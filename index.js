@@ -1,0 +1,270 @@
+// =============================================================================
+// ProphetX Parlay Service Provider
+// MLB / NBA / NHL — Spreads, Moneylines, Totals
+// =============================================================================
+
+const { config, validate } = require('./config');
+const log = require('./services/logger');
+const px = require('./services/prophetx');
+const oddsFeed = require('./services/odds-feed');
+const lineManager = require('./services/line-manager');
+const websocket = require('./services/websocket');
+const orderTracker = require('./services/order-tracker');
+const express = require('express');
+
+// ---------------------------------------------------------------------------
+// STARTUP
+// ---------------------------------------------------------------------------
+
+const startTime = Date.now();
+let oddsRefreshTimer = null;
+let lineRefreshTimer = null;
+let serviceReady = false;
+
+async function startup() {
+  log.setLevel(config.logLevel);
+
+  console.log('');
+  console.log('  ╔═══════════════════════════════════════════════╗');
+  console.log('  ║   ProphetX Parlay Service Provider            ║');
+  console.log('  ║   MLB · NBA · NHL                             ║');
+  console.log('  ╚═══════════════════════════════════════════════╝');
+  console.log('');
+
+  // Validate config
+  try {
+    validate();
+  } catch (err) {
+    log.error('Startup', err.message);
+    process.exit(1);
+  }
+
+  log.info('Startup', `Config: vig=${config.pricing.defaultVig}, maxRisk=$${config.pricing.maxRiskPerParlay}, maxLegs=${config.pricing.maxLegs}`);
+  log.info('Startup', `Sports: ${config.supportedSports.join(', ')}`);
+  log.info('Startup', `PX Base URL: ${config.px.baseUrl}`);
+
+  // Step 1: Auth with ProphetX
+  log.info('Startup', '1/5 Authenticating with ProphetX...');
+  try {
+    await px.login();
+    log.info('Startup', '    ✓ ProphetX auth OK');
+  } catch (err) {
+    log.error('Startup', `    ✗ ProphetX auth failed: ${err.message}`);
+    process.exit(1);
+  }
+
+  // Step 2: Fetch odds from The Odds API
+  log.info('Startup', '2/5 Fetching fair values from The Odds API...');
+  try {
+    const oddsResults = await oddsFeed.refreshAllSports();
+    for (const [sport, result] of Object.entries(oddsResults)) {
+      if (result.ok) {
+        log.info('Startup', `    ✓ ${sport}: ${result.events} events`);
+      } else {
+        log.warn('Startup', `    ✗ ${sport}: ${result.error}`);
+      }
+    }
+  } catch (err) {
+    log.warn('Startup', `    ✗ Odds fetch failed: ${err.message}`);
+    log.warn('Startup', '    Continuing without odds — will decline all RFQs until odds are loaded');
+  }
+
+  // Step 3: Seed lines and register with PX
+  log.info('Startup', '3/5 Seeding lines and registering with ProphetX...');
+  try {
+    const seedStats = await lineManager.seedAllLines();
+    log.info('Startup', `    ✓ ${seedStats.registeredLines} lines registered (${seedStats.matchedLines} matched of ${seedStats.totalLines} parsed)`);
+  } catch (err) {
+    log.warn('Startup', `    ✗ Line seeding failed: ${err.message}`);
+  }
+
+  // Step 4: Connect WebSocket
+  log.info('Startup', '4/5 Connecting to ProphetX WebSocket...');
+  try {
+    await websocket.connect();
+    log.info('Startup', '    ✓ WebSocket connected');
+  } catch (err) {
+    log.error('Startup', `    ✗ WebSocket connection failed: ${err.message}`);
+    log.warn('Startup', '    Service will run without WebSocket — use /status to check state');
+  }
+
+  // Step 5: Start Express status server
+  log.info('Startup', '5/5 Starting status server...');
+  startStatusServer();
+
+  // Start periodic timers
+  const refreshMs = config.refreshIntervalMinutes * 60 * 1000;
+  oddsRefreshTimer = setInterval(async () => {
+    try {
+      await oddsFeed.refreshAllSports();
+    } catch (err) {
+      log.error('Refresh', `Odds refresh failed: ${err.message}`);
+    }
+  }, refreshMs);
+
+  lineRefreshTimer = setInterval(async () => {
+    try {
+      await lineManager.refreshLines();
+    } catch (err) {
+      log.error('Refresh', `Line refresh failed: ${err.message}`);
+    }
+  }, refreshMs);
+
+  serviceReady = true;
+  log.info('Startup', `=== Service ready! Refreshing every ${config.refreshIntervalMinutes}min ===`);
+  console.log('');
+}
+
+// ---------------------------------------------------------------------------
+// EXPRESS STATUS SERVER
+// ---------------------------------------------------------------------------
+
+function startStatusServer() {
+  const app = express();
+  const path = require('path');
+  app.use(express.json());
+
+  // Serve dashboard
+  app.use(express.static(path.join(__dirname, 'client')));
+
+  // Health check
+  app.get('/health', (req, res) => {
+    const ws = websocket.getState();
+    res.json({
+      ok: serviceReady,
+      uptime: Math.round((Date.now() - startTime) / 1000),
+      wsState: ws.connectionState,
+      paused: ws.paused,
+      lineCount: lineManager.getLineCount(),
+      oddsCacheStatus: oddsFeed.getCacheStatus(),
+    });
+  });
+
+  // Full status dashboard
+  app.get('/status', (req, res) => {
+    res.json({
+      service: {
+        ready: serviceReady,
+        uptime: Math.round((Date.now() - startTime) / 1000),
+        startedAt: new Date(startTime).toISOString(),
+      },
+      config: {
+        vig: config.pricing.defaultVig,
+        maxRisk: config.pricing.maxRiskPerParlay,
+        maxLegs: config.pricing.maxLegs,
+        stalePriceMinutes: config.pricing.stalePriceMinutes,
+        sports: config.supportedSports,
+        baseUrl: config.px.baseUrl,
+      },
+      websocket: websocket.getState(),
+      lines: {
+        registered: lineManager.getLineCount(),
+        bySportAndMarket: lineManager.getLineSummary(),
+        lastSeed: lineManager.getStats(),
+      },
+      odds: oddsFeed.getCacheStatus(),
+      orders: orderTracker.getStats(),
+    });
+  });
+
+  // Recent orders
+  app.get('/orders', (req, res) => {
+    const limit = parseInt(req.query.limit) || 20;
+    res.json({
+      stats: orderTracker.getStats(),
+      pnlBySport: orderTracker.getPnLBySport(),
+      recentOrders: orderTracker.getRecentOrders(limit),
+    });
+  });
+
+  // Manual refresh odds
+  app.post('/refresh-odds', async (req, res) => {
+    try {
+      const results = await oddsFeed.refreshAllSports();
+      res.json({ ok: true, results });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Manual refresh lines
+  app.post('/refresh-lines', async (req, res) => {
+    try {
+      const stats = await lineManager.refreshLines();
+      res.json({ ok: true, stats });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Pause/resume RFQ handling
+  app.post('/pause', (req, res) => {
+    websocket.pause();
+    res.json({ ok: true, paused: true });
+  });
+
+  app.post('/resume', (req, res) => {
+    websocket.resume();
+    res.json({ ok: true, paused: false });
+  });
+
+  // List cached odds events (debugging)
+  app.get('/odds-events', (req, res) => {
+    res.json({ events: oddsFeed.getAllCachedEvents() });
+  });
+
+  // List line index (debugging)
+  app.get('/lines', (req, res) => {
+    const summary = lineManager.getLineSummary();
+    res.json({
+      count: lineManager.getLineCount(),
+      bySportAndMarket: summary,
+    });
+  });
+
+  // SPA fallback
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'client', 'index.html'));
+  });
+
+  app.listen(config.server.port, () => {
+    log.info('Startup', `    ✓ Status server on port ${config.server.port}`);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// GRACEFUL SHUTDOWN
+// ---------------------------------------------------------------------------
+
+function shutdown(signal) {
+  log.info('Shutdown', `Received ${signal} — shutting down...`);
+
+  if (oddsRefreshTimer) clearInterval(oddsRefreshTimer);
+  if (lineRefreshTimer) clearInterval(lineRefreshTimer);
+  websocket.disconnect();
+
+  log.info('Shutdown', 'Final stats:', orderTracker.getStats());
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+// Handle uncaught errors
+process.on('uncaughtException', (err) => {
+  log.error('Fatal', `Uncaught exception: ${err.message}`, err.stack);
+  shutdown('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason) => {
+  log.error('Fatal', `Unhandled rejection: ${reason}`);
+});
+
+// ---------------------------------------------------------------------------
+// RUN
+// ---------------------------------------------------------------------------
+
+startup().catch(err => {
+  log.error('Startup', `Fatal startup error: ${err.message}`);
+  process.exit(1);
+});

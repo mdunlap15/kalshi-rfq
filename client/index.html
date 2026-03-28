@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parlay SP Dashboard</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #1c2333;
+      --surface3: #21283b;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text2: #8b949e;
+      --text3: #6e7681;
+      --green: #3fb950;
+      --red: #f85149;
+      --amber: #d29922;
+      --blue: #58a6ff;
+      --accent: #58a6ff;
+      --purple: #bc8cff;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* Header */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-left { display: flex; align-items: center; gap: 16px; }
+    .header h1 { font-size: 18px; font-weight: 600; }
+    .header h1 span { color: var(--text2); font-weight: 400; }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .status-badge .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .status-badge.connected { background: rgba(63,185,80,0.15); color: var(--green); }
+    .status-badge.connected .dot { background: var(--green); }
+    .status-badge.disconnected { background: rgba(248,81,73,0.15); color: var(--red); }
+    .status-badge.disconnected .dot { background: var(--red); }
+    .status-badge.connecting { background: rgba(210,153,34,0.15); color: var(--amber); }
+    .status-badge.connecting .dot { background: var(--amber); animation: pulse 1.5s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    .header-actions { display: flex; gap: 8px; }
+
+    /* Buttons */
+    .btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: background 0.15s;
+    }
+    .btn:hover { background: var(--surface3); }
+    .btn:active { transform: scale(0.98); }
+    .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn.primary:hover { background: #4a96e8; }
+    .btn.danger { background: rgba(248,81,73,0.15); color: var(--red); border-color: var(--red); }
+    .btn.danger:hover { background: rgba(248,81,73,0.25); }
+    .btn.success { background: rgba(63,185,80,0.15); color: var(--green); border-color: var(--green); }
+    .btn.success:hover { background: rgba(63,185,80,0.25); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Main layout */
+    .main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 16px;
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .card-body { padding: 16px; }
+
+    /* Stat grid */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .stat-box {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+    }
+    .stat-box .label {
+      font-size: 11px;
+      color: var(--text3);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .stat-box .value {
+      font-size: 22px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .stat-box .sub {
+      font-size: 11px;
+      color: var(--text2);
+      margin-top: 2px;
+    }
+    .positive { color: var(--green); }
+    .negative { color: var(--red); }
+    .neutral { color: var(--text2); }
+
+    /* Grid layouts */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+
+    @media (max-width: 768px) {
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .stat-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      text-align: left;
+      padding: 8px 12px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text3);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--surface2); }
+
+    /* Line pills */
+    .sport-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .sport-pill.nba { background: rgba(88,166,255,0.15); color: var(--blue); }
+    .sport-pill.mlb { background: rgba(210,153,34,0.15); color: var(--amber); }
+    .sport-pill.nhl { background: rgba(188,140,255,0.15); color: var(--purple); }
+
+    .market-pill {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 11px;
+      background: var(--surface3);
+      color: var(--text2);
+    }
+
+    /* Odds cache bars */
+    .cache-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .cache-row:last-child { border-bottom: none; }
+    .cache-sport { width: 100px; font-weight: 500; }
+    .cache-bar-wrap {
+      flex: 1;
+      height: 6px;
+      background: var(--surface3);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .cache-bar {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.5s;
+    }
+    .cache-bar.fresh { background: var(--green); }
+    .cache-bar.aging { background: var(--amber); }
+    .cache-bar.stale { background: var(--red); }
+    .cache-info { font-size: 12px; color: var(--text2); min-width: 120px; text-align: right; }
+
+    /* Log feed */
+    .log-feed {
+      max-height: 300px;
+      overflow-y: auto;
+      font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 12px;
+      padding: 12px;
+      background: var(--bg);
+      border-radius: 4px;
+    }
+    .log-entry {
+      padding: 2px 0;
+      display: flex;
+      gap: 8px;
+    }
+    .log-time { color: var(--text3); min-width: 85px; }
+    .log-cat {
+      min-width: 70px;
+      font-weight: 600;
+    }
+    .log-cat.rfq { color: var(--blue); }
+    .log-cat.confirm { color: var(--green); }
+    .log-cat.settle { color: var(--amber); }
+    .log-cat.error { color: var(--red); }
+    .log-cat.system { color: var(--text3); }
+    .log-msg { color: var(--text2); word-break: break-all; }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text3);
+    }
+    .empty-state .icon { font-size: 32px; margin-bottom: 8px; }
+
+    /* Config display */
+    .config-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .config-item:last-child { border-bottom: none; }
+    .config-key { color: var(--text2); }
+    .config-val { font-weight: 500; font-variant-numeric: tabular-nums; }
+
+    /* Auto-refresh indicator */
+    .refresh-indicator {
+      font-size: 11px;
+      color: var(--text3);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .refresh-indicator .spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .paused-banner {
+      background: rgba(248,81,73,0.1);
+      border: 1px solid var(--red);
+      color: var(--red);
+      padding: 10px 16px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-left">
+    <h1>Parlay SP <span>Dashboard</span></h1>
+    <div id="ws-badge" class="status-badge disconnected">
+      <span class="dot"></span>
+      <span id="ws-badge-text">Disconnected</span>
+    </div>
+  </div>
+  <div class="header-actions">
+    <div class="refresh-indicator" id="refresh-indicator" style="display:none;">
+      <div class="spinner"></div>
+      <span>Refreshing...</span>
+    </div>
+    <button class="btn" onclick="refreshDashboard()">Refresh</button>
+    <button class="btn" id="pause-btn" onclick="togglePause()">Pause</button>
+  </div>
+</div>
+
+<div class="main">
+  <!-- Paused banner -->
+  <div id="paused-banner" class="paused-banner" style="display:none;">
+    <span>RFQ handling is paused. Incoming requests will be ignored.</span>
+    <button class="btn success" onclick="togglePause()">Resume</button>
+  </div>
+
+  <!-- Stats row -->
+  <div class="card">
+    <div class="card-header">
+      <span>Overview</span>
+      <span id="uptime" class="refresh-indicator"></span>
+    </div>
+    <div class="card-body">
+      <div class="stat-grid">
+        <div class="stat-box">
+          <div class="label">Lines Registered</div>
+          <div class="value" id="stat-lines">-</div>
+          <div class="sub" id="stat-lines-sub"></div>
+        </div>
+        <div class="stat-box">
+          <div class="label">Quotes Sent</div>
+          <div class="value" id="stat-quotes">-</div>
+        </div>
+        <div class="stat-box">
+          <div class="label">Confirmed</div>
+          <div class="value" id="stat-confirmed">-</div>
+        </div>
+        <div class="stat-box">
+          <div class="label">Settled</div>
+          <div class="value" id="stat-settled">-</div>
+        </div>
+        <div class="stat-box">
+          <div class="label">Running P&L</div>
+          <div class="value" id="stat-pnl">-</div>
+        </div>
+        <div class="stat-box">
+          <div class="label">Win Rate</div>
+          <div class="value" id="stat-winrate">-</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <!-- Odds Cache -->
+    <div class="card">
+      <div class="card-header">
+        <span>Odds Cache</span>
+        <button class="btn" onclick="refreshOdds(this)">Refresh Odds</button>
+      </div>
+      <div class="card-body" id="odds-cache">
+        <div class="empty-state"><div class="icon">...</div>Loading</div>
+      </div>
+    </div>
+
+    <!-- Lines by Sport -->
+    <div class="card">
+      <div class="card-header">
+        <span>Registered Lines</span>
+        <button class="btn" onclick="refreshLines(this)">Refresh Lines</button>
+      </div>
+      <div class="card-body" id="lines-breakdown">
+        <div class="empty-state"><div class="icon">...</div>Loading</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <!-- Config -->
+    <div class="card">
+      <div class="card-header">Configuration</div>
+      <div class="card-body" id="config-display">
+        <div class="empty-state"><div class="icon">...</div>Loading</div>
+      </div>
+    </div>
+
+    <!-- P&L by Sport -->
+    <div class="card">
+      <div class="card-header">P&L by Sport</div>
+      <div class="card-body" id="pnl-sport">
+        <div class="empty-state">
+          <div class="icon">-</div>
+          <div>No settled orders yet</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent Orders -->
+  <div class="card">
+    <div class="card-header">
+      <span>Recent Orders</span>
+      <span id="order-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+      <div id="orders-table">
+        <div class="empty-state">
+          <div class="icon">-</div>
+          <div>No orders yet. Waiting for RFQs...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Activity Log -->
+  <div class="card">
+    <div class="card-header">
+      <span>Activity Log</span>
+      <button class="btn" onclick="clearLog()">Clear</button>
+    </div>
+    <div class="card-body" style="padding: 0;">
+      <div class="log-feed" id="log-feed">
+        <div class="log-entry">
+          <span class="log-time">--:--:--</span>
+          <span class="log-cat system">System</span>
+          <span class="log-msg">Dashboard loaded. Connecting...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const BASE = window.location.origin;
+  let isPaused = false;
+  let autoRefreshTimer = null;
+
+  // -----------------------------------------------------------------------
+  // DATA FETCHING
+  // -----------------------------------------------------------------------
+
+  async function fetchJSON(path) {
+    const resp = await fetch(BASE + path);
+    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+    return resp.json();
+  }
+
+  async function postJSON(path) {
+    const resp = await fetch(BASE + path, { method: 'POST' });
+    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+    return resp.json();
+  }
+
+  // -----------------------------------------------------------------------
+  // DASHBOARD REFRESH
+  // -----------------------------------------------------------------------
+
+  async function refreshDashboard() {
+    const indicator = document.getElementById('refresh-indicator');
+    indicator.style.display = 'flex';
+
+    try {
+      const [status, orders] = await Promise.all([
+        fetchJSON('/status'),
+        fetchJSON('/orders'),
+      ]);
+
+      renderStatus(status);
+      renderOrders(orders);
+      addLog('system', 'Dashboard refreshed');
+    } catch (err) {
+      addLog('error', 'Failed to refresh: ' + err.message);
+    } finally {
+      indicator.style.display = 'none';
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // RENDER STATUS
+  // -----------------------------------------------------------------------
+
+  function renderStatus(data) {
+    // WebSocket badge
+    const ws = data.websocket || {};
+    const badge = document.getElementById('ws-badge');
+    const badgeText = document.getElementById('ws-badge-text');
+    badge.className = 'status-badge ' + (ws.connectionState === 'connected' ? 'connected' :
+      ws.connectionState === 'connecting' ? 'connecting' : 'disconnected');
+    badgeText.textContent = ws.connectionState || 'Unknown';
+
+    // Paused state
+    isPaused = ws.paused || false;
+    document.getElementById('paused-banner').style.display = isPaused ? 'flex' : 'none';
+    const pauseBtn = document.getElementById('pause-btn');
+    pauseBtn.textContent = isPaused ? 'Resume' : 'Pause';
+    pauseBtn.className = isPaused ? 'btn success' : 'btn danger';
+
+    // Uptime
+    const svc = data.service || {};
+    document.getElementById('uptime').textContent = svc.ready ?
+      'Up ' + formatDuration(svc.uptime) : 'Not ready';
+
+    // Stats
+    const o = data.orders || {};
+    document.getElementById('stat-lines').textContent = (data.lines?.registered || 0).toLocaleString();
+    const lineSummary = data.lines?.bySportAndMarket || {};
+    const sportCounts = {};
+    for (const [key, count] of Object.entries(lineSummary)) {
+      const sport = key.split('/')[0];
+      sportCounts[sport] = (sportCounts[sport] || 0) + count;
+    }
+    document.getElementById('stat-lines-sub').textContent = Object.entries(sportCounts)
+      .map(([s, c]) => `${sportLabel(s)}: ${c}`).join(' · ');
+
+    document.getElementById('stat-quotes').textContent = (o.totalQuotes || 0).toLocaleString();
+    document.getElementById('stat-confirmed').textContent = (o.totalConfirmations || 0).toLocaleString();
+    document.getElementById('stat-settled').textContent = (o.totalSettlements || 0).toLocaleString();
+
+    const pnl = o.runningPnL || 0;
+    const pnlEl = document.getElementById('stat-pnl');
+    pnlEl.textContent = '$' + Math.abs(pnl).toFixed(2);
+    if (pnl > 0) { pnlEl.textContent = '+$' + pnl.toFixed(2); pnlEl.className = 'value positive'; }
+    else if (pnl < 0) { pnlEl.textContent = '-$' + Math.abs(pnl).toFixed(2); pnlEl.className = 'value negative'; }
+    else { pnlEl.className = 'value neutral'; }
+
+    const wins = o.totalWins || 0;
+    const losses = o.totalLosses || 0;
+    const total = wins + losses;
+    const wrEl = document.getElementById('stat-winrate');
+    if (total > 0) {
+      wrEl.textContent = Math.round(wins / total * 100) + '%';
+      wrEl.className = 'value ' + (wins / total >= 0.5 ? 'positive' : 'negative');
+    } else {
+      wrEl.textContent = '-';
+      wrEl.className = 'value neutral';
+    }
+
+    // Odds cache
+    renderOddsCache(data.odds || {});
+
+    // Lines breakdown
+    renderLinesBreakdown(data.lines?.bySportAndMarket || {});
+
+    // Config
+    renderConfig(data.config || {});
+  }
+
+  function renderOddsCache(odds) {
+    const el = document.getElementById('odds-cache');
+    if (!odds || Object.keys(odds).length === 0) {
+      el.innerHTML = '<div class="empty-state">No odds data</div>';
+      return;
+    }
+
+    let html = '';
+    for (const [sport, info] of Object.entries(odds)) {
+      const age = info.ageMinutes || 0;
+      const maxAge = 15; // stale threshold
+      const pct = Math.max(0, Math.min(100, (1 - age / maxAge) * 100));
+      const barClass = age < 5 ? 'fresh' : age < 10 ? 'aging' : 'stale';
+
+      html += `
+        <div class="cache-row">
+          <span class="cache-sport">${sportPill(sport)}</span>
+          <div class="cache-bar-wrap">
+            <div class="cache-bar ${barClass}" style="width: ${pct}%"></div>
+          </div>
+          <span class="cache-info">${info.eventCount} events · ${age.toFixed(1)}m ago</span>
+        </div>
+      `;
+    }
+    el.innerHTML = html;
+  }
+
+  function renderLinesBreakdown(breakdown) {
+    const el = document.getElementById('lines-breakdown');
+    if (!breakdown || Object.keys(breakdown).length === 0) {
+      el.innerHTML = '<div class="empty-state">No lines registered</div>';
+      return;
+    }
+
+    let html = '<table><tr><th>Sport</th><th>Market</th><th style="text-align:right">Lines</th></tr>';
+    for (const [key, count] of Object.entries(breakdown).sort()) {
+      const [sport, market] = key.split('/');
+      html += `
+        <tr>
+          <td>${sportPill(sport)}</td>
+          <td><span class="market-pill">${market}</span></td>
+          <td style="text-align:right; font-variant-numeric: tabular-nums;">${count}</td>
+        </tr>
+      `;
+    }
+    html += '</table>';
+    el.innerHTML = html;
+  }
+
+  function renderConfig(cfg) {
+    const el = document.getElementById('config-display');
+    const items = [
+      ['Vig', (cfg.vig * 100).toFixed(1) + '%'],
+      ['Max Risk / Parlay', '$' + (cfg.maxRisk || 0)],
+      ['Max Legs', cfg.maxLegs || '-'],
+      ['Stale Price Limit', (cfg.stalePriceMinutes || 0) + ' min'],
+      ['Sports', (cfg.sports || []).map(sportLabel).join(', ')],
+      ['PX Base URL', cfg.baseUrl || '-'],
+    ];
+
+    el.innerHTML = items.map(([k, v]) =>
+      `<div class="config-item"><span class="config-key">${k}</span><span class="config-val">${v}</span></div>`
+    ).join('');
+  }
+
+  // -----------------------------------------------------------------------
+  // RENDER ORDERS
+  // -----------------------------------------------------------------------
+
+  function renderOrders(data) {
+    const el = document.getElementById('orders-table');
+    const orders = data.recentOrders || [];
+    document.getElementById('order-count').textContent = orders.length > 0 ?
+      `${data.stats?.totalOrders || orders.length} total` : '';
+
+    if (orders.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No orders yet. Waiting for RFQs...</div></div>';
+      return;
+    }
+
+    let html = `
+      <div style="overflow-x: auto;">
+      <table>
+        <tr>
+          <th>Time</th>
+          <th>Parlay ID</th>
+          <th>Legs</th>
+          <th>Fair Prob</th>
+          <th>Offered Odds</th>
+          <th>Max Risk</th>
+          <th>Status</th>
+          <th style="text-align:right">P&L</th>
+        </tr>
+    `;
+
+    for (const order of orders) {
+      const time = order.quotedAt ? new Date(order.quotedAt).toLocaleTimeString() : '-';
+      const parlayShort = (order.parlayId || '').substring(0, 8) + '...';
+      const legs = (order.legs || order.meta?.legs || []);
+      const legCount = legs.length;
+      const legSummary = legs.slice(0, 2).map(l =>
+        `${l.team || 'Unknown'} ${l.market || ''}`
+      ).join(', ') + (legCount > 2 ? ` +${legCount - 2}` : '');
+
+      const fairProb = order.fairParlayProb ? (order.fairParlayProb * 100).toFixed(2) + '%' : '-';
+      const odds = order.offeredOdds ? order.offeredOdds.toFixed(2) + 'x' : '-';
+      const risk = order.maxRisk ? '$' + order.maxRisk : '-';
+
+      let statusClass = '';
+      let statusText = order.status || 'unknown';
+      if (statusText === 'quoted') statusClass = 'neutral';
+      else if (statusText === 'confirmed') statusClass = 'positive';
+      else if (statusText === 'rejected') statusClass = 'negative';
+      else if (statusText.startsWith('settled_')) {
+        statusClass = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+        statusText = statusText.replace('settled_', '');
+      }
+
+      let pnlHtml = '-';
+      if (order.pnl != null) {
+        const cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+        pnlHtml = `<span class="${cls}">${order.pnl >= 0 ? '+' : ''}$${order.pnl.toFixed(2)}</span>`;
+      }
+
+      html += `
+        <tr title="${legSummary}">
+          <td>${time}</td>
+          <td style="font-family: monospace; font-size: 12px;">${parlayShort}</td>
+          <td>${legCount} legs</td>
+          <td>${fairProb}</td>
+          <td>${odds}</td>
+          <td>${risk}</td>
+          <td><span class="${statusClass}">${statusText}</span></td>
+          <td style="text-align:right">${pnlHtml}</td>
+        </tr>
+      `;
+    }
+
+    html += '</table></div>';
+    el.innerHTML = html;
+
+    // P&L by sport
+    renderPnLBySport(data.pnlBySport || {});
+  }
+
+  function renderPnLBySport(pnl) {
+    const el = document.getElementById('pnl-sport');
+    if (!pnl || Object.keys(pnl).length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>';
+      return;
+    }
+
+    let html = '<table><tr><th>Sport</th><th style="text-align:right">P&L</th><th style="text-align:right">W-L</th></tr>';
+    for (const [sport, data] of Object.entries(pnl)) {
+      const cls = data.pnl > 0 ? 'positive' : data.pnl < 0 ? 'negative' : 'neutral';
+      html += `
+        <tr>
+          <td>${sportPill(sport)}</td>
+          <td style="text-align:right" class="${cls}">${data.pnl >= 0 ? '+' : ''}$${data.pnl.toFixed(2)}</td>
+          <td style="text-align:right">${data.wins}-${data.losses}</td>
+        </tr>
+      `;
+    }
+    html += '</table>';
+    el.innerHTML = html;
+  }
+
+  // -----------------------------------------------------------------------
+  // ACTIONS
+  // -----------------------------------------------------------------------
+
+  async function togglePause() {
+    try {
+      if (isPaused) {
+        await postJSON('/resume');
+        addLog('system', 'Resumed RFQ handling');
+      } else {
+        await postJSON('/pause');
+        addLog('system', 'Paused RFQ handling');
+      }
+      await refreshDashboard();
+    } catch (err) {
+      addLog('error', 'Toggle pause failed: ' + err.message);
+    }
+  }
+
+  async function refreshOdds(btn) {
+    btn.disabled = true;
+    btn.textContent = 'Refreshing...';
+    try {
+      const result = await postJSON('/refresh-odds');
+      addLog('system', 'Odds refreshed: ' + JSON.stringify(result.results || {}));
+      await refreshDashboard();
+    } catch (err) {
+      addLog('error', 'Odds refresh failed: ' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Refresh Odds';
+    }
+  }
+
+  async function refreshLines(btn) {
+    btn.disabled = true;
+    btn.textContent = 'Refreshing...';
+    try {
+      const result = await postJSON('/refresh-lines');
+      addLog('system', 'Lines refreshed: ' + JSON.stringify(result.stats || {}));
+      await refreshDashboard();
+    } catch (err) {
+      addLog('error', 'Lines refresh failed: ' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Refresh Lines';
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // ACTIVITY LOG
+  // -----------------------------------------------------------------------
+
+  function addLog(category, message) {
+    const feed = document.getElementById('log-feed');
+    const now = new Date().toLocaleTimeString();
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+    entry.innerHTML = `
+      <span class="log-time">${now}</span>
+      <span class="log-cat ${category}">${category.charAt(0).toUpperCase() + category.slice(1)}</span>
+      <span class="log-msg">${escapeHtml(message)}</span>
+    `;
+    feed.appendChild(entry);
+    feed.scrollTop = feed.scrollHeight;
+
+    // Keep last 100 entries
+    while (feed.children.length > 100) {
+      feed.removeChild(feed.firstChild);
+    }
+  }
+
+  function clearLog() {
+    document.getElementById('log-feed').innerHTML = '';
+    addLog('system', 'Log cleared');
+  }
+
+  // -----------------------------------------------------------------------
+  // HELPERS
+  // -----------------------------------------------------------------------
+
+  function sportLabel(sport) {
+    const map = {
+      'basketball_nba': 'NBA',
+      'baseball_mlb': 'MLB',
+      'icehockey_nhl': 'NHL',
+    };
+    return map[sport] || sport;
+  }
+
+  function sportPill(sport) {
+    const label = sportLabel(sport);
+    const cls = label.toLowerCase();
+    return `<span class="sport-pill ${cls}">${label}</span>`;
+  }
+
+  function formatDuration(seconds) {
+    if (seconds < 60) return seconds + 's';
+    if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return h + 'h ' + m + 'm';
+  }
+
+  function escapeHtml(text) {
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+  }
+
+  // -----------------------------------------------------------------------
+  // INIT
+  // -----------------------------------------------------------------------
+
+  // Initial load
+  refreshDashboard();
+
+  // Auto-refresh every 10 seconds
+  autoRefreshTimer = setInterval(refreshDashboard, 10000);
+</script>
+</body>
+</html>

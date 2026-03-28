@@ -1,0 +1,351 @@
+const { config } = require('../config');
+const log = require('./logger');
+const px = require('./prophetx');
+const oddsFeed = require('./odds-feed');
+
+// ---------------------------------------------------------------------------
+// LINE INDEX — maps PX line_id → metadata + Odds API match
+// ---------------------------------------------------------------------------
+// { [lineId]: { sport, pxEventId, pxEventName, marketType, selection,
+//               teamName, line, homeTeam, awayTeam,
+//               oddsApiSport, oddsApiMarket, oddsApiSelection } }
+const lineIndex = {};
+
+// Reverse lookup: PX event_id → event metadata
+const eventIndex = {};
+
+// Stats from last seed
+let lastSeedStats = null;
+
+// ---------------------------------------------------------------------------
+// TEAM NAME MATCHING
+// ---------------------------------------------------------------------------
+
+// Known overrides for team name mismatches between PX and The Odds API
+// Add entries here if matching fails for specific teams
+const TEAM_NAME_OVERRIDES = {
+  // 'px name lowercase': 'odds api name'
+  // Example: 'ny rangers': 'New York Rangers'
+};
+
+function normalizeTeamName(name) {
+  return (name || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+}
+
+/**
+ * Try to match a PX team name to an Odds API team name.
+ * Strategies: exact, contains, override map.
+ */
+function matchTeamName(pxName, oddsApiNames) {
+  const norm = normalizeTeamName(pxName);
+
+  // Check override map
+  if (TEAM_NAME_OVERRIDES[norm]) {
+    const override = TEAM_NAME_OVERRIDES[norm];
+    const match = oddsApiNames.find(n => normalizeTeamName(n) === normalizeTeamName(override));
+    if (match) return match;
+  }
+
+  // Exact normalized match
+  const exact = oddsApiNames.find(n => normalizeTeamName(n) === norm);
+  if (exact) return exact;
+
+  // Substring: PX name contains Odds API name or vice versa
+  for (const oaName of oddsApiNames) {
+    const oaNorm = normalizeTeamName(oaName);
+    if (norm.includes(oaNorm) || oaNorm.includes(norm)) return oaName;
+  }
+
+  // Last word match (e.g., "Rangers" matches "New York Rangers")
+  const pxWords = norm.split(/\s+/);
+  const pxLast = pxWords[pxWords.length - 1];
+  if (pxLast.length >= 4) {
+    const lastWordMatch = oddsApiNames.find(n => {
+      const words = normalizeTeamName(n).split(/\s+/);
+      return words[words.length - 1] === pxLast;
+    });
+    // Only use last-word match if it's unambiguous (1 match)
+    const allLastWord = oddsApiNames.filter(n => {
+      const words = normalizeTeamName(n).split(/\s+/);
+      return words[words.length - 1] === pxLast;
+    });
+    if (allLastWord.length === 1) return lastWordMatch;
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// MARKET TYPE MAPPING
+// ---------------------------------------------------------------------------
+
+// PX market.type → Odds API market key
+const MARKET_TYPE_MAP = {
+  'moneyline': 'h2h',
+  'spread': 'spreads',
+  'total': 'totals',
+};
+
+// ---------------------------------------------------------------------------
+// SEEDING
+// ---------------------------------------------------------------------------
+
+/**
+ * Seed all lines from ProphetX, match to Odds API, register supported lines.
+ *
+ * Flow:
+ * 1. Fetch all PX sport events
+ * 2. Filter to supported sports
+ * 3. Fetch markets for each event
+ * 4. Parse line_ids from markets
+ * 5. Match each line to Odds API event/market
+ * 6. Register matched lines with PX
+ */
+async function seedAllLines() {
+  log.info('Lines', '=== Starting line seed ===');
+
+  // 1. Fetch PX events
+  const allEvents = await px.fetchSportEvents();
+  const pxSportNames = Object.values(config.sportNameMap);
+
+  // 2. Filter to supported sports (accept any active status)
+  const events = allEvents.filter(e =>
+    pxSportNames.includes(e.sport_name) &&
+    (e.status === 'live' || e.status === 'pre_event' || e.status === 'active' || !e.status) &&
+    e.competitors && e.competitors.length >= 2
+  );
+  log.info('Lines', `Found ${events.length} supported sport events (of ${allEvents.length} total)`);
+
+  // Get all Odds API cached events for matching
+  const oddsApiEvents = oddsFeed.getAllCachedEvents();
+
+  let totalLines = 0;
+  let matchedLines = 0;
+  let unmatchedEvents = [];
+
+  // 3-4. Fetch markets and parse for each event
+  for (const event of events) {
+    // Determine sport key
+    const sportKey = Object.entries(config.sportNameMap)
+      .find(([k, v]) => v === event.sport_name)?.[0];
+    if (!sportKey) continue;
+
+    // Store event metadata
+    eventIndex[event.event_id] = {
+      name: event.name,
+      sport: sportKey,
+      sportName: event.sport_name,
+      competitors: event.competitors,
+      scheduled: event.scheduled,
+    };
+
+    // Extract home/away from PX event
+    const homeComp = event.competitors.find(c => c.side === 'home');
+    const awayComp = event.competitors.find(c => c.side === 'away');
+    if (!homeComp || !awayComp) {
+      log.debug('Lines', `Skipping ${event.name}: missing home/away competitors`);
+      continue;
+    }
+
+    // 5. Try to match to Odds API event
+    const allOddsTeams = oddsApiEvents
+      .filter(e => e.sport === sportKey)
+      .flatMap(e => [e.homeTeam, e.awayTeam]);
+    const uniqueTeams = [...new Set(allOddsTeams)];
+
+    const matchedHome = matchTeamName(homeComp.name, uniqueTeams);
+    const matchedAway = matchTeamName(awayComp.name, uniqueTeams);
+
+    if (!matchedHome || !matchedAway) {
+      unmatchedEvents.push({
+        pxEvent: event.name,
+        pxHome: homeComp.name,
+        pxAway: awayComp.name,
+        matchedHome,
+        matchedAway,
+      });
+      continue;
+    }
+
+    // Verify this home/away pair exists as an actual Odds API event
+    const oddsEvent = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway);
+    if (!oddsEvent) {
+      // Try reversed (home/away might be swapped)
+      const oddsEventReversed = oddsFeed.getEventMarkets(sportKey, matchedAway, matchedHome);
+      if (!oddsEventReversed) {
+        unmatchedEvents.push({
+          pxEvent: event.name,
+          reason: 'Team names matched but no Odds API event found',
+          matchedHome,
+          matchedAway,
+        });
+        continue;
+      }
+      // Swap for correct orientation
+      const temp = matchedHome;
+      // Note: we'll handle the swap in line indexing below
+    }
+
+    // Fetch PX markets
+    let markets;
+    try {
+      markets = await px.fetchMarkets(event.event_id);
+    } catch (err) {
+      log.error('Lines', `Failed to fetch markets for ${event.name}: ${err.message}`);
+      continue;
+    }
+
+    // Filter to main markets only (moneyline, spread, total for the game)
+    const mainMarkets = markets.filter(m =>
+      ['moneyline', 'spread', 'total'].includes(m.type) &&
+      // Exclude player props that also have type 'total'
+      (m.type !== 'total' || m.name === 'Total' || m.name === 'Total Points' || m.name === 'Total Runs' || m.name === 'Total Goals')
+    );
+
+    for (const market of mainMarkets) {
+      const parsed = px.parseMarketSelections(market);
+      for (const sel of parsed) {
+        totalLines++;
+
+        // Determine Odds API selection mapping
+        let oddsApiSelection = null;
+        let oddsApiMarket = MARKET_TYPE_MAP[sel.marketType];
+
+        if (sel.marketType === 'moneyline') {
+          // Match team to home/away
+          if (matchTeamName(sel.teamName, [matchedHome])) {
+            oddsApiSelection = 'home';
+          } else if (matchTeamName(sel.teamName, [matchedAway])) {
+            oddsApiSelection = 'away';
+          }
+        } else if (sel.marketType === 'spread') {
+          // Match by team name
+          if (matchTeamName(sel.teamName, [matchedHome]) ||
+              (sel.teamName.toLowerCase().includes(normalizeTeamName(matchedHome).split(' ').pop()))) {
+            oddsApiSelection = 'home';
+          } else {
+            oddsApiSelection = 'away';
+          }
+        } else if (sel.marketType === 'total') {
+          oddsApiSelection = sel.selection; // 'over' or 'under'
+        }
+
+        if (!oddsApiSelection || !oddsApiMarket) continue;
+
+        // Register line — fair value check happens at RFQ pricing time
+        // For moneylines, verify fair value exists now
+        // For spreads/totals, register all alternate lines (fair value available for primary line)
+        matchedLines++;
+        lineIndex[sel.lineId] = {
+          sport: sportKey,
+          pxEventId: event.event_id,
+          pxEventName: event.name,
+          marketType: sel.marketType,
+          selection: oddsApiSelection,
+          teamName: sel.teamName,
+          line: sel.line,
+          homeTeam: matchedHome,
+          awayTeam: matchedAway,
+          oddsApiSport: sportKey,
+          oddsApiMarket,
+          oddsApiSelection,
+          competitorId: sel.competitorId,
+        };
+      }
+    }
+
+    // Small delay to avoid hammering PX API
+    await new Promise(r => setTimeout(r, 100));
+  }
+
+  // Log unmatched events
+  if (unmatchedEvents.length > 0) {
+    log.warn('Lines', `${unmatchedEvents.length} events could not be matched to Odds API:`);
+    for (const ue of unmatchedEvents) {
+      log.warn('Lines', `  ${ue.pxEvent}: ${ue.reason || `home=${ue.pxHome}→${ue.matchedHome || 'NO MATCH'}, away=${ue.pxAway}→${ue.matchedAway || 'NO MATCH'}`}`);
+    }
+  }
+
+  // 6. Register matched lines with PX
+  const lineIds = Object.keys(lineIndex);
+  if (lineIds.length > 0) {
+    try {
+      await px.registerSupportedLines(lineIds);
+      log.info('Lines', `Registered ${lineIds.length} lines with ProphetX`);
+    } catch (err) {
+      log.error('Lines', `Failed to register lines: ${err.message}`);
+    }
+  }
+
+  lastSeedStats = {
+    timestamp: new Date().toISOString(),
+    totalEvents: events.length,
+    totalLines,
+    matchedLines,
+    registeredLines: lineIds.length,
+    unmatchedEvents: unmatchedEvents.length,
+  };
+
+  log.info('Lines', `=== Seed complete: ${events.length} events, ${totalLines} lines parsed, ${matchedLines} matched, ${lineIds.length} registered ===`);
+  return lastSeedStats;
+}
+
+// ---------------------------------------------------------------------------
+// LOOKUPS
+// ---------------------------------------------------------------------------
+
+function lookupLine(lineId) {
+  return lineIndex[lineId] || null;
+}
+
+function getRegisteredLineIds() {
+  return Object.keys(lineIndex);
+}
+
+function getStats() {
+  return lastSeedStats;
+}
+
+function getLineCount() {
+  return Object.keys(lineIndex).length;
+}
+
+/**
+ * Get a summary of lines by sport and market type.
+ */
+function getLineSummary() {
+  const summary = {};
+  for (const [lineId, info] of Object.entries(lineIndex)) {
+    const key = `${info.sport}/${info.marketType}`;
+    summary[key] = (summary[key] || 0) + 1;
+  }
+  return summary;
+}
+
+// ---------------------------------------------------------------------------
+// REFRESH
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-seed lines. Clears old index and re-fetches everything.
+ */
+async function refreshLines() {
+  log.info('Lines', 'Refreshing all lines...');
+  // Clear existing
+  for (const key of Object.keys(lineIndex)) {
+    delete lineIndex[key];
+  }
+  return seedAllLines();
+}
+
+module.exports = {
+  seedAllLines,
+  refreshLines,
+  lookupLine,
+  getRegisteredLineIds,
+  getStats,
+  getLineCount,
+  getLineSummary,
+  matchTeamName,
+  normalizeTeamName,
+};
