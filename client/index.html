@@ -825,29 +825,41 @@
     statusFilter: [],
     legsFilter: [],
     expandedRows: new Set(),
-    allOrders: [],
+    allOrders: {}, // keyed by parlayId to merge across refreshes
   };
 
   function renderOrders(data) {
     const el = document.getElementById('orders-table');
     const orders = data.recentOrders || [];
-    orderState.allOrders = orders;
 
-    document.getElementById('order-count').textContent = orders.length > 0 ?
-      `${data.stats?.totalOrders || orders.length} total` : '';
+    // Preserve search input value before DOM rebuild
+    const searchEl = document.getElementById('order-search');
+    if (searchEl) orderState.search = searchEl.value;
 
-    if (orders.length === 0) {
+    // Merge new orders into existing set (keyed by parlayId) so data survives refreshes
+    for (const o of orders) {
+      if (o.parlayId) orderState.allOrders[o.parlayId] = o;
+    }
+    // Convert map to sorted array, keep most recent 100
+    const allOrders = Object.values(orderState.allOrders)
+      .sort((a, b) => (b.quotedAt || '').localeCompare(a.quotedAt || ''))
+      .slice(0, 100);
+
+    document.getElementById('order-count').textContent = allOrders.length > 0 ?
+      `${allOrders.length} total` : '';
+
+    if (allOrders.length === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No orders yet. Waiting for RFQs...</div></div>';
       renderPnLBySport(data.pnlBySport || {});
       return;
     }
 
     // Collect all unique statuses and teams for filter dropdowns
-    const allStatuses = [...new Set(orders.map(o => orderStatusText(o)))];
-    const allTeams = [...new Set(orders.flatMap(o => getOrderTeams(o)))].sort();
+    const allStatuses = [...new Set(allOrders.map(o => orderStatusText(o)))];
+    const allTeams = [...new Set(allOrders.flatMap(o => getOrderTeams(o)))].sort();
 
     // Apply filters
-    let filtered = orders.filter(o => {
+    let filtered = allOrders.filter(o => {
       // Search: parlay ID or team names
       if (orderState.search) {
         const q = orderState.search.toLowerCase();
@@ -883,7 +895,7 @@
       return 0;
     });
 
-    const rerender = () => renderOrders({ recentOrders: orderState.allOrders, stats: { totalOrders: orderState.allOrders.length }, pnlBySport: window._lastPnlBySport || {} });
+    const rerender = () => renderOrders({ recentOrders: [], pnlBySport: window._lastPnlBySport || {} });
 
     // Build filter bar
     let html = `<div style="padding: 8px 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--border);">
@@ -896,7 +908,7 @@
         ${allStatuses.map(s => `<option value="${s}" ${orderState.statusFilter.includes(s)?'selected':''}>${s}</option>`).join('')}
       </select>
       ${orderState.legsFilter.length > 0 ? `<button class="btn" style="font-size:11px; padding:3px 8px;" onclick="orderState.legsFilter=[]; orderRerender()">Clear team filter</button>` : ''}
-      <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${orders.length}</span>
+      <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${allOrders.length}</span>
     </div>`;
 
     // Sort arrow
@@ -986,6 +998,16 @@
 
     window._lastPnlBySport = data.pnlBySport || {};
     window.orderRerender = rerender;
+
+    // Restore search input focus if it was active
+    if (orderState.search) {
+      const newSearchEl = document.getElementById('order-search');
+      if (newSearchEl) {
+        newSearchEl.value = orderState.search;
+        // Don't steal focus — only restore if user was typing
+      }
+    }
+
     renderPnLBySport(data.pnlBySport || {});
   }
 
