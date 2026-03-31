@@ -190,6 +190,12 @@ function startStatusServer() {
     });
   });
 
+  // Market intelligence
+  app.get('/market-intel', (req, res) => {
+    const limit = parseInt(req.query.limit) || 50;
+    res.json(orderTracker.getMarketIntel(limit));
+  });
+
   // Manual refresh odds
   app.post('/refresh-odds', async (req, res) => {
     try {

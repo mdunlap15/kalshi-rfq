@@ -282,14 +282,18 @@ async function handleRFQ(data) {
 
     // Quick decline check
     if (pricer.shouldDecline(legs)) {
-      log.info('RFQ', `Declined parlay ${parlayId}: failed quick checks`);
+      // Determine decline reason for tracking
+      const lineManager = require('./line-manager');
+      const unknownLegs = legs.filter(l => !lineManager.lookupLine(l.line_id || l.lineId || l));
+      const reason = unknownLegs.length > 0 ? 'unknown legs' : 'exposure/limit';
+      orderTracker.recordDecline(reason);
       return;
     }
 
     // Price the parlay
     const result = pricer.priceParlay(legs);
     if (!result) {
-      log.info('RFQ', `Declined parlay ${parlayId}: could not price`);
+      orderTracker.recordDecline('no fair value');
       return;
     }
 
@@ -385,10 +389,19 @@ async function handleConfirm(data) {
 const { config } = require('../config');
 
 /**
- * Handle order matched (broadcast — informational).
+ * Handle order matched (broadcast — all SPs see this when any parlay gets filled).
  */
 function handleOrderMatched(data) {
-  log.debug('WS', 'Order matched (broadcast)', data);
+  const payload = data.payload || data;
+  const parlayId = payload.parlay_id || payload.parlayId;
+  const matchedOdds = payload.matched_odds;
+  const matchedStake = payload.matched_stake;
+  const legs = payload.market_lines || [];
+
+  const lineManager = require('./line-manager');
+  const entry = orderTracker.recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineManager);
+
+  log.info('Market', `Matched: parlay=${(parlayId||'').substring(0,8)}, odds=${matchedOdds}, stake=$${matchedStake}, legs=${legs.length}, outcome=${entry.outcome}`);
 }
 
 /**

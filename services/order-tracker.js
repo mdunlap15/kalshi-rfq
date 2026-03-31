@@ -8,9 +8,28 @@ const orders = {}; // keyed by parlayId
 const ordersByUuid = {}; // secondary index: orderUuid → parlayId
 
 // ---------------------------------------------------------------------------
+// MARKET INTELLIGENCE — tracks all matched parlays across all SPs
+// ---------------------------------------------------------------------------
+const matchedParlays = []; // array of { parlayId, matchedOdds, matchedStake, legs, matchedAt, weQuoted, ourOdds, outcome }
+const marketStats = {
+  totalMatched: 0,
+  weQuoted: 0,
+  weWon: 0,
+  weLost: 0, // quoted but another SP won
+  missedNoQuote: 0, // didn't quote at all
+};
+
+// ---------------------------------------------------------------------------
+// DECLINE TRACKING
+// ---------------------------------------------------------------------------
+const declineStats = {
+  total: 0,
+  reasons: {}, // { 'unknown legs': count, 'stale prices': count, etc. }
+};
+
+// ---------------------------------------------------------------------------
 // EXPOSURE TRACKING — team/selection level risk across confirmed parlays
 // ---------------------------------------------------------------------------
-// { 'normalized_team_or_selection': { risk: totalMaxRisk, parlays: count, name: displayName } }
 const exposure = {};
 
 // Running stats
@@ -132,6 +151,96 @@ function recordSettlement(orderUuid, result, payout) {
   }
 
   return order;
+}
+
+// ---------------------------------------------------------------------------
+// MARKET INTELLIGENCE
+// ---------------------------------------------------------------------------
+
+/**
+ * Record a matched parlay from the broadcast channel (any SP won it).
+ * Compare against our quotes to build competitive intel.
+ */
+function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineManager) {
+  marketStats.totalMatched++;
+
+  const ourQuote = orders[parlayId] || null;
+  const weQuoted = !!ourQuote;
+
+  // Resolve leg info from line_ids
+  const resolvedLegs = (legs || []).map(l => {
+    const lineId = l.line_id || l.lineId;
+    const info = lineManager ? lineManager.lookupLine(lineId) : null;
+    return {
+      lineId,
+      team: info?.teamName || 'Unknown',
+      market: info?.marketType || '-',
+      line: info?.line ?? l.line ?? null,
+      sport: info?.sport || 'unknown',
+    };
+  });
+
+  let outcome;
+  if (weQuoted && ourQuote.status === 'confirmed') {
+    outcome = 'won';
+    marketStats.weWon++;
+    marketStats.weQuoted++;
+  } else if (weQuoted) {
+    outcome = 'lost'; // we quoted but didn't win
+    marketStats.weLost++;
+    marketStats.weQuoted++;
+  } else {
+    outcome = 'missed';
+    marketStats.missedNoQuote++;
+  }
+
+  const entry = {
+    parlayId,
+    matchedOdds,
+    matchedStake,
+    legs: resolvedLegs,
+    matchedAt: new Date().toISOString(),
+    weQuoted,
+    ourOdds: ourQuote?.offeredOdds || null,
+    ourAmericanOdds: ourQuote?.offeredOdds ? decToAm(ourQuote.offeredOdds) : null,
+    matchedAmericanOdds: matchedOdds,
+    outcome,
+    legCount: resolvedLegs.length,
+  };
+
+  matchedParlays.unshift(entry); // newest first
+  if (matchedParlays.length > 200) matchedParlays.pop(); // cap memory
+
+  if (weQuoted && outcome === 'lost') {
+    log.info('Market', `Lost quote: parlay=${parlayId.substring(0,8)}, our=${entry.ourAmericanOdds}, winning=${matchedOdds}, stake=$${matchedStake}`);
+  }
+
+  return entry;
+}
+
+function decToAm(dec) {
+  if (!dec || dec <= 1) return null;
+  if (dec >= 2.0) return '+' + Math.round((dec - 1) * 100);
+  return '' + Math.round(-100 / (dec - 1));
+}
+
+/**
+ * Record a declined RFQ with reason.
+ */
+function recordDecline(reason) {
+  declineStats.total++;
+  const bucket = reason || 'unknown';
+  declineStats.reasons[bucket] = (declineStats.reasons[bucket] || 0) + 1;
+}
+
+function getMarketIntel(limit = 50) {
+  return {
+    stats: { ...marketStats },
+    declines: { ...declineStats },
+    recentMatched: matchedParlays.slice(0, limit),
+    quoteWinRate: marketStats.weQuoted > 0 ? (marketStats.weWon / marketStats.weQuoted * 100).toFixed(1) + '%' : '-',
+    coverageRate: marketStats.totalMatched > 0 ? (marketStats.weQuoted / marketStats.totalMatched * 100).toFixed(1) + '%' : '-',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -292,4 +401,7 @@ module.exports = {
   getExposureForTeam,
   checkExposureLimits,
   getExposureSnapshot,
+  recordMatchedParlay,
+  recordDecline,
+  getMarketIntel,
 };

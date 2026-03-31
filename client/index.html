@@ -378,7 +378,18 @@
     </div>
   </div>
 
-  <!-- 2. Team Exposure (active risk) -->
+  <!-- 2. Market Intelligence -->
+  <div class="card">
+    <div class="card-header" onclick="toggleCard(this)">
+      <span><span class="toggle-icon">&#9660;</span>Market Intelligence</span>
+      <span id="intel-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+    </div>
+    <div class="card-body" id="market-intel">
+      <div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div>
+    </div>
+  </div>
+
+  <!-- 3. Team Exposure (active risk) -->
   <div class="card">
     <div class="card-header" onclick="toggleCard(this)">
       <span><span class="toggle-icon">&#9660;</span>Team Exposure</span>
@@ -513,13 +524,15 @@
     indicator.style.display = 'flex';
 
     try {
-      const [status, orders] = await Promise.all([
+      const [status, orders, intel] = await Promise.all([
         fetchJSON('/status'),
         fetchJSON('/orders'),
+        fetchJSON('/market-intel'),
       ]);
 
       renderStatus(status);
       renderOrders(orders);
+      renderMarketIntel(intel);
       addLog('system', 'Dashboard refreshed');
     } catch (err) {
       addLog('error', 'Failed to refresh: ' + err.message);
@@ -665,6 +678,87 @@
     el.innerHTML = items.map(([k, v]) =>
       `<div class="config-item"><span class="config-key">${k}</span><span class="config-val">${v}</span></div>`
     ).join('');
+  }
+
+  function renderMarketIntel(intel) {
+    const el = document.getElementById('market-intel');
+    const sumEl = document.getElementById('intel-summary');
+    if (!intel) return;
+
+    const s = intel.stats || {};
+    const d = intel.declines || {};
+
+    // Summary in header
+    if (sumEl) {
+      const parts = [];
+      if (s.totalMatched) parts.push(`${s.totalMatched} matched`);
+      if (s.weQuoted) parts.push(`${s.weQuoted} quoted`);
+      if (s.weWon) parts.push(`${s.weWon} won`);
+      sumEl.textContent = parts.join(' · ');
+    }
+
+    // Stats bar
+    let html = `<div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:16px; font-size:13px;">
+      <span><span style="color:var(--text3)">Parlays matched (all SPs):</span> <strong>${s.totalMatched || 0}</strong></span>
+      <span><span style="color:var(--text3)">We quoted:</span> <strong>${s.weQuoted || 0}</strong> (${intel.coverageRate || '-'})</span>
+      <span><span style="color:var(--text3)">We won:</span> <strong class="positive">${s.weWon || 0}</strong></span>
+      <span><span style="color:var(--text3)">We lost:</span> <strong class="negative">${s.weLost || 0}</strong> (${intel.quoteWinRate || '-'} win rate)</span>
+      <span><span style="color:var(--text3)">Missed (no quote):</span> <strong>${s.missedNoQuote || 0}</strong></span>
+    </div>`;
+
+    // Decline reasons
+    if (d.total > 0) {
+      html += `<div style="margin-bottom:16px;">
+        <div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">DECLINE REASONS (${d.total} total)</div>
+        <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px;">`;
+      for (const [reason, count] of Object.entries(d.reasons || {}).sort((a,b) => b[1]-a[1])) {
+        const pct = (count / d.total * 100).toFixed(0);
+        html += `<span style="color:var(--text2);">${reason}: <strong>${count}</strong> (${pct}%)</span>`;
+      }
+      html += `</div></div>`;
+    }
+
+    // Recent matched parlays table
+    const matched = intel.recentMatched || [];
+    if (matched.length > 0) {
+      html += `<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">RECENT MATCHED PARLAYS</div>`;
+      html += `<div style="overflow-x:auto;"><table>
+        <tr>
+          <th>Time</th>
+          <th>Teams</th>
+          <th>Legs</th>
+          <th>Winning Price</th>
+          <th>Stake</th>
+          <th>Our Price</th>
+          <th>Result</th>
+        </tr>`;
+
+      for (const m of matched.slice(0, 20)) {
+        const time = m.matchedAt ? new Date(m.matchedAt).toLocaleTimeString() : '-';
+        const teams = (m.legs || []).map(l => l.team).filter(t => t !== 'Unknown').join(', ') || '-';
+        const winPrice = m.matchedAmericanOdds != null ? (m.matchedAmericanOdds >= 0 ? '+' : '') + m.matchedAmericanOdds : '-';
+        const stake = m.matchedStake != null ? '$' + Number(m.matchedStake).toFixed(2) : '-';
+        const ourPrice = m.ourAmericanOdds || '-';
+
+        let resultClass, resultText;
+        if (m.outcome === 'won') { resultClass = 'positive'; resultText = 'Won'; }
+        else if (m.outcome === 'lost') { resultClass = 'negative'; resultText = 'Lost'; }
+        else { resultClass = 'neutral'; resultText = 'No quote'; }
+
+        html += `<tr>
+          <td>${time}</td>
+          <td style="font-size:12px; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="${teams}">${teams}</td>
+          <td>${m.legCount || '-'}</td>
+          <td style="font-weight:600;">${winPrice}</td>
+          <td>${stake}</td>
+          <td>${ourPrice}</td>
+          <td><span class="${resultClass}">${resultText}</span></td>
+        </tr>`;
+      }
+      html += '</table></div>';
+    }
+
+    el.innerHTML = html || '<div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div>';
   }
 
   function renderExposure(exp) {
