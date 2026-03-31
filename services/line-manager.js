@@ -24,8 +24,13 @@ let lastSeedStats = null;
 // Known overrides for team name mismatches between PX and The Odds API
 // Add entries here if matching fails for specific teams
 const TEAM_NAME_OVERRIDES = {
-  // 'px name lowercase': 'odds api name'
-  // Example: 'ny rangers': 'New York Rangers'
+  // SharpAPI abbreviates some NHL city names
+  'washington capitals': 'WAS Capitals',
+  'columbus blue jackets': 'CBJ Blue Jackets',
+  'montreal canadiens': 'MTL Canadiens',
+  'new jersey devils': 'NJ Devils',
+  'san jose sharks': 'SJ Sharks',
+  'los angeles kings': 'LA Kings',
 };
 
 function normalizeTeamName(name) {
@@ -56,20 +61,19 @@ function matchTeamName(pxName, oddsApiNames) {
     if (norm.includes(oaNorm) || oaNorm.includes(norm)) return oaName;
   }
 
-  // Last word match (e.g., "Rangers" matches "New York Rangers")
+  // Last N words match (e.g., "Red Sox" matches "Boston Red Sox")
   const pxWords = norm.split(/\s+/);
-  const pxLast = pxWords[pxWords.length - 1];
-  if (pxLast.length >= 4) {
-    const lastWordMatch = oddsApiNames.find(n => {
-      const words = normalizeTeamName(n).split(/\s+/);
-      return words[words.length - 1] === pxLast;
+  // Try last 2 words first (handles "Red Sox" vs "White Sox"), then last 1 word
+  for (const n of [2, 1]) {
+    if (pxWords.length < n + 1) continue; // Need at least n+1 words (city + name)
+    const pxTail = pxWords.slice(-n).join(' ');
+    if (pxTail.length < 4) continue;
+    const matches = oddsApiNames.filter(name => {
+      const words = normalizeTeamName(name).split(/\s+/);
+      if (words.length < n) return false;
+      return words.slice(-n).join(' ') === pxTail;
     });
-    // Only use last-word match if it's unambiguous (1 match)
-    const allLastWord = oddsApiNames.filter(n => {
-      const words = normalizeTeamName(n).split(/\s+/);
-      return words[words.length - 1] === pxLast;
-    });
-    if (allLastWord.length === 1) return lastWordMatch;
+    if (matches.length === 1) return matches[0];
   }
 
   return null;
@@ -108,10 +112,10 @@ async function seedAllLines() {
   const allEvents = await px.fetchSportEvents();
   const pxSportNames = Object.values(config.sportNameMap);
 
-  // 2. Filter to supported sports (accept any active status)
+  // 2. Filter to supported sports (accept any non-settled status)
   const events = allEvents.filter(e =>
     pxSportNames.includes(e.sport_name) &&
-    (e.status === 'live' || e.status === 'pre_event' || e.status === 'active' || !e.status) &&
+    (!e.status || e.status !== 'settled') &&
     e.competitors && e.competitors.length >= 2
   );
   log.info('Lines', `Found ${events.length} supported sport events (of ${allEvents.length} total)`);
