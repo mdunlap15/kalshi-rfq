@@ -8,9 +8,9 @@ const config = {
     tokenTtlMinutes: 8,
   },
   oddsApi: {
-    baseUrl: 'https://api.the-odds-api.com/v4',
+    baseUrl: 'https://api.sharpapi.io/api/v1',
     apiKey: process.env.ODDS_API_KEY,
-    cacheTtlMinutes: parseInt(process.env.ODDS_CACHE_TTL_MINUTES) || 30,
+    cacheTtlMinutes: parseInt(process.env.ODDS_CACHE_TTL_MINUTES) || 5,
   },
   pricing: {
     defaultVig: parseFloat(process.env.DEFAULT_VIG) || 0.06,
@@ -31,7 +31,7 @@ const config = {
     port: parseInt(process.env.PORT) || 3001,
   },
   logLevel: process.env.LOG_LEVEL || 'info',
-  refreshIntervalMinutes: parseInt(process.env.REFRESH_INTERVAL_MINUTES) || 30,
+  refreshIntervalMinutes: parseInt(process.env.REFRESH_INTERVAL_MINUTES) || 2,
 };
 
 // Validate required config

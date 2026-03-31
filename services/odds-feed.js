@@ -5,72 +5,118 @@ const log = require('./logger');
 // ---------------------------------------------------------------------------
 // IN-MEMORY CACHE
 // ---------------------------------------------------------------------------
-// Structure: { [sport]: { fetchedAt, events: { [eventKey]: { ... } } } }
+// Structure: { [league]: { fetchedAt, events: { [eventKey]: { ... } } } }
 const oddsCache = {};
 
+// SharpAPI league keys (also used as our internal sport keys)
+const LEAGUE_MAP = {
+  'basketball_nba': 'nba',
+  'baseball_mlb': 'mlb',
+  'icehockey_nhl': 'nhl',
+};
+
 // ---------------------------------------------------------------------------
-// THE ODDS API CLIENT
+// SHARPAPI CLIENT
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch odds for a single sport from The Odds API.
- * Uses Pinnacle as the primary bookmaker (sharpest lines).
- * Falls back to including all available books if Pinnacle isn't available.
+ * Fetch odds for a single league from SharpAPI.
+ * Gets moneyline, spread, and total markets from all available books,
+ * then de-vigs by averaging across books.
  */
 async function fetchOddsForSport(sport) {
-  const url = `${config.oddsApi.baseUrl}/sports/${sport}/odds`
-    + `?apiKey=${config.oddsApi.apiKey}`
-    + `&regions=us,eu`
-    + `&markets=h2h,spreads,totals`
-    + `&bookmakers=pinnacle`
-    + `&oddsFormat=american`;
+  const league = LEAGUE_MAP[sport];
+  if (!league) throw new Error(`Unknown sport: ${sport}`);
 
-  log.info('OddsFeed', `Fetching odds for ${sport}...`);
+  // Use explicit market types — the 'main' alias can return empty on some tiers
+  const marketTypes = league === 'mlb'
+    ? 'moneyline,run_line,total_runs'
+    : league === 'nhl'
+      ? 'moneyline,puck_line,total_goals'
+      : 'moneyline,point_spread,total_points';
 
-  const resp = await fetch(url);
+  const url = `${config.oddsApi.baseUrl}/odds`
+    + `?league=${league}`
+    + `&market=${marketTypes}`
+    + `&live=false`
+    + `&limit=200`;
+
+  log.info('OddsFeed', `Fetching ${league} odds from SharpAPI...`);
+
+  const resp = await fetch(url, {
+    headers: { 'X-API-Key': config.oddsApi.apiKey },
+  });
+
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`Odds API ${resp.status} for ${sport}: ${text}`);
+    throw new Error(`SharpAPI ${resp.status} for ${league}: ${text}`);
   }
 
-  // Track API usage from response headers
-  const remaining = resp.headers.get('x-requests-remaining');
-  const used = resp.headers.get('x-requests-used');
-  if (remaining != null) {
-    log.info('OddsFeed', `API usage: ${used} used, ${remaining} remaining`);
+  const body = await resp.json();
+  const rows = body.data || [];
+  log.info('OddsFeed', `Got ${rows.length} odds rows for ${league}`);
+
+  // Group by event, then by market+selection to de-vig across books
+  const eventMap = {};
+  for (const row of rows) {
+    const eventId = row.event_id;
+    if (!eventMap[eventId]) {
+      eventMap[eventId] = {
+        homeTeam: cleanTeamName(row.home_team),
+        awayTeam: cleanTeamName(row.away_team),
+        commenceTime: row.event_start_time,
+        eventId,
+        odds: [], // collect all odds rows
+      };
+    }
+    eventMap[eventId].odds.push(row);
   }
 
-  const events = await resp.json();
-  log.info('OddsFeed', `Got ${events.length} events for ${sport}`);
-
-  // Parse and cache
+  // Parse into our cache format
   const parsed = {};
-  for (const event of events) {
-    const key = normalizeEventKey(event.home_team, event.away_team);
-    const pinnacle = (event.bookmakers || []).find(b => b.key === 'pinnacle');
-    if (!pinnacle) {
-      log.debug('OddsFeed', `No Pinnacle odds for ${event.home_team} vs ${event.away_team}`);
-      continue;
-    }
-
+  for (const [eventId, event] of Object.entries(eventMap)) {
+    const key = normalizeEventKey(event.homeTeam, event.awayTeam);
     const markets = {};
-    for (const market of pinnacle.markets || []) {
-      if (market.key === 'h2h') {
-        markets.h2h = parseMoneylineMarket(market.outcomes, event.home_team, event.away_team);
-      } else if (market.key === 'spreads') {
-        markets.spreads = parseSpreadMarket(market.outcomes, event.home_team, event.away_team);
-      } else if (market.key === 'totals') {
-        markets.totals = parseTotalMarket(market.outcomes);
-      }
+
+    // Group odds by market_type and sportsbook
+    const byMarketAndBook = {};
+    for (const row of event.odds) {
+      const mk = `${row.market_type}|${row.sportsbook}`;
+      if (!byMarketAndBook[mk]) byMarketAndBook[mk] = [];
+      byMarketAndBook[mk].push(row);
     }
 
-    parsed[key] = {
-      homeTeam: event.home_team,
-      awayTeam: event.away_team,
-      commenceTime: event.commence_time,
-      oddsApiId: event.id,
-      markets,
-    };
+    // Process moneyline
+    const mlBooks = getBookPairs(event.odds, 'moneyline');
+    if (mlBooks.length > 0) {
+      markets.h2h = buildConsensusMoneyline(mlBooks);
+    }
+
+    // Process spread (point_spread / run_line / puck_line)
+    const spreadTypes = ['point_spread', 'run_line', 'puck_line'];
+    const spreadOdds = event.odds.filter(r => spreadTypes.includes(r.market_type));
+    const spreadBooks = getBookPairs(spreadOdds, null);
+    if (spreadBooks.length > 0) {
+      markets.spreads = buildConsensusSpread(spreadBooks);
+    }
+
+    // Process totals (total_points / total_runs / total_goals)
+    const totalTypes = ['total_points', 'total_runs', 'total_goals'];
+    const totalOdds = event.odds.filter(r => totalTypes.includes(r.market_type));
+    const totalBooks = getBookPairsForTotals(totalOdds);
+    if (totalBooks.length > 0) {
+      markets.totals = buildConsensusTotals(totalBooks);
+    }
+
+    if (Object.keys(markets).length > 0) {
+      parsed[key] = {
+        homeTeam: event.homeTeam,
+        awayTeam: event.awayTeam,
+        commenceTime: event.commenceTime,
+        eventId,
+        markets,
+      };
+    }
   }
 
   oddsCache[sport] = {
@@ -78,64 +124,135 @@ async function fetchOddsForSport(sport) {
     events: parsed,
   };
 
-  log.info('OddsFeed', `Cached ${Object.keys(parsed).length} events for ${sport} (${Object.keys(parsed).length} with Pinnacle odds)`);
+  log.info('OddsFeed', `Cached ${Object.keys(parsed).length} events for ${league}`);
   return parsed;
 }
 
 // ---------------------------------------------------------------------------
-// MARKET PARSERS — extract Pinnacle odds and de-vig
+// CONSENSUS BUILDERS — de-vig each book, then average fair probs
 // ---------------------------------------------------------------------------
 
-function parseMoneylineMarket(outcomes, homeTeam, awayTeam) {
-  if (!outcomes || outcomes.length < 2) return null;
+/**
+ * Group odds rows into book-level pairs (home+away for the same book).
+ */
+function getBookPairs(odds, marketType) {
+  const filtered = marketType ? odds.filter(r => r.market_type === marketType) : odds;
+  const byBook = {};
+  for (const row of filtered) {
+    if (!byBook[row.sportsbook]) byBook[row.sportsbook] = {};
+    byBook[row.sportsbook][row.selection_type] = row;
+  }
+  // Only return books that have both sides
+  return Object.entries(byBook)
+    .filter(([_, sides]) => sides.home && sides.away)
+    .map(([book, sides]) => ({ book, home: sides.home, away: sides.away }));
+}
 
-  const home = outcomes.find(o => o.name === homeTeam);
-  const away = outcomes.find(o => o.name === awayTeam);
-  if (!home || !away) return null;
+function getBookPairsForTotals(odds) {
+  const byBook = {};
+  for (const row of odds) {
+    if (!byBook[row.sportsbook]) byBook[row.sportsbook] = {};
+    byBook[row.sportsbook][row.selection_type] = row;
+  }
+  return Object.entries(byBook)
+    .filter(([_, sides]) => sides.over && sides.under)
+    .map(([book, sides]) => ({ book, over: sides.over, under: sides.under }));
+}
 
-  const homeProb = americanToImpliedProb(home.price);
-  const awayProb = americanToImpliedProb(away.price);
-  const [fairHome, fairAway] = deVig2Way(homeProb, awayProb);
-
+function buildConsensusMoneyline(bookPairs) {
+  const fairProbs = { home: [], away: [] };
+  for (const { home, away } of bookPairs) {
+    const [fh, fa] = deVig2Way(home.odds_probability, away.odds_probability);
+    fairProbs.home.push(fh);
+    fairProbs.away.push(fa);
+  }
   return {
-    home: { rawOdds: home.price, impliedProb: homeProb, fairProb: fairHome },
-    away: { rawOdds: away.price, impliedProb: awayProb, fairProb: fairAway },
+    home: {
+      rawOdds: bookPairs[0].home.odds_american,
+      impliedProb: bookPairs[0].home.odds_probability,
+      fairProb: avg(fairProbs.home),
+    },
+    away: {
+      rawOdds: bookPairs[0].away.odds_american,
+      impliedProb: bookPairs[0].away.odds_probability,
+      fairProb: avg(fairProbs.away),
+    },
+    books: bookPairs.length,
   };
 }
 
-function parseSpreadMarket(outcomes, homeTeam, awayTeam) {
-  if (!outcomes || outcomes.length < 2) return null;
+function buildConsensusSpread(bookPairs) {
+  // Use the most common line across books
+  const lineCounts = {};
+  for (const { home } of bookPairs) {
+    const line = home.line;
+    if (line != null) lineCounts[line] = (lineCounts[line] || 0) + 1;
+  }
+  const primaryLine = Object.entries(lineCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const pLine = parseFloat(primaryLine);
 
-  const home = outcomes.find(o => o.name === homeTeam);
-  const away = outcomes.find(o => o.name === awayTeam);
-  if (!home || !away) return null;
+  // Filter to books with this line
+  const matching = bookPairs.filter(bp => bp.home.line === pLine);
+  if (matching.length === 0) return null;
 
-  const homeProb = americanToImpliedProb(home.price);
-  const awayProb = americanToImpliedProb(away.price);
-  const [fairHome, fairAway] = deVig2Way(homeProb, awayProb);
-
+  const fairProbs = { home: [], away: [] };
+  for (const { home, away } of matching) {
+    const [fh, fa] = deVig2Way(home.odds_probability, away.odds_probability);
+    fairProbs.home.push(fh);
+    fairProbs.away.push(fa);
+  }
   return {
-    home: { rawOdds: home.price, point: home.point, impliedProb: homeProb, fairProb: fairHome },
-    away: { rawOdds: away.price, point: away.point, impliedProb: awayProb, fairProb: fairAway },
-    line: home.point, // Home team's spread (e.g., -5.5)
+    home: {
+      rawOdds: matching[0].home.odds_american,
+      point: pLine,
+      impliedProb: matching[0].home.odds_probability,
+      fairProb: avg(fairProbs.home),
+    },
+    away: {
+      rawOdds: matching[0].away.odds_american,
+      point: -pLine,
+      impliedProb: matching[0].away.odds_probability,
+      fairProb: avg(fairProbs.away),
+    },
+    line: pLine,
+    books: matching.length,
   };
 }
 
-function parseTotalMarket(outcomes) {
-  if (!outcomes || outcomes.length < 2) return null;
+function buildConsensusTotals(bookPairs) {
+  // Use the most common line across books
+  const lineCounts = {};
+  for (const { over } of bookPairs) {
+    const line = over.line;
+    if (line != null) lineCounts[line] = (lineCounts[line] || 0) + 1;
+  }
+  const primaryLine = Object.entries(lineCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const pLine = parseFloat(primaryLine);
 
-  const over = outcomes.find(o => o.name === 'Over');
-  const under = outcomes.find(o => o.name === 'Under');
-  if (!over || !under) return null;
+  const matching = bookPairs.filter(bp => bp.over.line === pLine);
+  if (matching.length === 0) return null;
 
-  const overProb = americanToImpliedProb(over.price);
-  const underProb = americanToImpliedProb(under.price);
-  const [fairOver, fairUnder] = deVig2Way(overProb, underProb);
-
+  const fairProbs = { over: [], under: [] };
+  for (const { over, under } of matching) {
+    const [fo, fu] = deVig2Way(over.odds_probability, under.odds_probability);
+    fairProbs.over.push(fo);
+    fairProbs.under.push(fu);
+  }
   return {
-    over: { rawOdds: over.price, point: over.point, impliedProb: overProb, fairProb: fairOver },
-    under: { rawOdds: under.price, point: under.point, impliedProb: underProb, fairProb: fairUnder },
-    line: over.point, // Total number (e.g., 220.5)
+    over: {
+      rawOdds: matching[0].over.odds_american,
+      point: pLine,
+      impliedProb: matching[0].over.odds_probability,
+      fairProb: avg(fairProbs.over),
+    },
+    under: {
+      rawOdds: matching[0].under.odds_american,
+      point: pLine,
+      impliedProb: matching[0].under.odds_probability,
+      fairProb: avg(fairProbs.under),
+    },
+    line: pLine,
+    books: matching.length,
   };
 }
 
@@ -143,41 +260,27 @@ function parseTotalMarket(outcomes) {
 // DE-VIG
 // ---------------------------------------------------------------------------
 
-/**
- * Simple 2-way de-vig by normalization.
- * For Pinnacle with ~2% margins, this is accurate enough.
- * No need for power method like golf sportsbooks with 20%+ holds.
- */
 function deVig2Way(prob1, prob2) {
   const total = prob1 + prob2;
   if (total === 0) return [0.5, 0.5];
   return [prob1 / total, prob2 / total];
 }
 
-/**
- * American odds to implied probability (before de-vig).
- */
 function americanToImpliedProb(odds) {
   if (odds >= 100) return 100 / (odds + 100);
   if (odds <= -100) return Math.abs(odds) / (Math.abs(odds) + 100);
   return 0.5;
 }
 
+function avg(arr) {
+  if (!arr.length) return 0;
+  return arr.reduce((s, v) => s + v, 0) / arr.length;
+}
+
 // ---------------------------------------------------------------------------
-// CACHE LOOKUP
+// CACHE LOOKUP (same interface as before — no changes needed downstream)
 // ---------------------------------------------------------------------------
 
-/**
- * Get fair probability for a specific selection.
- *
- * @param {string} sport - e.g., 'basketball_nba'
- * @param {string} homeTeam - The Odds API home team name
- * @param {string} awayTeam - The Odds API away team name
- * @param {string} marketType - 'h2h', 'spreads', or 'totals'
- * @param {string} selection - 'home', 'away', 'over', or 'under'
- * @param {number|null} line - spread/total number (null for moneyline)
- * @returns {number|null} fair probability (0-1) or null if not found
- */
 function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line) {
   const sportCache = oddsCache[sport];
   if (!sportCache) return null;
@@ -189,16 +292,9 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line) {
   const market = event.markets[marketType];
   if (!market) return null;
 
-  // For spreads and totals, check if line matches Pinnacle's primary line.
-  // If the RFQ line differs from Pinnacle, we still return the primary line fair prob
-  // as a reference. The pricer can decide whether to adjust or decline.
-  // This is acceptable because: (1) for spreads near the primary, the vig covers the difference,
-  // (2) for far-off alternate lines, the pricer will widen vig or decline.
   if ((marketType === 'spreads' || marketType === 'totals') && market.line != null && line != null) {
     const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
     if (lineDiff > 0.01) {
-      // Line doesn't match exactly — return null and let pricer handle it
-      // In the future, could estimate prob at alternate lines
       return null;
     }
   }
@@ -217,9 +313,6 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line) {
   return null;
 }
 
-/**
- * Get the full cached market data for an event (for line matching).
- */
 function getEventMarkets(sport, homeTeam, awayTeam) {
   const sportCache = oddsCache[sport];
   if (!sportCache) return null;
@@ -227,30 +320,16 @@ function getEventMarkets(sport, homeTeam, awayTeam) {
   return sportCache.events[key] || null;
 }
 
-/**
- * Get cache age in minutes for a sport.
- */
 function getCacheAge(sport) {
   const sportCache = oddsCache[sport];
   if (!sportCache) return Infinity;
   return (Date.now() - sportCache.fetchedAt) / 1000 / 60;
 }
 
-/**
- * Check if cache is stale.
- */
 function isStale(sport) {
   return getCacheAge(sport) > config.pricing.stalePriceMinutes;
 }
 
-// ---------------------------------------------------------------------------
-// REFRESH
-// ---------------------------------------------------------------------------
-
-/**
- * Refresh odds for all configured sports.
- * Staggers calls to be respectful of API.
- */
 async function refreshAllSports() {
   const results = {};
   for (const sport of config.supportedSports) {
@@ -261,15 +340,11 @@ async function refreshAllSports() {
       log.error('OddsFeed', `Failed to fetch ${sport}: ${err.message}`);
       results[sport] = { ok: false, error: err.message };
     }
-    // Small delay between calls
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 300));
   }
   return results;
 }
 
-/**
- * Get summary of cache state.
- */
 function getCacheStatus() {
   const status = {};
   for (const sport of config.supportedSports) {
@@ -283,9 +358,6 @@ function getCacheStatus() {
   return status;
 }
 
-/**
- * List all cached events (for debugging / line matching).
- */
 function getAllCachedEvents() {
   const all = [];
   for (const sport of Object.keys(oddsCache)) {
@@ -312,6 +384,13 @@ function normalizeEventKey(homeTeam, awayTeam) {
 
 function normalizeTeamName(name) {
   return (name || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+}
+
+/**
+ * Clean team names from SharpAPI (removes pitcher info like "(TBD)").
+ */
+function cleanTeamName(name) {
+  return (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
 }
 
 module.exports = {
