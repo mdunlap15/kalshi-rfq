@@ -431,6 +431,22 @@
     </div>
   </div>
 
+  <!-- Team Exposure -->
+  <div class="card">
+    <div class="card-header">
+      <span>Team Exposure</span>
+      <span id="exposure-limit" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+      <div id="exposure-table">
+        <div class="empty-state">
+          <div class="icon">-</div>
+          <div>No active exposure</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Recent Orders -->
   <div class="card">
     <div class="card-header">
@@ -465,6 +481,7 @@
         <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Risk</td><td>Maximum amount we could lose on this parlay if all legs win. Set by the MAX_RISK_PER_PARLAY config parameter.</td></tr>
         <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Vig</td><td>Our profit margin applied to the fair probability. At 6% vig, a parlay with 20% fair prob gets offered at ~21.2% implied (worse odds for the bettor).</td></tr>
         <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Stale Price Limit</td><td>Maximum age (in minutes) of our cached odds before we stop quoting. Protects against pricing off outdated lines.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Exposure / Team</td><td>Maximum total risk allowed across all active (confirmed, unsettled) parlays containing the same team. Prevents concentrated losses if one team causes multiple parlays to lose. Default $50.</td></tr>
         <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Odds Cache</td><td>Live sportsbook odds fetched from SharpAPI (NBA/MLB/NHL/Tennis/Soccer) and The Odds API (NCAAB). Green bar = fresh, yellow = aging, red = stale.</td></tr>
       </table>
     </div>
@@ -601,6 +618,9 @@
 
     // Config
     renderConfig(data.config || {});
+
+    // Exposure
+    renderExposure(data.exposure || {});
   }
 
   function renderOddsCache(odds) {
@@ -657,6 +677,7 @@
     const items = [
       ['Vig', (cfg.vig * 100).toFixed(1) + '%'],
       ['Max Risk / Parlay', '$' + (cfg.maxRisk || 0)],
+      ['Max Exposure / Team', '$' + (cfg.maxExposurePerTeam || 0)],
       ['Max Legs', cfg.maxLegs || '-'],
       ['Stale Price Limit', (cfg.stalePriceMinutes || 0) + ' min'],
       ['Sports', (cfg.sports || []).map(sportLabel).join(', ')],
@@ -666,6 +687,59 @@
     el.innerHTML = items.map(([k, v]) =>
       `<div class="config-item"><span class="config-key">${k}</span><span class="config-val">${v}</span></div>`
     ).join('');
+  }
+
+  function renderExposure(exp) {
+    const el = document.getElementById('exposure-table');
+    const limitEl = document.getElementById('exposure-limit');
+    const teams = exp.teams || [];
+    const maxPerTeam = exp.maxPerTeam || 0;
+
+    if (limitEl) {
+      limitEl.textContent = maxPerTeam > 0 ? `Limit: $${maxPerTeam} per team` : '';
+    }
+
+    if (teams.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No active exposure</div></div>';
+      return;
+    }
+
+    let html = `
+      <div style="overflow-x: auto;">
+      <table>
+        <tr>
+          <th>Team / Selection</th>
+          <th style="text-align:right">Active Parlays</th>
+          <th style="text-align:right">Total Risk</th>
+          <th style="text-align:right">Remaining</th>
+          <th style="width:120px;"></th>
+        </tr>
+    `;
+
+    for (const t of teams) {
+      const remaining = maxPerTeam > 0 ? maxPerTeam - t.risk : Infinity;
+      const pct = maxPerTeam > 0 ? Math.min(100, (t.risk / maxPerTeam) * 100) : 0;
+      const barColor = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--amber)' : 'var(--green)';
+
+      html += `
+        <tr>
+          <td>${t.name}</td>
+          <td style="text-align:right; font-variant-numeric: tabular-nums;">${t.parlays}</td>
+          <td style="text-align:right; font-variant-numeric: tabular-nums; font-weight:600;">$${t.risk.toFixed(0)}</td>
+          <td style="text-align:right; font-variant-numeric: tabular-nums; color: ${remaining < 20 ? 'var(--red)' : 'var(--text2)'};">
+            ${maxPerTeam > 0 ? '$' + remaining.toFixed(0) : '-'}
+          </td>
+          <td>
+            <div style="background: var(--surface); border-radius: 4px; height: 6px; overflow: hidden;">
+              <div style="background: ${barColor}; width: ${pct}%; height: 100%; border-radius: 4px; transition: width 0.3s;"></div>
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+
+    html += '</table></div>';
+    el.innerHTML = html;
   }
 
   // -----------------------------------------------------------------------

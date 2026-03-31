@@ -153,6 +153,7 @@ function startStatusServer() {
         vig: config.pricing.defaultVig,
         maxRisk: config.pricing.maxRiskPerParlay,
         maxLegs: config.pricing.maxLegs,
+        maxExposurePerTeam: config.pricing.maxExposurePerTeam,
         stalePriceMinutes: config.pricing.stalePriceMinutes,
         sports: config.supportedSports,
         baseUrl: config.px.baseUrl,
@@ -165,6 +166,10 @@ function startStatusServer() {
       },
       odds: oddsFeed.getCacheStatus(),
       orders: orderTracker.getStats(),
+      exposure: {
+        maxPerTeam: config.pricing.maxExposurePerTeam,
+        teams: orderTracker.getExposureSnapshot(),
+      },
     });
   });
 

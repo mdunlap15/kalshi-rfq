@@ -2,6 +2,7 @@ const { config } = require('../config');
 const log = require('./logger');
 const lineManager = require('./line-manager');
 const oddsFeed = require('./odds-feed');
+const orderTracker = require('./order-tracker');
 
 // ---------------------------------------------------------------------------
 // PRICING ENGINE
@@ -169,9 +170,24 @@ function shouldDecline(legs) {
   if (!legs || legs.length === 0) return true;
   if (legs.length > config.pricing.maxLegs) return true;
 
+  // Check all legs are known
+  const resolvedLegs = [];
   for (const leg of legs) {
     const lineId = leg.line_id || leg.lineId || leg;
-    if (!lineManager.lookupLine(lineId)) return true;
+    const lineInfo = lineManager.lookupLine(lineId);
+    if (!lineInfo) return true;
+    resolvedLegs.push({ lineId, lineInfo });
+  }
+
+  // Check team-level exposure limits
+  const exposureCheck = orderTracker.checkExposureLimits(
+    resolvedLegs.map(l => ({ team: l.lineInfo.teamName })),
+    config.pricing.maxRiskPerParlay,
+    config.pricing.maxExposurePerTeam
+  );
+  if (!exposureCheck.allowed) {
+    log.info('Pricing', `Exposure limit: ${exposureCheck.reason}`);
+    return true;
   }
 
   return false;

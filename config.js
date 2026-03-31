@@ -18,6 +18,7 @@ const config = {
     maxLegs: parseInt(process.env.MAX_LEGS) || 8,
     stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 15,
     offerValidSeconds: 120,
+    maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 50,
   },
   supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,baseball_mlb,icehockey_nhl,tennis,soccer')
     .split(',').map(s => s.trim()),

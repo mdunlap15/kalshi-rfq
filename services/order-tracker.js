@@ -7,6 +7,12 @@ const log = require('./logger');
 const orders = {}; // keyed by parlayId
 const ordersByUuid = {}; // secondary index: orderUuid → parlayId
 
+// ---------------------------------------------------------------------------
+// EXPOSURE TRACKING — team/selection level risk across confirmed parlays
+// ---------------------------------------------------------------------------
+// { 'normalized_team_or_selection': { risk: totalMaxRisk, parlays: count, name: displayName } }
+const exposure = {};
+
 // Running stats
 const stats = {
   totalQuotes: 0,
@@ -63,6 +69,9 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
       ordersByUuid[orderUuid] = parlayId;
     }
 
+    // Track exposure per team/selection
+    addExposure(order);
+
     log.info('Orders', `Confirmed: parlay=${parlayId}, order=${orderUuid}, odds=${confirmedOdds}, stake=$${confirmedStake}`);
   } else {
     log.warn('Orders', `Confirmation for unknown parlay ${parlayId}`);
@@ -112,6 +121,9 @@ function recordSettlement(orderUuid, result, payout) {
     if (order.pnl != null) {
       stats.runningPnL += order.pnl;
     }
+
+    // Release exposure for settled parlay
+    removeExposure(order);
 
     order.status = `settled_${result}`;
     log.info('Orders', `Settled: order=${orderUuid}, result=${result}, pnl=$${order.pnl?.toFixed(2)}, running=$${stats.runningPnL.toFixed(2)}`);
@@ -167,6 +179,106 @@ function getPnLBySport() {
   return bySport;
 }
 
+// ---------------------------------------------------------------------------
+// EXPOSURE HELPERS
+// ---------------------------------------------------------------------------
+
+function normalizeExposureKey(name) {
+  return (name || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+}
+
+function getLegsForExposure(order) {
+  return order.legs || order.meta?.legs || [];
+}
+
+function addExposure(order) {
+  const legs = getLegsForExposure(order);
+  const risk = order.maxRisk || 0;
+  for (const leg of legs) {
+    const name = leg.team || leg.teamName || 'unknown';
+    const key = normalizeExposureKey(name);
+    if (!key) continue;
+    if (!exposure[key]) {
+      exposure[key] = { risk: 0, parlays: 0, name };
+    }
+    exposure[key].risk += risk;
+    exposure[key].parlays += 1;
+  }
+}
+
+function removeExposure(order) {
+  const legs = getLegsForExposure(order);
+  const risk = order.maxRisk || 0;
+  for (const leg of legs) {
+    const name = leg.team || leg.teamName || 'unknown';
+    const key = normalizeExposureKey(name);
+    if (!key || !exposure[key]) continue;
+    exposure[key].risk -= risk;
+    exposure[key].parlays -= 1;
+    if (exposure[key].parlays <= 0) {
+      delete exposure[key];
+    }
+  }
+}
+
+/**
+ * Get current exposure for a specific team/selection.
+ * Returns { risk, parlays, name } or null.
+ */
+function getExposureForTeam(teamName) {
+  const key = normalizeExposureKey(teamName);
+  return exposure[key] || null;
+}
+
+/**
+ * Check if adding a parlay with these legs would exceed exposure limits.
+ * Returns { allowed, reason, violations[] }.
+ */
+function checkExposureLimits(legs, maxRiskPerParlay, maxExposurePerTeam) {
+  if (!maxExposurePerTeam || maxExposurePerTeam <= 0) {
+    return { allowed: true, reason: null, violations: [] };
+  }
+
+  const violations = [];
+  for (const leg of legs) {
+    const name = leg.team || leg.teamName || leg.lineInfo?.teamName || 'unknown';
+    const key = normalizeExposureKey(name);
+    if (!key) continue;
+
+    const current = exposure[key]?.risk || 0;
+    const afterAdd = current + maxRiskPerParlay;
+
+    if (afterAdd > maxExposurePerTeam) {
+      violations.push({
+        team: name,
+        currentExposure: current,
+        wouldBe: afterAdd,
+        limit: maxExposurePerTeam,
+      });
+    }
+  }
+
+  if (violations.length > 0) {
+    const names = violations.map(v => v.team).join(', ');
+    return {
+      allowed: false,
+      reason: `Exposure limit exceeded for: ${names}`,
+      violations,
+    };
+  }
+
+  return { allowed: true, reason: null, violations: [] };
+}
+
+/**
+ * Get full exposure snapshot — all teams with active exposure.
+ */
+function getExposureSnapshot() {
+  return Object.entries(exposure)
+    .map(([key, val]) => ({ key, ...val }))
+    .sort((a, b) => b.risk - a.risk);
+}
+
 module.exports = {
   recordQuote,
   recordConfirmation,
@@ -177,4 +289,7 @@ module.exports = {
   getRecentOrders,
   getStats,
   getPnLBySport,
+  getExposureForTeam,
+  checkExposureLimits,
+  getExposureSnapshot,
 };
