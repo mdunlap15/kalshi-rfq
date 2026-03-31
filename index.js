@@ -2,6 +2,7 @@
 // ProphetX Parlay Service Provider
 // MLB / NBA / NHL — Spreads, Moneylines, Totals
 // =============================================================================
+console.log('[BOOT] Process starting, NODE_ENV=' + process.env.NODE_ENV + ', PORT=' + process.env.PORT);
 
 const { config, validate } = require('./config');
 const log = require('./services/logger');
@@ -36,12 +37,13 @@ async function startup() {
   log.info('Startup', '0/5 Starting status server...');
   startStatusServer();
 
-  // Validate config
+  // Validate config (don't exit — keep Express alive for health check)
   try {
     validate();
   } catch (err) {
-    log.error('Startup', err.message);
-    process.exit(1);
+    log.error('Startup', `Config validation failed: ${err.message}`);
+    log.error('Startup', 'Service will stay running but cannot process RFQs until env vars are set');
+    return; // Stop startup but keep Express alive
   }
 
   log.info('Startup', `Config: vig=${config.pricing.defaultVig}, maxRisk=$${config.pricing.maxRiskPerParlay}, maxLegs=${config.pricing.maxLegs}`);
