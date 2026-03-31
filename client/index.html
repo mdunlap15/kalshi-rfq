@@ -126,38 +126,36 @@
     }
     .card-body { padding: 16px; }
 
-    /* Stat grid */
-    .stat-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-      gap: 12px;
+    /* Compact stat bar */
+    .stat-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 20px;
+      font-size: 13px;
+      padding: 4px 0;
     }
-    .stat-box {
-      background: var(--surface2);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 14px 16px;
+    .stat-bar .stat-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
-    .stat-box .label {
-      font-size: 11px;
-      color: var(--text3);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 4px;
-    }
-    .stat-box .value {
-      font-size: 22px;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-    }
-    .stat-box .sub {
-      font-size: 11px;
-      color: var(--text2);
-      margin-top: 2px;
-    }
+    .stat-bar .stat-label { color: var(--text3); }
+    .stat-bar .stat-val { font-weight: 600; font-variant-numeric: tabular-nums; }
     .positive { color: var(--green); }
     .negative { color: var(--red); }
     .neutral { color: var(--text2); }
+
+    /* Collapsible cards */
+    .card-header { cursor: pointer; user-select: none; }
+    .card-header .toggle-icon {
+      font-size: 10px;
+      color: var(--text3);
+      margin-right: 6px;
+      display: inline-block;
+      transition: transform 0.15s;
+    }
+    .card-header .toggle-icon.collapsed { transform: rotate(-90deg); }
+    .card-body.collapsed { display: none; }
 
     /* Grid layouts */
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -349,108 +347,25 @@
     <button class="btn success" onclick="togglePause()">Resume</button>
   </div>
 
-  <!-- Stats row -->
+  <!-- Compact stats bar -->
   <div class="card">
-    <div class="card-header">
-      <span>Overview</span>
-      <span id="uptime" class="refresh-indicator"></span>
-    </div>
-    <div class="card-body">
-      <div class="stat-grid">
-        <div class="stat-box">
-          <div class="label">Lines Registered</div>
-          <div class="value" id="stat-lines">-</div>
-          <div class="sub" id="stat-lines-sub"></div>
-        </div>
-        <div class="stat-box">
-          <div class="label">Quotes Sent</div>
-          <div class="value" id="stat-quotes">-</div>
-        </div>
-        <div class="stat-box">
-          <div class="label">Confirmed</div>
-          <div class="value" id="stat-confirmed">-</div>
-        </div>
-        <div class="stat-box">
-          <div class="label">Settled</div>
-          <div class="value" id="stat-settled">-</div>
-        </div>
-        <div class="stat-box">
-          <div class="label">Running P&L</div>
-          <div class="value" id="stat-pnl">-</div>
-        </div>
-        <div class="stat-box">
-          <div class="label">Win Rate</div>
-          <div class="value" id="stat-winrate">-</div>
-        </div>
+    <div class="card-body" style="padding: 10px 16px;">
+      <div class="stat-bar">
+        <span class="stat-item"><span class="stat-label">Lines:</span> <span class="stat-val" id="stat-lines">-</span> <span class="stat-label" id="stat-lines-sub" style="font-size:11px;"></span></span>
+        <span class="stat-item"><span class="stat-label">Quotes:</span> <span class="stat-val" id="stat-quotes">0</span></span>
+        <span class="stat-item"><span class="stat-label">Confirmed:</span> <span class="stat-val" id="stat-confirmed">0</span></span>
+        <span class="stat-item"><span class="stat-label">Settled:</span> <span class="stat-val" id="stat-settled">0</span></span>
+        <span class="stat-item"><span class="stat-label">P&L:</span> <span class="stat-val" id="stat-pnl">$0.00</span></span>
+        <span class="stat-item"><span class="stat-label">Win Rate:</span> <span class="stat-val" id="stat-winrate">-</span></span>
+        <span class="stat-item" style="margin-left:auto;"><span id="uptime" class="refresh-indicator"></span></span>
       </div>
     </div>
   </div>
 
-  <div class="grid-2">
-    <!-- Odds Cache -->
-    <div class="card">
-      <div class="card-header">
-        <span>Odds Cache</span>
-        <button class="btn" onclick="refreshOdds(this)">Refresh Odds</button>
-      </div>
-      <div class="card-body" id="odds-cache">
-        <div class="empty-state"><div class="icon">...</div>Loading</div>
-      </div>
-    </div>
-
-    <!-- Lines by Sport -->
-    <div class="card">
-      <div class="card-header">
-        <span>Registered Lines</span>
-        <button class="btn" onclick="refreshLines(this)">Refresh Lines</button>
-      </div>
-      <div class="card-body" id="lines-breakdown">
-        <div class="empty-state"><div class="icon">...</div>Loading</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="grid-2">
-    <!-- Config -->
-    <div class="card">
-      <div class="card-header">Configuration</div>
-      <div class="card-body" id="config-display">
-        <div class="empty-state"><div class="icon">...</div>Loading</div>
-      </div>
-    </div>
-
-    <!-- P&L by Sport -->
-    <div class="card">
-      <div class="card-header">P&L by Sport</div>
-      <div class="card-body" id="pnl-sport">
-        <div class="empty-state">
-          <div class="icon">-</div>
-          <div>No settled orders yet</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Team Exposure -->
+  <!-- 1. Recent Orders (highest priority — what's happening now) -->
   <div class="card">
-    <div class="card-header">
-      <span>Team Exposure</span>
-      <span id="exposure-limit" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-    </div>
-    <div class="card-body" style="padding: 0;">
-      <div id="exposure-table">
-        <div class="empty-state">
-          <div class="icon">-</div>
-          <div>No active exposure</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Recent Orders -->
-  <div class="card">
-    <div class="card-header">
-      <span>Recent Orders</span>
+    <div class="card-header" onclick="toggleCard(this)">
+      <span><span class="toggle-icon">&#9660;</span>Recent Orders</span>
       <span id="order-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
     </div>
     <div class="card-body" style="padding: 0;">
@@ -463,37 +378,100 @@
     </div>
   </div>
 
-  <!-- Definitions -->
+  <!-- 2. Team Exposure (active risk) -->
+  <div class="card">
+    <div class="card-header" onclick="toggleCard(this)">
+      <span><span class="toggle-icon">&#9660;</span>Team Exposure</span>
+      <span id="exposure-limit" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+      <div id="exposure-table">
+        <div class="empty-state">
+          <div class="icon">-</div>
+          <div>No active exposure</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. P&L by Sport -->
+  <div class="card">
+    <div class="card-header" onclick="toggleCard(this)">
+      <span><span class="toggle-icon collapsed">&#9660;</span>P&L by Sport</span>
+    </div>
+    <div class="card-body collapsed" id="pnl-sport">
+      <div class="empty-state">
+        <div class="icon">-</div>
+        <div>No settled orders yet</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <!-- 4. Odds Cache (operational health) -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard(this)">
+        <span><span class="toggle-icon collapsed">&#9660;</span>Odds Cache</span>
+        <button class="btn" onclick="event.stopPropagation(); refreshOdds(this)">Refresh</button>
+      </div>
+      <div class="card-body collapsed" id="odds-cache">
+        <div class="empty-state"><div class="icon">...</div>Loading</div>
+      </div>
+    </div>
+
+    <!-- 5. Registered Lines -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard(this)">
+        <span><span class="toggle-icon collapsed">&#9660;</span>Registered Lines</span>
+        <button class="btn" onclick="event.stopPropagation(); refreshLines(this)">Refresh</button>
+      </div>
+      <div class="card-body collapsed" id="lines-breakdown">
+        <div class="empty-state"><div class="icon">...</div>Loading</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. Configuration (reference) -->
+  <div class="card">
+    <div class="card-header" onclick="toggleCard(this)">
+      <span><span class="toggle-icon collapsed">&#9660;</span>Configuration</span>
+    </div>
+    <div class="card-body collapsed" id="config-display">
+      <div class="empty-state"><div class="icon">...</div>Loading</div>
+    </div>
+  </div>
+
+  <!-- 7. Definitions (reference) -->
   <div class="card" id="definitions-card" style="display: none;">
-    <div class="card-header">
-      <span>Definitions</span>
-      <button class="btn" onclick="toggleDefinitions()">Hide</button>
+    <div class="card-header" onclick="toggleCard(this)">
+      <span><span class="toggle-icon">&#9660;</span>Definitions</span>
+      <button class="btn" onclick="event.stopPropagation(); toggleDefinitions()">Hide</button>
     </div>
     <div class="card-body" id="definitions-body">
       <table>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Lines Registered</td><td>Number of individual betting lines (outcomes) registered with ProphetX. Each line is a specific selection (e.g., "Yankees ML", "Lakers -5.5", "Over 220.5").</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Quotes Sent</td><td>Number of parlay price quotes submitted in response to RFQs. A quote is our offered price for the parlay — it doesn't mean we've taken on risk yet.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Confirmed</td><td>Number of quotes accepted by the bettor and confirmed by us. Once confirmed, we have live exposure on the parlay.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Settled</td><td>Number of confirmed parlays that have fully settled (all legs completed). Each settled parlay produces a win or loss.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Lines Registered</td><td>Individual betting lines registered with ProphetX. Each line is a specific selection (e.g., "Yankees ML", "Lakers -5.5", "Over 220.5").</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Quotes Sent</td><td>Parlay price quotes submitted in response to RFQs. A quote is our offered price — it doesn't mean we've taken on risk yet.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Confirmed</td><td>Quotes accepted by the bettor and confirmed by us. Once confirmed, we have live exposure on the parlay.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Settled</td><td>Confirmed parlays that have fully settled (all legs completed). Each produces a win or loss.</td></tr>
         <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Running P&L</td><td>Cumulative profit/loss from all settled parlays. As the SP (house side), we win the stake when the parlay loses and pay out when it wins.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Fair Prob</td><td>The de-vigged probability of the parlay winning, calculated by multiplying each leg's fair probability together. Derived from DraftKings/FanDuel consensus (or Pinnacle for NCAAB).</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Offered Odds</td><td>The American odds we quoted to the bettor. Includes our vig margin on top of fair value — worse for the bettor than true fair odds.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Risk</td><td>Maximum amount we could lose on this parlay if all legs win. Set by the MAX_RISK_PER_PARLAY config parameter.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Vig</td><td>Our profit margin applied to the fair probability. At 6% vig, a parlay with 20% fair prob gets offered at ~21.2% implied (worse odds for the bettor).</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Stale Price Limit</td><td>Maximum age (in minutes) of our cached odds before we stop quoting. Protects against pricing off outdated lines.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Exposure / Team</td><td>Maximum total risk allowed across all active (confirmed, unsettled) parlays containing the same team. Prevents concentrated losses if one team causes multiple parlays to lose. Default $50.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Odds Cache</td><td>Live sportsbook odds fetched from SharpAPI (NBA/MLB/NHL/Tennis/Soccer) and The Odds API (NCAAB). Green bar = fresh, yellow = aging, red = stale.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Fair Prob</td><td>De-vigged probability of the parlay winning. Each leg's fair prob multiplied together. From DK/FD consensus (or Pinnacle for NCAAB).</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Offered Odds</td><td>American odds we quoted. Includes our vig margin — worse for the bettor than true fair odds.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Risk</td><td>Maximum we could lose on this parlay if all legs win. Set by MAX_RISK_PER_PARLAY.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Exposure / Team</td><td>Max total risk across all active parlays containing the same team. Prevents concentrated losses. Default $50.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Vig</td><td>Our profit margin on fair probability. At 6%, a parlay with 20% fair prob gets offered at ~21.2% implied.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Stale Price Limit</td><td>Max age (minutes) of cached odds before we stop quoting. Protects against stale lines.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Odds Cache</td><td>Live odds from SharpAPI (NBA/MLB/NHL/Tennis/Soccer) and The Odds API (NCAAB). Green = fresh, yellow = aging, red = stale.</td></tr>
       </table>
     </div>
   </div>
 
-  <!-- Activity Log -->
+  <!-- 8. Activity Log (lowest priority) -->
   <div class="card">
-    <div class="card-header">
-      <span>Activity Log</span>
-      <button class="btn" onclick="clearLog()">Clear</button>
+    <div class="card-header" onclick="toggleCard(this)">
+      <span><span class="toggle-icon collapsed">&#9660;</span>Activity Log</span>
+      <button class="btn" onclick="event.stopPropagation(); clearLog()">Clear</button>
     </div>
-    <div class="card-body" style="padding: 0;">
+    <div class="card-body collapsed" style="padding: 0;">
       <div class="log-feed" id="log-feed">
         <div class="log-entry">
           <span class="log-time">--:--:--</span>
@@ -977,6 +955,13 @@
     if (!dec || dec <= 1) return '-';
     if (dec >= 2.0) return '+' + Math.round((dec - 1) * 100);
     return '' + Math.round(-100 / (dec - 1));
+  }
+
+  function toggleCard(headerEl) {
+    const body = headerEl.nextElementSibling;
+    const icon = headerEl.querySelector('.toggle-icon');
+    if (body) body.classList.toggle('collapsed');
+    if (icon) icon.classList.toggle('collapsed');
   }
 
   function toggleDefinitions() {
