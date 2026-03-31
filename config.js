@@ -19,11 +19,13 @@ const config = {
     stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 15,
     offerValidSeconds: 120,
   },
-  supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,baseball_mlb,icehockey_nhl,tennis,soccer')
+  supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,baseball_mlb,icehockey_nhl,tennis,soccer')
     .split(',').map(s => s.trim()),
   // Maps our sport keys to ProphetX sport_name values
+  // Note: NBA and NCAAB both map to 'Basketball' — line manager handles both
   sportNameMap: {
     'basketball_nba': 'Basketball',
+    'basketball_ncaab': 'Basketball',
     'baseball_mlb': 'Baseball',
     'icehockey_nhl': 'Ice Hockey',
     'tennis': 'Tennis',

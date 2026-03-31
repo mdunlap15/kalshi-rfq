@@ -17,6 +17,15 @@ const LEAGUE_MAP = {
   'soccer': { param: 'sport', value: 'soccer' },
 };
 
+// Sports that use The Odds API as fallback (SharpAPI free tier doesn't cover them)
+const ODDS_API_FALLBACK = {
+  'basketball_ncaab': {
+    oddsApiSport: 'basketball_ncaab',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+};
+
 // ---------------------------------------------------------------------------
 // SHARPAPI CLIENT
 // ---------------------------------------------------------------------------
@@ -27,6 +36,11 @@ const LEAGUE_MAP = {
  * then de-vigs by averaging across books.
  */
 async function fetchOddsForSport(sport) {
+  // Check if this sport uses The Odds API fallback
+  if (ODDS_API_FALLBACK[sport]) {
+    return fetchFromTheOddsApi(sport);
+  }
+
   const mapping = LEAGUE_MAP[sport];
   if (!mapping) throw new Error(`Unknown sport: ${sport}`);
 
@@ -129,6 +143,153 @@ async function fetchOddsForSport(sport) {
   };
 
   log.info('OddsFeed', `Cached ${Object.keys(parsed).length} events for ${mapping.value}`);
+  return parsed;
+}
+
+// ---------------------------------------------------------------------------
+// THE ODDS API FALLBACK (for sports SharpAPI free tier doesn't cover)
+// ---------------------------------------------------------------------------
+
+async function fetchFromTheOddsApi(sport) {
+  const fallback = ODDS_API_FALLBACK[sport];
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) {
+    throw new Error(`No THE_ODDS_API_KEY set for fallback sport ${sport}`);
+  }
+
+  const url = `https://api.the-odds-api.com/v4/sports/${fallback.oddsApiSport}/odds`
+    + `?apiKey=${theOddsApiKey}`
+    + `&regions=us,eu`
+    + `&markets=${fallback.markets}`
+    + `&bookmakers=${fallback.bookmakers}`
+    + `&oddsFormat=american`;
+
+  log.info('OddsFeed', `Fetching ${sport} from The Odds API (fallback)...`);
+
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`The Odds API ${resp.status} for ${sport}: ${text}`);
+  }
+
+  const remaining = resp.headers.get('x-requests-remaining');
+  const used = resp.headers.get('x-requests-used');
+  if (remaining != null) {
+    log.info('OddsFeed', `The Odds API usage: ${used} used, ${remaining} remaining`);
+  }
+
+  const events = await resp.json();
+  log.info('OddsFeed', `Got ${events.length} events for ${sport} from The Odds API`);
+
+  // Parse into same cache format as SharpAPI
+  const parsed = {};
+  for (const event of events) {
+    const key = normalizeEventKey(event.home_team, event.away_team);
+    // Collect all books' odds and build consensus
+    const allBooks = event.bookmakers || [];
+    if (allBooks.length === 0) continue;
+
+    const markets = {};
+
+    // Moneyline (h2h)
+    const mlPairs = [];
+    for (const book of allBooks) {
+      const mlMarket = book.markets?.find(m => m.key === 'h2h');
+      if (!mlMarket) continue;
+      const home = mlMarket.outcomes?.find(o => o.name === event.home_team);
+      const away = mlMarket.outcomes?.find(o => o.name === event.away_team);
+      if (home && away) {
+        mlPairs.push({
+          home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price },
+          away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price },
+        });
+      }
+    }
+    if (mlPairs.length > 0) {
+      const fairHome = [], fairAway = [];
+      for (const p of mlPairs) {
+        const [fh, fa] = deVig2Way(p.home.odds_probability, p.away.odds_probability);
+        fairHome.push(fh);
+        fairAway.push(fa);
+      }
+      markets.h2h = {
+        home: { rawOdds: mlPairs[0].home.odds_american, impliedProb: mlPairs[0].home.odds_probability, fairProb: avg(fairHome) },
+        away: { rawOdds: mlPairs[0].away.odds_american, impliedProb: mlPairs[0].away.odds_probability, fairProb: avg(fairAway) },
+        books: mlPairs.length,
+      };
+    }
+
+    // Spreads
+    const spreadPairs = [];
+    for (const book of allBooks) {
+      const sMarket = book.markets?.find(m => m.key === 'spreads');
+      if (!sMarket) continue;
+      const home = sMarket.outcomes?.find(o => o.name === event.home_team);
+      const away = sMarket.outcomes?.find(o => o.name === event.away_team);
+      if (home && away) {
+        spreadPairs.push({
+          home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price, point: home.point },
+          away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price, point: away.point },
+        });
+      }
+    }
+    if (spreadPairs.length > 0) {
+      const fairHome = [], fairAway = [];
+      for (const p of spreadPairs) {
+        const [fh, fa] = deVig2Way(p.home.odds_probability, p.away.odds_probability);
+        fairHome.push(fh);
+        fairAway.push(fa);
+      }
+      markets.spreads = {
+        home: { rawOdds: spreadPairs[0].home.odds_american, point: spreadPairs[0].home.point, impliedProb: spreadPairs[0].home.odds_probability, fairProb: avg(fairHome) },
+        away: { rawOdds: spreadPairs[0].away.odds_american, point: spreadPairs[0].away.point, impliedProb: spreadPairs[0].away.odds_probability, fairProb: avg(fairAway) },
+        line: spreadPairs[0].home.point,
+        books: spreadPairs.length,
+      };
+    }
+
+    // Totals
+    const totalPairs = [];
+    for (const book of allBooks) {
+      const tMarket = book.markets?.find(m => m.key === 'totals');
+      if (!tMarket) continue;
+      const over = tMarket.outcomes?.find(o => o.name === 'Over');
+      const under = tMarket.outcomes?.find(o => o.name === 'Under');
+      if (over && under) {
+        totalPairs.push({
+          over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point },
+          under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point },
+        });
+      }
+    }
+    if (totalPairs.length > 0) {
+      const fairOver = [], fairUnder = [];
+      for (const p of totalPairs) {
+        const [fo, fu] = deVig2Way(p.over.odds_probability, p.under.odds_probability);
+        fairOver.push(fo);
+        fairUnder.push(fu);
+      }
+      markets.totals = {
+        over: { rawOdds: totalPairs[0].over.odds_american, point: totalPairs[0].over.point, impliedProb: totalPairs[0].over.odds_probability, fairProb: avg(fairOver) },
+        under: { rawOdds: totalPairs[0].under.odds_american, point: totalPairs[0].under.point, impliedProb: totalPairs[0].under.odds_probability, fairProb: avg(fairUnder) },
+        line: totalPairs[0].over.point,
+        books: totalPairs.length,
+      };
+    }
+
+    if (Object.keys(markets).length > 0) {
+      parsed[key] = {
+        homeTeam: event.home_team,
+        awayTeam: event.away_team,
+        commenceTime: event.commence_time,
+        eventId: event.id,
+        markets,
+      };
+    }
+  }
+
+  oddsCache[sport] = { fetchedAt: Date.now(), events: parsed };
+  log.info('OddsFeed', `Cached ${Object.keys(parsed).length} events for ${sport} (The Odds API fallback)`);
   return parsed;
 }
 

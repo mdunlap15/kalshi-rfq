@@ -129,10 +129,15 @@ async function seedAllLines() {
 
   // 3-4. Fetch markets and parse for each event
   for (const event of events) {
-    // Determine sport key
-    const sportKey = Object.entries(config.sportNameMap)
-      .find(([k, v]) => v === event.sport_name)?.[0];
-    if (!sportKey) continue;
+    // Determine sport key(s) — some PX sport names map to multiple keys
+    // (e.g., "Basketball" → basketball_nba AND basketball_ncaab)
+    const possibleSportKeys = Object.entries(config.sportNameMap)
+      .filter(([k, v]) => v === event.sport_name)
+      .map(([k]) => k);
+    if (possibleSportKeys.length === 0) continue;
+
+    // We'll determine the actual sport key by which one has a matching Odds API event
+    let sportKey = possibleSportKeys[0]; // default to first match
 
     // Store event metadata
     eventIndex[event.event_id] = {
@@ -157,30 +162,44 @@ async function seedAllLines() {
       continue;
     }
 
-    // 5. Try to match to Odds API event
-    const allOddsTeams = oddsApiEvents
-      .filter(e => e.sport === sportKey)
-      .flatMap(e => [e.homeTeam, e.awayTeam]);
-    const uniqueTeams = [...new Set(allOddsTeams)];
+    // 5. Try to match to Odds API event — try all possible sport keys
+    let matchedHome = null, matchedAway = null, matchedOddsEvent = null;
 
-    const matchedHome = matchTeamName(homeComp.name, uniqueTeams);
-    const matchedAway = matchTeamName(awayComp.name, uniqueTeams);
+    for (const tryKey of possibleSportKeys) {
+      const allOddsTeams = oddsApiEvents
+        .filter(e => e.sport === tryKey)
+        .flatMap(e => [e.homeTeam, e.awayTeam]);
+      const uniqueTeams = [...new Set(allOddsTeams)];
+
+      const tryHome = matchTeamName(homeComp.name, uniqueTeams);
+      const tryAway = matchTeamName(awayComp.name, uniqueTeams);
+
+      if (tryHome && tryAway) {
+        // Verify this pair exists as an actual Odds API event
+        const oddsEvt = oddsFeed.getEventMarkets(tryKey, tryHome, tryAway)
+          || oddsFeed.getEventMarkets(tryKey, tryAway, tryHome);
+        if (oddsEvt) {
+          matchedHome = tryHome;
+          matchedAway = tryAway;
+          matchedOddsEvent = oddsEvt;
+          sportKey = tryKey; // Use the sport key that matched
+          break;
+        }
+      }
+    }
 
     if (!matchedHome || !matchedAway) {
       unmatchedEvents.push({
         pxEvent: event.name,
         pxHome: homeComp.name,
         pxAway: awayComp.name,
-        matchedHome,
-        matchedAway,
       });
       continue;
     }
 
     // Verify this home/away pair exists as an actual Odds API event
-    const oddsEvent = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway);
+    const oddsEvent = matchedOddsEvent || oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway);
     if (!oddsEvent) {
-      // Try reversed (home/away might be swapped)
       const oddsEventReversed = oddsFeed.getEventMarkets(sportKey, matchedAway, matchedHome);
       if (!oddsEventReversed) {
         unmatchedEvents.push({
