@@ -109,14 +109,25 @@ function priceParlay(legs) {
       estimated_price: estimatedPrice,
     },
     meta: {
-      legs: pricedLegs.map(l => ({
-        lineId: l.lineId,
-        team: l.lineInfo.teamName,
-        market: l.lineInfo.marketType,
-        selection: l.lineInfo.oddsApiSelection,
-        line: l.lineInfo.line,
-        fairProb: Math.round(l.fairProb * 10000) / 10000,
-      })),
+      legs: pricedLegs.map(l => {
+        // For totals/spreads, build a descriptive label: "Over 6.5 (NYM vs CHC)"
+        let team = l.lineInfo.teamName;
+        const event = l.lineInfo.pxEventName || '';
+        if (l.lineInfo.marketType === 'total' && l.lineInfo.homeTeam && l.lineInfo.awayTeam) {
+          team = `${team} (${l.lineInfo.awayTeam} @ ${l.lineInfo.homeTeam})`;
+        }
+        return {
+          lineId: l.lineId,
+          team,
+          market: l.lineInfo.marketType,
+          selection: l.lineInfo.oddsApiSelection,
+          line: l.lineInfo.line,
+          fairProb: Math.round(l.fairProb * 10000) / 10000,
+          sport: l.lineInfo.sport,
+          homeTeam: l.lineInfo.homeTeam,
+          awayTeam: l.lineInfo.awayTeam,
+        };
+      }),
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
       offeredImpliedProb: Math.round(cappedProb * 100000) / 100000,
       decimalOdds: Math.round(decimalOdds * 100) / 100,

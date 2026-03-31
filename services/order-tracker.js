@@ -171,9 +171,14 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
   const resolvedLegs = (legs || []).map(l => {
     const lineId = l.line_id || l.lineId;
     const info = lineManager ? lineManager.lookupLine(lineId) : null;
+    let team = info?.teamName || 'Unknown';
+    // For totals, include the game context
+    if (info?.marketType === 'total' && info?.homeTeam && info?.awayTeam) {
+      team = `${team} (${info.awayTeam} @ ${info.homeTeam})`;
+    }
     return {
       lineId,
-      team: info?.teamName || 'Unknown',
+      team,
       market: info?.marketType || '-',
       line: info?.line ?? l.line ?? null,
       sport: info?.sport || 'unknown',
