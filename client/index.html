@@ -789,53 +789,46 @@
       return 0;
     });
 
+    const rerender = () => renderOrders({ recentOrders: orderState.allOrders, stats: { totalOrders: orderState.allOrders.length }, pnlBySport: window._lastPnlBySport || {} });
+
     // Build filter bar
     let html = `<div style="padding: 8px 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--border);">
-      <input type="text" id="order-search" placeholder="Search parlay ID or team..." value="${orderState.search}"
-        oninput="orderState.search=this.value; renderOrders({recentOrders: orderState.allOrders, stats:{totalOrders:orderState.allOrders.length}, pnlBySport:window._lastPnlBySport||{}})"
-        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:200px;">
-      <select id="order-status-filter" onchange="orderState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); renderOrders({recentOrders: orderState.allOrders, stats:{totalOrders:orderState.allOrders.length}, pnlBySport:window._lastPnlBySport||{}})"
+      <input type="text" id="order-search" placeholder="Search team or ID..." value="${orderState.search}"
+        oninput="orderState.search=this.value; orderRerender()"
+        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">
+      <select id="order-status-filter" onchange="orderState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); orderRerender()"
         style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">
         <option value="">All statuses</option>
         ${allStatuses.map(s => `<option value="${s}" ${orderState.statusFilter.includes(s)?'selected':''}>${s}</option>`).join('')}
       </select>
-      <select id="order-legs-filter" multiple onchange="orderState.legsFilter=Array.from(this.selectedOptions).map(o=>o.value); renderOrders({recentOrders: orderState.allOrders, stats:{totalOrders:orderState.allOrders.length}, pnlBySport:window._lastPnlBySport||{}})"
-        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; max-width:250px; height:28px;">
-        ${allTeams.map(t => `<option value="${t}" ${orderState.legsFilter.includes(t)?'selected':''}>${t}</option>`).join('')}
-      </select>
+      ${orderState.legsFilter.length > 0 ? `<button class="btn" style="font-size:11px; padding:3px 8px;" onclick="orderState.legsFilter=[]; orderRerender()">Clear team filter</button>` : ''}
       <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${orders.length}</span>
     </div>`;
 
-    // Sort arrow helper
-    const sa = (col) => {
-      const active = orderState.sortCol === col;
-      const arrow = active ? (orderState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
-      return `onclick="event.stopPropagation(); toggleOrderSort('${col}')" style="cursor:pointer;"`;
-    };
+    // Sort arrow
+    const sortArrow = (col) => orderState.sortCol === col ? (orderState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const sortClick = (col) => `onclick="event.stopPropagation(); toggleOrderSort('${col}')" style="cursor:pointer;"`;
 
     html += `<div style="overflow-x: auto;"><table>
       <tr>
-        <th ${sa('time')}>Time${orderState.sortCol==='time'?(orderState.sortDir>0?' &#9650;':' &#9660;'):''}</th>
-        <th>ID</th>
-        <th ${sa('teams')}>Teams${orderState.sortCol==='teams'?(orderState.sortDir>0?' &#9650;':' &#9660;'):''}</th>
+        <th ${sortClick('time')}>Time${sortArrow('time')}</th>
+        <th ${sortClick('teams')}>Teams${sortArrow('teams')}</th>
         <th>Legs</th>
-        <th ${sa('fairOdds')}>Fair Odds${orderState.sortCol==='fairOdds'?(orderState.sortDir>0?' &#9650;':' &#9660;'):''}</th>
-        <th ${sa('offeredOdds')}>Offered${orderState.sortCol==='offeredOdds'?(orderState.sortDir>0?' &#9650;':' &#9660;'):''}</th>
+        <th ${sortClick('fairOdds')}>Fair${sortArrow('fairOdds')}</th>
+        <th ${sortClick('offeredOdds')}>Offered${sortArrow('offeredOdds')}</th>
         <th>Status</th>
-        <th ${sa('pnl')} style="text-align:right">P&L${orderState.sortCol==='pnl'?(orderState.sortDir>0?' &#9650;':' &#9660;'):''}</th>
+        <th ${sortClick('pnl')} style="text-align:right">P&L${sortArrow('pnl')}</th>
       </tr>`;
 
     for (let i = 0; i < filtered.length; i++) {
       const order = filtered[i];
       const time = order.quotedAt ? new Date(order.quotedAt).toLocaleTimeString() : '-';
-      const parlayShort = (order.parlayId || '').substring(0, 8) + '...';
       const legs = (order.legs || order.meta?.legs || []);
       const teams = getOrderTeams(order);
       const teamStr = teams.join(', ');
 
       const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
       const offeredAm = order.offeredOdds ? decimalToAmerican(order.offeredOdds) : '-';
-
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
       let pnlHtml = '-';
@@ -844,13 +837,12 @@
         pnlHtml = `<span class="${cls}">${order.pnl >= 0 ? '+' : ''}$${order.pnl.toFixed(2)}</span>`;
       }
 
-      const rowKey = order.parlayId || i;
+      const rowKey = order.parlayId || String(i);
       const expanded = orderState.expandedRows.has(rowKey);
       html += `
         <tr style="cursor:pointer;" onclick="toggleOrderRow('${rowKey}')">
           <td>${time}</td>
-          <td style="font-family: monospace; font-size: 11px;" title="${order.parlayId||''}">${parlayShort}</td>
-          <td style="font-size:12px; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="${teamStr}">${teamStr}</td>
+          <td style="font-size:12px; max-width:260px; overflow:hidden; text-overflow:ellipsis;" title="${teamStr}">${teamStr}</td>
           <td>${legs.length}</td>
           <td>${fairAm}</td>
           <td style="font-weight:600;">${offeredAm}</td>
@@ -858,23 +850,32 @@
           <td style="text-align:right">${pnlHtml}</td>
         </tr>
         <tr id="ord-${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-          <td colspan="8" style="padding: 12px 16px;">
+          <td colspan="7" style="padding: 12px 16px;">
             <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
             <table style="width:100%; font-size: 12px;">
               <tr style="color: var(--text3);">
+                <th style="text-align:left; padding: 4px 8px;">Status</th>
                 <th style="text-align:left; padding: 4px 8px;">Team / Selection</th>
                 <th style="text-align:left; padding: 4px 8px;">Market</th>
                 <th style="text-align:left; padding: 4px 8px;">Line</th>
                 <th style="text-align:right; padding: 4px 8px;">Fair Odds</th>
               </tr>
-              ${legs.map(l => `
+              ${legs.map(l => {
+                const legStatus = l.settlementStatus || l.settlement_status || l.status || 'pending';
+                let legIcon, legColor;
+                if (legStatus === 'won') { legIcon = '&#10003;'; legColor = 'var(--green)'; }
+                else if (legStatus === 'lost') { legIcon = '&#10007;'; legColor = 'var(--red)'; }
+                else if (legStatus === 'push' || legStatus === 'void') { legIcon = '&#8212;'; legColor = 'var(--amber)'; }
+                else { legIcon = '&#9679;'; legColor = 'var(--text3)'; }
+                return `
                 <tr>
+                  <td style="padding: 4px 8px; color: ${legColor}; font-size: 14px; text-align: center; width: 40px;" title="${legStatus}">${legIcon}</td>
                   <td style="padding: 4px 8px; color: var(--text);">${l.team || l.teamName || 'Unknown'}</td>
                   <td style="padding: 4px 8px;"><span class="market-pill">${l.market || l.marketType || '-'}</span></td>
                   <td style="padding: 4px 8px; color: var(--text2);">${l.line != null ? l.line : (l.selection || '-')}</td>
                   <td style="padding: 4px 8px; text-align:right; font-variant-numeric: tabular-nums;">${l.fairProb ? decimalToAmerican(1/l.fairProb) : '-'}</td>
-                </tr>
-              `).join('')}
+                </tr>`;
+              }).join('')}
             </table>
             <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
               Vig: ${((order.meta?.vig || order.vig || 0) * 100).toFixed(1)}% ·
@@ -889,13 +890,8 @@
     html += '</table></div>';
     el.innerHTML = html;
 
-    // Restore search focus if it was active
-    const searchEl = document.getElementById('order-search');
-    if (searchEl && document.activeElement?.id !== 'order-search' && orderState.search) {
-      // Don't steal focus, just preserve value
-    }
-
     window._lastPnlBySport = data.pnlBySport || {};
+    window.orderRerender = rerender;
     renderPnLBySport(data.pnlBySport || {});
   }
 
