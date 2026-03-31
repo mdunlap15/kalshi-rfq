@@ -32,6 +32,10 @@ async function startup() {
   console.log('  ╚═══════════════════════════════════════════════╝');
   console.log('');
 
+  // Start Express FIRST so Railway health check passes while we initialize
+  log.info('Startup', '0/5 Starting status server...');
+  startStatusServer();
+
   // Validate config
   try {
     validate();
@@ -43,10 +47,6 @@ async function startup() {
   log.info('Startup', `Config: vig=${config.pricing.defaultVig}, maxRisk=$${config.pricing.maxRiskPerParlay}, maxLegs=${config.pricing.maxLegs}`);
   log.info('Startup', `Sports: ${config.supportedSports.join(', ')}`);
   log.info('Startup', `PX Base URL: ${config.px.baseUrl}`);
-
-  // Start Express FIRST so Railway health check passes while we initialize
-  log.info('Startup', '0/5 Starting status server...');
-  startStatusServer();
 
   // Step 1: Auth with ProphetX
   log.info('Startup', '1/5 Authenticating with ProphetX...');
@@ -122,13 +122,7 @@ async function startup() {
 
 function startStatusServer() {
   const app = express();
-  const path = require('path');
   app.use(express.json());
-
-  // Serve dashboard
-  app.use(express.static(path.join(__dirname, 'client')));
-
-  // Serve static files (dashboard)
   app.use(express.static(path.join(__dirname, 'client')));
 
   // Health check — always returns 200 so Railway deployment succeeds
@@ -272,7 +266,9 @@ process.on('unhandledRejection', (reason) => {
 // RUN
 // ---------------------------------------------------------------------------
 
+console.log(`[Boot] PORT=${process.env.PORT}, PX_ACCESS_KEY=${process.env.PX_ACCESS_KEY ? 'set' : 'MISSING'}, ODDS_API_KEY=${process.env.ODDS_API_KEY ? 'set' : 'MISSING'}`);
+
 startup().catch(err => {
   log.error('Startup', `Fatal startup error: ${err.message}`);
-  process.exit(1);
+  log.error('Startup', err.stack);
 });
