@@ -337,6 +337,7 @@
       <span>Refreshing...</span>
     </div>
     <button class="btn" onclick="refreshDashboard()">Refresh</button>
+    <button class="btn" onclick="toggleDefinitions()">Definitions</button>
     <button class="btn" id="pause-btn" onclick="togglePause()">Pause</button>
   </div>
 </div>
@@ -443,6 +444,29 @@
           <div>No orders yet. Waiting for RFQs...</div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Definitions -->
+  <div class="card" id="definitions-card" style="display: none;">
+    <div class="card-header">
+      <span>Definitions</span>
+      <button class="btn" onclick="toggleDefinitions()">Hide</button>
+    </div>
+    <div class="card-body" id="definitions-body">
+      <table>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Lines Registered</td><td>Number of individual betting lines (outcomes) registered with ProphetX. Each line is a specific selection (e.g., "Yankees ML", "Lakers -5.5", "Over 220.5").</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Quotes Sent</td><td>Number of parlay price quotes submitted in response to RFQs. A quote is our offered price for the parlay — it doesn't mean we've taken on risk yet.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Confirmed</td><td>Number of quotes accepted by the bettor and confirmed by us. Once confirmed, we have live exposure on the parlay.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Settled</td><td>Number of confirmed parlays that have fully settled (all legs completed). Each settled parlay produces a win or loss.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Running P&L</td><td>Cumulative profit/loss from all settled parlays. As the SP (house side), we win the stake when the parlay loses and pay out when it wins.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Fair Prob</td><td>The de-vigged probability of the parlay winning, calculated by multiplying each leg's fair probability together. Derived from DraftKings/FanDuel consensus (or Pinnacle for NCAAB).</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Offered Odds</td><td>The American odds we quoted to the bettor. Includes our vig margin on top of fair value — worse for the bettor than true fair odds.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Risk</td><td>Maximum amount we could lose on this parlay if all legs win. Set by the MAX_RISK_PER_PARLAY config parameter.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Vig</td><td>Our profit margin applied to the fair probability. At 6% vig, a parlay with 20% fair prob gets offered at ~21.2% implied (worse odds for the bettor).</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Stale Price Limit</td><td>Maximum age (in minutes) of our cached odds before we stop quoting. Protects against pricing off outdated lines.</td></tr>
+        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Odds Cache</td><td>Live sportsbook odds fetched from SharpAPI (NBA/MLB/NHL/Tennis/Soccer) and The Odds API (NCAAB). Green bar = fresh, yellow = aging, red = stale.</td></tr>
+      </table>
     </div>
   </div>
 
@@ -674,17 +698,15 @@
         </tr>
     `;
 
-    for (const order of orders) {
+    for (let i = 0; i < orders.length; i++) {
+      const order = orders[i];
       const time = order.quotedAt ? new Date(order.quotedAt).toLocaleTimeString() : '-';
       const parlayShort = (order.parlayId || '').substring(0, 8) + '...';
       const legs = (order.legs || order.meta?.legs || []);
       const legCount = legs.length;
-      const legSummary = legs.slice(0, 2).map(l =>
-        `${l.team || 'Unknown'} ${l.market || ''}`
-      ).join(', ') + (legCount > 2 ? ` +${legCount - 2}` : '');
 
       const fairProb = order.fairParlayProb ? (order.fairParlayProb * 100).toFixed(2) + '%' : '-';
-      const odds = order.offeredOdds ? order.offeredOdds.toFixed(2) + 'x' : '-';
+      const americanOdds = order.offeredOdds ? decimalToAmerican(order.offeredOdds) : '-';
       const risk = order.maxRisk ? '$' + order.maxRisk : '-';
 
       let statusClass = '';
@@ -703,16 +725,43 @@
         pnlHtml = `<span class="${cls}">${order.pnl >= 0 ? '+' : ''}$${order.pnl.toFixed(2)}</span>`;
       }
 
+      const rowId = 'order-detail-' + i;
       html += `
-        <tr title="${legSummary}">
+        <tr style="cursor:pointer;" onclick="document.getElementById('${rowId}').style.display = document.getElementById('${rowId}').style.display === 'none' ? 'table-row' : 'none'">
           <td>${time}</td>
           <td style="font-family: monospace; font-size: 12px;">${parlayShort}</td>
           <td>${legCount} legs</td>
           <td>${fairProb}</td>
-          <td>${odds}</td>
+          <td style="font-weight:600;">${americanOdds}</td>
           <td>${risk}</td>
           <td><span class="${statusClass}">${statusText}</span></td>
           <td style="text-align:right">${pnlHtml}</td>
+        </tr>
+        <tr id="${rowId}" style="display:none; background: var(--surface3);">
+          <td colspan="8" style="padding: 12px 16px;">
+            <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
+            <table style="width:100%; font-size: 12px;">
+              <tr style="color: var(--text3);">
+                <th style="text-align:left; padding: 4px 8px;">Team / Selection</th>
+                <th style="text-align:left; padding: 4px 8px;">Market</th>
+                <th style="text-align:left; padding: 4px 8px;">Line</th>
+                <th style="text-align:right; padding: 4px 8px;">Fair Prob</th>
+              </tr>
+              ${legs.map(l => `
+                <tr>
+                  <td style="padding: 4px 8px; color: var(--text);">${l.team || l.teamName || 'Unknown'}</td>
+                  <td style="padding: 4px 8px;"><span class="market-pill">${l.market || l.marketType || '-'}</span></td>
+                  <td style="padding: 4px 8px; color: var(--text2);">${l.line != null ? l.line : (l.selection || '-')}</td>
+                  <td style="padding: 4px 8px; text-align:right; font-variant-numeric: tabular-nums;">${l.fairProb ? (l.fairProb * 100).toFixed(1) + '%' : '-'}</td>
+                </tr>
+              `).join('')}
+            </table>
+            <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
+              Vig: ${((order.meta?.vig || order.vig || 0) * 100).toFixed(1)}% ·
+              Decimal: ${order.offeredOdds ? order.offeredOdds.toFixed(2) + 'x' : '-'} ·
+              Parlay ID: ${order.parlayId || '-'}
+            </div>
+          </td>
         </tr>
       `;
     }
@@ -848,6 +897,17 @@
     };
     const cls = clsMap[label] || label.toLowerCase();
     return `<span class="sport-pill ${cls}">${label}</span>`;
+  }
+
+  function decimalToAmerican(dec) {
+    if (!dec || dec <= 1) return '-';
+    if (dec >= 2.0) return '+' + Math.round((dec - 1) * 100);
+    return '' + Math.round(-100 / (dec - 1));
+  }
+
+  function toggleDefinitions() {
+    const card = document.getElementById('definitions-card');
+    card.style.display = card.style.display === 'none' ? 'block' : 'none';
   }
 
   function formatDuration(seconds) {
