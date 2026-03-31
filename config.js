@@ -9,7 +9,7 @@ const config = {
   },
   oddsApi: {
     baseUrl: 'https://api.sharpapi.io/api/v1',
-    apiKey: process.env.ODDS_API_KEY,
+    apiKey: process.env.SHARP_ODDS_API_KEY || process.env.ODDS_API_KEY,
     cacheTtlMinutes: parseInt(process.env.ODDS_CACHE_TTL_MINUTES) || 5,
   },
   pricing: {
@@ -43,7 +43,7 @@ function validate() {
   const missing = [];
   if (!config.px.accessKey) missing.push('PX_ACCESS_KEY');
   if (!config.px.secretKey) missing.push('PX_SECRET_KEY');
-  if (!config.oddsApi.apiKey) missing.push('ODDS_API_KEY');
+  if (!config.oddsApi.apiKey) missing.push('SHARP_ODDS_API_KEY');
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
