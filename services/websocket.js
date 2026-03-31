@@ -272,9 +272,11 @@ async function handleRFQ(data) {
   }
 
   try {
-    const parlayId = data.parlay_id || data.parlayId;
-    const legs = data.market_lines || data.legs || [];
-    const callbackUrl = data.callback_url || data.callbackUrl;
+    // RFQ data is nested under data.payload
+    const payload = data.payload || data;
+    const parlayId = payload.parlay_id || payload.parlayId;
+    const legs = payload.market_lines || payload.legs || [];
+    const callbackUrl = payload.callback_url || payload.callbackUrl;
 
     log.info('RFQ', `Received: parlay=${parlayId}, legs=${legs.length}`);
 
@@ -319,11 +321,13 @@ async function handleRFQ(data) {
  */
 async function handleConfirm(data) {
   try {
-    const parlayId = data.parlay_id || data.parlayId;
-    const orderUuid = data.order_uuid || data.orderUuid;
-    const callbackUrl = data.callback_url || data.callbackUrl;
-    const confirmedOdds = data.odds || data.confirmed_odds;
-    const confirmedStake = data.stake || data.confirmed_stake;
+    // Confirmation data is nested under data.payload
+    const payload = data.payload || data;
+    const parlayId = payload.parlay_id || payload.parlayId;
+    const orderUuid = payload.order_uuid || payload.orderUuid;
+    const callbackUrl = payload.callback_url || payload.callbackUrl;
+    const confirmedOdds = payload.odds || payload.confirmed_odds;
+    const confirmedStake = payload.stake || payload.confirmed_stake;
 
     log.info('Confirm', `Received: parlay=${parlayId}, order=${orderUuid}, odds=${confirmedOdds}, stake=$${confirmedStake}`);
 
@@ -391,26 +395,29 @@ function handleOrderMatched(data) {
  * Handle order finalized (private — our order confirmed by PX).
  */
 function handleOrderFinalized(data) {
-  const orderUuid = data.order_uuid || data.orderUuid;
-  log.info('WS', `Order finalized: ${orderUuid}`, data);
+  const payload = data.payload || data;
+  const orderUuid = payload.order_uuid || payload.orderUuid;
+  log.info('WS', `Order finalized: ${orderUuid}`, payload);
 }
 
 /**
  * Handle individual leg settlement.
  */
 function handleLegSettled(data) {
-  const orderUuid = data.order_uuid || data.orderUuid;
-  const status = data.status || data.settlement_status;
-  log.info('WS', `Leg settled: order=${orderUuid}, status=${status}`, data);
+  const payload = data.payload || data;
+  const orderUuid = payload.order_uuid || payload.orderUuid;
+  const status = payload.status || payload.settlement_status;
+  log.info('WS', `Leg settled: order=${orderUuid}, status=${status}`, payload);
 }
 
 /**
  * Handle full parlay settlement.
  */
 function handleParlaySettled(data) {
-  const orderUuid = data.order_uuid || data.orderUuid;
-  const result = data.result || data.status; // 'won', 'lost', 'push', 'void'
-  const payout = data.payout || 0;
+  const payload = data.payload || data;
+  const orderUuid = payload.order_uuid || payload.orderUuid;
+  const result = payload.result || payload.status;
+  const payout = payload.payout || 0;
 
   log.info('Settle', `Parlay settled: order=${orderUuid}, result=${result}, payout=${payout}`);
   orderTracker.recordSettlement(orderUuid, result, payout);
