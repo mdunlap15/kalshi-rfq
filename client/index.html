@@ -721,55 +721,122 @@
   }
 
   // -----------------------------------------------------------------------
-  // RENDER ORDERS
+  // RENDER ORDERS — with persistent sort/filter state
   // -----------------------------------------------------------------------
+
+  // Persistent state (survives refreshes)
+  const orderState = {
+    sortCol: 'time', sortDir: -1, // newest first
+    search: '',
+    statusFilter: [],
+    legsFilter: [],
+    expandedRows: new Set(),
+    allOrders: [],
+  };
 
   function renderOrders(data) {
     const el = document.getElementById('orders-table');
     const orders = data.recentOrders || [];
+    orderState.allOrders = orders;
+
     document.getElementById('order-count').textContent = orders.length > 0 ?
       `${data.stats?.totalOrders || orders.length} total` : '';
 
     if (orders.length === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No orders yet. Waiting for RFQs...</div></div>';
+      renderPnLBySport(data.pnlBySport || {});
       return;
     }
 
-    let html = `
-      <div style="overflow-x: auto;">
-      <table>
-        <tr>
-          <th>Time</th>
-          <th>Parlay ID</th>
-          <th>Legs</th>
-          <th>Fair Prob</th>
-          <th>Offered Odds</th>
-          <th>Max Risk</th>
-          <th>Status</th>
-          <th style="text-align:right">P&L</th>
-        </tr>
-    `;
+    // Collect all unique statuses and teams for filter dropdowns
+    const allStatuses = [...new Set(orders.map(o => orderStatusText(o)))];
+    const allTeams = [...new Set(orders.flatMap(o => getOrderTeams(o)))].sort();
 
-    for (let i = 0; i < orders.length; i++) {
-      const order = orders[i];
+    // Apply filters
+    let filtered = orders.filter(o => {
+      // Search: parlay ID or team names
+      if (orderState.search) {
+        const q = orderState.search.toLowerCase();
+        const id = (o.parlayId || '').toLowerCase();
+        const teams = getOrderTeams(o).join(' ').toLowerCase();
+        if (!id.includes(q) && !teams.includes(q)) return false;
+      }
+      // Status filter
+      if (orderState.statusFilter.length > 0) {
+        if (!orderState.statusFilter.includes(orderStatusText(o))) return false;
+      }
+      // Legs (team) filter
+      if (orderState.legsFilter.length > 0) {
+        const teams = getOrderTeams(o);
+        if (!orderState.legsFilter.some(t => teams.includes(t))) return false;
+      }
+      return true;
+    });
+
+    // Sort
+    filtered.sort((a, b) => {
+      let va, vb;
+      switch (orderState.sortCol) {
+        case 'time': va = a.quotedAt || ''; vb = b.quotedAt || ''; break;
+        case 'fairOdds': va = fairToAmerican(a.fairParlayProb); vb = fairToAmerican(b.fairParlayProb); break;
+        case 'offeredOdds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
+        case 'teams': va = getOrderTeams(a).join(','); vb = getOrderTeams(b).join(','); break;
+        default: va = 0; vb = 0;
+      }
+      if (va < vb) return -1 * orderState.sortDir;
+      if (va > vb) return 1 * orderState.sortDir;
+      return 0;
+    });
+
+    // Build filter bar
+    let html = `<div style="padding: 8px 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--border);">
+      <input type="text" id="order-search" placeholder="Search parlay ID or team..." value="${orderState.search}"
+        oninput="orderState.search=this.value; renderOrders({recentOrders: orderState.allOrders, stats:{totalOrders:orderState.allOrders.length}, pnlBySport:window._lastPnlBySport||{}})"
+        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:200px;">
+      <select id="order-status-filter" onchange="orderState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); renderOrders({recentOrders: orderState.allOrders, stats:{totalOrders:orderState.allOrders.length}, pnlBySport:window._lastPnlBySport||{}})"
+        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">
+        <option value="">All statuses</option>
+        ${allStatuses.map(s => `<option value="${s}" ${orderState.statusFilter.includes(s)?'selected':''}>${s}</option>`).join('')}
+      </select>
+      <select id="order-legs-filter" multiple onchange="orderState.legsFilter=Array.from(this.selectedOptions).map(o=>o.value); renderOrders({recentOrders: orderState.allOrders, stats:{totalOrders:orderState.allOrders.length}, pnlBySport:window._lastPnlBySport||{}})"
+        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; max-width:250px; height:28px;">
+        ${allTeams.map(t => `<option value="${t}" ${orderState.legsFilter.includes(t)?'selected':''}>${t}</option>`).join('')}
+      </select>
+      <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${orders.length}</span>
+    </div>`;
+
+    // Sort arrow helper
+    const sa = (col) => {
+      const active = orderState.sortCol === col;
+      const arrow = active ? (orderState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+      return `onclick="event.stopPropagation(); toggleOrderSort('${col}')" style="cursor:pointer;"`;
+    };
+
+    html += `<div style="overflow-x: auto;"><table>
+      <tr>
+        <th ${sa('time')}>Time${orderState.sortCol==='time'?(orderState.sortDir>0?' &#9650;':' &#9660;'):''}</th>
+        <th>ID</th>
+        <th ${sa('teams')}>Teams${orderState.sortCol==='teams'?(orderState.sortDir>0?' &#9650;':' &#9660;'):''}</th>
+        <th>Legs</th>
+        <th ${sa('fairOdds')}>Fair Odds${orderState.sortCol==='fairOdds'?(orderState.sortDir>0?' &#9650;':' &#9660;'):''}</th>
+        <th ${sa('offeredOdds')}>Offered${orderState.sortCol==='offeredOdds'?(orderState.sortDir>0?' &#9650;':' &#9660;'):''}</th>
+        <th>Status</th>
+        <th ${sa('pnl')} style="text-align:right">P&L${orderState.sortCol==='pnl'?(orderState.sortDir>0?' &#9650;':' &#9660;'):''}</th>
+      </tr>`;
+
+    for (let i = 0; i < filtered.length; i++) {
+      const order = filtered[i];
       const time = order.quotedAt ? new Date(order.quotedAt).toLocaleTimeString() : '-';
       const parlayShort = (order.parlayId || '').substring(0, 8) + '...';
       const legs = (order.legs || order.meta?.legs || []);
-      const legCount = legs.length;
+      const teams = getOrderTeams(order);
+      const teamStr = teams.join(', ');
 
-      const fairProb = order.fairParlayProb ? (order.fairParlayProb * 100).toFixed(2) + '%' : '-';
-      const americanOdds = order.offeredOdds ? decimalToAmerican(order.offeredOdds) : '-';
-      const risk = order.maxRisk ? '$' + order.maxRisk : '-';
+      const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
+      const offeredAm = order.offeredOdds ? decimalToAmerican(order.offeredOdds) : '-';
 
-      let statusClass = '';
-      let statusText = order.status || 'unknown';
-      if (statusText === 'quoted') statusClass = 'neutral';
-      else if (statusText === 'confirmed') statusClass = 'positive';
-      else if (statusText === 'rejected') statusClass = 'negative';
-      else if (statusText.startsWith('settled_')) {
-        statusClass = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
-        statusText = statusText.replace('settled_', '');
-      }
+      const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
       let pnlHtml = '-';
       if (order.pnl != null) {
@@ -777,19 +844,20 @@
         pnlHtml = `<span class="${cls}">${order.pnl >= 0 ? '+' : ''}$${order.pnl.toFixed(2)}</span>`;
       }
 
-      const rowId = 'order-detail-' + i;
+      const rowKey = order.parlayId || i;
+      const expanded = orderState.expandedRows.has(rowKey);
       html += `
-        <tr style="cursor:pointer;" onclick="document.getElementById('${rowId}').style.display = document.getElementById('${rowId}').style.display === 'none' ? 'table-row' : 'none'">
+        <tr style="cursor:pointer;" onclick="toggleOrderRow('${rowKey}')">
           <td>${time}</td>
-          <td style="font-family: monospace; font-size: 12px;">${parlayShort}</td>
-          <td>${legCount} legs</td>
-          <td>${fairProb}</td>
-          <td style="font-weight:600;">${americanOdds}</td>
-          <td>${risk}</td>
+          <td style="font-family: monospace; font-size: 11px;" title="${order.parlayId||''}">${parlayShort}</td>
+          <td style="font-size:12px; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="${teamStr}">${teamStr}</td>
+          <td>${legs.length}</td>
+          <td>${fairAm}</td>
+          <td style="font-weight:600;">${offeredAm}</td>
           <td><span class="${statusClass}">${statusText}</span></td>
           <td style="text-align:right">${pnlHtml}</td>
         </tr>
-        <tr id="${rowId}" style="display:none; background: var(--surface3);">
+        <tr id="ord-${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
           <td colspan="8" style="padding: 12px 16px;">
             <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
             <table style="width:100%; font-size: 12px;">
@@ -797,32 +865,88 @@
                 <th style="text-align:left; padding: 4px 8px;">Team / Selection</th>
                 <th style="text-align:left; padding: 4px 8px;">Market</th>
                 <th style="text-align:left; padding: 4px 8px;">Line</th>
-                <th style="text-align:right; padding: 4px 8px;">Fair Prob</th>
+                <th style="text-align:right; padding: 4px 8px;">Fair Odds</th>
               </tr>
               ${legs.map(l => `
                 <tr>
                   <td style="padding: 4px 8px; color: var(--text);">${l.team || l.teamName || 'Unknown'}</td>
                   <td style="padding: 4px 8px;"><span class="market-pill">${l.market || l.marketType || '-'}</span></td>
                   <td style="padding: 4px 8px; color: var(--text2);">${l.line != null ? l.line : (l.selection || '-')}</td>
-                  <td style="padding: 4px 8px; text-align:right; font-variant-numeric: tabular-nums;">${l.fairProb ? (l.fairProb * 100).toFixed(1) + '%' : '-'}</td>
+                  <td style="padding: 4px 8px; text-align:right; font-variant-numeric: tabular-nums;">${l.fairProb ? decimalToAmerican(1/l.fairProb) : '-'}</td>
                 </tr>
               `).join('')}
             </table>
             <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
               Vig: ${((order.meta?.vig || order.vig || 0) * 100).toFixed(1)}% ·
+              Max Risk: $${order.maxRisk || 0} ·
               Decimal: ${order.offeredOdds ? order.offeredOdds.toFixed(2) + 'x' : '-'} ·
-              Parlay ID: ${order.parlayId || '-'}
+              ID: ${order.parlayId || '-'}
             </div>
           </td>
-        </tr>
-      `;
+        </tr>`;
     }
 
     html += '</table></div>';
     el.innerHTML = html;
 
-    // P&L by sport
+    // Restore search focus if it was active
+    const searchEl = document.getElementById('order-search');
+    if (searchEl && document.activeElement?.id !== 'order-search' && orderState.search) {
+      // Don't steal focus, just preserve value
+    }
+
+    window._lastPnlBySport = data.pnlBySport || {};
     renderPnLBySport(data.pnlBySport || {});
+  }
+
+  // Order helper functions
+  function getOrderTeams(order) {
+    const legs = order.legs || order.meta?.legs || [];
+    return legs.map(l => l.team || l.teamName || 'Unknown');
+  }
+
+  function orderStatusText(order) {
+    let s = order.status || 'unknown';
+    if (s.startsWith('settled_')) s = s.replace('settled_', '');
+    return s;
+  }
+
+  function orderStatusDisplay(order) {
+    let text = order.status || 'unknown';
+    let cls = 'neutral';
+    if (text === 'quoted') cls = 'neutral';
+    else if (text === 'confirmed') cls = 'positive';
+    else if (text === 'rejected') cls = 'negative';
+    else if (text.startsWith('settled_')) {
+      cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+      text = text.replace('settled_', '');
+    }
+    return { cls, text };
+  }
+
+  function fairToAmerican(prob) {
+    if (!prob || prob <= 0) return 0;
+    return prob >= 0.5 ? -100 * prob / (1 - prob) : 100 * (1 - prob) / prob;
+  }
+
+  function toggleOrderSort(col) {
+    if (orderState.sortCol === col) {
+      orderState.sortDir *= -1;
+    } else {
+      orderState.sortCol = col;
+      orderState.sortDir = col === 'time' ? -1 : 1;
+    }
+    renderOrders({ recentOrders: orderState.allOrders, stats: { totalOrders: orderState.allOrders.length }, pnlBySport: window._lastPnlBySport || {} });
+  }
+
+  function toggleOrderRow(key) {
+    if (orderState.expandedRows.has(key)) {
+      orderState.expandedRows.delete(key);
+    } else {
+      orderState.expandedRows.add(key);
+    }
+    const el = document.getElementById('ord-' + key);
+    if (el) el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
   }
 
   function renderPnLBySport(pnl) {
