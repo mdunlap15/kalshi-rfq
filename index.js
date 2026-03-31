@@ -125,7 +125,14 @@ async function startup() {
 function startStatusServer() {
   const app = express();
   app.use(express.json());
-  app.use(express.static(path.join(__dirname, 'client')));
+  // No cache for HTML so deploys are picked up immediately
+  app.use(express.static(path.join(__dirname, 'client'), {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      }
+    }
+  }));
 
   // Health check — always returns 200 so Railway deployment succeeds
   app.get('/health', (req, res) => {
