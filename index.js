@@ -11,6 +11,7 @@ const lineManager = require('./services/line-manager');
 const websocket = require('./services/websocket');
 const orderTracker = require('./services/order-tracker');
 const express = require('express');
+const path = require('path');
 
 // ---------------------------------------------------------------------------
 // STARTUP
@@ -42,6 +43,10 @@ async function startup() {
   log.info('Startup', `Config: vig=${config.pricing.defaultVig}, maxRisk=$${config.pricing.maxRiskPerParlay}, maxLegs=${config.pricing.maxLegs}`);
   log.info('Startup', `Sports: ${config.supportedSports.join(', ')}`);
   log.info('Startup', `PX Base URL: ${config.px.baseUrl}`);
+
+  // Start Express FIRST so Railway health check passes while we initialize
+  log.info('Startup', '0/5 Starting status server...');
+  startStatusServer();
 
   // Step 1: Auth with ProphetX
   log.info('Startup', '1/5 Authenticating with ProphetX...');
@@ -88,10 +93,6 @@ async function startup() {
     log.warn('Startup', '    Service will run without WebSocket — use /status to check state');
   }
 
-  // Step 5: Start Express status server
-  log.info('Startup', '5/5 Starting status server...');
-  startStatusServer();
-
   // Start periodic timers
   const refreshMs = config.refreshIntervalMinutes * 60 * 1000;
   oddsRefreshTimer = setInterval(async () => {
@@ -127,11 +128,15 @@ function startStatusServer() {
   // Serve dashboard
   app.use(express.static(path.join(__dirname, 'client')));
 
-  // Health check
+  // Serve static files (dashboard)
+  app.use(express.static(path.join(__dirname, 'client')));
+
+  // Health check — always returns 200 so Railway deployment succeeds
   app.get('/health', (req, res) => {
     const ws = websocket.getState();
     res.json({
-      ok: serviceReady,
+      ok: true,
+      ready: serviceReady,
       uptime: Math.round((Date.now() - startTime) / 1000),
       wsState: ws.connectionState,
       paused: ws.paused,
@@ -227,8 +232,11 @@ function startStatusServer() {
     res.sendFile(path.join(__dirname, 'client', 'index.html'));
   });
 
-  app.listen(config.server.port, () => {
+  const server = app.listen(config.server.port, () => {
     log.info('Startup', `    ✓ Status server on port ${config.server.port}`);
+  });
+  server.on('error', (err) => {
+    log.error('Startup', `Status server failed: ${err.message}`);
   });
 }
 
