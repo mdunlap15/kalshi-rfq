@@ -201,8 +201,11 @@
       font-weight: 600;
     }
     .sport-pill.nba { background: rgba(88,166,255,0.15); color: var(--blue); }
+    .sport-pill.ncaab { background: rgba(63,185,80,0.15); color: var(--green); }
     .sport-pill.mlb { background: rgba(210,153,34,0.15); color: var(--amber); }
     .sport-pill.nhl { background: rgba(188,140,255,0.15); color: var(--purple); }
+    .sport-pill.tennis { background: rgba(210,153,34,0.15); color: #e8c547; }
+    .sport-pill.soccer { background: rgba(63,185,80,0.15); color: #57cc8a; }
 
     .market-pill {
       display: inline-block;
@@ -827,15 +830,23 @@
   function sportLabel(sport) {
     const map = {
       'basketball_nba': 'NBA',
+      'basketball_ncaab': 'NCAAB',
       'baseball_mlb': 'MLB',
       'icehockey_nhl': 'NHL',
+      'tennis': 'Tennis',
+      'soccer': 'Soccer',
     };
     return map[sport] || sport;
   }
 
   function sportPill(sport) {
     const label = sportLabel(sport);
-    const cls = label.toLowerCase();
+    // Map label to CSS class
+    const clsMap = {
+      'NBA': 'nba', 'NCAAB': 'ncaab', 'MLB': 'mlb',
+      'NHL': 'nhl', 'Tennis': 'tennis', 'Soccer': 'soccer',
+    };
+    const cls = clsMap[label] || label.toLowerCase();
     return `<span class="sport-pill ${cls}">${label}</span>`;
   }
 
