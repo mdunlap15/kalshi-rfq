@@ -8,11 +8,13 @@ const log = require('./logger');
 // Structure: { [league]: { fetchedAt, events: { [eventKey]: { ... } } } }
 const oddsCache = {};
 
-// SharpAPI league keys (also used as our internal sport keys)
+// SharpAPI league/sport keys mapping
 const LEAGUE_MAP = {
-  'basketball_nba': 'nba',
-  'baseball_mlb': 'mlb',
-  'icehockey_nhl': 'nhl',
+  'basketball_nba': { param: 'league', value: 'nba' },
+  'baseball_mlb': { param: 'league', value: 'mlb' },
+  'icehockey_nhl': { param: 'league', value: 'nhl' },
+  'tennis': { param: 'sport', value: 'tennis' },
+  'soccer': { param: 'sport', value: 'soccer' },
 };
 
 // ---------------------------------------------------------------------------
@@ -25,23 +27,25 @@ const LEAGUE_MAP = {
  * then de-vigs by averaging across books.
  */
 async function fetchOddsForSport(sport) {
-  const league = LEAGUE_MAP[sport];
-  if (!league) throw new Error(`Unknown sport: ${sport}`);
+  const mapping = LEAGUE_MAP[sport];
+  if (!mapping) throw new Error(`Unknown sport: ${sport}`);
 
-  // Use explicit market types — the 'main' alias can return empty on some tiers
-  const marketTypes = league === 'mlb'
-    ? 'moneyline,run_line,total_runs'
-    : league === 'nhl'
-      ? 'moneyline,puck_line,total_goals'
-      : 'moneyline,point_spread,total_points';
+  // Market types vary by sport
+  const marketTypes = {
+    'baseball_mlb': 'moneyline,run_line,total_runs',
+    'icehockey_nhl': 'moneyline,puck_line,total_goals',
+    'basketball_nba': 'moneyline,point_spread,total_points',
+    'tennis': 'moneyline',
+    'soccer': 'moneyline,point_spread,total_goals',
+  }[sport] || 'moneyline,point_spread,total_points';
 
   const url = `${config.oddsApi.baseUrl}/odds`
-    + `?league=${league}`
+    + `?${mapping.param}=${mapping.value}`
     + `&market=${marketTypes}`
     + `&live=false`
     + `&limit=200`;
 
-  log.info('OddsFeed', `Fetching ${league} odds from SharpAPI...`);
+  log.info('OddsFeed', `Fetching ${mapping.value} odds from SharpAPI...`);
 
   const resp = await fetch(url, {
     headers: { 'X-API-Key': config.oddsApi.apiKey },
@@ -49,12 +53,12 @@ async function fetchOddsForSport(sport) {
 
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`SharpAPI ${resp.status} for ${league}: ${text}`);
+    throw new Error(`SharpAPI ${resp.status} for ${mapping.value}: ${text}`);
   }
 
   const body = await resp.json();
   const rows = body.data || [];
-  log.info('OddsFeed', `Got ${rows.length} odds rows for ${league}`);
+  log.info('OddsFeed', `Got ${rows.length} odds rows for ${mapping.value}`);
 
   // Group by event, then by market+selection to de-vig across books
   const eventMap = {};
@@ -124,7 +128,7 @@ async function fetchOddsForSport(sport) {
     events: parsed,
   };
 
-  log.info('OddsFeed', `Cached ${Object.keys(parsed).length} events for ${league}`);
+  log.info('OddsFeed', `Cached ${Object.keys(parsed).length} events for ${mapping.value}`);
   return parsed;
 }
 

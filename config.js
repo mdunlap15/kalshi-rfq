@@ -19,13 +19,15 @@ const config = {
     stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 15,
     offerValidSeconds: 120,
   },
-  supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,baseball_mlb,icehockey_nhl')
+  supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,baseball_mlb,icehockey_nhl,tennis,soccer')
     .split(',').map(s => s.trim()),
-  // Maps The Odds API sport keys to ProphetX sport_name values
+  // Maps our sport keys to ProphetX sport_name values
   sportNameMap: {
     'basketball_nba': 'Basketball',
     'baseball_mlb': 'Baseball',
     'icehockey_nhl': 'Ice Hockey',
+    'tennis': 'Tennis',
+    'soccer': 'Soccer',
   },
   server: {
     port: parseInt(process.env.PORT) || 3001,

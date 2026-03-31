@@ -144,10 +144,16 @@ async function seedAllLines() {
     };
 
     // Extract home/away from PX event
-    const homeComp = event.competitors.find(c => c.side === 'home');
-    const awayComp = event.competitors.find(c => c.side === 'away');
+    // Tennis/soccer may use different side labels or just have 2 competitors without home/away
+    let homeComp = event.competitors.find(c => c.side === 'home');
+    let awayComp = event.competitors.find(c => c.side === 'away');
+    // Fallback: use first two competitors if no home/away labels
+    if (!homeComp && !awayComp && event.competitors.length >= 2) {
+      homeComp = event.competitors[0];
+      awayComp = event.competitors[1];
+    }
     if (!homeComp || !awayComp) {
-      log.debug('Lines', `Skipping ${event.name}: missing home/away competitors`);
+      log.debug('Lines', `Skipping ${event.name}: missing competitors`);
       continue;
     }
 
