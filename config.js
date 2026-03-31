@@ -14,7 +14,7 @@ const config = {
   },
   pricing: {
     defaultVig: parseFloat(process.env.DEFAULT_VIG) || 0.01,
-    maxRiskPerParlay: parseFloat(process.env.MAX_RISK_PER_PARLAY) || 10,
+    maxRiskPerParlay: parseFloat(process.env.MAX_RISK_PER_PARLAY) || 500,
     maxLegs: parseInt(process.env.MAX_LEGS) || 8,
     stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 15,
     offerValidSeconds: 120,
