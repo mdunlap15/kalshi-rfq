@@ -282,18 +282,36 @@ async function handleRFQ(data) {
 
     // Quick decline check
     if (pricer.shouldDecline(legs)) {
-      // Determine decline reason for tracking
       const lineManager = require('./line-manager');
-      const unknownLegs = legs.filter(l => !lineManager.lookupLine(l.line_id || l.lineId || l));
+      const knownLegs = [];
+      const unknownLegs = [];
+      const unknownSports = [];
+      for (const l of legs) {
+        const lineId = l.line_id || l.lineId || l;
+        const info = lineManager.lookupLine(lineId);
+        if (info) {
+          knownLegs.push({ team: info.teamName, market: info.marketType, sport: info.sport, line: info.line });
+        } else {
+          unknownLegs.push(lineId);
+          // Try to identify sport from PX event data
+          unknownSports.push(l.tournament_id ? `tournament_${l.tournament_id}` : 'unknown');
+        }
+      }
       const reason = unknownLegs.length > 0 ? 'unknown legs' : 'exposure/limit';
-      orderTracker.recordDecline(reason);
+      orderTracker.recordDecline(reason, { parlayId, legs, knownLegs, unknownLegs, unknownSports });
       return;
     }
 
     // Price the parlay
     const result = pricer.priceParlay(legs);
     if (!result) {
-      orderTracker.recordDecline('no fair value');
+      // Near miss — all legs known but couldn't get fair values
+      const lineManager = require('./line-manager');
+      const knownLegs = legs.map(l => {
+        const info = lineManager.lookupLine(l.line_id || l.lineId || l);
+        return info ? { team: info.teamName, market: info.marketType, sport: info.sport, line: info.line } : null;
+      }).filter(Boolean);
+      orderTracker.recordDecline('no fair value', { parlayId, knownLegs });
       return;
     }
 

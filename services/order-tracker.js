@@ -24,7 +24,9 @@ const marketStats = {
 // ---------------------------------------------------------------------------
 const declineStats = {
   total: 0,
-  reasons: {}, // { 'unknown legs': count, 'stale prices': count, etc. }
+  reasons: {}, // { 'unknown legs': count, 'no fair value': count, etc. }
+  unknownSports: {}, // { 'Soccer': count, 'unknown': count } — sports from unknown legs
+  nearMisses: [], // RFQs where all legs were known but couldn't price (no fair value)
 };
 
 // ---------------------------------------------------------------------------
@@ -232,19 +234,72 @@ function decToAm(dec) {
 /**
  * Record a declined RFQ with reason.
  */
-function recordDecline(reason) {
+/**
+ * Record a declined RFQ with detailed info.
+ * @param {string} reason - 'unknown legs', 'no fair value', 'exposure/limit'
+ * @param {object} detail - { legs, knownLegs, unknownLegs, parlayId }
+ */
+function recordDecline(reason, detail) {
   declineStats.total++;
   const bucket = reason || 'unknown';
   declineStats.reasons[bucket] = (declineStats.reasons[bucket] || 0) + 1;
+
+  // Track sports from unknown legs
+  if (detail?.unknownSports) {
+    for (const sport of detail.unknownSports) {
+      declineStats.unknownSports[sport] = (declineStats.unknownSports[sport] || 0) + 1;
+    }
+  }
+
+  // Track near-misses (all legs known but couldn't price)
+  if (reason === 'no fair value' && detail) {
+    declineStats.nearMisses.unshift({
+      parlayId: detail.parlayId,
+      legs: detail.knownLegs || [],
+      time: new Date().toISOString(),
+      reason: 'no fair value for one or more legs',
+    });
+    if (declineStats.nearMisses.length > 50) declineStats.nearMisses.pop();
+  }
 }
 
 function getMarketIntel(limit = 50) {
   return {
     stats: { ...marketStats },
-    declines: { ...declineStats },
+    declines: {
+      total: declineStats.total,
+      reasons: { ...declineStats.reasons },
+      unknownSports: { ...declineStats.unknownSports },
+      nearMissCount: declineStats.nearMisses.length,
+      recentNearMisses: declineStats.nearMisses.slice(0, 10),
+    },
     recentMatched: matchedParlays.slice(0, limit),
     quoteWinRate: marketStats.weQuoted > 0 ? (marketStats.weWon / marketStats.weQuoted * 100).toFixed(1) + '%' : '-',
     coverageRate: marketStats.totalMatched > 0 ? (marketStats.weQuoted / marketStats.totalMatched * 100).toFixed(1) + '%' : '-',
+    // Sport breakdown of matched parlays
+    matchedBySport: (() => {
+      const bySport = {};
+      for (const m of matchedParlays) {
+        const sports = [...new Set((m.legs || []).map(l => l.sport).filter(Boolean))];
+        for (const s of sports) {
+          if (!bySport[s]) bySport[s] = { count: 0, weQuoted: 0, missed: 0, avgStake: 0, totalStake: 0 };
+          bySport[s].count++;
+          bySport[s].totalStake += (m.matchedStake || 0);
+          if (m.weQuoted) bySport[s].weQuoted++;
+          else bySport[s].missed++;
+        }
+        if (sports.length === 0) {
+          if (!bySport['unknown']) bySport['unknown'] = { count: 0, weQuoted: 0, missed: 0, avgStake: 0, totalStake: 0 };
+          bySport['unknown'].count++;
+          bySport['unknown'].totalStake += (m.matchedStake || 0);
+          bySport['unknown'].missed++;
+        }
+      }
+      for (const s of Object.keys(bySport)) {
+        bySport[s].avgStake = bySport[s].count > 0 ? bySport[s].totalStake / bySport[s].count : 0;
+      }
+      return bySport;
+    })(),
   };
 }
 

@@ -699,23 +699,71 @@
 
     // Stats bar
     let html = `<div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:16px; font-size:13px;">
-      <span><span style="color:var(--text3)">Parlays matched (all SPs):</span> <strong>${s.totalMatched || 0}</strong></span>
+      <span><span style="color:var(--text3)">Matched (all SPs):</span> <strong>${s.totalMatched || 0}</strong></span>
       <span><span style="color:var(--text3)">We quoted:</span> <strong>${s.weQuoted || 0}</strong> (${intel.coverageRate || '-'})</span>
-      <span><span style="color:var(--text3)">We won:</span> <strong class="positive">${s.weWon || 0}</strong></span>
-      <span><span style="color:var(--text3)">We lost:</span> <strong class="negative">${s.weLost || 0}</strong> (${intel.quoteWinRate || '-'} win rate)</span>
-      <span><span style="color:var(--text3)">Missed (no quote):</span> <strong>${s.missedNoQuote || 0}</strong></span>
+      <span><span style="color:var(--text3)">Won:</span> <strong class="positive">${s.weWon || 0}</strong></span>
+      <span><span style="color:var(--text3)">Lost:</span> <strong class="negative">${s.weLost || 0}</strong></span>
+      <span><span style="color:var(--text3)">Missed:</span> <strong>${s.missedNoQuote || 0}</strong></span>
     </div>`;
+
+    // Sport breakdown of matched parlays
+    const bySport = intel.matchedBySport || {};
+    if (Object.keys(bySport).length > 0) {
+      html += `<div style="margin-bottom:16px;">
+        <div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">MATCHED PARLAYS BY SPORT</div>
+        <div style="overflow-x:auto;"><table style="font-size:12px;">
+          <tr><th>Sport</th><th style="text-align:right">Parlays</th><th style="text-align:right">We Quoted</th><th style="text-align:right">Missed</th><th style="text-align:right">Avg Stake</th></tr>`;
+      for (const [sport, info] of Object.entries(bySport).sort((a,b) => b[1].count - a[1].count)) {
+        html += `<tr>
+          <td>${sportPill(sport)}</td>
+          <td style="text-align:right">${info.count}</td>
+          <td style="text-align:right">${info.weQuoted}</td>
+          <td style="text-align:right; color: ${info.missed > 0 ? 'var(--amber)' : 'var(--text2)'};">${info.missed}</td>
+          <td style="text-align:right">$${info.avgStake.toFixed(2)}</td>
+        </tr>`;
+      }
+      html += '</table></div></div>';
+    }
 
     // Decline reasons
     if (d.total > 0) {
       html += `<div style="margin-bottom:16px;">
-        <div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">DECLINE REASONS (${d.total} total)</div>
-        <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px;">`;
+        <div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">DECLINE REASONS (${d.total} RFQs)</div>
+        <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px; margin-bottom:8px;">`;
       for (const [reason, count] of Object.entries(d.reasons || {}).sort((a,b) => b[1]-a[1])) {
         const pct = (count / d.total * 100).toFixed(0);
         html += `<span style="color:var(--text2);">${reason}: <strong>${count}</strong> (${pct}%)</span>`;
       }
-      html += `</div></div>`;
+      html += `</div>`;
+
+      // Unknown sports breakdown
+      const unknownSports = d.unknownSports || {};
+      if (Object.keys(unknownSports).length > 0) {
+        html += `<div style="font-size:11px; color:var(--text3); margin-top:4px;">Unknown leg sources: `;
+        html += Object.entries(unknownSports).sort((a,b) => b[1]-a[1]).slice(0, 10)
+          .map(([k, v]) => `${k} (${v})`).join(', ');
+        html += `</div>`;
+      }
+      html += `</div>`;
+    }
+
+    // Near misses
+    const nearMisses = d.recentNearMisses || [];
+    if (nearMisses.length > 0) {
+      html += `<div style="margin-bottom:16px;">
+        <div style="font-size:12px; font-weight:600; color:var(--amber); margin-bottom:6px;">NEAR MISSES — ${d.nearMissCount || nearMisses.length} total (all legs known, no fair value)</div>
+        <div style="overflow-x:auto;"><table style="font-size:12px;">
+          <tr><th>Time</th><th>Teams</th><th>Legs</th></tr>`;
+      for (const nm of nearMisses.slice(0, 10)) {
+        const time = nm.time ? new Date(nm.time).toLocaleTimeString() : '-';
+        const teams = (nm.legs || []).map(l => `${l.team} (${l.market}${l.line != null ? ' ' + l.line : ''})`).join(', ');
+        html += `<tr>
+          <td>${time}</td>
+          <td style="font-size:11px; max-width:400px; overflow:hidden; text-overflow:ellipsis;" title="${teams}">${teams}</td>
+          <td>${(nm.legs||[]).length}</td>
+        </tr>`;
+      }
+      html += '</table></div></div>';
     }
 
     // Recent matched parlays table
