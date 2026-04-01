@@ -247,7 +247,11 @@ function recordDecline(reason, detail) {
   // Track sports from unknown legs
   if (detail?.unknownSports) {
     for (const sport of detail.unknownSports) {
-      declineStats.unknownSports[sport] = (declineStats.unknownSports[sport] || 0) + 1;
+      if (!declineStats.unknownSports[sport]) {
+        declineStats.unknownSports[sport] = { count: 0, lastSeen: null };
+      }
+      declineStats.unknownSports[sport].count++;
+      declineStats.unknownSports[sport].lastSeen = new Date().toISOString();
     }
   }
 
