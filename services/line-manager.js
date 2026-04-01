@@ -255,7 +255,7 @@ async function seedAllLines() {
     const fullGameNames = {
       moneyline: ['Moneyline', 'Moneyline (2 Way)', 'Moneyline (Regulation)'],
       spread: ['Spread', 'Run Line', 'Puck Line', 'Spread (Regular Time)', 'Game Spread', 'Point Spread'],
-      total: ['Total', 'Total Points', 'Total Runs', 'Total Goals', 'Total Goals (Regular Time)'],
+      total: ['Total', 'Total Points', 'Points', 'Total Runs', 'Total Goals', 'Total Goals (Regular Time)'],
     };
 
     const mainMarkets = markets.filter(m => {
