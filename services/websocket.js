@@ -331,7 +331,13 @@ async function handleRFQ(data) {
       const lineManager = require('./line-manager');
       const knownLegs = legs.map(l => {
         const info = lineManager.lookupLine(l.line_id || l.lineId || l);
-        return info ? { team: info.teamName, market: info.marketType, sport: info.sport, line: info.line } : null;
+        if (!info) return null;
+        // For totals, include game context
+        let team = info.teamName;
+        if (info.marketType === 'total' && info.homeTeam && info.awayTeam) {
+          team = `${team} (${info.awayTeam} @ ${info.homeTeam})`;
+        }
+        return { team, market: info.marketType, sport: info.sport, line: info.line, homeTeam: info.homeTeam, awayTeam: info.awayTeam };
       }).filter(Boolean);
       orderTracker.recordDecline('no fair value', { parlayId, knownLegs });
       return;
