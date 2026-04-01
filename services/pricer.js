@@ -24,7 +24,7 @@ function decimalToAmerican(dec) {
  * Returns null if the parlay should be declined.
  * Returns an offer object if we can price it.
  */
-function priceParlay(legs) {
+async function priceParlay(legs) {
   // Validate leg count
   if (!legs || legs.length === 0) {
     log.debug('Pricing', 'Declined: no legs');
@@ -54,8 +54,8 @@ function priceParlay(legs) {
       return null;
     }
 
-    // Get fair probability
-    const fairProb = oddsFeed.getFairProb(
+    // Get fair probability — tries cache first, then on-demand alt lines fetch
+    const fairProb = await oddsFeed.getFairProbAsync(
       lineInfo.oddsApiSport,
       lineInfo.homeTeam,
       lineInfo.awayTeam,
@@ -150,8 +150,8 @@ function priceParlay(legs) {
  * Build multiple tier offers for a parlay.
  * Tighter odds at low risk, wider at high risk.
  */
-function buildOffers(legs) {
-  const base = priceParlay(legs);
+async function buildOffers(legs) {
+  const base = await priceParlay(legs);
   if (!base) return null;
 
   const tiers = [
@@ -217,11 +217,11 @@ function shouldDecline(legs) {
  * Re-validate pricing at confirmation time.
  * Check if fair values have moved significantly since we quoted.
  */
-function validateForConfirmation(parlayId, originalMeta) {
+async function validateForConfirmation(parlayId, originalMeta) {
   if (!originalMeta || !originalMeta.legs) return { valid: false, reason: 'no original meta' };
 
   const legs = originalMeta.legs.map(l => l.lineId);
-  const currentPricing = priceParlay(legs);
+  const currentPricing = await priceParlay(legs);
   if (!currentPricing) return { valid: false, reason: 'cannot reprice — missing data' };
 
   // Check if fair value has moved more than 5% against us

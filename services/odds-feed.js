@@ -443,9 +443,126 @@ function avg(arr) {
 }
 
 // ---------------------------------------------------------------------------
-// CACHE LOOKUP (same interface as before — no changes needed downstream)
+// ALT LINES CACHE — on-demand fetched from The Odds API event endpoint
+// ---------------------------------------------------------------------------
+// { 'eventKey': { fetchedAt, altSpreads: { [line]: { home, away } }, altTotals: { [line]: { over, under } } } }
+const altLinesCache = {};
+const ALT_LINES_TTL_MS = 10 * 60 * 1000; // 10 minute cache
+
+/**
+ * Fetch alternate spreads and totals for a specific event from The Odds API.
+ * Uses the event-specific endpoint which supports alt markets from Pinnacle.
+ */
+async function fetchAltLines(sport, homeTeam, awayTeam) {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return null;
+
+  const key = normalizeEventKey(homeTeam, awayTeam);
+
+  // Check cache
+  const cached = altLinesCache[key];
+  if (cached && (Date.now() - cached.fetchedAt) < ALT_LINES_TTL_MS) {
+    return cached;
+  }
+
+  // Need to find the Odds API event ID — look it up from the main cache
+  const sportCache = oddsCache[sport];
+  if (!sportCache) return null;
+  const event = sportCache.events[key];
+  if (!event?.eventId) return null;
+
+  // Map our sport key to The Odds API sport key
+  const oddsApiSportMap = {
+    'basketball_nba': 'basketball_nba',
+    'basketball_ncaab': 'basketball_ncaab',
+    'baseball_mlb': 'baseball_mlb',
+    'icehockey_nhl': 'icehockey_nhl',
+  };
+  const oddsApiSport = oddsApiSportMap[sport];
+  if (!oddsApiSport) return null;
+
+  const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events/${event.eventId}/odds`
+    + `?apiKey=${theOddsApiKey}`
+    + `&regions=us,eu`
+    + `&markets=alternate_spreads,alternate_totals`
+    + `&bookmakers=pinnacle,draftkings,fanduel`
+    + `&oddsFormat=american`;
+
+  log.info('OddsFeed', `Fetching alt lines for ${homeTeam} vs ${awayTeam}...`);
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const text = await resp.text();
+      log.warn('OddsFeed', `Alt lines fetch failed (${resp.status}): ${text.substring(0, 100)}`);
+      return null;
+    }
+
+    const data = await resp.json();
+    const result = { fetchedAt: Date.now(), altSpreads: {}, altTotals: {} };
+
+    for (const book of (data.bookmakers || [])) {
+      for (const market of (book.markets || [])) {
+        if (market.key === 'alternate_spreads') {
+          // Group by point value, collect home/away
+          for (const o of (market.outcomes || [])) {
+            const lineKey = Math.abs(o.point);
+            if (!result.altSpreads[lineKey]) result.altSpreads[lineKey] = { probs: [] };
+            const isHome = o.name === homeTeam || o.name === data.home_team;
+            const prob = americanToImpliedProb(o.price);
+            result.altSpreads[lineKey].probs.push({ isHome, prob, point: o.point });
+          }
+        } else if (market.key === 'alternate_totals') {
+          for (const o of (market.outcomes || [])) {
+            const lineKey = o.point;
+            if (!result.altTotals[lineKey]) result.altTotals[lineKey] = { probs: [] };
+            const isOver = o.name === 'Over';
+            const prob = americanToImpliedProb(o.price);
+            result.altTotals[lineKey].probs.push({ isOver, prob });
+          }
+        }
+      }
+    }
+
+    // De-vig each line
+    for (const [lineKey, data] of Object.entries(result.altSpreads)) {
+      const homeProbs = data.probs.filter(p => p.isHome).map(p => p.prob);
+      const awayProbs = data.probs.filter(p => !p.isHome).map(p => p.prob);
+      if (homeProbs.length > 0 && awayProbs.length > 0) {
+        const [fh, fa] = deVig2Way(avg(homeProbs), avg(awayProbs));
+        result.altSpreads[lineKey] = { home: fh, away: fa };
+      } else {
+        delete result.altSpreads[lineKey];
+      }
+    }
+
+    for (const [lineKey, data] of Object.entries(result.altTotals)) {
+      const overProbs = data.probs.filter(p => p.isOver).map(p => p.prob);
+      const underProbs = data.probs.filter(p => !p.isOver).map(p => p.prob);
+      if (overProbs.length > 0 && underProbs.length > 0) {
+        const [fo, fu] = deVig2Way(avg(overProbs), avg(underProbs));
+        result.altTotals[lineKey] = { over: fo, under: fu };
+      } else {
+        delete result.altTotals[lineKey];
+      }
+    }
+
+    altLinesCache[key] = result;
+    log.info('OddsFeed', `Cached alt lines: ${Object.keys(result.altSpreads).length} spreads, ${Object.keys(result.altTotals).length} totals`);
+    return result;
+  } catch (err) {
+    log.error('OddsFeed', `Alt lines error: ${err.message}`);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CACHE LOOKUP
 // ---------------------------------------------------------------------------
 
+/**
+ * Get fair probability — sync version, uses cached data only.
+ */
 function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line) {
   const sportCache = oddsCache[sport];
   if (!sportCache) return null;
@@ -457,12 +574,12 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line) {
   const market = event.markets[marketType];
   if (!market) return null;
 
-  // Require exact line match for spreads and totals.
-  // Alt lines have significantly different probabilities — using the primary
-  // line's prob as proxy is unsafe. Need an alt-lines odds source instead.
   if ((marketType === 'spreads' || marketType === 'totals') && market.line != null && line != null) {
     const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
     if (lineDiff > 0.01) {
+      // Check alt lines cache
+      const altProb = getAltLineFairProb(key, marketType, selection, line);
+      if (altProb != null) return altProb;
       return null;
     }
   }
@@ -476,6 +593,50 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line) {
   } else if (marketType === 'totals') {
     if (selection === 'over') return market.over?.fairProb || null;
     if (selection === 'under') return market.under?.fairProb || null;
+  }
+
+  return null;
+}
+
+/**
+ * Get fair probability — async version. Falls back to on-demand alt line fetch.
+ */
+async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection, line) {
+  // Try sync first
+  const syncResult = getFairProb(sport, homeTeam, awayTeam, marketType, selection, line);
+  if (syncResult != null) return syncResult;
+
+  // If it's a spread/total with a line mismatch, try fetching alt lines
+  if ((marketType === 'spreads' || marketType === 'totals') && line != null) {
+    const sportCache = oddsCache[sport];
+    const key = normalizeEventKey(homeTeam, awayTeam);
+    const event = sportCache?.events?.[key];
+    if (event) {
+      await fetchAltLines(sport, homeTeam, awayTeam);
+      return getAltLineFairProb(key, marketType, selection, line);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Look up a fair prob from the alt lines cache.
+ */
+function getAltLineFairProb(eventKey, marketType, selection, line) {
+  const alt = altLinesCache[eventKey];
+  if (!alt) return null;
+
+  if (marketType === 'spreads') {
+    const lineData = alt.altSpreads[Math.abs(line)];
+    if (!lineData) return null;
+    if (selection === 'home') return lineData.home || null;
+    if (selection === 'away') return lineData.away || null;
+  } else if (marketType === 'totals') {
+    const lineData = alt.altTotals[line];
+    if (!lineData) return null;
+    if (selection === 'over') return lineData.over || null;
+    if (selection === 'under') return lineData.under || null;
   }
 
   return null;
@@ -565,6 +726,8 @@ module.exports = {
   fetchOddsForSport,
   refreshAllSports,
   getFairProb,
+  getFairProbAsync,
+  fetchAltLines,
   getEventMarkets,
   getCacheAge,
   isStale,

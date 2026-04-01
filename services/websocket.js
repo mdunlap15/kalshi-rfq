@@ -325,7 +325,7 @@ async function handleRFQ(data) {
     }
 
     // Price the parlay
-    const result = pricer.priceParlay(legs);
+    const result = await pricer.priceParlay(legs);
     if (!result) {
       // Near miss — all legs known but couldn't get fair values
       const lineManager = require('./line-manager');
@@ -392,7 +392,7 @@ async function handleConfirm(data) {
     }
 
     // Re-validate pricing
-    const validation = pricer.validateForConfirmation(parlayId, originalOrder.meta);
+    const validation = await pricer.validateForConfirmation(parlayId, originalOrder.meta);
     if (!validation.valid) {
       log.warn('Confirm', `Rejecting: ${validation.reason}`);
       orderTracker.recordRejection(parlayId, validation.reason);
