@@ -210,7 +210,10 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     weQuoted,
     ourOdds: ourQuote?.offeredOdds || null,
     ourAmericanOdds: ourQuote?.offeredOdds || null, // Already stored as American
-    matchedAmericanOdds: matchedOdds,
+    // PX sends matched_odds with opposite sign to our format.
+    // Evidence: when we win at +18297, PX broadcasts -18297.
+    // Negate PX value so both are in the same format for comparison.
+    matchedAmericanOdds: matchedOdds != null ? -matchedOdds : null,
     outcome,
     legCount: resolvedLegs.length,
   };
