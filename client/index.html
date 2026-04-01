@@ -783,17 +783,19 @@ ${e.won ? 'WON' : 'LOST'}</title>
 
       // Side table with the entries
       html += `<div style="flex:1; min-width:300px; overflow-x:auto;"><table style="font-size:11px;">
-        <tr><th>Teams</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:center">Gap</th><th>Result</th></tr>`;
+        <tr><th>Teams</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:right">Stake</th><th style="text-align:center">Gap</th><th>Result</th></tr>`;
       for (const e of compEntries.slice(0, 15)) {
         const teamsShort = e.teams.length > 30 ? e.teams.substring(0, 27) + '...' : e.teams;
         const ourFmt = e.ourOdds >= 0 ? '+' + e.ourOdds : '' + e.ourOdds;
         const winFmt = e.winOdds >= 0 ? '+' + e.winOdds : '' + e.winOdds;
+        const stakeFmt = e.stake ? '$' + Number(e.stake).toFixed(2) : '-';
         const gapFmt = (e.gapProb >= 0 ? '+' : '') + e.gapProb.toFixed(1) + 'pp';
         const gapColor = e.gapProb > 0 ? 'var(--red)' : 'var(--green)';
         html += `<tr>
           <td style="max-width:160px; overflow:hidden; text-overflow:ellipsis;" title="${e.teams}">${teamsShort}</td>
           <td style="text-align:right; font-weight:600;">${ourFmt}</td>
           <td style="text-align:right;">${winFmt}</td>
+          <td style="text-align:right;">${stakeFmt}</td>
           <td style="text-align:center; color:${gapColor};">${gapFmt}</td>
           <td><span class="${e.won ? 'positive' : 'negative'}">${e.won ? 'Won' : 'Lost'}</span></td>
         </tr>`;
@@ -1133,6 +1135,7 @@ ${e.won ? 'WON' : 'LOST'}</title>
         <th>Legs</th>
         <th ${sortClick('fairOdds')}>Fair${sortArrow('fairOdds')}</th>
         <th ${sortClick('offeredOdds')}>Offered${sortArrow('offeredOdds')}</th>
+        <th style="text-align:right">Stake</th>
         <th>Status</th>
         <th ${sortClick('pnl')} style="text-align:right">P&L${sortArrow('pnl')}</th>
       </tr>`;
@@ -1147,6 +1150,7 @@ ${e.won ? 'WON' : 'LOST'}</title>
       const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
       // offeredOdds is now stored as American (integer) matching PX format
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
+      const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
       let pnlHtml = '-';
@@ -1164,11 +1168,12 @@ ${e.won ? 'WON' : 'LOST'}</title>
           <td>${legs.length}</td>
           <td>${fairAm}</td>
           <td style="font-weight:600;">${offeredAm}</td>
+          <td style="text-align:right">${stake}</td>
           <td><span class="${statusClass}">${statusText}</span></td>
           <td style="text-align:right">${pnlHtml}</td>
         </tr>
         <tr id="ord-${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-          <td colspan="7" style="padding: 12px 16px;">
+          <td colspan="8" style="padding: 12px 16px;">
             <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
             <table style="width:100%; font-size: 12px;">
               <tr style="color: var(--text3);">
