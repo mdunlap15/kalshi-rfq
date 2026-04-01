@@ -378,7 +378,18 @@
     </div>
   </div>
 
-  <!-- 2. Market Intelligence -->
+  <!-- 2. Quote Competitiveness -->
+  <div class="card">
+    <div class="card-header" onclick="toggleCard(this)">
+      <span><span class="toggle-icon">&#9660;</span>Quote Competitiveness</span>
+      <span id="comp-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+    </div>
+    <div class="card-body" id="comp-section">
+      <div class="empty-state"><div class="icon">-</div><div>Need quoted & matched parlays to compare</div></div>
+    </div>
+  </div>
+
+  <!-- 3. Market Intelligence -->
   <div class="card">
     <div class="card-header" onclick="toggleCard(this)">
       <span><span class="toggle-icon">&#9660;</span>Market Intelligence</span>
@@ -539,6 +550,7 @@
       renderStatus(status);
       renderOrders(orders);
       renderMarketIntel(intel);
+      renderCompetitiveness(intel);
       addLog('system', 'Dashboard refreshed');
     } catch (err) {
       addLog('error', 'Failed to refresh: ' + err.message);
@@ -712,103 +724,6 @@
       <span><span style="color:var(--text3)">Missed:</span> <strong>${s.missedNoQuote || 0}</strong></span>
     </div>`;
 
-    // Competitive Analysis — scatter plot + summary
-    const comp = intel.competitive || {};
-    const compEntries = comp.entries || [];
-    const compSummary = comp.summary;
-    if (compEntries.length > 0) {
-      html += `<div style="margin-bottom:16px; border:1px solid var(--border); border-radius:6px; overflow:hidden;">
-        <div style="padding:10px 12px; background:var(--surface2); font-size:12px; font-weight:600; color:var(--accent);">
-          QUOTE COMPETITIVENESS
-        </div>
-        <div style="padding:12px;">`;
-
-      // Summary
-      if (compSummary) {
-        html += `<div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px; margin-bottom:12px;">
-          <span><span style="color:var(--text3);">Compared:</span> <strong>${compSummary.totalQuoted}</strong></span>
-          <span><span style="color:var(--text3);">Won:</span> <strong class="positive">${compSummary.wins}</strong></span>
-          <span><span style="color:var(--text3);">Lost:</span> <strong class="negative">${compSummary.losses}</strong></span>
-        </div>`;
-      }
-
-      // Scatter plot: X = winning implied prob, Y = our implied prob
-      // Points above the diagonal = we were tighter, below = we were more generous
-      const plotW = 400, plotH = 300, pad = 40;
-      const probs = compEntries.map(e => [e.winProb / 100, e.ourProb / 100, e.won]);
-      const allP = probs.flatMap(p => [p[0], p[1]]).filter(v => v > 0 && v < 1);
-      const minP = Math.max(0, Math.min(...allP) - 0.05);
-      const maxP = Math.min(1, Math.max(...allP) + 0.05);
-      const range = maxP - minP || 0.1;
-      const toX = p => pad + ((p - minP) / range) * (plotW - 2 * pad);
-      const toY = p => (plotH - pad) - ((p - minP) / range) * (plotH - 2 * pad);
-
-      html += `<div style="display:flex; gap:24px; flex-wrap:wrap; align-items:start;">`;
-      html += `<div>
-        <svg width="${plotW}" height="${plotH}" style="background:var(--surface3); border-radius:6px;">
-          <!-- Diagonal line: our price = winning price -->
-          <line x1="${toX(minP)}" y1="${toY(minP)}" x2="${toX(maxP)}" y2="${toY(maxP)}" stroke="var(--border)" stroke-width="1" stroke-dasharray="4,4"/>
-          <!-- Axis labels -->
-          <text x="${plotW/2}" y="${plotH - 5}" fill="var(--text3)" font-size="10" text-anchor="middle">Winning Implied Prob</text>
-          <text x="10" y="${plotH/2}" fill="var(--text3)" font-size="10" text-anchor="middle" transform="rotate(-90, 10, ${plotH/2})">Our Implied Prob</text>
-          <!-- Grid lines -->
-          ${[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8].filter(v => v > minP && v < maxP).map(v =>
-            `<line x1="${toX(v)}" y1="${pad-5}" x2="${toX(v)}" y2="${plotH-pad}" stroke="var(--border)" stroke-width="0.5" opacity="0.3"/>
-             <text x="${toX(v)}" y="${plotH-pad+12}" fill="var(--text3)" font-size="9" text-anchor="middle">${(v*100).toFixed(0)}%</text>
-             <line x1="${pad}" y1="${toY(v)}" x2="${plotW-pad}" y2="${toY(v)}" stroke="var(--border)" stroke-width="0.5" opacity="0.3"/>
-             <text x="${pad-5}" y="${toY(v)+3}" fill="var(--text3)" font-size="9" text-anchor="end">${(v*100).toFixed(0)}%</text>`
-          ).join('')}
-          <!-- Data points -->
-          ${compEntries.map(e => {
-            const wp = e.winProb / 100;
-            const op = e.ourProb / 100;
-            if (wp <= 0 || op <= 0) return '';
-            const color = e.won ? 'var(--green)' : 'var(--red)';
-            const r = e.won ? 6 : 5;
-            return `<circle cx="${toX(wp)}" cy="${toY(op)}" r="${r}" fill="${color}" opacity="0.8" stroke="var(--bg)" stroke-width="1">
-              <title>${e.teams.substring(0,40)}
-Our: ${e.ourOdds >= 0 ? '+' : ''}${e.ourOdds} (${e.ourProb}%)
-Win: ${e.winOdds >= 0 ? '+' : ''}${e.winOdds} (${e.winProb}%)
-${e.won ? 'WON' : 'LOST'}</title>
-            </circle>`;
-          }).join('')}
-          <!-- Zone labels -->
-          <text x="${toX(maxP) - 5}" y="${toY(minP) + 15}" fill="var(--red)" font-size="9" text-anchor="end" opacity="0.6">Too tight ↑</text>
-          <text x="${toX(minP) + 5}" y="${toY(maxP) - 5}" fill="var(--green)" font-size="9" opacity="0.6">Too generous ↓</text>
-        </svg>
-        <div style="font-size:10px; color:var(--text3); margin-top:6px; text-align:center;">
-          <span style="color:var(--green);">● Won</span> &nbsp; <span style="color:var(--red);">● Lost</span> &nbsp; Dashed line = break even. Hover for details.
-        </div>
-      </div>`;
-
-      // Side table with the entries
-      html += `<div style="flex:1; min-width:300px; overflow-x:auto;"><table style="font-size:11px;">
-        <tr><th>Teams</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:right">Stake</th><th style="text-align:center">Gap</th><th>Result</th></tr>`;
-      for (const e of compEntries.slice(0, 15)) {
-        const teamsShort = e.teams.length > 30 ? e.teams.substring(0, 27) + '...' : e.teams;
-        const ourFmt = e.ourOdds >= 0 ? '+' + e.ourOdds : '' + e.ourOdds;
-        const winFmt = e.winOdds >= 0 ? '+' + e.winOdds : '' + e.winOdds;
-        const stakeFmt = e.stake ? '$' + Number(e.stake).toFixed(2) : '-';
-        const gapFmt = (e.gapProb >= 0 ? '+' : '') + e.gapProb.toFixed(1) + 'pp';
-        const gapColor = e.gapProb > 0 ? 'var(--red)' : 'var(--green)';
-        html += `<tr>
-          <td style="max-width:160px; overflow:hidden; text-overflow:ellipsis;" title="${e.teams}">${teamsShort}</td>
-          <td style="text-align:right; font-weight:600;">${ourFmt}</td>
-          <td style="text-align:right;">${winFmt}</td>
-          <td style="text-align:right;">${stakeFmt}</td>
-          <td style="text-align:center; color:${gapColor};">${gapFmt}</td>
-          <td><span class="${e.won ? 'positive' : 'negative'}">${e.won ? 'Won' : 'Lost'}</span></td>
-        </tr>`;
-      }
-      html += '</table></div></div>';
-
-      html += `<div style="margin-top:8px; font-size:10px; color:var(--text3);">
-        Scatter: points below the diagonal = you offered better odds than the winner (generous). Above = you were tighter.<br>
-        Ideal positioning: green dots (wins) clustered just below the diagonal — winning by the smallest margin necessary.
-      </div>`;
-      html += '</div></div>';
-    }
-
     // Helper for collapsible sub-sections with persistent state
     const subSection = (id, title, count, defaultOpen) => {
       // Use saved state if available, otherwise use default
@@ -972,6 +887,167 @@ ${e.won ? 'WON' : 'LOST'}</title>
     }
 
     el.innerHTML = html || '<div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div>';
+  }
+
+  function renderCompetitiveness(intel) {
+    const el = document.getElementById('comp-section');
+    const sumEl = document.getElementById('comp-summary');
+    const comp = intel?.competitive || {};
+    const entries = comp.entries || [];
+    const summary = comp.summary;
+
+    if (sumEl) {
+      sumEl.textContent = entries.length > 0 ? `${summary?.wins || 0} won · ${summary?.losses || 0} lost of ${entries.length}` : '';
+    }
+
+    if (entries.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need quoted & matched parlays to compare</div></div>';
+      return;
+    }
+
+    let html = '';
+
+    // Summary stats
+    if (summary) {
+      html += `<div style="display:flex; gap:20px; flex-wrap:wrap; font-size:13px; margin-bottom:16px;">
+        <span><span style="color:var(--text3);">Compared:</span> <strong>${summary.totalQuoted}</strong></span>
+        <span><span style="color:var(--text3);">Won:</span> <strong class="positive">${summary.wins}</strong></span>
+        <span><span style="color:var(--text3);">Lost:</span> <strong class="negative">${summary.losses}</strong></span>
+        ${summary.avgGapLosses != null ? `<span><span style="color:var(--text3);">Avg gap (losses):</span> <strong style="color:var(--red);">${summary.avgGapLosses > 0 ? '+' : ''}${summary.avgGapLosses}pp</strong></span>` : ''}
+      </div>`;
+    }
+
+    // === CHARTS SIDE BY SIDE ===
+    html += `<div style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:16px;">`;
+
+    // 1. SCATTER PLOT — our prob vs winning prob
+    const plotW = 500, plotH = 400, pad = 50;
+    const probs = entries.map(e => [e.winProb / 100, e.ourProb / 100, e.won]);
+    const allP = probs.flatMap(p => [p[0], p[1]]).filter(v => v > 0 && v < 1);
+    const minP = Math.max(0, Math.min(...allP) - 0.03);
+    const maxP = Math.min(1, Math.max(...allP) + 0.03);
+    const range = maxP - minP || 0.1;
+    const toX = p => pad + ((p - minP) / range) * (plotW - 2 * pad);
+    const toY = p => (plotH - pad) - ((p - minP) / range) * (plotH - 2 * pad);
+
+    html += `<div>
+      <div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">OUR PRICE vs WINNING PRICE</div>
+      <svg width="${plotW}" height="${plotH}" style="background:var(--surface3); border-radius:8px;">
+        <!-- Diagonal -->
+        <line x1="${toX(minP)}" y1="${toY(minP)}" x2="${toX(maxP)}" y2="${toY(maxP)}" stroke="var(--text3)" stroke-width="1" stroke-dasharray="6,4" opacity="0.5"/>
+        <!-- Axis labels -->
+        <text x="${plotW/2}" y="${plotH - 8}" fill="var(--text2)" font-size="12" text-anchor="middle">Winning Implied Prob %</text>
+        <text x="14" y="${plotH/2}" fill="var(--text2)" font-size="12" text-anchor="middle" transform="rotate(-90, 14, ${plotH/2})">Our Implied Prob %</text>
+        <!-- Grid -->
+        ${[0.05,0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.5,0.6,0.7,0.8].filter(v => v > minP && v < maxP).map(v =>
+          `<line x1="${toX(v)}" y1="${pad}" x2="${toX(v)}" y2="${plotH-pad}" stroke="var(--border)" stroke-width="0.5" opacity="0.3"/>
+           <text x="${toX(v)}" y="${plotH-pad+14}" fill="var(--text3)" font-size="11" text-anchor="middle">${(v*100).toFixed(0)}%</text>
+           <line x1="${pad}" y1="${toY(v)}" x2="${plotW-pad}" y2="${toY(v)}" stroke="var(--border)" stroke-width="0.5" opacity="0.3"/>
+           <text x="${pad-6}" y="${toY(v)+4}" fill="var(--text3)" font-size="11" text-anchor="end">${(v*100).toFixed(0)}%</text>`
+        ).join('')}
+        <!-- Zone labels -->
+        <text x="${plotW - pad - 5}" y="${pad + 16}" fill="var(--red)" font-size="11" text-anchor="end" opacity="0.5">Too tight (losing) ↑</text>
+        <text x="${pad + 5}" y="${plotH - pad - 10}" fill="var(--green)" font-size="11" opacity="0.5">↓ Too generous</text>
+        <!-- Data points -->
+        ${entries.map((e, i) => {
+          const wp = e.winProb / 100;
+          const op = e.ourProb / 100;
+          if (wp <= 0 || op <= 0) return '';
+          const color = e.won ? 'var(--green)' : 'var(--red)';
+          return `<circle cx="${toX(wp)}" cy="${toY(op)}" r="7" fill="${color}" opacity="0.75" stroke="var(--bg)" stroke-width="1.5">
+            <title>${e.teams.substring(0,50)}
+Our: ${e.ourOdds >= 0 ? '+' : ''}${e.ourOdds} (${e.ourProb.toFixed(1)}%)
+Win: ${e.winOdds >= 0 ? '+' : ''}${e.winOdds} (${e.winProb.toFixed(1)}%)
+Gap: ${e.gapProb >= 0 ? '+' : ''}${e.gapProb.toFixed(1)}pp
+${e.won ? 'WON' : 'LOST'}</title>
+          </circle>`;
+        }).join('')}
+      </svg>
+      <div style="font-size:11px; color:var(--text3); margin-top:6px; text-align:center;">
+        <span style="color:var(--green);">● Won</span> &nbsp; <span style="color:var(--red);">● Lost</span> &nbsp;
+        Dashed = break even. Below = generous. Hover for details.
+      </div>
+    </div>`;
+
+    // 2. TREND CHART — gap over time (chronological)
+    const trendW = 500, trendH = 250, trendPad = 50;
+    const sorted = [...entries].sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+    const gaps = sorted.map(e => e.gapProb);
+    const maxGap = Math.max(10, Math.max(...gaps.map(Math.abs)) + 2);
+
+    // Running average
+    const runAvg = [];
+    let sum = 0;
+    for (let i = 0; i < gaps.length; i++) {
+      sum += gaps[i];
+      runAvg.push(sum / (i + 1));
+    }
+
+    const tX = i => trendPad + (i / Math.max(sorted.length - 1, 1)) * (trendW - 2 * trendPad);
+    const tY = g => trendPad + ((maxGap - g) / (2 * maxGap)) * (trendH - 2 * trendPad);
+
+    html += `<div>
+      <div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">GAP TREND (our prob − winning prob)</div>
+      <svg width="${trendW}" height="${trendH}" style="background:var(--surface3); border-radius:8px;">
+        <!-- Zero line -->
+        <line x1="${trendPad}" y1="${tY(0)}" x2="${trendW - trendPad}" y2="${tY(0)}" stroke="var(--text3)" stroke-width="1" stroke-dasharray="6,4" opacity="0.5"/>
+        <!-- Zone shading -->
+        <rect x="${trendPad}" y="${trendPad}" width="${trendW - 2*trendPad}" height="${tY(0) - trendPad}" fill="var(--red)" opacity="0.03"/>
+        <rect x="${trendPad}" y="${tY(0)}" width="${trendW - 2*trendPad}" height="${trendH - trendPad - tY(0)}" fill="var(--green)" opacity="0.03"/>
+        <!-- Y axis labels -->
+        ${[-10,-5,0,5,10].filter(v => Math.abs(v) <= maxGap).map(v =>
+          `<line x1="${trendPad}" y1="${tY(v)}" x2="${trendW-trendPad}" y2="${tY(v)}" stroke="var(--border)" stroke-width="0.5" opacity="0.2"/>
+           <text x="${trendPad-6}" y="${tY(v)+4}" fill="var(--text3)" font-size="11" text-anchor="end">${v > 0 ? '+' : ''}${v}pp</text>`
+        ).join('')}
+        <!-- Axis labels -->
+        <text x="${trendW/2}" y="${trendH - 5}" fill="var(--text2)" font-size="11" text-anchor="middle">Quote # (chronological)</text>
+        <text x="${trendPad + 5}" y="${trendPad - 8}" fill="var(--red)" font-size="10" opacity="0.6">Tight (losing)</text>
+        <text x="${trendPad + 5}" y="${trendH - trendPad + 14}" fill="var(--green)" font-size="10" opacity="0.6">Generous (winning)</text>
+        <!-- Running average line -->
+        ${runAvg.length > 1 ? `<polyline fill="none" stroke="var(--amber)" stroke-width="2" opacity="0.8" points="${runAvg.map((g, i) => `${tX(i)},${tY(g)}`).join(' ')}"/>` : ''}
+        <!-- Data points -->
+        ${sorted.map((e, i) => {
+          const color = e.won ? 'var(--green)' : 'var(--red)';
+          return `<circle cx="${tX(i)}" cy="${tY(e.gapProb)}" r="5" fill="${color}" opacity="0.8" stroke="var(--bg)" stroke-width="1">
+            <title>Quote #${i+1}: ${e.teams.substring(0,40)}
+Gap: ${e.gapProb >= 0 ? '+' : ''}${e.gapProb.toFixed(1)}pp
+${e.won ? 'WON' : 'LOST'}</title>
+          </circle>`;
+        }).join('')}
+      </svg>
+      <div style="font-size:11px; color:var(--text3); margin-top:6px; text-align:center;">
+        <span style="color:var(--amber);">— Running avg</span> &nbsp;
+        <span style="color:var(--green);">● Won</span> &nbsp; <span style="color:var(--red);">● Lost</span> &nbsp;
+        Zero line = equal to winner. Below = more generous.
+      </div>
+    </div>`;
+
+    html += `</div>`; // close charts flex
+
+    // Detail table
+    html += `<div style="overflow-x:auto; margin-top:16px;"><table style="font-size:12px;">
+      <tr><th>Time</th><th>Teams</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:right">Stake</th><th style="text-align:center">Gap</th><th>Result</th></tr>`;
+    for (const e of entries.slice(0, 20)) {
+      const time = e.time ? new Date(e.time).toLocaleTimeString() : '-';
+      const teamsShort = e.teams.length > 35 ? e.teams.substring(0, 32) + '...' : e.teams;
+      const ourFmt = e.ourOdds >= 0 ? '+' + e.ourOdds : '' + e.ourOdds;
+      const winFmt = e.winOdds >= 0 ? '+' + e.winOdds : '' + e.winOdds;
+      const stakeFmt = e.stake ? '$' + Number(e.stake).toFixed(2) : '-';
+      const gapFmt = (e.gapProb >= 0 ? '+' : '') + e.gapProb.toFixed(1) + 'pp';
+      const gapColor = e.gapProb > 0 ? 'var(--red)' : 'var(--green)';
+      html += `<tr>
+        <td style="color:var(--text3);">${time}</td>
+        <td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="${e.teams}">${teamsShort}</td>
+        <td style="text-align:right; font-weight:600;">${ourFmt}</td>
+        <td style="text-align:right;">${winFmt}</td>
+        <td style="text-align:right;">${stakeFmt}</td>
+        <td style="text-align:center; color:${gapColor}; font-weight:600;">${gapFmt}</td>
+        <td><span class="${e.won ? 'positive' : 'negative'}">${e.won ? 'Won' : 'Lost'}</span></td>
+      </tr>`;
+    }
+    html += '</table></div>';
+
+    el.innerHTML = html;
   }
 
   function renderExposure(exp) {
