@@ -759,16 +759,12 @@
       const unknownEntries = Object.entries(unknownSports).sort((a,b) => b[1]-a[1]);
       if (unknownEntries.length > 0) {
         html += `<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:12px;">
-          <tr><th>Event</th><th>Type</th><th>Detail</th><th style="text-align:right">Count</th></tr>`;
+          <tr><th>Event</th><th>Market</th><th style="text-align:right">Declines</th></tr>`;
         for (const [raw, count] of unknownEntries.slice(0, 20)) {
-          const tagMatch = raw.match(/\[(.*?)\]/);
-          const tag = tagMatch ? tagMatch[1] : '-';
-          const tagColor = tag === 'unregistered market' ? 'var(--amber)' : 'var(--text3)';
           const eventName = raw.split('[')[0].trim();
           const detail = raw.split(']')[1]?.trim() || '-';
           html += `<tr>
-            <td style="max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="${eventName}">${eventName}</td>
-            <td><span style="color:${tagColor}; font-size:11px;">${tag}</span></td>
+            <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis;" title="${eventName}">${eventName}</td>
             <td style="font-family:monospace; font-size:11px; color:var(--text3);">${detail}</td>
             <td style="text-align:right; font-weight:600;">${count}</td>
           </tr>`;
