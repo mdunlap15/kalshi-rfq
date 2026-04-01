@@ -706,13 +706,25 @@
       <span><span style="color:var(--text3)">Missed:</span> <strong>${s.missedNoQuote || 0}</strong></span>
     </div>`;
 
+    // Helper for collapsible sub-sections
+    const subSection = (id, title, count, defaultOpen) => {
+      const icon = defaultOpen ? '&#9660;' : '&#9654;';
+      return `<div style="margin-bottom:12px; border:1px solid var(--border); border-radius:6px; overflow:hidden;">
+        <div style="padding:8px 12px; background:var(--surface2); cursor:pointer; display:flex; align-items:center; justify-content:space-between; font-size:12px; font-weight:600; color:var(--text2);"
+          onclick="const b=document.getElementById('${id}'); const ic=this.querySelector('.ss-icon'); b.style.display=b.style.display==='none'?'block':'none'; ic.innerHTML=b.style.display==='none'?'&#9654;':'&#9660;';">
+          <span><span class="ss-icon" style="display:inline-block; width:14px; font-size:10px;">${icon}</span>${title}</span>
+          ${count != null ? `<span style="font-weight:400; color:var(--text3);">${count}</span>` : ''}
+        </div>
+        <div id="${id}" style="display:${defaultOpen ? 'block' : 'none'}; padding:8px 12px;">`;
+    };
+    const subEnd = '</div></div>';
+
     // Sport breakdown of matched parlays
     const bySport = intel.matchedBySport || {};
     if (Object.keys(bySport).length > 0) {
-      html += `<div style="margin-bottom:16px;">
-        <div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">MATCHED PARLAYS BY SPORT</div>
-        <div style="overflow-x:auto;"><table style="font-size:12px;">
-          <tr><th>Sport</th><th style="text-align:right">Parlays</th><th style="text-align:right">We Quoted</th><th style="text-align:right">Missed</th><th style="text-align:right">Avg Stake</th></tr>`;
+      html += subSection('intel-by-sport', 'Matched Parlays by Sport', Object.keys(bySport).length + ' sports', false);
+      html += `<div style="overflow-x:auto;"><table style="font-size:12px;">
+        <tr><th>Sport</th><th style="text-align:right">Parlays</th><th style="text-align:right">We Quoted</th><th style="text-align:right">Missed</th><th style="text-align:right">Avg Stake</th></tr>`;
       for (const [sport, info] of Object.entries(bySport).sort((a,b) => b[1].count - a[1].count)) {
         html += `<tr>
           <td>${sportPill(sport)}</td>
@@ -722,30 +734,25 @@
           <td style="text-align:right">$${info.avgStake.toFixed(2)}</td>
         </tr>`;
       }
-      html += '</table></div></div>';
+      html += '</table></div>' + subEnd;
     }
 
-    // Decline reasons
+    // Decline reasons + unknown legs
     if (d.total > 0) {
-      html += `<div style="margin-bottom:16px;">
-        <div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">DECLINE REASONS (${d.total} RFQs)</div>
-        <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px; margin-bottom:8px;">`;
+      html += subSection('intel-declines', 'Decline Reasons', d.total + ' RFQs', false);
+      html += `<div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px; margin-bottom:8px;">`;
       for (const [reason, count] of Object.entries(d.reasons || {}).sort((a,b) => b[1]-a[1])) {
         const pct = (count / d.total * 100).toFixed(0);
         html += `<span style="color:var(--text2);">${reason}: <strong>${count}</strong> (${pct}%)</span>`;
       }
       html += `</div>`;
 
-      // Unknown legs breakdown table
       const unknownSports = d.unknownSports || {};
       const unknownEntries = Object.entries(unknownSports).sort((a,b) => b[1]-a[1]);
       if (unknownEntries.length > 0) {
-        html += `<div style="margin-top:8px;">
-          <div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">UNKNOWN LEG SOURCES (${unknownEntries.length} unique)</div>
-          <div style="overflow-x:auto;"><table style="font-size:12px;">
-            <tr><th>Event</th><th>Type</th><th>Detail</th><th style="text-align:right">Count</th></tr>`;
+        html += `<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:12px;">
+          <tr><th>Event</th><th>Type</th><th>Detail</th><th style="text-align:right">Count</th></tr>`;
         for (const [raw, count] of unknownEntries.slice(0, 20)) {
-          // Parse the raw string: "Event Name [tag] detail"
           const tagMatch = raw.match(/\[(.*?)\]/);
           const tag = tagMatch ? tagMatch[1] : '-';
           const tagColor = tag === 'unregistered market' ? 'var(--amber)' : 'var(--text3)';
@@ -758,22 +765,21 @@
             <td style="text-align:right; font-weight:600;">${count}</td>
           </tr>`;
         }
-        html += '</table></div></div>';
+        html += '</table></div>';
       }
-      html += `</div>`;
+      html += subEnd;
     }
 
     // Near misses
     const nearMisses = d.recentNearMisses || [];
     if (nearMisses.length > 0) {
-      html += `<div style="margin-bottom:16px;">
-        <div style="font-size:12px; font-weight:600; color:var(--amber); margin-bottom:6px;">NEAR MISSES — ${d.nearMissCount || nearMisses.length} total (all legs known, no fair value)</div>
-        <div style="overflow-x:auto;"><table style="font-size:12px;">
-          <tr><th>Time</th><th>Summary</th><th>Legs</th></tr>`;
+      html += subSection('intel-near-miss', 'Near Misses (all legs known, no fair value)', d.nearMissCount || nearMisses.length, false);
+      html += `<div style="overflow-x:auto;"><table style="font-size:12px;">
+        <tr><th>Time</th><th>Summary</th><th>Legs</th></tr>`;
       for (let ni = 0; ni < Math.min(nearMisses.length, 10); ni++) {
         const nm = nearMisses[ni];
         const time = nm.time ? new Date(nm.time).toLocaleTimeString() : '-';
-        const summary = (nm.legs || []).slice(0, 2).map(l => `${l.team}`).join(', ') + ((nm.legs||[]).length > 2 ? ` +${(nm.legs||[]).length - 2}` : '');
+        const summary = (nm.legs || []).slice(0, 2).map(l => l.team).join(', ') + ((nm.legs||[]).length > 2 ? ` +${(nm.legs||[]).length - 2}` : '');
         const nmId = 'nm-' + ni;
         html += `<tr style="cursor:pointer;" onclick="document.getElementById('${nmId}').style.display = document.getElementById('${nmId}').style.display === 'none' ? 'table-row' : 'none'">
           <td>${time}</td>
@@ -791,17 +797,16 @@
                 <td style="padding:2px 6px;">${l.line != null ? l.line : '-'}</td>
               </tr>`).join('')}
             </table>
-            <div style="margin-top:4px; font-size:10px; color:var(--text3);">Declined: line mismatch between PX and odds source</div>
           </td>
         </tr>`;
       }
-      html += '</table></div></div>';
+      html += '</table></div>' + subEnd;
     }
 
     // Recent matched parlays table
     const matched = intel.recentMatched || [];
     if (matched.length > 0) {
-      html += `<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">RECENT MATCHED PARLAYS</div>`;
+      html += subSection('intel-matched', 'Recent Matched Parlays', matched.length, false);
       html += `<div style="overflow-x:auto;"><table>
         <tr>
           <th>Time</th>
@@ -852,7 +857,7 @@
           </td>
         </tr>`;
       }
-      html += '</table></div>';
+      html += '</table></div>' + subEnd;
     }
 
     el.innerHTML = html || '<div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div>';
