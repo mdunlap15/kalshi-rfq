@@ -311,7 +311,15 @@ async function handleRFQ(data) {
             1715: 'side-1', 1716: 'side-2',
           };
           const mktLabel = mktNames[l.market_id] || `mkt:${l.market_id||'?'}`;
-          const outLabel = outNames[l.outcome_id] || `out:${l.outcome_id||'?'}`;
+          // Resolve outcome label based on market type
+          let outLabel;
+          if (mktLabel === 'total') {
+            outLabel = { 12: 'over', 13: 'under' }[l.outcome_id] || outNames[l.outcome_id] || `out:${l.outcome_id||'?'}`;
+          } else if (mktLabel === 'spread') {
+            outLabel = { 12: 'favorite', 13: 'underdog' }[l.outcome_id] || outNames[l.outcome_id] || `out:${l.outcome_id||'?'}`;
+          } else {
+            outLabel = { 4: 'away', 5: 'home' }[l.outcome_id] || `out:${l.outcome_id||'?'}`;
+          }
           const lineNum = l.line != null ? `${l.line}` : '';
           const detail = [mktLabel, outLabel, lineNum].filter(Boolean).join(' · ');
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
