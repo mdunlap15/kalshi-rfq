@@ -330,9 +330,9 @@
     </div>
   </div>
   <div class="header-actions">
+    <span id="countdown-display" style="font-size:11px; color:var(--text3); margin-right:4px;">Auto-refresh in 10s</span>
     <div class="refresh-indicator" id="refresh-indicator" style="display:none;">
       <div class="spinner"></div>
-      <span>Refreshing...</span>
     </div>
     <button class="btn" onclick="refreshDashboard()">Refresh</button>
     <button class="btn" onclick="toggleDefinitions()">Definitions</button>
@@ -498,6 +498,11 @@
   const BASE = window.location.origin;
   let isPaused = false;
   let autoRefreshTimer = null;
+  let autoRefreshCountdown = 10;
+  let countdownTimer = null;
+
+  // Track expanded/collapsed state of sub-sections across refreshes
+  const toggleState = {}; // { elementId: true/false }
 
   // -----------------------------------------------------------------------
   // DATA FETCHING
@@ -706,16 +711,18 @@
       <span><span style="color:var(--text3)">Missed:</span> <strong>${s.missedNoQuote || 0}</strong></span>
     </div>`;
 
-    // Helper for collapsible sub-sections
+    // Helper for collapsible sub-sections with persistent state
     const subSection = (id, title, count, defaultOpen) => {
-      const icon = defaultOpen ? '&#9660;' : '&#9654;';
+      // Use saved state if available, otherwise use default
+      const isOpen = toggleState[id] != null ? toggleState[id] : defaultOpen;
+      const icon = isOpen ? '&#9660;' : '&#9654;';
       return `<div style="margin-bottom:12px; border:1px solid var(--border); border-radius:6px; overflow:hidden;">
         <div style="padding:8px 12px; background:var(--surface2); cursor:pointer; display:flex; align-items:center; justify-content:space-between; font-size:12px; font-weight:600; color:var(--text2);"
-          onclick="const b=document.getElementById('${id}'); const ic=this.querySelector('.ss-icon'); b.style.display=b.style.display==='none'?'block':'none'; ic.innerHTML=b.style.display==='none'?'&#9654;':'&#9660;';">
+          onclick="const b=document.getElementById('${id}'); const ic=this.querySelector('.ss-icon'); const open=b.style.display==='none'; b.style.display=open?'block':'none'; ic.innerHTML=open?'&#9660;':'&#9654;'; toggleState['${id}']=open;">
           <span><span class="ss-icon" style="display:inline-block; width:14px; font-size:10px;">${icon}</span>${title}</span>
           ${count != null ? `<span style="font-weight:400; color:var(--text3);">${count}</span>` : ''}
         </div>
-        <div id="${id}" style="display:${defaultOpen ? 'block' : 'none'}; padding:8px 12px;">`;
+        <div id="${id}" style="display:${isOpen ? 'block' : 'none'}; padding:8px 12px;">`;
     };
     const subEnd = '</div></div>';
 
@@ -1328,8 +1335,25 @@
   // Initial load
   refreshDashboard();
 
-  // Auto-refresh every 10 seconds
-  autoRefreshTimer = setInterval(refreshDashboard, 10000);
+  // Auto-refresh every 10 seconds with countdown
+  function startAutoRefresh() {
+    autoRefreshCountdown = 10;
+    if (countdownTimer) clearInterval(countdownTimer);
+    if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+
+    countdownTimer = setInterval(() => {
+      autoRefreshCountdown--;
+      const el = document.getElementById('countdown-display');
+      if (el) el.textContent = `Auto-refresh in ${autoRefreshCountdown}s`;
+      if (autoRefreshCountdown <= 0) autoRefreshCountdown = 10;
+    }, 1000);
+
+    autoRefreshTimer = setInterval(() => {
+      autoRefreshCountdown = 10;
+      refreshDashboard();
+    }, 10000);
+  }
+  startAutoRefresh();
 </script>
 </body>
 </html>
