@@ -304,7 +304,63 @@ function getMarketIntel(limit = 50) {
       }
       return bySport;
     })(),
+    // Competitive analysis — compare our quotes to winning prices
+    competitive: (() => {
+      const quoted = matchedParlays.filter(m => m.weQuoted && m.ourAmericanOdds != null && m.matchedAmericanOdds != null);
+      if (quoted.length === 0) return { entries: [], summary: null };
+
+      const entries = quoted.map(m => {
+        const ourOdds = Number(m.ourAmericanOdds);
+        const winOdds = Number(m.matchedAmericanOdds);
+        // Convert to implied probability for proper comparison
+        const ourProb = americanToProb(ourOdds);
+        const winProb = americanToProb(winOdds);
+        // Gap in probability points — positive means we were tighter (less generous)
+        const gapProb = ourProb - winProb;
+        // Gap in odds — how many odds points apart
+        const won = m.outcome === 'won';
+        return {
+          parlayId: m.parlayId,
+          teams: (m.legs || []).map(l => l.team).filter(t => t !== 'Unknown').join(', '),
+          legCount: m.legCount,
+          ourOdds,
+          winOdds,
+          ourProb: Math.round(ourProb * 10000) / 100,
+          winProb: Math.round(winProb * 10000) / 100,
+          gapProb: Math.round(gapProb * 10000) / 100, // in percentage points
+          won,
+          stake: m.matchedStake,
+          time: m.matchedAt,
+        };
+      }).sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+
+      // Summary stats
+      const wins = entries.filter(e => e.won);
+      const losses = entries.filter(e => !e.won);
+      const avgGapWins = wins.length > 0 ? wins.reduce((s, e) => s + e.gapProb, 0) / wins.length : null;
+      const avgGapLosses = losses.length > 0 ? losses.reduce((s, e) => s + e.gapProb, 0) / losses.length : null;
+      const avgGapAll = entries.reduce((s, e) => s + e.gapProb, 0) / entries.length;
+
+      return {
+        entries,
+        summary: {
+          totalQuoted: entries.length,
+          wins: wins.length,
+          losses: losses.length,
+          avgGapAll: Math.round(avgGapAll * 100) / 100,
+          avgGapWins: avgGapWins != null ? Math.round(avgGapWins * 100) / 100 : null,
+          avgGapLosses: avgGapLosses != null ? Math.round(avgGapLosses * 100) / 100 : null,
+        },
+      };
+    })(),
   };
+}
+
+function americanToProb(odds) {
+  odds = Number(odds);
+  if (odds >= 100) return 100 / (odds + 100);
+  if (odds <= -100) return Math.abs(odds) / (Math.abs(odds) + 100);
+  return 0.5;
 }
 
 // ---------------------------------------------------------------------------

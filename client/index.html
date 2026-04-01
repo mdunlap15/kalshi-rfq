@@ -712,6 +712,83 @@
       <span><span style="color:var(--text3)">Missed:</span> <strong>${s.missedNoQuote || 0}</strong></span>
     </div>`;
 
+    // Competitive Analysis — our price vs winning price
+    const comp = intel.competitive || {};
+    const compEntries = comp.entries || [];
+    const compSummary = comp.summary;
+    if (compEntries.length > 0) {
+      html += `<div style="margin-bottom:16px; border:1px solid var(--border); border-radius:6px; overflow:hidden;">
+        <div style="padding:10px 12px; background:var(--surface2); font-size:12px; font-weight:600; color:var(--accent);">
+          QUOTE COMPETITIVENESS
+        </div>
+        <div style="padding:12px;">`;
+
+      // Summary line
+      if (compSummary) {
+        html += `<div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px; margin-bottom:12px;">
+          <span><span style="color:var(--text3);">Quoted & matched:</span> <strong>${compSummary.totalQuoted}</strong></span>
+          <span><span style="color:var(--text3);">Won:</span> <strong class="positive">${compSummary.wins}</strong></span>
+          <span><span style="color:var(--text3);">Lost:</span> <strong class="negative">${compSummary.losses}</strong></span>
+          <span><span style="color:var(--text3);">Avg gap (all):</span> <strong>${compSummary.avgGapAll > 0 ? '+' : ''}${compSummary.avgGapAll}pp</strong></span>
+          ${compSummary.avgGapWins != null ? `<span><span style="color:var(--text3);">Avg gap (wins):</span> <strong class="positive">${compSummary.avgGapWins > 0 ? '+' : ''}${compSummary.avgGapWins}pp</strong></span>` : ''}
+          ${compSummary.avgGapLosses != null ? `<span><span style="color:var(--text3);">Avg gap (losses):</span> <strong class="negative">${compSummary.avgGapLosses > 0 ? '+' : ''}${compSummary.avgGapLosses}pp</strong></span>` : ''}
+        </div>
+        <div style="font-size:11px; color:var(--text3); margin-bottom:12px;">
+          Gap = our implied prob − winning implied prob. Positive = we were tighter (less generous). Negative = we offered better odds than winner.
+        </div>`;
+      }
+
+      // Visual bar chart — each entry as a horizontal bar showing gap
+      html += `<div style="overflow-x:auto;"><table style="font-size:12px;">
+        <tr>
+          <th>Time</th>
+          <th>Teams</th>
+          <th style="text-align:right">Our Price</th>
+          <th style="text-align:right">Winner</th>
+          <th style="text-align:center">Gap</th>
+          <th style="width:150px;">Visual</th>
+          <th>Result</th>
+        </tr>`;
+
+      for (const e of compEntries.slice(0, 20)) {
+        const time = e.time ? new Date(e.time).toLocaleTimeString() : '-';
+        const teamsShort = e.teams.length > 40 ? e.teams.substring(0, 37) + '...' : e.teams;
+        const ourFmt = e.ourOdds >= 0 ? '+' + e.ourOdds : '' + e.ourOdds;
+        const winFmt = e.winOdds >= 0 ? '+' + e.winOdds : '' + e.winOdds;
+        const gapFmt = (e.gapProb >= 0 ? '+' : '') + e.gapProb.toFixed(1) + 'pp';
+        const gapColor = e.gapProb > 0 ? 'var(--red)' : e.gapProb < -2 ? 'var(--amber)' : 'var(--green)';
+
+        // Bar: center is 0, left is negative (generous), right is positive (tight)
+        const barMax = 10; // ±10pp range
+        const barPct = Math.min(Math.abs(e.gapProb), barMax) / barMax * 50;
+        const isRight = e.gapProb > 0;
+        const barHtml = `<div style="position:relative; height:14px; background:var(--surface3); border-radius:3px; overflow:hidden;">
+          <div style="position:absolute; left:50%; top:0; bottom:0; width:1px; background:var(--border);"></div>
+          <div style="position:absolute; ${isRight ? 'left:50%' : `right:50%`}; top:2px; bottom:2px; width:${barPct}%; background:${gapColor}; border-radius:2px;"></div>
+        </div>`;
+
+        const resultCls = e.won ? 'positive' : 'negative';
+        const resultTxt = e.won ? 'Won' : 'Lost';
+
+        html += `<tr>
+          <td style="color:var(--text3);">${time}</td>
+          <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis;" title="${e.teams}">${teamsShort}</td>
+          <td style="text-align:right; font-weight:600;">${ourFmt}</td>
+          <td style="text-align:right;">${winFmt}</td>
+          <td style="text-align:center; color:${gapColor}; font-weight:600;">${gapFmt}</td>
+          <td>${barHtml}</td>
+          <td><span class="${resultCls}">${resultTxt}</span></td>
+        </tr>`;
+      }
+
+      html += '</table></div>';
+      html += `<div style="margin-top:8px; font-size:10px; color:var(--text3);">
+        Bar: <span style="color:var(--green);">← generous (better for bettor)</span> | center = equal | <span style="color:var(--red);">tight (worse for bettor) →</span>
+        <br>Ideal: win quotes with bars just barely left of center (green, small).
+      </div>`;
+      html += '</div></div>';
+    }
+
     // Helper for collapsible sub-sections with persistent state
     const subSection = (id, title, count, defaultOpen) => {
       // Use saved state if available, otherwise use default
