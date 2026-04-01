@@ -262,8 +262,10 @@ async function seedAllLines() {
       if (!['moneyline', 'spread', 'total'].includes(m.type)) return false;
       // Exclude anything matching half/quarter/prop patterns
       if (excludePatterns.test(m.name)) return false;
-      // For totals, require an exact name match (excludes player props)
-      if (m.type === 'total' && !fullGameNames.total.includes(m.name)) return false;
+      // Require exact name match for ALL types — excludes player props
+      // (e.g., "CJ McCollum To Record a Double Double" typed as moneyline)
+      const allowed = fullGameNames[m.type];
+      if (allowed && !allowed.includes(m.name)) return false;
       return true;
     });
 
