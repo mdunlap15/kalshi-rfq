@@ -293,9 +293,11 @@ async function handleRFQ(data) {
           knownLegs.push({ team: info.teamName, market: info.marketType, sport: info.sport, line: info.line });
         } else {
           unknownLegs.push(lineId);
-          // Resolve tournament name from PX event data
+          // Build specific description: "Rangers @ Bruins (NHL)" or "MLS (Soccer)"
+          const eventName = l.sport_event_id ? lineManager.getEventName(l.sport_event_id) : null;
           const tName = l.tournament_id ? lineManager.getTournamentName(l.tournament_id) : null;
-          unknownSports.push(tName || (l.tournament_id ? `tournament_${l.tournament_id}` : 'unknown'));
+          const desc = eventName || tName || (l.tournament_id ? `tournament_${l.tournament_id}` : 'unknown');
+          unknownSports.push(desc);
         }
       }
       const reason = unknownLegs.length > 0 ? 'unknown legs' : 'exposure/limit';

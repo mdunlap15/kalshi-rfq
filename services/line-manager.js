@@ -115,7 +115,7 @@ async function seedAllLines() {
   const allEvents = await px.fetchSportEvents();
   const pxSportNames = Object.values(config.sportNameMap);
 
-  // Build tournament index from ALL events (not just supported)
+  // Build tournament + event index from ALL events (not just supported)
   for (const e of allEvents) {
     if (e.tournament_id) {
       tournamentIndex[e.tournament_id] = {
@@ -123,8 +123,18 @@ async function seedAllLines() {
         sport: e.sport_name,
       };
     }
+    // Store ALL events for name resolution (even ones we don't support)
+    if (e.event_id) {
+      eventIndex[e.event_id] = eventIndex[e.event_id] || {
+        name: e.name,
+        sport: null,
+        sportName: e.sport_name,
+        competitors: e.competitors,
+        scheduled: e.scheduled,
+      };
+    }
   }
-  log.info('Lines', `Built tournament index: ${Object.keys(tournamentIndex).length} tournaments`);
+  log.info('Lines', `Built indexes: ${Object.keys(tournamentIndex).length} tournaments, ${Object.keys(eventIndex).length} events`);
 
   // 2. Filter to supported sports (accept any non-settled status)
   const events = allEvents.filter(e =>
@@ -389,6 +399,14 @@ function getTournamentName(tournamentId) {
   return t ? `${t.name} (${t.sport})` : null;
 }
 
+/**
+ * Resolve a sport_event_id to event name.
+ */
+function getEventName(eventId) {
+  const e = eventIndex[eventId];
+  return e ? e.name : null;
+}
+
 module.exports = {
   seedAllLines,
   refreshLines,
@@ -400,4 +418,5 @@ module.exports = {
   matchTeamName,
   normalizeTeamName,
   getTournamentName,
+  getEventName,
 };
