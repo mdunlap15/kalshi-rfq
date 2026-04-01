@@ -209,7 +209,7 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     matchedAt: new Date().toISOString(),
     weQuoted,
     ourOdds: ourQuote?.offeredOdds || null,
-    ourAmericanOdds: ourQuote?.offeredOdds ? decToAm(ourQuote.offeredOdds) : null,
+    ourAmericanOdds: ourQuote?.offeredOdds || null, // Already stored as American
     matchedAmericanOdds: matchedOdds,
     outcome,
     legCount: resolvedLegs.length,

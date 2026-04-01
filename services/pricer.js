@@ -4,6 +4,16 @@ const lineManager = require('./line-manager');
 const oddsFeed = require('./odds-feed');
 const orderTracker = require('./order-tracker');
 
+/**
+ * Convert decimal odds to American odds (integer).
+ * PX uses American odds throughout its API.
+ */
+function decimalToAmerican(dec) {
+  if (!dec || dec <= 1) return 0;
+  if (dec >= 2.0) return Math.round((dec - 1) * 100);  // +150, +286, etc.
+  return Math.round(-100 / (dec - 1));                   // -200, -150, etc.
+}
+
 // ---------------------------------------------------------------------------
 // PRICING ENGINE
 // ---------------------------------------------------------------------------
@@ -87,24 +97,22 @@ function priceParlay(legs) {
   // Determine max risk
   const maxRisk = config.pricing.maxRiskPerParlay;
 
-  // Build estimated_price (per-leg breakdown)
+  // Convert to American odds (PX uses American integers throughout)
+  const americanOdds = decimalToAmerican(decimalOdds);
+
+  // Build estimated_price (per-leg breakdown) — also in American
   const estimatedPrice = pricedLegs.map(leg => ({
     line_id: leg.lineId,
-    odds: Math.round((1 / leg.fairProb) * 100), // per-leg decimal odds × 100 (integer format)
+    odds: decimalToAmerican(1 / leg.fairProb),
   }));
 
   // valid_until in nanoseconds
   const validUntil = Math.floor((Date.now() / 1000 + config.pricing.offerValidSeconds) * 1e9);
 
-  // PX odds format: appears to be decimal × some multiplier based on sandbox data
-  // The sandbox examples show integer values like 100000.
-  // We'll use standard decimal odds and adjust if PX rejects
-  const oddsValue = Math.round(decimalOdds * 100) / 100;
-
   return {
     offer: {
       valid_until: validUntil,
-      odds: oddsValue,
+      odds: americanOdds,
       max_risk: maxRisk,
       estimated_price: estimatedPrice,
     },
@@ -131,6 +139,7 @@ function priceParlay(legs) {
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
       offeredImpliedProb: Math.round(cappedProb * 100000) / 100000,
       decimalOdds: Math.round(decimalOdds * 100) / 100,
+      americanOdds,
       vig,
       maxRisk,
     },

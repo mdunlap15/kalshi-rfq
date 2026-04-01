@@ -341,7 +341,7 @@ async function handleRFQ(data) {
     orderTracker.recordQuote(
       parlayId,
       result.meta.legs,
-      result.meta.decimalOdds,
+      result.meta.americanOdds, // Store American odds (matches PX format)
       result.meta.maxRisk,
       result.meta.fairParlayProb,
       result.meta
