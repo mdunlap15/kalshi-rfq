@@ -293,8 +293,9 @@ async function handleRFQ(data) {
           knownLegs.push({ team: info.teamName, market: info.marketType, sport: info.sport, line: info.line });
         } else {
           unknownLegs.push(lineId);
-          // Try to identify sport from PX event data
-          unknownSports.push(l.tournament_id ? `tournament_${l.tournament_id}` : 'unknown');
+          // Resolve tournament name from PX event data
+          const tName = l.tournament_id ? lineManager.getTournamentName(l.tournament_id) : null;
+          unknownSports.push(tName || (l.tournament_id ? `tournament_${l.tournament_id}` : 'unknown'));
         }
       }
       const reason = unknownLegs.length > 0 ? 'unknown legs' : 'exposure/limit';

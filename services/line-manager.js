@@ -14,6 +14,9 @@ const lineIndex = {};
 // Reverse lookup: PX event_id → event metadata
 const eventIndex = {};
 
+// Tournament ID → name/sport lookup
+const tournamentIndex = {};
+
 // Stats from last seed
 let lastSeedStats = null;
 
@@ -111,6 +114,17 @@ async function seedAllLines() {
   // 1. Fetch PX events
   const allEvents = await px.fetchSportEvents();
   const pxSportNames = Object.values(config.sportNameMap);
+
+  // Build tournament index from ALL events (not just supported)
+  for (const e of allEvents) {
+    if (e.tournament_id) {
+      tournamentIndex[e.tournament_id] = {
+        name: e.tournament_name || e.tournament?.name || e.sport_name,
+        sport: e.sport_name,
+      };
+    }
+  }
+  log.info('Lines', `Built tournament index: ${Object.keys(tournamentIndex).length} tournaments`);
 
   // 2. Filter to supported sports (accept any non-settled status)
   const events = allEvents.filter(e =>
@@ -367,6 +381,14 @@ async function refreshLines() {
   return seedAllLines();
 }
 
+/**
+ * Resolve a tournament_id to a human-readable name.
+ */
+function getTournamentName(tournamentId) {
+  const t = tournamentIndex[tournamentId];
+  return t ? `${t.name} (${t.sport})` : null;
+}
+
 module.exports = {
   seedAllLines,
   refreshLines,
@@ -377,4 +399,5 @@ module.exports = {
   getLineSummary,
   matchTeamName,
   normalizeTeamName,
+  getTournamentName,
 };
