@@ -299,9 +299,21 @@ async function handleRFQ(data) {
           const baseName = eventName || tName || 'unknown';
           // Add context: is this a known event but unregistered line?
           const isKnownEvent = !!eventName;
-          const lineNum = l.line != null ? `line:${l.line}` : '';
-          const originLine = l.origin_market_line != null ? `orig:${l.origin_market_line}` : '';
-          const detail = [lineNum, originLine, `mkt:${l.market_id||'?'}`, `out:${l.outcome_id||'?'}`].filter(Boolean).join(' ');
+
+          // Map common PX market_ids to readable names
+          const mktNames = {
+            11: 'moneyline', 16: 'spread', 18: 'total',
+            186: 'moneyline', 187: 'spread', 188: 'total',
+            251: 'moneyline', 258: 'spread', 259: 'total',
+          };
+          const outNames = {
+            4: 'away', 5: 'home', 12: 'over/fav', 13: 'under/dog',
+            1715: 'side-1', 1716: 'side-2',
+          };
+          const mktLabel = mktNames[l.market_id] || `mkt:${l.market_id||'?'}`;
+          const outLabel = outNames[l.outcome_id] || `out:${l.outcome_id||'?'}`;
+          const lineNum = l.line != null ? `${l.line}` : '';
+          const detail = [mktLabel, outLabel, lineNum].filter(Boolean).join(' · ');
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
           unknownSports.push(`${baseName} ${tag} ${detail}`);
         }
