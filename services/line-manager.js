@@ -248,12 +248,24 @@ async function seedAllLines() {
       continue;
     }
 
-    // Filter to main markets only (moneyline, spread, total for the game)
-    const mainMarkets = markets.filter(m =>
-      ['moneyline', 'spread', 'total'].includes(m.type) &&
-      // Exclude player props that also have type 'total'
-      (m.type !== 'total' || m.name === 'Total' || m.name === 'Total Points' || m.name === 'Total Runs' || m.name === 'Total Goals')
-    );
+    // Filter to FULL-GAME main markets only.
+    // Exclude: first half, first quarter, period, inning, player props
+    const excludePatterns = /first half|1st half|first quarter|1st quarter|2nd half|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|overtime|player|total hits|total strikeout|total earned|total block|total point[^s]|total rebound|total assist|total steal|total made|total rush|total recei|total passing/i;
+
+    const fullGameNames = {
+      moneyline: ['Moneyline', 'Moneyline (2 Way)', 'Moneyline (Regulation)'],
+      spread: ['Spread', 'Run Line', 'Puck Line', 'Spread (Regular Time)', 'Game Spread', 'Point Spread'],
+      total: ['Total', 'Total Points', 'Points', 'Total Runs', 'Total Goals', 'Total Goals (Regular Time)'],
+    };
+
+    const mainMarkets = markets.filter(m => {
+      if (!['moneyline', 'spread', 'total'].includes(m.type)) return false;
+      // Exclude anything matching half/quarter/prop patterns
+      if (excludePatterns.test(m.name)) return false;
+      // For totals, require an exact name match (excludes player props)
+      if (m.type === 'total' && !fullGameNames.total.includes(m.name)) return false;
+      return true;
+    });
 
     for (const market of mainMarkets) {
       const parsed = px.parseMarketSelections(market);
