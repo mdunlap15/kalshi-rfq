@@ -215,6 +215,14 @@ function shouldDecline(legs) {
     resolvedLegs.push({ lineId, lineInfo });
   }
 
+  // Reject same-game parlays — legs from the same event are correlated,
+  // independent probability multiplication gives wrong fair value
+  const eventIds = resolvedLegs.map(l => l.lineInfo.pxEventId).filter(Boolean);
+  if (eventIds.length !== new Set(eventIds).size) {
+    log.info('Pricing', 'Declined: same-game parlay detected (correlated legs)');
+    return true;
+  }
+
   // Check team-level exposure limits
   const exposureCheck = orderTracker.checkExposureLimits(
     resolvedLegs.map(l => ({ team: l.lineInfo.teamName })),
