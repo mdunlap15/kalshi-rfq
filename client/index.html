@@ -305,6 +305,23 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* Tabs */
+    .tab-btn {
+      padding: 8px 20px;
+      border: none;
+      background: transparent;
+      color: var(--text3);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-content { display: block; }
+
     .paused-banner {
       background: rgba(248,81,73,0.1);
       border: 1px solid var(--red);
@@ -362,143 +379,166 @@
     </div>
   </div>
 
-  <!-- 1. Recent Orders (highest priority — what's happening now) -->
-  <div class="card">
-    <div class="card-header" onclick="toggleCard(this)">
-      <span><span class="toggle-icon">&#9660;</span>Recent Orders</span>
-      <span id="order-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+  <!-- TAB NAVIGATION -->
+  <div style="display:flex; gap:2px; margin-bottom:16px; border-bottom:2px solid var(--border); padding-bottom:0;">
+    <button class="tab-btn active" onclick="switchTab('live', this)">Live</button>
+    <button class="tab-btn" onclick="switchTab('analytics', this)">Analytics</button>
+    <button class="tab-btn" onclick="switchTab('history', this)">History</button>
+    <button class="tab-btn" onclick="switchTab('intel', this)">Market Intel</button>
+    <button class="tab-btn" onclick="switchTab('config', this)">Config</button>
+  </div>
+
+  <!-- ===================== TAB: LIVE ===================== -->
+  <div id="tab-live" class="tab-content">
+    <!-- Recent Orders -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard(this)">
+        <span><span class="toggle-icon">&#9660;</span>Recent Orders</span>
+        <span id="order-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" style="padding: 0;">
+        <div id="orders-table">
+          <div class="empty-state"><div class="icon">-</div><div>No orders yet. Waiting for RFQs...</div></div>
+        </div>
+      </div>
     </div>
-    <div class="card-body" style="padding: 0;">
-      <div id="orders-table">
-        <div class="empty-state">
-          <div class="icon">-</div>
-          <div>No orders yet. Waiting for RFQs...</div>
+
+    <!-- Team Exposure -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard(this)">
+        <span><span class="toggle-icon">&#9660;</span>Team Exposure</span>
+        <span id="exposure-limit" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" style="padding: 0;">
+        <div id="exposure-table">
+          <div class="empty-state"><div class="icon">-</div><div>No active exposure</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- P&L by Sport -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard(this)">
+        <span><span class="toggle-icon collapsed">&#9660;</span>P&L by Sport</span>
+      </div>
+      <div class="card-body collapsed" id="pnl-sport">
+        <div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== TAB: ANALYTICS ===================== -->
+  <div id="tab-analytics" class="tab-content" style="display:none;">
+    <!-- Quote Competitiveness -->
+    <div class="card">
+      <div class="card-header">
+        <span>Quote Competitiveness</span>
+        <span id="comp-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" id="comp-section">
+        <div class="empty-state"><div class="icon">-</div><div>Need quoted & matched parlays to compare</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== TAB: HISTORY ===================== -->
+  <div id="tab-history" class="tab-content" style="display:none;">
+    <div class="card">
+      <div class="card-header">
+        <span>Parlay History</span>
+        <span id="history-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" style="padding: 0;">
+        <div id="history-table">
+          <div class="empty-state"><div class="icon">-</div><div>No historical parlays yet</div></div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 2. Quote Competitiveness -->
-  <div class="card">
-    <div class="card-header" onclick="toggleCard(this)">
-      <span><span class="toggle-icon">&#9660;</span>Quote Competitiveness</span>
-      <span id="comp-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-    </div>
-    <div class="card-body" id="comp-section">
-      <div class="empty-state"><div class="icon">-</div><div>Need quoted & matched parlays to compare</div></div>
-    </div>
-  </div>
-
-  <!-- 3. Market Intelligence -->
-  <div class="card">
-    <div class="card-header" onclick="toggleCard(this)">
-      <span><span class="toggle-icon">&#9660;</span>Market Intelligence</span>
-      <span id="intel-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-    </div>
-    <div class="card-body" id="market-intel">
-      <div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div>
+  <!-- ===================== TAB: MARKET INTEL ===================== -->
+  <div id="tab-intel" class="tab-content" style="display:none;">
+    <!-- Market Intelligence -->
+    <div class="card">
+      <div class="card-header">
+        <span>Market Intelligence</span>
+        <span id="intel-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" id="market-intel">
+        <div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div>
+      </div>
     </div>
   </div>
 
-  <!-- 3. Team Exposure (active risk) -->
-  <div class="card">
-    <div class="card-header" onclick="toggleCard(this)">
-      <span><span class="toggle-icon">&#9660;</span>Team Exposure</span>
-      <span id="exposure-limit" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-    </div>
-    <div class="card-body" style="padding: 0;">
-      <div id="exposure-table">
-        <div class="empty-state">
-          <div class="icon">-</div>
-          <div>No active exposure</div>
+  <!-- ===================== TAB: CONFIG ===================== -->
+  <div id="tab-config" class="tab-content" style="display:none;">
+    <div class="grid-2">
+      <!-- Odds Cache -->
+      <div class="card">
+        <div class="card-header">
+          <span>Odds Cache</span>
+          <button class="btn" onclick="refreshOdds(this)">Refresh</button>
+        </div>
+        <div class="card-body" id="odds-cache">
+          <div class="empty-state"><div class="icon">...</div>Loading</div>
+        </div>
+      </div>
+
+      <!-- Registered Lines -->
+      <div class="card">
+        <div class="card-header">
+          <span>Registered Lines</span>
+          <button class="btn" onclick="refreshLines(this)">Refresh</button>
+        </div>
+        <div class="card-body" id="lines-breakdown">
+          <div class="empty-state"><div class="icon">...</div>Loading</div>
         </div>
       </div>
     </div>
-  </div>
 
-  <!-- 3. P&L by Sport -->
-  <div class="card">
-    <div class="card-header" onclick="toggleCard(this)">
-      <span><span class="toggle-icon collapsed">&#9660;</span>P&L by Sport</span>
-    </div>
-    <div class="card-body collapsed" id="pnl-sport">
-      <div class="empty-state">
-        <div class="icon">-</div>
-        <div>No settled orders yet</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="grid-2">
-    <!-- 4. Odds Cache (operational health) -->
+    <!-- Configuration -->
     <div class="card">
-      <div class="card-header" onclick="toggleCard(this)">
-        <span><span class="toggle-icon collapsed">&#9660;</span>Odds Cache</span>
-        <button class="btn" onclick="event.stopPropagation(); refreshOdds(this)">Refresh</button>
-      </div>
-      <div class="card-body collapsed" id="odds-cache">
+      <div class="card-header"><span>Configuration</span></div>
+      <div class="card-body" id="config-display">
         <div class="empty-state"><div class="icon">...</div>Loading</div>
       </div>
     </div>
 
-    <!-- 5. Registered Lines -->
+    <!-- Definitions -->
+    <div class="card" id="definitions-card" style="display:none;">
+      <div class="card-header">
+        <span>Definitions</span>
+        <button class="btn" onclick="toggleDefinitions()">Hide</button>
+      </div>
+      <div class="card-body" id="definitions-body">
+        <table>
+          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Lines Registered</td><td>Individual betting lines registered with ProphetX.</td></tr>
+          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Quotes Sent</td><td>Parlay price quotes submitted in response to RFQs.</td></tr>
+          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Confirmed</td><td>Quotes accepted by the bettor and confirmed by us.</td></tr>
+          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Settled</td><td>Confirmed parlays that have fully settled.</td></tr>
+          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Running P&L</td><td>Cumulative profit/loss from all settled parlays.</td></tr>
+          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Fair Prob</td><td>De-vigged probability of the parlay winning.</td></tr>
+          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Offered Odds</td><td>American odds we quoted with vig margin applied.</td></tr>
+          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Vig</td><td>Our profit margin on fair probability.</td></tr>
+          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Exposure / Team</td><td>Max total risk across all active parlays per team.</td></tr>
+          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Odds Cache</td><td>Live odds from SharpAPI and The Odds API.</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <!-- Activity Log -->
     <div class="card">
-      <div class="card-header" onclick="toggleCard(this)">
-        <span><span class="toggle-icon collapsed">&#9660;</span>Registered Lines</span>
-        <button class="btn" onclick="event.stopPropagation(); refreshLines(this)">Refresh</button>
+      <div class="card-header">
+        <span>Activity Log</span>
+        <button class="btn" onclick="clearLog()">Clear</button>
       </div>
-      <div class="card-body collapsed" id="lines-breakdown">
-        <div class="empty-state"><div class="icon">...</div>Loading</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 6. Configuration (reference) -->
-  <div class="card">
-    <div class="card-header" onclick="toggleCard(this)">
-      <span><span class="toggle-icon collapsed">&#9660;</span>Configuration</span>
-    </div>
-    <div class="card-body collapsed" id="config-display">
-      <div class="empty-state"><div class="icon">...</div>Loading</div>
-    </div>
-  </div>
-
-  <!-- 7. Definitions (reference) -->
-  <div class="card" id="definitions-card" style="display: none;">
-    <div class="card-header" onclick="toggleCard(this)">
-      <span><span class="toggle-icon">&#9660;</span>Definitions</span>
-      <button class="btn" onclick="event.stopPropagation(); toggleDefinitions()">Hide</button>
-    </div>
-    <div class="card-body" id="definitions-body">
-      <table>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Lines Registered</td><td>Individual betting lines registered with ProphetX. Each line is a specific selection (e.g., "Yankees ML", "Lakers -5.5", "Over 220.5").</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Quotes Sent</td><td>Parlay price quotes submitted in response to RFQs. A quote is our offered price — it doesn't mean we've taken on risk yet.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Confirmed</td><td>Quotes accepted by the bettor and confirmed by us. Once confirmed, we have live exposure on the parlay.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Settled</td><td>Confirmed parlays that have fully settled (all legs completed). Each produces a win or loss.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Running P&L</td><td>Cumulative profit/loss from all settled parlays. As the SP (house side), we win the stake when the parlay loses and pay out when it wins.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Fair Prob</td><td>De-vigged probability of the parlay winning. Each leg's fair prob multiplied together. From DK/FD consensus (or Pinnacle for NCAAB).</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Offered Odds</td><td>American odds we quoted. Includes our vig margin — worse for the bettor than true fair odds.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Risk</td><td>Maximum we could lose on this parlay if all legs win. Set by MAX_RISK_PER_PARLAY.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Exposure / Team</td><td>Max total risk across all active parlays containing the same team. Prevents concentrated losses. Default $50.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Vig</td><td>Our profit margin on fair probability. At 6%, a parlay with 20% fair prob gets offered at ~21.2% implied.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Stale Price Limit</td><td>Max age (minutes) of cached odds before we stop quoting. Protects against stale lines.</td></tr>
-        <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Odds Cache</td><td>Live odds from SharpAPI (NBA/MLB/NHL/Tennis/Soccer) and The Odds API (NCAAB). Green = fresh, yellow = aging, red = stale.</td></tr>
-      </table>
-    </div>
-  </div>
-
-  <!-- 8. Activity Log (lowest priority) -->
-  <div class="card">
-    <div class="card-header" onclick="toggleCard(this)">
-      <span><span class="toggle-icon collapsed">&#9660;</span>Activity Log</span>
-      <button class="btn" onclick="event.stopPropagation(); clearLog()">Clear</button>
-    </div>
-    <div class="card-body collapsed" style="padding: 0;">
-      <div class="log-feed" id="log-feed">
-        <div class="log-entry">
-          <span class="log-time">--:--:--</span>
-          <span class="log-cat system">System</span>
-          <span class="log-msg">Dashboard loaded. Connecting...</span>
+      <div class="card-body" style="padding: 0;">
+        <div class="log-feed" id="log-feed">
+          <div class="log-entry">
+            <span class="log-time">--:--:--</span>
+            <span class="log-cat system">System</span>
+            <span class="log-msg">Dashboard loaded. Connecting...</span>
+          </div>
         </div>
       </div>
     </div>
@@ -551,6 +591,7 @@
       renderOrders(orders);
       renderMarketIntel(intel);
       renderCompetitiveness(intel);
+      renderHistory(orders);
       addLog('system', 'Dashboard refreshed');
     } catch (err) {
       addLog('error', 'Failed to refresh: ' + err.message);
@@ -1494,6 +1535,173 @@ ${e.won ? 'WON' : 'LOST'}</title>
     if (!dec || dec <= 1) return '-';
     if (dec >= 2.0) return '+' + Math.round((dec - 1) * 100);
     return '' + Math.round(-100 / (dec - 1));
+  }
+
+  // Tab switching
+  let activeTab = 'live';
+  function switchTab(tab, btn) {
+    activeTab = tab;
+    document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+    const tabEl = document.getElementById('tab-' + tab);
+    if (tabEl) tabEl.style.display = 'block';
+    if (btn) btn.classList.add('active');
+  }
+
+  // History state — accumulates all orders across refreshes
+  const historyState = {
+    orders: {}, // keyed by parlayId
+    sortCol: 'time', sortDir: -1,
+    search: '',
+    statusFilter: [],
+  };
+
+  function renderHistory(data) {
+    const el = document.getElementById('history-table');
+    const orders = data.recentOrders || [];
+
+    // Merge into history
+    for (const o of orders) {
+      if (o.parlayId) historyState.orders[o.parlayId] = o;
+    }
+
+    const allOrders = Object.values(historyState.orders)
+      .sort((a, b) => (b.quotedAt || '').localeCompare(a.quotedAt || ''));
+
+    document.getElementById('history-count').textContent = allOrders.length > 0 ? allOrders.length + ' parlays' : '';
+
+    if (allOrders.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No historical parlays yet</div></div>';
+      return;
+    }
+
+    // Preserve search
+    const searchEl = document.getElementById('history-search');
+    if (searchEl) historyState.search = searchEl.value;
+
+    // Collect filters
+    const allStatuses = [...new Set(allOrders.map(o => {
+      let s = o.status || 'unknown';
+      if (s.startsWith('settled_')) s = s.replace('settled_', '');
+      return s;
+    }))];
+
+    // Filter
+    let filtered = allOrders.filter(o => {
+      if (historyState.search) {
+        const q = historyState.search.toLowerCase();
+        const id = (o.parlayId || '').toLowerCase();
+        const legs = (o.legs || o.meta?.legs || []);
+        const teams = legs.map(l => l.team || l.teamName || '').join(' ').toLowerCase();
+        if (!id.includes(q) && !teams.includes(q)) return false;
+      }
+      if (historyState.statusFilter.length > 0) {
+        let s = o.status || 'unknown';
+        if (s.startsWith('settled_')) s = s.replace('settled_', '');
+        if (!historyState.statusFilter.includes(s)) return false;
+      }
+      return true;
+    });
+
+    // Sort
+    filtered.sort((a, b) => {
+      let va, vb;
+      switch (historyState.sortCol) {
+        case 'time': va = a.quotedAt || ''; vb = b.quotedAt || ''; break;
+        case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
+        default: va = 0; vb = 0;
+      }
+      if (va < vb) return -1 * historyState.sortDir;
+      if (va > vb) return 1 * historyState.sortDir;
+      return 0;
+    });
+
+    const hRerender = () => renderHistory({ recentOrders: [] });
+    window.historyRerender = hRerender;
+
+    const hSortArrow = (col) => historyState.sortCol === col ? (historyState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const hSortClick = (col) => `onclick="event.stopPropagation(); historyState.sortCol=historyState.sortCol==='${col}'?historyState.sortCol:('${col}'); if(historyState.sortCol==='${col}') historyState.sortDir*=-1; else { historyState.sortCol='${col}'; historyState.sortDir='${col}'==='time'?-1:1; } historyRerender();" style="cursor:pointer;"`;
+
+    let html = `<div style="padding: 8px 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--border);">
+      <input type="text" id="history-search" placeholder="Search team or ID..." value="${historyState.search}"
+        oninput="historyState.search=this.value; historyRerender()"
+        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">
+      <select onchange="historyState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); historyRerender()"
+        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">
+        <option value="">All statuses</option>
+        ${allStatuses.map(s => `<option value="${s}" ${historyState.statusFilter.includes(s)?'selected':''}>${s}</option>`).join('')}
+      </select>
+      <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${allOrders.length}</span>
+    </div>`;
+
+    html += `<div style="overflow-x: auto;"><table>
+      <tr>
+        <th ${hSortClick('time')}>Time${hSortArrow('time')}</th>
+        <th>Teams</th>
+        <th>Legs</th>
+        <th>Fair</th>
+        <th ${hSortClick('odds')}>Offered${hSortArrow('odds')}</th>
+        <th ${hSortClick('stake')}>Stake${hSortArrow('stake')}</th>
+        <th>Status</th>
+        <th ${hSortClick('pnl')} style="text-align:right">P&L${hSortArrow('pnl')}</th>
+      </tr>`;
+
+    for (const order of filtered.slice(0, 100)) {
+      const time = order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
+      const legs = (order.legs || order.meta?.legs || []);
+      const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
+      const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
+      const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
+      const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
+      const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
+
+      let statusText = order.status || 'unknown';
+      let statusClass = 'neutral';
+      if (statusText === 'confirmed') statusClass = 'positive';
+      else if (statusText === 'rejected') statusClass = 'negative';
+      else if (statusText.startsWith('settled_')) {
+        statusClass = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+        statusText = statusText.replace('settled_', '');
+      }
+
+      let pnlHtml = '-';
+      if (order.pnl != null) {
+        const cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+        pnlHtml = `<span class="${cls}">${order.pnl >= 0 ? '+' : ''}$${order.pnl.toFixed(2)}</span>`;
+      }
+
+      const rowKey = 'hist-' + (order.parlayId || '');
+      const expanded = expandedRows.has(rowKey);
+      html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
+        <td style="white-space:nowrap;">${time}</td>
+        <td style="max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="${teams}">${teamsShort}</td>
+        <td>${legs.length}</td>
+        <td>${fairAm}</td>
+        <td style="font-weight:600;">${offeredAm}</td>
+        <td>${stake}</td>
+        <td><span class="${statusClass}">${statusText}</span></td>
+        <td style="text-align:right">${pnlHtml}</td>
+      </tr>
+      <tr id="${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
+        <td colspan="8" style="padding: 12px 16px;">
+          <table style="width:100%; font-size:11px;">
+            <tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Team</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th><th style="text-align:right; padding:2px 6px;">Fair Odds</th></tr>
+            ${legs.map(l => `<tr>
+              <td style="padding:2px 6px;">${l.team || l.teamName || 'Unknown'}</td>
+              <td style="padding:2px 6px;"><span class="market-pill">${l.market || l.marketType || '-'}</span></td>
+              <td style="padding:2px 6px;">${l.line != null ? l.line : (l.selection || '-')}</td>
+              <td style="padding:2px 6px; text-align:right;">${l.fairProb ? decimalToAmerican(1/l.fairProb) : '-'}</td>
+            </tr>`).join('')}
+          </table>
+          <div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ${order.parlayId || '-'}</div>
+        </td>
+      </tr>`;
+    }
+
+    html += '</table></div>';
+    el.innerHTML = html;
   }
 
   function toggleCard(headerEl) {
