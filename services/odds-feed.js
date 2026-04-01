@@ -457,17 +457,14 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line) {
   const market = event.markets[marketType];
   if (!market) return null;
 
-  // For spreads and totals, allow nearby lines (within 3 points).
-  // The fair prob of the primary line is a reasonable proxy for alt lines
-  // within a small range, especially with our vig margin as buffer.
-  // Beyond 3 points, the prob shifts too much to safely use the proxy.
+  // Require exact line match for spreads and totals.
+  // Alt lines have significantly different probabilities — using the primary
+  // line's prob as proxy is unsafe. Need an alt-lines odds source instead.
   if ((marketType === 'spreads' || marketType === 'totals') && market.line != null && line != null) {
     const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
-    if (lineDiff > 3) {
-      return null; // Too far from primary — can't safely proxy
+    if (lineDiff > 0.01) {
+      return null;
     }
-    // Note: we return the primary line's fair prob as a proxy.
-    // This is approximate but covered by our vig margin for small diffs.
   }
 
   if (marketType === 'h2h') {
