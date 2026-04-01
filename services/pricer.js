@@ -48,6 +48,15 @@ async function priceParlay(legs) {
       return null;
     }
 
+    // Check if event has already started — don't quote with stale pre-game odds
+    if (lineInfo.startTime) {
+      const startMs = new Date(lineInfo.startTime).getTime();
+      if (!isNaN(startMs) && Date.now() > startMs) {
+        log.debug('Pricing', `Declined: event already started (${lineInfo.teamName}, started ${lineInfo.startTime})`);
+        return null;
+      }
+    }
+
     // Check if prices are stale for this sport
     if (oddsFeed.isStale(lineInfo.sport)) {
       log.debug('Pricing', `Declined: stale prices for ${lineInfo.sport} (${Math.round(oddsFeed.getCacheAge(lineInfo.sport))}min old)`);
@@ -190,12 +199,19 @@ function shouldDecline(legs) {
   if (!legs || legs.length === 0) return true;
   if (legs.length > config.pricing.maxLegs) return true;
 
-  // Check all legs are known
+  // Check all legs are known and events haven't started
   const resolvedLegs = [];
   for (const leg of legs) {
     const lineId = leg.line_id || leg.lineId || leg;
     const lineInfo = lineManager.lookupLine(lineId);
     if (!lineInfo) return true;
+
+    // Reject if event has already started
+    if (lineInfo.startTime) {
+      const startMs = new Date(lineInfo.startTime).getTime();
+      if (!isNaN(startMs) && Date.now() > startMs) return true;
+    }
+
     resolvedLegs.push({ lineId, lineInfo });
   }
 

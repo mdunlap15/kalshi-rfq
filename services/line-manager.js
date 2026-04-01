@@ -289,6 +289,10 @@ async function seedAllLines() {
         // For moneylines, verify fair value exists now
         // For spreads/totals, register all alternate lines (fair value available for primary line)
         matchedLines++;
+        // Get event start time from odds cache or PX event
+        const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway);
+        const startTime = oddsEvt?.commenceTime || event.scheduled || null;
+
         lineIndex[sel.lineId] = {
           sport: sportKey,
           pxEventId: event.event_id,
@@ -303,6 +307,7 @@ async function seedAllLines() {
           oddsApiMarket,
           oddsApiSelection,
           competitorId: sel.competitorId,
+          startTime,
         };
       }
     }
