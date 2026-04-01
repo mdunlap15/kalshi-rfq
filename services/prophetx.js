@@ -187,6 +187,13 @@ function parseMarketSelections(market) {
   const results = [];
   const marketType = market.type; // 'moneyline', 'spread', 'total'
 
+  // Strip trailing odds from team names (e.g., "Kansas City Royals -103" → "Kansas City Royals")
+  function cleanSelectionName(name) {
+    if (!name) return '';
+    // Remove trailing odds pattern: space + optional sign + digits (e.g., " -103", " +275", " 150")
+    return name.replace(/\s+[+-]?\d+(\.\d+)?$/, '').trim();
+  }
+
   if (marketType === 'moneyline' && market.selections) {
     // Moneyline: selections is array of arrays, each inner array has one object
     for (const selGroup of market.selections) {
@@ -196,7 +203,7 @@ function parseMarketSelections(market) {
           lineId: sel.line_id,
           marketType: 'moneyline',
           selection: sel.competitor_id ? 'team' : 'unknown',
-          teamName: sel.display_name || sel.name || '',
+          teamName: cleanSelectionName(sel.display_name || sel.name || ''),
           line: null,
           competitorId: sel.competitor_id,
           outcomeName: sel.name,
@@ -223,7 +230,7 @@ function parseMarketSelections(market) {
             lineId: sel.line_id,
             marketType,
             selection,
-            teamName: sel.display_name || sel.name || '',
+            teamName: cleanSelectionName(sel.display_name || sel.name || ''),
             line: sel.line != null ? sel.line : marketLine.line,
             competitorId: sel.competitor_id,
             outcomeName: sel.name,
