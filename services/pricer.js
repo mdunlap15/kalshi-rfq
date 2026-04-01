@@ -215,12 +215,34 @@ function shouldDecline(legs) {
     resolvedLegs.push({ lineId, lineInfo });
   }
 
-  // Reject same-game parlays — legs from the same event are correlated,
-  // independent probability multiplication gives wrong fair value
-  const eventIds = resolvedLegs.map(l => l.lineInfo.pxEventId).filter(Boolean);
-  if (eventIds.length !== new Set(eventIds).size) {
-    log.info('Pricing', 'Declined: same-game parlay detected (correlated legs)');
-    return true;
+  // Check for correlated same-game legs.
+  // Allowed: spread/moneyline + total on same game (low correlation)
+  // Blocked: spread + moneyline on same game (high correlation)
+  // Blocked: two of the same market type on same game
+  const byEvent = {};
+  for (const l of resolvedLegs) {
+    const eid = l.lineInfo.pxEventId;
+    if (!eid) continue;
+    if (!byEvent[eid]) byEvent[eid] = [];
+    byEvent[eid].push(l.lineInfo.marketType);
+  }
+  for (const [eid, types] of Object.entries(byEvent)) {
+    if (types.length <= 1) continue;
+    const hasSpread = types.includes('spread');
+    const hasMoneyline = types.includes('moneyline');
+    const hasTotal = types.includes('total');
+    const uniqueTypes = new Set(types);
+    // Block: two of the same type on same game
+    if (uniqueTypes.size < types.length) {
+      log.info('Pricing', 'Declined: duplicate market type on same game');
+      return true;
+    }
+    // Block: spread + moneyline (highly correlated)
+    if (hasSpread && hasMoneyline) {
+      log.info('Pricing', 'Declined: spread + moneyline on same game (correlated)');
+      return true;
+    }
+    // Allow: spread/moneyline + total (acceptable correlation)
   }
 
   // Check team-level exposure limits
