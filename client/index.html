@@ -501,8 +501,9 @@
   let autoRefreshCountdown = 10;
   let countdownTimer = null;
 
-  // Track expanded/collapsed state of sub-sections across refreshes
+  // Track expanded/collapsed state across refreshes (sub-sections + individual rows)
   const toggleState = {}; // { elementId: true/false }
+  const expandedRows = new Set(); // track all expanded detail rows (nm-X, mp-X, ord-X)
 
   // -----------------------------------------------------------------------
   // DATA FETCHING
@@ -788,12 +789,13 @@
         const time = nm.time ? new Date(nm.time).toLocaleTimeString() : '-';
         const summary = (nm.legs || []).slice(0, 2).map(l => l.team).join(', ') + ((nm.legs||[]).length > 2 ? ` +${(nm.legs||[]).length - 2}` : '');
         const nmId = 'nm-' + ni;
-        html += `<tr style="cursor:pointer;" onclick="document.getElementById('${nmId}').style.display = document.getElementById('${nmId}').style.display === 'none' ? 'table-row' : 'none'">
+        const nmExpanded = expandedRows.has(nmId);
+        html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${nmId}')">
           <td>${time}</td>
           <td style="max-width:350px; overflow:hidden; text-overflow:ellipsis;">${summary}</td>
           <td>${(nm.legs||[]).length}</td>
         </tr>
-        <tr id="${nmId}" style="display:none; background: var(--surface3);">
+        <tr id="${nmId}" style="display:${nmExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
           <td colspan="3" style="padding: 8px 12px;">
             <table style="width:100%; font-size:11px;">
               <tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Sport</th><th style="text-align:left; padding:2px 6px;">Team</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th></tr>
@@ -840,7 +842,8 @@
         else { resultClass = 'neutral'; resultText = 'No quote'; }
 
         const mId = 'mp-' + mi;
-        html += `<tr style="cursor:pointer;" onclick="document.getElementById('${mId}').style.display = document.getElementById('${mId}').style.display === 'none' ? 'table-row' : 'none'">
+        const mpExpanded = expandedRows.has(mId);
+        html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${mId}')">
           <td>${time}</td>
           <td style="font-size:12px; max-width:220px; overflow:hidden; text-overflow:ellipsis;" title="${knownLegs.map(l=>l.team).join(', ')}">${summary}</td>
           <td>${m.legCount || '-'}</td>
@@ -849,7 +852,7 @@
           <td>${ourPrice}</td>
           <td><span class="${resultClass}">${resultText}</span></td>
         </tr>
-        <tr id="${mId}" style="display:none; background: var(--surface3);">
+        <tr id="${mId}" style="display:${mpExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
           <td colspan="7" style="padding: 8px 12px;">
             <table style="width:100%; font-size:11px;">
               <tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Sport</th><th style="text-align:left; padding:2px 6px;">Team / Selection</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th></tr>
@@ -1168,6 +1171,16 @@
     }
     const el = document.getElementById('ord-' + key);
     if (el) el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
+  }
+
+  // Generic detail row toggle for Market Intel rows (nm-X, mp-X)
+  function toggleDetailRow(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const opening = el.style.display === 'none';
+    el.style.display = opening ? 'table-row' : 'none';
+    if (opening) expandedRows.add(id);
+    else expandedRows.delete(id);
   }
 
   function renderPnLBySport(pnl) {
