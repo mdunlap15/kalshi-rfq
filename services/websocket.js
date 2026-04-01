@@ -293,11 +293,17 @@ async function handleRFQ(data) {
           knownLegs.push({ team: info.teamName, market: info.marketType, sport: info.sport, line: info.line });
         } else {
           unknownLegs.push(lineId);
-          // Build specific description: "Rangers @ Bruins (NHL)" or "MLS (Soccer)"
+          // Build specific description with market detail
           const eventName = l.sport_event_id ? lineManager.getEventName(l.sport_event_id) : null;
           const tName = l.tournament_id ? lineManager.getTournamentName(l.tournament_id) : null;
-          const desc = eventName || tName || (l.tournament_id ? `tournament_${l.tournament_id}` : 'unknown');
-          unknownSports.push(desc);
+          const baseName = eventName || tName || 'unknown';
+          // Add context: is this a known event but unregistered line?
+          const isKnownEvent = !!eventName;
+          const lineNum = l.line != null ? `line:${l.line}` : '';
+          const originLine = l.origin_market_line != null ? `orig:${l.origin_market_line}` : '';
+          const detail = [lineNum, originLine, `mkt:${l.market_id||'?'}`, `out:${l.outcome_id||'?'}`].filter(Boolean).join(' ');
+          const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
+          unknownSports.push(`${baseName} ${tag} ${detail}`);
         }
       }
       const reason = unknownLegs.length > 0 ? 'unknown legs' : 'exposure/limit';
