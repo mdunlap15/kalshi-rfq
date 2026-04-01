@@ -300,28 +300,21 @@ async function handleRFQ(data) {
           // Add context: is this a known event but unregistered line?
           const isKnownEvent = !!eventName;
 
-          // Map common PX market_ids to readable names
-          const mktNames = {
-            11: 'moneyline', 16: 'spread', 18: 'total',
-            186: 'moneyline', 187: 'spread', 188: 'total',
-            251: 'moneyline', 258: 'spread', 259: 'total',
-          };
-          const outNames = {
-            4: 'away', 5: 'home', 12: 'over/fav', 13: 'under/dog',
-            1715: 'side-1', 1716: 'side-2',
-          };
-          const mktLabel = mktNames[l.market_id] || `mkt:${l.market_id||'?'}`;
-          // Resolve outcome label based on market type
-          let outLabel;
-          if (mktLabel === 'total') {
-            outLabel = { 12: 'over', 13: 'under' }[l.outcome_id] || outNames[l.outcome_id] || `out:${l.outcome_id||'?'}`;
-          } else if (mktLabel === 'spread') {
-            outLabel = { 12: 'favorite', 13: 'underdog' }[l.outcome_id] || outNames[l.outcome_id] || `out:${l.outcome_id||'?'}`;
+          // Build a simple detail string from what we know
+          // Don't try to map market_ids — PX reuses them across different market types
+          const hasLine = l.line != null;
+          const lineNum = hasLine ? l.line : null;
+          const origLine = l.origin_market_line != null ? l.origin_market_line : null;
+
+          let detail;
+          if (hasLine && origLine != null && lineNum !== origLine) {
+            // Alt line — show the line it's based on
+            detail = `alt line ${lineNum} (primary: ${origLine})`;
+          } else if (hasLine) {
+            detail = `line ${lineNum}`;
           } else {
-            outLabel = { 4: 'away', 5: 'home' }[l.outcome_id] || `out:${l.outcome_id||'?'}`;
+            detail = 'no line (prop or 2-way)';
           }
-          const lineNum = l.line != null ? `${l.line}` : '';
-          const detail = [mktLabel, outLabel, lineNum].filter(Boolean).join(' · ');
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
           unknownSports.push(`${baseName} ${tag} ${detail}`);
         }

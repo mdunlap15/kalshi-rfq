@@ -759,7 +759,7 @@
       const unknownEntries = Object.entries(unknownSports).sort((a,b) => b[1]-a[1]);
       if (unknownEntries.length > 0) {
         html += `<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:12px;">
-          <tr><th>Event</th><th>Market</th><th style="text-align:right">Declines</th></tr>`;
+          <tr><th>Event</th><th>Why Unregistered</th><th style="text-align:right">Declines</th></tr>`;
         for (const [raw, count] of unknownEntries.slice(0, 20)) {
           const eventName = raw.split('[')[0].trim();
           const detail = raw.split(']')[1]?.trim() || '-';
