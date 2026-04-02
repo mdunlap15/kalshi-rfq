@@ -203,6 +203,8 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     // Update order status to 'lost' so dashboard reflects it
     ourQuote.status = 'lost';
     ourQuote.lostAt = new Date().toISOString();
+    ourQuote.winningOdds = matchedOdds != null ? -matchedOdds : null; // negated to match our format
+    ourQuote.winningStake = matchedStake;
     db.saveOrder(ourQuote).catch(() => {});
   } else {
     outcome = 'missed';

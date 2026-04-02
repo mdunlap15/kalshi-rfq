@@ -1511,6 +1511,7 @@
         <th ${sortClick('legs')}>Legs${sortArrow('legs')}</th>
         <th ${sortClick('fairOdds')}>Fair${sortArrow('fairOdds')}</th>
         <th ${sortClick('offeredOdds')}>Offered${sortArrow('offeredOdds')}</th>
+        <th>Winner</th>
         <th ${sortClick('stake')} style="text-align:right">Stake${sortArrow('stake')}</th>
         <th ${sortClick('status')}>Status${sortArrow('status')}</th>
         <th ${sortClick('pnl')} style="text-align:right">P&L${sortArrow('pnl')}</th>
@@ -1526,6 +1527,7 @@
       const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
       // offeredOdds is now stored as American (integer) matching PX format
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
+      const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
       const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
@@ -1544,12 +1546,13 @@
           <td>${legs.length}</td>
           <td>${fairAm}</td>
           <td style="font-weight:600;">${offeredAm}</td>
+          <td style="color:${order.status === 'lost' ? 'var(--amber)' : 'var(--text3)'};">${winnerOdds}</td>
           <td style="text-align:right">${stake}</td>
           <td><span class="${statusClass}">${statusText}</span></td>
           <td style="text-align:right">${pnlHtml}</td>
         </tr>
         <tr id="ord-${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-          <td colspan="8" style="padding: 12px 16px;">
+          <td colspan="9" style="padding: 12px 16px;">
             <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
             <table style="width:100%; font-size: 12px;">
               <tr style="color: var(--text3);">
