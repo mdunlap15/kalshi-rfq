@@ -200,6 +200,10 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     outcome = 'lost'; // we quoted but didn't win
     marketStats.weLost++;
     marketStats.weQuoted++;
+    // Update order status to 'lost' so dashboard reflects it
+    ourQuote.status = 'lost';
+    ourQuote.lostAt = new Date().toISOString();
+    db.saveOrder(ourQuote).catch(() => {});
   } else {
     outcome = 'missed';
     marketStats.missedNoQuote++;

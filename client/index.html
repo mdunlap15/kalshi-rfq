@@ -1338,6 +1338,7 @@
     let cls = 'neutral';
     if (text === 'quoted') cls = 'neutral';
     else if (text === 'confirmed') cls = 'positive';
+    else if (text === 'lost') cls = 'negative';
     else if (text === 'rejected') cls = 'negative';
     else if (text.startsWith('settled_')) {
       cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
