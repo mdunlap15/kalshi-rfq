@@ -107,13 +107,14 @@ async function priceParlay(legs) {
   // Determine max risk
   const maxRisk = config.pricing.maxRiskPerParlay;
 
-  // Convert to American odds (PX uses American integers throughout)
-  const americanOdds = decimalToAmerican(decimalOdds);
+  // PX Parlay SP API uses DECIMAL odds (docs example: odds: 1.8)
+  // NOT American odds — the main MM API uses American but Parlay SP is decimal
+  const americanOdds = decimalToAmerican(decimalOdds); // for display/tracking
 
-  // Build estimated_price (per-leg breakdown) — also in American
+  // Build estimated_price (per-leg breakdown) — decimal odds per leg
   const estimatedPrice = pricedLegs.map(leg => ({
     line_id: leg.lineId,
-    odds: decimalToAmerican(1 / leg.fairProb),
+    odds: Math.round((1 / leg.fairProb) * 100) / 100, // decimal odds
   }));
 
   // valid_until in nanoseconds
@@ -122,7 +123,7 @@ async function priceParlay(legs) {
   return {
     offer: {
       valid_until: validUntil,
-      odds: americanOdds,
+      odds: Math.round(decimalOdds * 100) / 100, // DECIMAL odds for PX
       max_risk: maxRisk,
       estimated_price: estimatedPrice,
     },
