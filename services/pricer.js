@@ -248,10 +248,19 @@ function shouldDecline(legs) {
   }
 
   // Check team-level exposure limits
+  // Estimate payout for exposure check (max_risk is our max payout)
+  const estPayout = config.pricing.maxRiskPerParlay;
+  // Pass legs with fairProb info for weighted calculation
+  const legsWithProb = resolvedLegs.map(l => {
+    const fp = oddsFeed.getFairProb(
+      l.lineInfo.oddsApiSport, l.lineInfo.homeTeam, l.lineInfo.awayTeam,
+      l.lineInfo.oddsApiMarket, l.lineInfo.oddsApiSelection,
+      l.lineInfo.line != null ? Math.abs(l.lineInfo.line) : null, l.lineInfo.startTime
+    );
+    return { team: l.lineInfo.teamName, fairProb: fp || 0.5 };
+  });
   const exposureCheck = orderTracker.checkExposureLimits(
-    resolvedLegs.map(l => ({ team: l.lineInfo.teamName })),
-    config.pricing.maxRiskPerParlay,
-    config.pricing.maxExposurePerTeam
+    legsWithProb, estPayout, config.pricing.maxExposurePerTeam
   );
   if (!exposureCheck.allowed) {
     log.info('Pricing', `Exposure limit: ${exposureCheck.reason}`);

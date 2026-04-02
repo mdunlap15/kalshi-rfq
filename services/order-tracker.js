@@ -421,8 +421,18 @@ function getPnLBySport() {
 }
 
 // ---------------------------------------------------------------------------
-// EXPOSURE HELPERS
+// PROBABILITY-WEIGHTED EXPOSURE
 // ---------------------------------------------------------------------------
+// For each team in each confirmed parlay, the weighted risk =
+// payout × P(all OTHER legs win | this team's leg wins)
+//
+// Example: 3-leg parlay, Lakers (60%), Celtics (70%), Over (50%), payout $1000
+// Lakers risk: $1000 × 0.70 × 0.50 = $350
+// Celtics risk: $1000 × 0.60 × 0.50 = $300
+// Over risk: $1000 × 0.60 × 0.70 = $420
+//
+// A 10-leg $2000 payout parlay at 50% each:
+// Each team risk: $2000 × 0.50^9 = $3.91 (negligible)
 
 function normalizeExposureKey(name) {
   return (name || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
@@ -432,78 +442,126 @@ function getLegsForExposure(order) {
   return order.legs || order.meta?.legs || [];
 }
 
-function addExposure(order) {
+/**
+ * Calculate payout for an order.
+ */
+function getOrderPayout(order) {
+  const stake = order.confirmedStake || 0;
+  const decimalOdds = order.meta?.decimalOdds || 0;
+  if (stake && decimalOdds > 1) return stake * (decimalOdds - 1);
+  // Fallback: use maxRisk as rough payout estimate
+  return order.maxRisk || 0;
+}
+
+/**
+ * Calculate probability-weighted risk per leg for a parlay.
+ * Returns [{ key, name, weightedRisk }]
+ */
+function calcWeightedRisk(order) {
   const legs = getLegsForExposure(order);
-  const risk = order.maxRisk || 0;
-  for (const leg of legs) {
+  const payout = getOrderPayout(order);
+  if (payout <= 0 || legs.length === 0) return [];
+
+  const results = [];
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i];
     const name = leg.team || leg.teamName || 'unknown';
     const key = normalizeExposureKey(name);
     if (!key) continue;
-    if (!exposure[key]) {
-      exposure[key] = { risk: 0, parlays: 0, name };
+
+    // Product of all OTHER legs' fair probabilities
+    let otherProb = 1;
+    for (let j = 0; j < legs.length; j++) {
+      if (j === i) continue;
+      const prob = legs[j].fairProb || 0.5; // default 50% if unknown
+      otherProb *= prob;
     }
-    exposure[key].risk += risk;
+
+    results.push({
+      key,
+      name,
+      weightedRisk: payout * otherProb,
+    });
+  }
+  return results;
+}
+
+function addExposure(order) {
+  const risks = calcWeightedRisk(order);
+  for (const { key, name, weightedRisk } of risks) {
+    if (!exposure[key]) {
+      exposure[key] = { risk: 0, parlays: 0, name, notionalPayout: 0 };
+    }
+    exposure[key].risk += weightedRisk;
     exposure[key].parlays += 1;
+    exposure[key].notionalPayout += getOrderPayout(order);
   }
 }
 
 function removeExposure(order) {
-  const legs = getLegsForExposure(order);
-  const risk = order.maxRisk || 0;
-  for (const leg of legs) {
-    const name = leg.team || leg.teamName || 'unknown';
-    const key = normalizeExposureKey(name);
-    if (!key || !exposure[key]) continue;
-    exposure[key].risk -= risk;
+  const risks = calcWeightedRisk(order);
+  for (const { key, weightedRisk } of risks) {
+    if (!exposure[key]) continue;
+    exposure[key].risk -= weightedRisk;
     exposure[key].parlays -= 1;
+    exposure[key].notionalPayout -= getOrderPayout(order);
     if (exposure[key].parlays <= 0) {
       delete exposure[key];
     }
   }
 }
 
-/**
- * Get current exposure for a specific team/selection.
- * Returns { risk, parlays, name } or null.
- */
 function getExposureForTeam(teamName) {
   const key = normalizeExposureKey(teamName);
   return exposure[key] || null;
 }
 
 /**
- * Check if adding a parlay with these legs would exceed exposure limits.
- * Returns { allowed, reason, violations[] }.
+ * Check if adding a parlay would exceed probability-weighted exposure limits.
+ * @param {Array} legs - legs with fairProb and team/teamName
+ * @param {number} payout - estimated payout if all legs win
+ * @param {number} maxWeightedExposure - max weighted risk per team
  */
-function checkExposureLimits(legs, maxRiskPerParlay, maxExposurePerTeam) {
-  if (!maxExposurePerTeam || maxExposurePerTeam <= 0) {
+function checkExposureLimits(legs, payout, maxWeightedExposure) {
+  if (!maxWeightedExposure || maxWeightedExposure <= 0) {
     return { allowed: true, reason: null, violations: [] };
   }
 
   const violations = [];
-  for (const leg of legs) {
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i];
     const name = leg.team || leg.teamName || leg.lineInfo?.teamName || 'unknown';
     const key = normalizeExposureKey(name);
     if (!key) continue;
 
-    const current = exposure[key]?.risk || 0;
-    const afterAdd = current + maxRiskPerParlay;
+    // Product of other legs' probs
+    let otherProb = 1;
+    for (let j = 0; j < legs.length; j++) {
+      if (j === i) continue;
+      const prob = legs[j].fairProb || legs[j].lineInfo?.fairProb || 0.5;
+      otherProb *= prob;
+    }
 
-    if (afterAdd > maxExposurePerTeam) {
+    const newRisk = payout * otherProb;
+    const current = exposure[key]?.risk || 0;
+    const afterAdd = current + newRisk;
+
+    if (afterAdd > maxWeightedExposure) {
       violations.push({
         team: name,
-        currentExposure: current,
-        wouldBe: afterAdd,
-        limit: maxExposurePerTeam,
+        currentExposure: Math.round(current * 100) / 100,
+        newRisk: Math.round(newRisk * 100) / 100,
+        wouldBe: Math.round(afterAdd * 100) / 100,
+        limit: maxWeightedExposure,
       });
     }
   }
 
   if (violations.length > 0) {
-    const names = violations.map(v => v.team).join(', ');
+    const names = violations.map(v => `${v.team} ($${v.wouldBe}/$${v.limit})`).join(', ');
     return {
       allowed: false,
-      reason: `Exposure limit exceeded for: ${names}`,
+      reason: `Weighted exposure limit exceeded: ${names}`,
       violations,
     };
   }
@@ -512,11 +570,11 @@ function checkExposureLimits(legs, maxRiskPerParlay, maxExposurePerTeam) {
 }
 
 /**
- * Get full exposure snapshot — all teams with active exposure.
+ * Get full exposure snapshot — all teams with active weighted exposure.
  */
 function getExposureSnapshot() {
   return Object.entries(exposure)
-    .map(([key, val]) => ({ key, ...val }))
+    .map(([key, val]) => ({ key, ...val, risk: Math.round(val.risk * 100) / 100, notionalPayout: Math.round((val.notionalPayout || 0) * 100) / 100 }))
     .sort((a, b) => b.risk - a.risk);
 }
 

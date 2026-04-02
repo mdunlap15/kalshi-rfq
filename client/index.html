@@ -1316,7 +1316,7 @@
     const maxPerTeam = exp.maxPerTeam || 0;
 
     if (limitEl) {
-      limitEl.textContent = maxPerTeam > 0 ? `Limit: $${maxPerTeam} per team` : '';
+      limitEl.textContent = maxPerTeam > 0 ? `Weighted limit: $${maxPerTeam} per team` : '';
     }
 
     if (teams.length === 0) {
@@ -1325,12 +1325,16 @@
     }
 
     let html = `
+      <div style="font-size:11px; color:var(--text3); padding:8px 12px; border-bottom:1px solid var(--border);">
+        Weighted Risk = payout × P(other legs win). A 10-leg parlay uses barely any risk budget per team.
+      </div>
       <div style="overflow-x: auto;">
       <table>
         <tr>
           <th>Team / Selection</th>
-          <th style="text-align:right">Active Parlays</th>
-          <th style="text-align:right">Total Risk</th>
+          <th style="text-align:right">Parlays</th>
+          <th style="text-align:right">Weighted Risk</th>
+          <th style="text-align:right">Notional Payout</th>
           <th style="text-align:right">Remaining</th>
           <th style="width:120px;"></th>
         </tr>
@@ -1345,8 +1349,9 @@
         <tr>
           <td>${t.name}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums;">${t.parlays}</td>
-          <td style="text-align:right; font-variant-numeric: tabular-nums; font-weight:600;">$${t.risk.toFixed(0)}</td>
-          <td style="text-align:right; font-variant-numeric: tabular-nums; color: ${remaining < 20 ? 'var(--red)' : 'var(--text2)'};">
+          <td style="text-align:right; font-variant-numeric: tabular-nums; font-weight:600;">$${t.risk.toFixed(2)}</td>
+          <td style="text-align:right; font-variant-numeric: tabular-nums; color:var(--text2);">$${(t.notionalPayout||0).toFixed(0)}</td>
+          <td style="text-align:right; font-variant-numeric: tabular-nums; color: ${remaining < 100 ? 'var(--red)' : 'var(--text2)'};">
             ${maxPerTeam > 0 ? '$' + remaining.toFixed(0) : '-'}
           </td>
           <td>
