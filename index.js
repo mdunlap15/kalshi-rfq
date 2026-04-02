@@ -60,6 +60,13 @@ async function startup() {
     process.exit(1);
   }
 
+  // Step 1b: Load historical data from Supabase
+  try {
+    await orderTracker.loadFromDb();
+  } catch (err) {
+    log.warn('Startup', `    ⚠ DB load failed: ${err.message} — continuing with empty state`);
+  }
+
   // Step 2: Fetch odds from The Odds API
   log.info('Startup', '2/5 Fetching fair values from The Odds API...');
   try {

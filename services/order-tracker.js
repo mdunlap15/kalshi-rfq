@@ -1,7 +1,8 @@
 const log = require('./logger');
+const db = require('./db');
 
 // ---------------------------------------------------------------------------
-// IN-MEMORY ORDER STORE
+// IN-MEMORY ORDER STORE (backed by Supabase for persistence)
 // ---------------------------------------------------------------------------
 
 const orders = {}; // keyed by parlayId
@@ -72,6 +73,7 @@ function recordQuote(parlayId, legs, offeredOdds, maxRisk, fairParlayProb, meta)
   };
 
   log.info('Orders', `Quote #${stats.totalQuotes}: parlay=${parlayId}, legs=${legs.length}, odds=${offeredOdds}, fair=${fairParlayProb.toFixed(5)}`);
+  db.saveOrder(orders[parlayId]).catch(() => {});
   return orders[parlayId];
 }
 
@@ -94,6 +96,7 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
     addExposure(order);
 
     log.info('Orders', `Confirmed: parlay=${parlayId}, order=${orderUuid}, odds=${confirmedOdds}, stake=$${confirmedStake}`);
+    db.saveOrder(order).catch(() => {});
   } else {
     log.warn('Orders', `Confirmation for unknown parlay ${parlayId}`);
   }
@@ -148,6 +151,7 @@ function recordSettlement(orderUuid, result, payout) {
 
     order.status = `settled_${result}`;
     log.info('Orders', `Settled: order=${orderUuid}, result=${result}, pnl=$${order.pnl?.toFixed(2)}, running=$${stats.runningPnL.toFixed(2)}`);
+    db.saveOrder(order).catch(() => {});
   } else {
     log.warn('Orders', `Settlement for unknown order ${orderUuid}`);
   }
@@ -219,6 +223,7 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
   };
 
   matchedParlays.unshift(entry); // newest first
+  db.saveMatchedParlay(entry).catch(() => {});
   if (matchedParlays.length > 200) matchedParlays.pop(); // cap memory
 
   if (weQuoted && outcome === 'lost') {
@@ -527,4 +532,59 @@ module.exports = {
   recordMatchedParlay,
   recordDecline,
   getMarketIntel,
+  loadFromDb,
 };
+
+/**
+ * Load historical data from Supabase on startup.
+ * Restores orders and matched parlays into in-memory stores.
+ */
+async function loadFromDb() {
+  if (!db.isEnabled()) {
+    log.info('DB', 'Supabase not configured — running in memory-only mode');
+    return;
+  }
+
+  log.info('DB', 'Loading historical data from Supabase...');
+
+  // Load orders
+  const dbOrders = await db.loadOrders(500);
+  for (const o of dbOrders) {
+    orders[o.parlayId] = o;
+    if (o.orderUuid) ordersByUuid[o.orderUuid] = o.parlayId;
+
+    // Restore stats
+    stats.totalQuotes++;
+    if (o.status === 'confirmed') stats.totalConfirmations++;
+    if (o.status === 'rejected') stats.totalRejections++;
+    if (o.status?.startsWith('settled_')) {
+      stats.totalSettlements++;
+      if (o.pnl != null) {
+        stats.runningPnL += o.pnl;
+        if (o.pnl > 0) stats.totalWins++;
+        else if (o.pnl < 0) stats.totalLosses++;
+      }
+    }
+
+    // Restore exposure for confirmed (unsettled) orders
+    if (o.status === 'confirmed') {
+      addExposure(o);
+    }
+  }
+  log.info('DB', `Loaded ${dbOrders.length} orders (P&L: $${stats.runningPnL.toFixed(2)})`);
+
+  // Load matched parlays
+  const dbMatched = await db.loadMatchedParlays(200);
+  for (const m of dbMatched) {
+    matchedParlays.push(m);
+    marketStats.totalMatched++;
+    if (m.weQuoted) {
+      marketStats.weQuoted++;
+      if (m.outcome === 'won') marketStats.weWon++;
+      else if (m.outcome === 'lost') marketStats.weLost++;
+    } else {
+      marketStats.missedNoQuote++;
+    }
+  }
+  log.info('DB', `Loaded ${dbMatched.length} matched parlays`);
+}
