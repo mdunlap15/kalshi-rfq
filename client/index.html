@@ -1192,6 +1192,9 @@
         case 'time': va = a.quotedAt || ''; vb = b.quotedAt || ''; break;
         case 'fairOdds': va = fairToAmerican(a.fairParlayProb); vb = fairToAmerican(b.fairParlayProb); break;
         case 'offeredOdds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'legs': va = (a.legs||a.meta?.legs||[]).length; vb = (b.legs||b.meta?.legs||[]).length; break;
+        case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'status': va = a.status || ''; vb = b.status || ''; break;
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
         case 'teams': va = getOrderTeams(a).join(','); vb = getOrderTeams(b).join(','); break;
         default: va = 0; vb = 0;
@@ -1225,11 +1228,11 @@
       <tr>
         <th ${sortClick('time')}>Time${sortArrow('time')}</th>
         <th ${sortClick('teams')}>Teams${sortArrow('teams')}</th>
-        <th>Legs</th>
+        <th ${sortClick('legs')}>Legs${sortArrow('legs')}</th>
         <th ${sortClick('fairOdds')}>Fair${sortArrow('fairOdds')}</th>
         <th ${sortClick('offeredOdds')}>Offered${sortArrow('offeredOdds')}</th>
-        <th style="text-align:right">Stake</th>
-        <th>Status</th>
+        <th ${sortClick('stake')} style="text-align:right">Stake${sortArrow('stake')}</th>
+        <th ${sortClick('status')}>Status${sortArrow('status')}</th>
         <th ${sortClick('pnl')} style="text-align:right">P&L${sortArrow('pnl')}</th>
       </tr>`;
 
@@ -1341,9 +1344,12 @@
     else if (text === 'lost') cls = 'negative';
     else if (text === 'rejected') cls = 'negative';
     else if (text.startsWith('settled_')) {
+      const result = text.replace('settled_', '');
       cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
-      text = text.replace('settled_', '');
+      text = result;
     }
+    // Capitalize first letter
+    text = text.charAt(0).toUpperCase() + text.slice(1);
     return { cls, text };
   }
 
@@ -1585,8 +1591,12 @@
       let va, vb;
       switch (historyState.sortCol) {
         case 'time': va = a.quotedAt || ''; vb = b.quotedAt || ''; break;
+        case 'teams': va = (a.legs||a.meta?.legs||[]).map(l=>l.team||l.teamName||'').join(','); vb = (b.legs||b.meta?.legs||[]).map(l=>l.team||l.teamName||'').join(','); break;
+        case 'legs': va = (a.legs||a.meta?.legs||[]).length; vb = (b.legs||b.meta?.legs||[]).length; break;
+        case 'fair': va = a.fairParlayProb || 0; vb = b.fairParlayProb || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'status': va = a.status || ''; vb = b.status || ''; break;
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
         default: va = 0; vb = 0;
       }
@@ -1616,12 +1626,12 @@
     html += `<div style="overflow-x: auto;"><table>
       <tr>
         <th ${hSortClick('time')}>Time${hSortArrow('time')}</th>
-        <th>Teams</th>
-        <th>Legs</th>
-        <th>Fair</th>
+        <th ${hSortClick('teams')}>Teams${hSortArrow('teams')}</th>
+        <th ${hSortClick('legs')}>Legs${hSortArrow('legs')}</th>
+        <th ${hSortClick('fair')}>Fair${hSortArrow('fair')}</th>
         <th ${hSortClick('odds')}>Offered${hSortArrow('odds')}</th>
         <th ${hSortClick('stake')}>Stake${hSortArrow('stake')}</th>
-        <th>Status</th>
+        <th ${hSortClick('status')}>Status${hSortArrow('status')}</th>
         <th ${hSortClick('pnl')} style="text-align:right">P&L${hSortArrow('pnl')}</th>
       </tr>`;
 
@@ -1634,14 +1644,7 @@
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
 
-      let statusText = order.status || 'unknown';
-      let statusClass = 'neutral';
-      if (statusText === 'confirmed') statusClass = 'positive';
-      else if (statusText === 'rejected') statusClass = 'negative';
-      else if (statusText.startsWith('settled_')) {
-        statusClass = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
-        statusText = statusText.replace('settled_', '');
-      }
+      const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
       let pnlHtml = '-';
       if (order.pnl != null) {
