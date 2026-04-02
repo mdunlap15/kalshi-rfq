@@ -355,6 +355,7 @@ async function handleRFQ(data) {
 
     // Submit offer to PX
     if (callbackUrl) {
+      log.info('RFQ', `Submitting: parlay=${parlayId}, decimal=${result.meta.decimalOdds}, american=${result.meta.americanOdds}, offer=${JSON.stringify(result.offer)}`);
       await px.submitOffer(callbackUrl, parlayId, [result.offer]);
       const elapsed = Date.now() - startTime;
       log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.decimalOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms`);

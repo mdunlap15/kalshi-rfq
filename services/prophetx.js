@@ -140,14 +140,20 @@ async function registerWebSocket(socketId) {
 
 async function submitOffer(callbackUrl, parlayId, offers) {
   log.info('PX-Offer', `Submitting offer for parlay ${parlayId}`, {
-    legs: offers.length,
     callbackUrl,
+    payload: JSON.stringify({ parlay_id: parlayId, offers }).substring(0, 500),
   });
-  const data = await pxFetch(callbackUrl, 'POST', {
-    parlay_id: parlayId,
-    offers,
-  }, false); // useBaseUrl=false — callbackUrl is absolute
-  return data;
+  try {
+    const data = await pxFetch(callbackUrl, 'POST', {
+      parlay_id: parlayId,
+      offers,
+    }, false); // useBaseUrl=false — callbackUrl is absolute
+    log.info('PX-Offer', `Response for ${parlayId}: ${JSON.stringify(data).substring(0, 300)}`);
+    return data;
+  } catch (err) {
+    log.error('PX-Offer', `Failed to submit offer for ${parlayId}: ${err.message}`);
+    throw err;
+  }
 }
 
 async function confirmOrder(callbackUrl, orderUuid, action, confirmedOdds, confirmedStake, priceProbability) {
