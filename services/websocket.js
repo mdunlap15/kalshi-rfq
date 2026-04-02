@@ -1,4 +1,5 @@
 const Pusher = require('pusher-js');
+const { config } = require('../config');
 const log = require('./logger');
 const px = require('./prophetx');
 const pricer = require('./pricer');
@@ -432,8 +433,6 @@ async function handleConfirm(data) {
     log.error('Confirm', `Error handling confirmation: ${err.message}`);
   }
 }
-
-const { config } = require('../config');
 
 /**
  * Handle order matched (broadcast — all SPs see this when any parlay gets filled).
