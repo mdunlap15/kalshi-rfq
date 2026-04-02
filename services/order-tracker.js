@@ -334,12 +334,13 @@ function getMarketIntel(limit = 50) {
         return {
           parlayId: m.parlayId,
           teams: (m.legs || []).map(l => l.team).filter(t => t !== 'Unknown').join(', '),
+          legs: m.legs || [],
           legCount: m.legCount,
           ourOdds,
           winOdds,
           ourProb: Math.round(ourProb * 10000) / 100,
           winProb: Math.round(winProb * 10000) / 100,
-          gapProb: Math.round(gapProb * 10000) / 100, // in percentage points
+          gapProb: Math.round(gapProb * 10000) / 100,
           won,
           stake: m.matchedStake,
           time: m.matchedAt,
