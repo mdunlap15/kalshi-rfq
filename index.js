@@ -234,6 +234,18 @@ function startStatusServer() {
     res.json({ ok: true, paused: false });
   });
 
+  // Force WebSocket reconnect
+  app.post('/reconnect', async (req, res) => {
+    try {
+      log.info('API', 'Manual WebSocket reconnect requested');
+      websocket.disconnect();
+      await websocket.connect();
+      res.json({ ok: true, state: websocket.getState().connectionState });
+    } catch (err) {
+      res.json({ ok: false, error: err.message });
+    }
+  });
+
   // List cached odds events (debugging)
   app.get('/odds-events', (req, res) => {
     res.json({ events: oddsFeed.getAllCachedEvents() });

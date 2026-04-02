@@ -352,6 +352,7 @@
       <div class="spinner"></div>
     </div>
     <button class="btn" onclick="refreshDashboard()">Refresh</button>
+    <button class="btn" id="reconnect-btn" onclick="reconnectWS(this)" style="display:none;">Reconnect</button>
     <button class="btn" onclick="toggleDefinitions()">Definitions</button>
     <button class="btn" id="pause-btn" onclick="togglePause()">Pause</button>
   </div>
@@ -637,9 +638,14 @@
     const ws = data.websocket || {};
     const badge = document.getElementById('ws-badge');
     const badgeText = document.getElementById('ws-badge-text');
-    badge.className = 'status-badge ' + (ws.connectionState === 'connected' ? 'connected' :
+    const isConnected = ws.connectionState === 'connected';
+    badge.className = 'status-badge ' + (isConnected ? 'connected' :
       ws.connectionState === 'connecting' ? 'connecting' : 'disconnected');
     badgeText.textContent = ws.connectionState || 'Unknown';
+
+    // Show reconnect button when disconnected
+    const reconnectBtn = document.getElementById('reconnect-btn');
+    if (reconnectBtn) reconnectBtn.style.display = isConnected ? 'none' : 'inline-block';
 
     // Paused state
     isPaused = ws.paused || false;
@@ -1687,6 +1693,20 @@
   // -----------------------------------------------------------------------
   // ACTIONS
   // -----------------------------------------------------------------------
+
+  async function reconnectWS(btn) {
+    try {
+      if (btn) { btn.textContent = 'Reconnecting...'; btn.disabled = true; }
+      addLog('system', 'Reconnecting WebSocket...');
+      const result = await postJSON('/reconnect');
+      addLog('system', 'Reconnect result: ' + (result.ok ? result.state : result.error));
+      await refreshDashboard();
+    } catch (err) {
+      addLog('error', 'Reconnect failed: ' + err.message);
+    } finally {
+      if (btn) { btn.textContent = 'Reconnect'; btn.disabled = false; }
+    }
+  }
 
   async function togglePause() {
     try {
