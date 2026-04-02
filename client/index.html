@@ -458,12 +458,25 @@
   <div id="tab-history" class="tab-content" style="display:none;">
     <div class="card">
       <div class="card-header">
-        <span>Parlay History</span>
+        <span>All Quotes</span>
         <span id="history-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
       </div>
       <div class="card-body" style="padding: 0;">
         <div id="history-table">
           <div class="empty-state"><div class="icon">-</div><div>No historical parlays yet</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settled Positions -->
+    <div class="card">
+      <div class="card-header">
+        <span>Settled Positions (Wager Log)</span>
+        <span id="settled-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" style="padding: 0;">
+        <div id="settled-table">
+          <div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div>
         </div>
       </div>
     </div>
@@ -603,6 +616,7 @@
       renderStatus(status);
       renderOrders(orders);
       renderPositions(orders);
+      renderSettled(orders);
       renderMarketIntel(intel);
       renderCompetitiveness(intel);
       renderHistory(orders);
@@ -1167,6 +1181,128 @@
           </div>
         </td>
       </tr>`;
+    }
+
+    html += '</table></div>';
+    el.innerHTML = html;
+  }
+
+  // Settled positions state
+  const settledState = {
+    orders: {},
+    sortCol: 'settled', sortDir: -1,
+    search: '',
+  };
+
+  function renderSettled(data) {
+    const el = document.getElementById('settled-table');
+    const countEl = document.getElementById('settled-count');
+    const orders = data.recentOrders || [];
+
+    // Merge into state
+    for (const o of orders) {
+      if (o.parlayId && o.status?.startsWith('settled_')) settledState.orders[o.parlayId] = o;
+    }
+
+    const settled = Object.values(settledState.orders)
+      .sort((a, b) => {
+        let va, vb;
+        switch (settledState.sortCol) {
+          case 'settled': va = a.settledAt || a.quotedAt || ''; vb = b.settledAt || b.quotedAt || ''; break;
+          case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+          case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
+          case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+          default: va = 0; vb = 0;
+        }
+        if (va < vb) return -1 * settledState.sortDir;
+        if (va > vb) return 1 * settledState.sortDir;
+        return 0;
+      });
+
+    // Filter by search
+    const filtered = settledState.search
+      ? settled.filter(o => {
+          const q = settledState.search.toLowerCase();
+          const teams = (o.legs||o.meta?.legs||[]).map(l=>l.team||l.teamName||'').join(' ').toLowerCase();
+          return teams.includes(q) || (o.parlayId||'').toLowerCase().includes(q);
+        })
+      : settled;
+
+    if (countEl) {
+      const totalPnl = settled.reduce((s, o) => s + (o.pnl || 0), 0);
+      const wins = settled.filter(o => o.pnl > 0).length;
+      const losses = settled.filter(o => o.pnl < 0).length;
+      countEl.textContent = settled.length > 0
+        ? settled.length + ' settled · ' + wins + 'W ' + losses + 'L · P&L: ' + (totalPnl >= 0 ? '+' : '') + '$' + totalPnl.toFixed(2)
+        : '';
+    }
+
+    if (filtered.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div>';
+      return;
+    }
+
+    const sSortArrow = (col) => settledState.sortCol === col ? (settledState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const sSortClick = (col) => 'onclick="event.stopPropagation(); settledState.sortCol=settledState.sortCol===\'' + col + '\'?settledState.sortCol:\'' + col + '\'; if(settledState.sortCol===\'' + col + '\') settledState.sortDir*=-1; else { settledState.sortCol=\'' + col + '\'; settledState.sortDir=-1; } renderSettled({recentOrders:[]});" style="cursor:pointer;"';
+
+    let html = '<div style="padding:8px 12px; border-bottom:1px solid var(--border);"><input type="text" id="settled-search" placeholder="Search team..." value="' + settledState.search + '" oninput="settledState.search=this.value; renderSettled({recentOrders:[]})" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;"></div>';
+
+    html += '<div style="overflow-x:auto;"><table>';
+    html += '<tr>';
+    html += '<th ' + sSortClick('settled') + '>Settled' + sSortArrow('settled') + '</th>';
+    html += '<th>Teams</th>';
+    html += '<th>Legs</th>';
+    html += '<th ' + sSortClick('odds') + '>Odds' + sSortArrow('odds') + '</th>';
+    html += '<th ' + sSortClick('stake') + ' style="text-align:right">Stake' + sSortArrow('stake') + '</th>';
+    html += '<th>Result</th>';
+    html += '<th ' + sSortClick('pnl') + ' style="text-align:right">P&L' + sSortArrow('pnl') + '</th>';
+    html += '</tr>';
+
+    for (const order of filtered.slice(0, 100)) {
+      const time = order.settledAt ? new Date(order.settledAt).toLocaleString() : order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
+      const legs = order.legs || order.meta?.legs || [];
+      const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
+      const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
+      const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
+      const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
+      const result = order.settlementResult || order.status?.replace('settled_', '') || '-';
+      const resultCls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+      const resultText = result.charAt(0).toUpperCase() + result.slice(1);
+      let pnlHtml = '-';
+      if (order.pnl != null) {
+        const cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+        pnlHtml = '<span class="' + cls + '">' + (order.pnl >= 0 ? '+' : '') + '$' + order.pnl.toFixed(2) + '</span>';
+      }
+
+      const rowKey = 'stl-' + (order.parlayId || '');
+      const expanded = expandedRows.has(rowKey);
+      html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">';
+      html += '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>';
+      html += '<td style="max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>';
+      html += '<td>' + legs.length + '</td>';
+      html += '<td style="font-weight:600;">' + offeredAm + '</td>';
+      html += '<td style="text-align:right">' + stake + '</td>';
+      html += '<td><span class="' + resultCls + '">' + resultText + '</span></td>';
+      html += '<td style="text-align:right">' + pnlHtml + '</td>';
+      html += '</tr>';
+      html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
+      html += '<td colspan="7" style="padding:12px 16px;">';
+      html += '<table style="width:100%; font-size:11px;">';
+      html += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Result</th><th style="text-align:left; padding:2px 6px;">Team</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th></tr>';
+      for (const l of legs) {
+        const ls = l.settlementStatus || l.settlement_status || l.status || 'pending';
+        let lIcon, lColor;
+        if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; }
+        else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; }
+        else { lIcon = '&#9679;'; lColor = 'var(--text3)'; }
+        html += '<tr><td style="padding:2px 6px; color:' + lColor + '; text-align:center;">' + lIcon + '</td>';
+        html += '<td style="padding:2px 6px;">' + (l.team || l.teamName || 'Unknown') + '</td>';
+        html += '<td style="padding:2px 6px;"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>';
+        html += '<td style="padding:2px 6px;">' + (l.line != null ? l.line : '-') + '</td></tr>';
+      }
+      html += '</table>';
+      html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
+      html += '</td></tr>';
     }
 
     html += '</table></div>';
