@@ -1528,7 +1528,8 @@
       // offeredOdds is now stored as American (integer) matching PX format
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
-      const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
+      const stakeVal = order.confirmedStake || order.winningStake;
+      const stake = stakeVal ? '$' + Number(stakeVal).toFixed(2) : '-';
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
       let pnlHtml = '-';
