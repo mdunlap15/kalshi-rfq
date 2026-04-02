@@ -91,6 +91,7 @@ async function fetchOddsForSport(sport) {
   }
 
   // Parse into our cache format
+  // Store as array per team pair to handle back-to-back series and doubleheaders
   const parsed = {};
   for (const [eventId, event] of Object.entries(eventMap)) {
     const key = normalizeEventKey(event.homeTeam, event.awayTeam);
@@ -127,13 +128,14 @@ async function fetchOddsForSport(sport) {
     }
 
     if (Object.keys(markets).length > 0) {
-      parsed[key] = {
+      if (!parsed[key]) parsed[key] = [];
+      parsed[key].push({
         homeTeam: event.homeTeam,
         awayTeam: event.awayTeam,
         commenceTime: event.commenceTime,
         eventId,
         markets,
-      };
+      });
     }
   }
 
@@ -278,18 +280,20 @@ async function fetchFromTheOddsApi(sport) {
     }
 
     if (Object.keys(markets).length > 0) {
-      parsed[key] = {
+      if (!parsed[key]) parsed[key] = [];
+      parsed[key].push({
         homeTeam: event.home_team,
         awayTeam: event.away_team,
         commenceTime: event.commence_time,
         eventId: event.id,
         markets,
-      };
+      });
     }
   }
 
   oddsCache[sport] = { fetchedAt: Date.now(), events: parsed };
-  log.info('OddsFeed', `Cached ${Object.keys(parsed).length} events for ${sport} (The Odds API fallback)`);
+  const totalEvents = Object.values(parsed).reduce((s, arr) => s + arr.length, 0);
+  log.info('OddsFeed', `Cached ${totalEvents} events (${Object.keys(parsed).length} matchups) for ${sport} (The Odds API fallback)`);
   return parsed;
 }
 
@@ -562,13 +566,10 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
 
 /**
  * Get fair probability — sync version, uses cached data only.
+ * @param {string} targetTime - optional ISO timestamp for time-aware matching
  */
-function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line) {
-  const sportCache = oddsCache[sport];
-  if (!sportCache) return null;
-
-  const key = normalizeEventKey(homeTeam, awayTeam);
-  const event = sportCache.events[key];
+function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, targetTime) {
+  const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
   if (!event) return null;
 
   const market = event.markets[marketType];
@@ -601,18 +602,17 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line) {
 /**
  * Get fair probability — async version. Falls back to on-demand alt line fetch.
  */
-async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection, line) {
+async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection, line, targetTime) {
   // Try sync first
-  const syncResult = getFairProb(sport, homeTeam, awayTeam, marketType, selection, line);
+  const syncResult = getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, targetTime);
   if (syncResult != null) return syncResult;
 
   // If it's a spread/total with a line mismatch, try fetching alt lines
   if ((marketType === 'spreads' || marketType === 'totals') && line != null) {
-    const sportCache = oddsCache[sport];
-    const key = normalizeEventKey(homeTeam, awayTeam);
-    const event = sportCache?.events?.[key];
+    const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
     if (event) {
       await fetchAltLines(sport, homeTeam, awayTeam);
+      const key = normalizeEventKey(homeTeam, awayTeam);
       return getAltLineFairProb(key, marketType, selection, line);
     }
   }
@@ -642,11 +642,36 @@ function getAltLineFairProb(eventKey, marketType, selection, line) {
   return null;
 }
 
-function getEventMarkets(sport, homeTeam, awayTeam) {
+/**
+ * Get event markets, optionally matching by time for back-to-back/doubleheaders.
+ * @param {string} targetTime - ISO timestamp to match closest event (optional)
+ */
+function getEventMarkets(sport, homeTeam, awayTeam, targetTime) {
   const sportCache = oddsCache[sport];
   if (!sportCache) return null;
   const key = normalizeEventKey(homeTeam, awayTeam);
-  return sportCache.events[key] || null;
+  const events = sportCache.events[key];
+  if (!events || events.length === 0) return null;
+
+  // If only one event or no target time, return first
+  if (events.length === 1 || !targetTime) return events[0];
+
+  // Find closest by time
+  const targetMs = new Date(targetTime).getTime();
+  if (isNaN(targetMs)) return events[0];
+
+  let closest = events[0];
+  let closestDiff = Infinity;
+  for (const ev of events) {
+    const evMs = new Date(ev.commenceTime).getTime();
+    if (isNaN(evMs)) continue;
+    const diff = Math.abs(evMs - targetMs);
+    if (diff < closestDiff) {
+      closestDiff = diff;
+      closest = ev;
+    }
+  }
+  return closest;
 }
 
 function getCacheAge(sport) {
@@ -678,8 +703,9 @@ function getCacheStatus() {
   const status = {};
   for (const sport of config.supportedSports) {
     const cache = oddsCache[sport];
+    const totalEvents = cache ? Object.values(cache.events).reduce((s, arr) => s + arr.length, 0) : 0;
     status[sport] = cache ? {
-      eventCount: Object.keys(cache.events).length,
+      eventCount: totalEvents,
       ageMinutes: Math.round(getCacheAge(sport) * 10) / 10,
       stale: isStale(sport),
     } : { eventCount: 0, ageMinutes: null, stale: true };
@@ -690,14 +716,16 @@ function getCacheStatus() {
 function getAllCachedEvents() {
   const all = [];
   for (const sport of Object.keys(oddsCache)) {
-    for (const [key, event] of Object.entries(oddsCache[sport].events)) {
-      all.push({
-        sport,
-        homeTeam: event.homeTeam,
-        awayTeam: event.awayTeam,
-        markets: Object.keys(event.markets),
-        commenceTime: event.commenceTime,
-      });
+    for (const [key, events] of Object.entries(oddsCache[sport].events)) {
+      for (const event of events) {
+        all.push({
+          sport,
+          homeTeam: event.homeTeam,
+          awayTeam: event.awayTeam,
+          markets: Object.keys(event.markets),
+          commenceTime: event.commenceTime,
+        });
+      }
     }
   }
   return all;

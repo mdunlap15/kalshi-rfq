@@ -70,7 +70,8 @@ async function priceParlay(legs) {
       lineInfo.awayTeam,
       lineInfo.oddsApiMarket,
       lineInfo.oddsApiSelection,
-      lineInfo.line != null ? Math.abs(lineInfo.line) : null
+      lineInfo.line != null ? Math.abs(lineInfo.line) : null,
+      lineInfo.startTime // for back-to-back/doubleheader matching
     );
 
     if (fairProb == null || fairProb <= 0 || fairProb >= 1) {

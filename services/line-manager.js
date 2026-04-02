@@ -199,9 +199,10 @@ async function seedAllLines() {
       const tryAway = matchTeamName(awayComp.name, uniqueTeams);
 
       if (tryHome && tryAway) {
-        // Verify this pair exists as an actual Odds API event
-        const oddsEvt = oddsFeed.getEventMarkets(tryKey, tryHome, tryAway)
-          || oddsFeed.getEventMarkets(tryKey, tryAway, tryHome);
+        // Verify this pair exists — use scheduled time for back-to-back/doubleheader matching
+        const pxTime = event.scheduled || null;
+        const oddsEvt = oddsFeed.getEventMarkets(tryKey, tryHome, tryAway, pxTime)
+          || oddsFeed.getEventMarkets(tryKey, tryAway, tryHome, pxTime);
         if (oddsEvt) {
           matchedHome = tryHome;
           matchedAway = tryAway;
@@ -222,9 +223,10 @@ async function seedAllLines() {
     }
 
     // Verify this home/away pair exists as an actual Odds API event
-    const oddsEvent = matchedOddsEvent || oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway);
+    const pxScheduled = event.scheduled || null;
+    const oddsEvent = matchedOddsEvent || oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxScheduled);
     if (!oddsEvent) {
-      const oddsEventReversed = oddsFeed.getEventMarkets(sportKey, matchedAway, matchedHome);
+      const oddsEventReversed = oddsFeed.getEventMarkets(sportKey, matchedAway, matchedHome, pxScheduled);
       if (!oddsEventReversed) {
         unmatchedEvents.push({
           pxEvent: event.name,
@@ -304,7 +306,7 @@ async function seedAllLines() {
         // For spreads/totals, register all alternate lines (fair value available for primary line)
         matchedLines++;
         // Get event start time from odds cache or PX event
-        const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway);
+        const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxScheduled);
         const startTime = oddsEvt?.commenceTime || event.scheduled || null;
 
         lineIndex[sel.lineId] = {
