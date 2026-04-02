@@ -390,6 +390,19 @@
 
   <!-- ===================== TAB: LIVE ===================== -->
   <div id="tab-live" class="tab-content">
+    <!-- Open Positions -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard(this)">
+        <span><span class="toggle-icon">&#9660;</span>Open Positions</span>
+        <span id="positions-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" style="padding: 0;">
+        <div id="positions-table">
+          <div class="empty-state"><div class="icon">-</div><div>No open positions</div></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Recent Orders -->
     <div class="card">
       <div class="card-header" onclick="toggleCard(this)">
@@ -589,6 +602,7 @@
 
       renderStatus(status);
       renderOrders(orders);
+      renderPositions(orders);
       renderMarketIntel(intel);
       renderCompetitiveness(intel);
       renderHistory(orders);
@@ -1064,6 +1078,98 @@
     }
     html += '</table></div>';
 
+    el.innerHTML = html;
+  }
+
+  function renderPositions(data) {
+    const el = document.getElementById('positions-table');
+    const countEl = document.getElementById('positions-count');
+    const allOrders = data.recentOrders || [];
+
+    // Open positions = confirmed but not settled
+    const positions = allOrders.filter(o => o.status === 'confirmed');
+
+    if (countEl) {
+      countEl.textContent = positions.length > 0 ? positions.length + ' active' : '';
+    }
+
+    if (positions.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No open positions</div></div>';
+      return;
+    }
+
+    let html = `<div style="overflow-x:auto;"><table>
+      <tr>
+        <th>Confirmed</th>
+        <th>Teams</th>
+        <th>Legs</th>
+        <th>Offered</th>
+        <th style="text-align:right">Stake</th>
+        <th style="text-align:right">Max Risk</th>
+        <th style="text-align:right">To Win</th>
+      </tr>`;
+
+    for (const order of positions) {
+      const time = order.confirmedAt ? new Date(order.confirmedAt).toLocaleString() : order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
+      const legs = order.legs || order.meta?.legs || [];
+      const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
+      const teamsShort = teams.length > 60 ? teams.substring(0, 57) + '...' : teams;
+      const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
+      const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
+      const maxRisk = order.maxRisk ? '$' + Number(order.maxRisk).toFixed(0) : '-';
+      // To win = stake * (decimal - 1) where decimal = offeredOdds converted
+      let toWin = '-';
+      if (order.confirmedStake && order.offeredOdds) {
+        const dec = order.offeredOdds >= 100 ? 1 + order.offeredOdds / 100 : 1 + 100 / Math.abs(order.offeredOdds);
+        toWin = '$' + (order.confirmedStake * (dec - 1)).toFixed(2);
+      }
+
+      const rowKey = 'pos-' + (order.parlayId || '');
+      const expanded = expandedRows.has(rowKey);
+      html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
+        <td style="white-space:nowrap; font-size:12px;">${time}</td>
+        <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis;" title="${teams}">${teamsShort}</td>
+        <td>${legs.length}</td>
+        <td style="font-weight:600;">${offeredAm}</td>
+        <td style="text-align:right">${stake}</td>
+        <td style="text-align:right">${maxRisk}</td>
+        <td style="text-align:right; font-weight:600;">${toWin}</td>
+      </tr>
+      <tr id="${rowKey}" style="display:${expanded ? 'table-row' : 'none'}; background: var(--surface3);">
+        <td colspan="7" style="padding: 12px 16px;">
+          <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
+          <table style="width:100%; font-size: 12px;">
+            <tr style="color: var(--text3);">
+              <th style="text-align:left; padding: 4px 8px;">Status</th>
+              <th style="text-align:left; padding: 4px 8px;">Team / Selection</th>
+              <th style="text-align:left; padding: 4px 8px;">Market</th>
+              <th style="text-align:left; padding: 4px 8px;">Line</th>
+              <th style="text-align:right; padding: 4px 8px;">Fair Odds</th>
+            </tr>
+            ${legs.map(l => {
+              const legStatus = l.settlementStatus || l.settlement_status || l.status || 'pending';
+              let legIcon, legColor;
+              if (legStatus === 'won') { legIcon = '&#10003;'; legColor = 'var(--green)'; }
+              else if (legStatus === 'lost') { legIcon = '&#10007;'; legColor = 'var(--red)'; }
+              else if (legStatus === 'push' || legStatus === 'void') { legIcon = '&#8212;'; legColor = 'var(--amber)'; }
+              else { legIcon = '&#9679;'; legColor = 'var(--text3)'; }
+              return '<tr>' +
+                '<td style="padding:4px 8px; color:' + legColor + '; font-size:14px; text-align:center; width:40px;" title="' + legStatus + '">' + legIcon + '</td>' +
+                '<td style="padding:4px 8px;">' + (l.team || l.teamName || 'Unknown') + '</td>' +
+                '<td style="padding:4px 8px;"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>' +
+                '<td style="padding:4px 8px; color:var(--text2);">' + (l.line != null ? l.line : (l.selection || '-')) + '</td>' +
+                '<td style="padding:4px 8px; text-align:right;">' + (l.fairProb ? decimalToAmerican(1/l.fairProb) : '-') + '</td>' +
+              '</tr>';
+            }).join('')}
+          </table>
+          <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
+            Vig: ${((order.meta?.vig || order.vig || 0) * 100).toFixed(1)}% · ID: ${order.parlayId || '-'}
+          </div>
+        </td>
+      </tr>`;
+    }
+
+    html += '</table></div>';
     el.innerHTML = html;
   }
 
