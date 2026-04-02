@@ -579,6 +579,7 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
     const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
     if (lineDiff > 0.01) {
       // Check alt lines cache
+      const key = normalizeEventKey(homeTeam, awayTeam);
       const altProb = getAltLineFairProb(key, marketType, selection, line);
       if (altProb != null) return altProb;
       return null;
