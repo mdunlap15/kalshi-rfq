@@ -1127,67 +1127,9 @@
     const losses = entries.filter(e => !e.won);
     const winRate = entries.length > 0 ? (wins.length / entries.length * 100).toFixed(0) : 0;
 
-    // Categorize losses
-    const lostOnPrice = losses.filter(e => e.gapProb > 0.5); // meaningfully tighter
-    const lostOnSpeed = losses.filter(e => Math.abs(e.gapProb) <= 0.5); // same price, lost anyway
-    const lostTooGenerous = losses.filter(e => e.gapProb < -0.5); // we were MORE generous but lost??
-
-    // === ACTIONABLE INSIGHTS ===
-    html += `<div style="font-size:14px; line-height:1.8; margin-bottom:20px;">`;
-
-    // Win rate headline
     const winColor = winRate >= 50 ? 'var(--green)' : winRate >= 25 ? 'var(--amber)' : 'var(--red)';
-    html += `<div style="font-size:20px; font-weight:700; color:${winColor}; margin-bottom:8px;">${winRate}% win rate</div>`;
-    html += `<div style="color:var(--text2);">Won <strong class="positive">${wins.length}</strong> of <strong>${entries.length}</strong> quoted parlays that got matched.</div>`;
-
-    // Loss analysis
-    if (losses.length > 0) {
-      html += `<div style="margin-top:12px; padding:12px; background:var(--surface2); border-radius:6px; border-left:3px solid var(--red);">`;
-      html += `<div style="font-weight:600; color:var(--red); margin-bottom:6px;">Loss Analysis (${losses.length} lost)</div>`;
-
-      if (lostOnSpeed.length > 0) {
-        html += `<div style="color:var(--text2); margin-bottom:4px;">
-          <strong>${lostOnSpeed.length}</strong> lost at essentially the same price as the winner — likely lost on <strong>response speed</strong>, not pricing.
-        </div>`;
-      }
-      if (lostOnPrice.length > 0) {
-        const avgGap = lostOnPrice.reduce((s, e) => s + e.gapProb, 0) / lostOnPrice.length;
-        html += `<div style="color:var(--text2); margin-bottom:4px;">
-          <strong>${lostOnPrice.length}</strong> lost because our price was tighter (avg <strong style="color:var(--red);">+${avgGap.toFixed(1)}pp</strong> above winner). Consider <strong>lowering vig</strong> to win these.
-        </div>`;
-      }
-      if (lostTooGenerous.length > 0) {
-        html += `<div style="color:var(--text2); margin-bottom:4px;">
-          <strong>${lostTooGenerous.length}</strong> lost despite offering better odds than the winner — unusual, may indicate <strong>speed disadvantage</strong> or sandbox behavior.
-        </div>`;
-      }
-      html += `</div>`;
-    }
-
-    // Win analysis
-    if (wins.length > 0) {
-      html += `<div style="margin-top:12px; padding:12px; background:var(--surface2); border-radius:6px; border-left:3px solid var(--green);">`;
-      html += `<div style="font-weight:600; color:var(--green); margin-bottom:6px;">Win Analysis (${wins.length} won)</div>`;
-      html += `<div style="color:var(--text2);">
-        Note: PX broadcasts our own odds as the winning price on parlays we win, so we can't see how close the runner-up was. The gap shows 0pp for all wins.
-      </div>`;
-      html += `</div>`;
-    }
-
-    // Recommendation
-    html += `<div style="margin-top:12px; padding:12px; background:var(--surface2); border-radius:6px; border-left:3px solid var(--accent);">`;
-    html += `<div style="font-weight:600; color:var(--accent); margin-bottom:6px;">Recommendation</div>`;
-    if (lostOnPrice.length > losses.length * 0.5 && losses.length >= 3) {
-      html += `<div style="color:var(--text2);">Most losses are on price. <strong>Lower your vig</strong> to improve win rate.</div>`;
-    } else if (lostOnSpeed.length > losses.length * 0.5 && losses.length >= 3) {
-      html += `<div style="color:var(--text2);">Most losses are at the same price — you're competitive on pricing. Focus on <strong>response speed</strong> or check if the sandbox routes quotes competitively.</div>`;
-    } else if (entries.length < 10) {
-      html += `<div style="color:var(--text2);">Not enough data yet (${entries.length} quotes matched). Keep running to build a clearer picture. Charts will appear after 10+ data points.</div>`;
-    } else {
-      html += `<div style="color:var(--text2);">Pricing looks balanced. Monitor as more data comes in.</div>`;
-    }
-    html += `</div>`;
-    html += `</div>`;
+    html += `<div style="font-size:20px; font-weight:700; color:${winColor}; margin-bottom:4px;">${winRate}% win rate</div>`;
+    html += `<div style="color:var(--text2); margin-bottom:16px;">Won <strong class="positive">${wins.length}</strong> of <strong>${entries.length}</strong> quoted parlays that got matched. Lost <strong class="negative">${losses.length}</strong>.</div>`;
 
     // === CHARTS (only show with 10+ entries) ===
     if (entries.length >= 10) {
@@ -1228,6 +1170,11 @@
       else if (e.gapProb > 0) { why = '<span style="color:var(--red);">Price</span>'; }
       else { why = '<span style="color:var(--amber);">Unknown</span>'; }
 
+      // Enrich legs from order data (which has fairProb, pinnacleOdds, startTime)
+      const orderData = e.parlayId ? orderState.allOrders[e.parlayId] : null;
+      const enrichedLegs = orderData ? (orderData.legs || orderData.meta?.legs || e.legs || []) : (e.legs || []);
+      const orderVig = orderData?.meta?.vig || orderData?.vig || 0;
+
       const compId = 'comp-' + ci;
       const compExpanded = expandedRows.has(compId);
       html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${compId}')">
@@ -1243,7 +1190,7 @@
       <tr id="${compId}" style="display:${compExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
         <td colspan="8" style="padding: 12px 16px;">
           <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
-          ${buildLegTable(e.legs || [], { showStatus: true, showSport: true, pad: '2px 6px' })}
+          ${buildLegTable(enrichedLegs, { showStatus: true, showSport: true, pad: '2px 6px', vig: orderVig })}
           <div style="margin-top: 6px; font-size: 10px; color: var(--text3);">
             Our implied: ${e.ourProb.toFixed(1)}% · Winner implied: ${e.winProb.toFixed(1)}% · ID: ${e.parlayId || '-'}
           </div>
