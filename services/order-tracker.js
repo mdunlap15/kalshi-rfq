@@ -458,9 +458,20 @@ function findByOrderUuid(uuid) {
 }
 
 function getRecentOrders(limit = 200) {
-  return Object.values(orders)
+  const all = Object.values(orders);
+  // Always include settled and confirmed orders regardless of limit
+  const important = all.filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')));
+  const rest = all.filter(o => o.status !== 'confirmed' && !(o.status && o.status.startsWith('settled_')))
     .sort((a, b) => (b.quotedAt || '').localeCompare(a.quotedAt || ''))
     .slice(0, limit);
+  // Merge, deduplicate, sort
+  const merged = [...important, ...rest];
+  const seen = new Set();
+  return merged.filter(o => {
+    if (seen.has(o.parlayId)) return false;
+    seen.add(o.parlayId);
+    return true;
+  }).sort((a, b) => (b.quotedAt || '').localeCompare(a.quotedAt || ''));
 }
 
 function getStats() {
