@@ -391,6 +391,9 @@
 
   <!-- ===================== TAB: LIVE ===================== -->
   <div id="tab-live" class="tab-content">
+    <!-- Portfolio Summary -->
+    <div id="portfolio-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
+
     <!-- Open Positions -->
     <div class="card">
       <div class="card-header" onclick="toggleCard(this)">
@@ -433,9 +436,9 @@
     <!-- P&L by Sport -->
     <div class="card">
       <div class="card-header" onclick="toggleCard(this)">
-        <span><span class="toggle-icon collapsed">&#9660;</span>P&L by Sport</span>
+        <span><span class="toggle-icon">&#9660;</span>P&L by Sport</span>
       </div>
-      <div class="card-body collapsed" id="pnl-sport">
+      <div class="card-body" id="pnl-sport">
         <div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>
       </div>
     </div>
@@ -520,6 +523,17 @@
         <div class="card-body" id="lines-breakdown">
           <div class="empty-state"><div class="icon">...</div>Loading</div>
         </div>
+      </div>
+    </div>
+
+    <!-- Settlements -->
+    <div class="card">
+      <div class="card-header">
+        <span>Settlement Polling</span>
+        <button class="btn" onclick="pollSettlements(this)">Poll Settlements</button>
+      </div>
+      <div class="card-body" style="padding:12px; font-size:12px; color:var(--text3);">
+        Polls PX orders API for settlement results. Runs automatically every 2 minutes, or click to poll now.
       </div>
     </div>
 
@@ -615,6 +629,7 @@
       ]);
 
       renderStatus(status);
+      renderPortfolioSummary(orders.stats || {}, orders.pnlBySport || {});
       renderOrders(orders);
       renderPositions(orders);
       renderSettled(orders);
@@ -1289,7 +1304,17 @@
     html += '<th ' + sSortClick('stake') + ' style="text-align:right">Stake' + sSortArrow('stake') + '</th>';
     html += '<th>Result</th>';
     html += '<th ' + sSortClick('pnl') + ' style="text-align:right">P&L' + sSortArrow('pnl') + '</th>';
+    html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
+
+    // Calculate cumulative P&L (sorted by settled time ascending for running total)
+    const sortedForCumul = [...filtered].sort((a, b) => (a.settledAt || a.quotedAt || '').localeCompare(b.settledAt || b.quotedAt || ''));
+    const cumulMap = {};
+    let runningPnl = 0;
+    for (const o of sortedForCumul) {
+      runningPnl += (o.pnl || 0);
+      cumulMap[o.parlayId] = runningPnl;
+    }
 
     for (const order of filtered.slice(0, 100)) {
       const time = order.settledAt ? new Date(order.settledAt).toLocaleString() : order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
@@ -1306,6 +1331,8 @@
         const cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
         pnlHtml = '<span class="' + cls + '">' + (order.pnl >= 0 ? '+' : '') + '$' + order.pnl.toFixed(2) + '</span>';
       }
+      const cumul = cumulMap[order.parlayId];
+      const cumulHtml = cumul != null ? '<span class="' + (cumul > 0 ? 'positive' : cumul < 0 ? 'negative' : 'neutral') + '">' + (cumul >= 0 ? '+' : '') + '$' + cumul.toFixed(2) + '</span>' : '-';
 
       const rowKey = 'stl-' + (order.parlayId || '');
       const expanded = expandedRows.has(rowKey);
@@ -1317,9 +1344,10 @@
       html += '<td style="text-align:right">' + stake + '</td>';
       html += '<td><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
+      html += '<td style="text-align:right">' + cumulHtml + '</td>';
       html += '</tr>';
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="7" style="padding:12px 16px;">';
+      html += '<td colspan="8" style="padding:12px 16px;">';
       html += '<table style="width:100%; font-size:11px;">';
       html += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Result</th><th style="text-align:left; padding:2px 6px;">Team</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th></tr>';
       for (const l of legs) {
@@ -1672,6 +1700,42 @@
     else expandedRows.delete(id);
   }
 
+  function renderPortfolioSummary(orderStats, pnlBySport) {
+    const el = document.getElementById('portfolio-summary');
+    if (!el) return;
+
+    const pnl = orderStats.runningPnL || 0;
+    const wins = orderStats.totalWins || 0;
+    const losses = orderStats.totalLosses || 0;
+    const settled = wins + losses;
+    const confirmed = orderStats.totalConfirmations || 0;
+    const active = orderStats.activeOrders || 0;
+    const winRate = settled > 0 ? Math.round(wins / settled * 100) : null;
+
+    // Calculate total stake wagered (sum of confirmed stakes)
+    const totalStake = Object.values(pnlBySport || {}).reduce((s, d) => s + Math.abs(d.pnl || 0), 0) || 0;
+    const roi = totalStake > 0 ? (pnl / totalStake * 100) : null;
+
+    function card(label, value, cls) {
+      return `<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">
+        <div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px;">${label}</div>
+        <div style="font-size:20px; font-weight:700; margin-top:2px;" class="${cls || ''}">${value}</div>
+      </div>`;
+    }
+
+    const pnlCls = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral';
+    const pnlStr = pnl >= 0 ? '+$' + pnl.toFixed(2) : '-$' + Math.abs(pnl).toFixed(2);
+    const wrCls = winRate != null ? (winRate >= 50 ? 'positive' : 'negative') : 'neutral';
+
+    el.innerHTML =
+      card('P&L', settled > 0 ? pnlStr : '-', pnlCls) +
+      card('Record', settled > 0 ? `${wins}W - ${losses}L` : '-') +
+      card('Win Rate', winRate != null ? winRate + '%' : '-', wrCls) +
+      card('Active', active > 0 ? active : '-') +
+      card('Quotes', orderStats.totalQuotes || 0) +
+      card('Filled', confirmed || 0);
+  }
+
   function renderPnLBySport(pnl) {
     const el = document.getElementById('pnl-sport');
     if (!pnl || Object.keys(pnl).length === 0) {
@@ -1754,6 +1818,21 @@
     } finally {
       btn.disabled = false;
       btn.textContent = 'Refresh Lines';
+    }
+  }
+
+  async function pollSettlements(btn) {
+    btn.disabled = true;
+    btn.textContent = 'Polling...';
+    try {
+      const result = await postJSON('/poll-settlements');
+      addLog('system', `Settlement poll: checked ${result.checked}, settled ${result.settled}`);
+      await refreshDashboard();
+    } catch (err) {
+      addLog('error', 'Settlement poll failed: ' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Poll Settlements';
     }
   }
 

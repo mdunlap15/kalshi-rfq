@@ -116,6 +116,67 @@ function recordRejection(parlayId, reason) {
   return order;
 }
 
+/**
+ * Record order finalization — this is where we get the order_uuid.
+ * The price.confirm.new event doesn't include it; order.finalized does.
+ */
+function recordFinalized(parlayId, orderUuid, payload) {
+  const order = orders[parlayId];
+  if (!order) {
+    log.warn('Orders', `Finalized event for unknown parlay ${parlayId}`);
+    return null;
+  }
+
+  order.orderUuid = orderUuid;
+  ordersByUuid[orderUuid] = parlayId;
+
+  // Also capture confirmed values from finalized event if we missed them
+  if (payload) {
+    if (payload.confirmed_stake && !order.confirmedStake) order.confirmedStake = payload.confirmed_stake;
+    if (payload.confirmed_odds && !order.confirmedOdds) order.confirmedOdds = payload.confirmed_odds;
+  }
+
+  log.info('Orders', `Finalized: parlay=${parlayId}, order=${orderUuid}`);
+  db.saveOrder(order).catch(() => {});
+  return order;
+}
+
+/**
+ * Record individual leg settlement.
+ */
+function recordLegSettlement(orderUuid, legPayload) {
+  const parlayId = ordersByUuid[orderUuid];
+  const order = parlayId ? orders[parlayId] : null;
+  if (!order) return;
+
+  const lineId = legPayload.line_id || legPayload.lineId;
+  const status = legPayload.settlement_status || legPayload.status;
+  if (!lineId || !status) return;
+
+  const legs = order.legs || order.meta?.legs || [];
+  for (const leg of legs) {
+    if (leg.lineId === lineId || leg.line_id === lineId) {
+      leg.settlementStatus = status;
+      break;
+    }
+  }
+
+  db.saveOrder(order).catch(() => {});
+}
+
+/**
+ * Convert American odds to profit on a given stake.
+ * Positive (+500): profit = stake * odds / 100
+ * Negative (-200): profit = stake * 100 / |odds|
+ */
+function americanOddsToProfit(americanOdds, stake) {
+  const odds = Number(americanOdds);
+  if (!odds || !stake) return 0;
+  if (odds >= 100) return stake * odds / 100;
+  if (odds <= -100) return stake * 100 / Math.abs(odds);
+  return 0;
+}
+
 function recordSettlement(orderUuid, result, payout) {
   stats.totalSettlements++;
 
@@ -123,20 +184,25 @@ function recordSettlement(orderUuid, result, payout) {
   const order = parlayId ? orders[parlayId] : null;
 
   if (order) {
+    // Don't re-settle
+    if (order.status && order.status.startsWith('settled_')) {
+      log.debug('Orders', `Already settled: order=${orderUuid}`);
+      return order;
+    }
+
     order.settledAt = new Date().toISOString();
     order.settlementResult = result; // 'won', 'lost', 'push', 'void'
 
     // Calculate P&L from SP perspective (house side)
-    // If parlay wins (bettor wins): we lose payout - stake collected
-    // If parlay loses (bettor loses): we win the stake
+    // confirmedOdds is American format (e.g., -221, +500)
     if (result === 'won') {
-      // Bettor won — we pay out
-      const payoutAmount = order.confirmedStake * (order.confirmedOdds - 1);
-      order.pnl = -payoutAmount;
+      // Bettor won — we pay out profit
+      const profit = americanOddsToProfit(order.confirmedOdds, order.confirmedStake);
+      order.pnl = -profit;
       stats.totalLosses++;
     } else if (result === 'lost') {
       // Bettor lost — we keep the stake
-      order.pnl = order.confirmedStake;
+      order.pnl = order.confirmedStake || 0;
       stats.totalWins++;
     } else if (result === 'push' || result === 'void') {
       order.pnl = 0;
@@ -581,11 +647,66 @@ function getExposureSnapshot() {
     .sort((a, b) => b.risk - a.risk);
 }
 
+/**
+ * Poll PX orders API for settlement updates.
+ * Catches settlements that WebSocket events may have missed.
+ */
+async function pollOrderSettlements(px) {
+  const confirmed = Object.values(orders).filter(o => o.status === 'confirmed' && o.orderUuid);
+  if (confirmed.length === 0) {
+    log.debug('Poll', 'No confirmed orders to check');
+    return { checked: 0, settled: 0 };
+  }
+
+  log.info('Poll', `Checking ${confirmed.length} confirmed orders for settlement...`);
+
+  try {
+    // Fetch all our orders from PX
+    const pxOrders = await px.fetchOrders(100);
+    let settled = 0;
+
+    for (const pxOrder of pxOrders) {
+      const uuid = pxOrder.order_uuid;
+      if (!uuid) continue;
+
+      const parlayId = ordersByUuid[uuid];
+      const order = parlayId ? orders[parlayId] : null;
+      if (!order || order.status !== 'confirmed') continue;
+
+      const settlementStatus = pxOrder.settlement_status;
+      if (!settlementStatus || settlementStatus === 'tbd' || settlementStatus === 'requested') continue;
+
+      // Map PX settlement_status to our result format
+      const result = settlementStatus; // 'won', 'lost', 'push', 'void'
+      recordSettlement(uuid, result, pxOrder.profit || 0);
+      settled++;
+
+      // Update per-leg settlement from PX response
+      if (pxOrder.legs && Array.isArray(pxOrder.legs)) {
+        for (const pxLeg of pxOrder.legs) {
+          if (pxLeg.line_id && pxLeg.settlement_status) {
+            recordLegSettlement(uuid, pxLeg);
+          }
+        }
+      }
+    }
+
+    log.info('Poll', `Settlement poll: checked ${pxOrders.length} PX orders, settled ${settled}`);
+    return { checked: pxOrders.length, settled };
+  } catch (err) {
+    log.error('Poll', `Settlement poll failed: ${err.message}`);
+    return { checked: 0, settled: 0, error: err.message };
+  }
+}
+
 module.exports = {
   recordQuote,
   recordConfirmation,
   recordRejection,
+  recordFinalized,
   recordSettlement,
+  recordLegSettlement,
+  pollOrderSettlements,
   findByParlayId,
   findByOrderUuid,
   getRecentOrders,

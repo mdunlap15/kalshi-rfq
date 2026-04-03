@@ -21,6 +21,7 @@ const path = require('path');
 const startTime = Date.now();
 let oddsRefreshTimer = null;
 let lineRefreshTimer = null;
+let settlementPollTimer = null;
 let serviceReady = false;
 
 async function startup() {
@@ -117,6 +118,15 @@ async function startup() {
       await lineManager.refreshLines();
     } catch (err) {
       log.error('Refresh', `Line refresh failed: ${err.message}`);
+    }
+  }, refreshMs);
+
+  // Poll PX for settlement updates every 2 minutes
+  settlementPollTimer = setInterval(async () => {
+    try {
+      await orderTracker.pollOrderSettlements(px);
+    } catch (err) {
+      log.error('Refresh', `Settlement poll failed: ${err.message}`);
     }
   }, refreshMs);
 
@@ -223,6 +233,16 @@ function startStatusServer() {
     }
   });
 
+  // Manual settlement poll
+  app.post('/poll-settlements', async (req, res) => {
+    try {
+      const result = await orderTracker.pollOrderSettlements(px);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Pause/resume RFQ handling
   app.post('/pause', (req, res) => {
     websocket.pause();
@@ -282,6 +302,7 @@ function shutdown(signal) {
 
   if (oddsRefreshTimer) clearInterval(oddsRefreshTimer);
   if (lineRefreshTimer) clearInterval(lineRefreshTimer);
+  if (settlementPollTimer) clearInterval(settlementPollTimer);
   websocket.disconnect();
 
   log.info('Shutdown', 'Final stats:', orderTracker.getStats());

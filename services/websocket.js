@@ -456,7 +456,13 @@ function handleOrderMatched(data) {
 function handleOrderFinalized(data) {
   const payload = data.payload || data;
   const orderUuid = payload.order_uuid || payload.orderUuid;
+  const parlayId = payload.parlay_id || payload.parlayId;
   log.info('WS', `Order finalized: ${orderUuid}`, payload);
+
+  // Store the orderUuid on the order — this is the only event that has it
+  if (parlayId && orderUuid) {
+    orderTracker.recordFinalized(parlayId, orderUuid, payload);
+  }
 }
 
 /**
@@ -467,6 +473,10 @@ function handleLegSettled(data) {
   const orderUuid = payload.order_uuid || payload.orderUuid;
   const status = payload.status || payload.settlement_status;
   log.info('WS', `Leg settled: order=${orderUuid}, status=${status}`, payload);
+
+  if (orderUuid) {
+    orderTracker.recordLegSettlement(orderUuid, payload);
+  }
 }
 
 /**

@@ -174,8 +174,10 @@ async function confirmOrder(callbackUrl, orderUuid, action, confirmedOdds, confi
 // ORDERS
 // ---------------------------------------------------------------------------
 
-async function fetchOrders(limit = 50) {
-  const data = await pxFetch(`/parlay/sp/orders/?limit=${limit}`);
+async function fetchOrders(limit = 50, status = null) {
+  let url = `/parlay/sp/orders/?limit=${limit}`;
+  if (status) url += `&status=${status}`;
+  const data = await pxFetch(url);
   return data.data?.orders || [];
 }
 
