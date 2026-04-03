@@ -1255,7 +1255,7 @@
     el.innerHTML = html;
   }
 
-  const posState = { sortCol: 'time', sortDir: -1, search: '' };
+  const posState = { sortCol: 'time', sortDir: -1, search: '', pageSize: 15, showAll: false };
   window.posRerender = () => renderPositions(window._lastPosData || { recentOrders: [] });
   window.togglePosSort = (col) => {
     if (posState.sortCol === col) posState.sortDir *= -1;
@@ -1327,7 +1327,12 @@
         <th ${pSortClick('towin')} style="text-align:right">To Win${pSortArrow('towin')}</th>
       </tr>`;
 
-    for (const order of filtered) {
+    const isPosFiltering = !!posState.search;
+    const posLimit = (posState.showAll || isPosFiltering) ? filtered.length : posState.pageSize;
+    const posDisplayed = filtered.slice(0, posLimit);
+    const posHasMore = filtered.length > posLimit;
+
+    for (const order of posDisplayed) {
       const time = order.confirmedAt ? new Date(order.confirmedAt).toLocaleString() : '-';
       const legs = order.legs || order.meta?.legs || [];
       const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
@@ -1364,6 +1369,15 @@
     }
 
     html += '</table></div>';
+
+    if (posHasMore) {
+      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
+        <button class="btn" onclick="posState.showAll=true; posRerender()" style="font-size:12px; padding:4px 16px;">Show All ${filtered.length}</button></div>`;
+    } else if (posState.showAll && filtered.length > posState.pageSize && !isPosFiltering) {
+      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
+        <button class="btn" onclick="posState.showAll=false; posRerender()" style="font-size:12px; padding:4px 16px;">Show Recent ${posState.pageSize}</button></div>`;
+    }
+
     el.innerHTML = html;
   }
 
@@ -1372,6 +1386,7 @@
     orders: {},
     sortCol: 'settled', sortDir: -1,
     search: '',
+    pageSize: 20, showAll: false,
   };
 
   function renderSettled(data) {
@@ -1448,7 +1463,12 @@
       cumulMap[o.parlayId] = runningPnl;
     }
 
-    for (const order of filtered.slice(0, 100)) {
+    const isSettledFiltering = !!settledState.search;
+    const settledLimit = (settledState.showAll || isSettledFiltering) ? filtered.length : settledState.pageSize;
+    const settledDisplayed = filtered.slice(0, settledLimit);
+    const settledHasMore = filtered.length > settledLimit;
+
+    for (const order of settledDisplayed) {
       const time = order.settledAt ? new Date(order.settledAt).toLocaleString() : order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
       const legs = order.legs || order.meta?.legs || [];
       const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
@@ -1486,10 +1506,19 @@
     }
 
     html += '</table></div>';
+
+    if (settledHasMore) {
+      html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">' +
+        '<button class="btn" onclick="settledState.showAll=true; renderSettled({recentOrders:[]})" style="font-size:12px; padding:4px 16px;">Show All ' + filtered.length + '</button></div>';
+    } else if (settledState.showAll && filtered.length > settledState.pageSize && !isSettledFiltering) {
+      html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">' +
+        '<button class="btn" onclick="settledState.showAll=false; renderSettled({recentOrders:[]})" style="font-size:12px; padding:4px 16px;">Show Recent ' + settledState.pageSize + '</button></div>';
+    }
+
     el.innerHTML = html;
   }
 
-  const expState = { sortCol: 'risk', sortDir: -1, search: '' };
+  const expState = { sortCol: 'risk', sortDir: -1, search: '', pageSize: 15, showAll: false };
   window.expRerender = () => renderExposure(window._lastExpData || { teams: [], maxPerTeam: 0 });
   window.toggleExpSort = (col) => {
     if (expState.sortCol === col) expState.sortDir *= -1;
@@ -1568,7 +1597,12 @@
         </tr>
     `;
 
-    for (const t of teams) {
+    const isExpFiltering = !!expState.search;
+    const expLimit = (expState.showAll || isExpFiltering) ? teams.length : expState.pageSize;
+    const expDisplayed = teams.slice(0, expLimit);
+    const expHasMore = teams.length > expLimit;
+
+    for (const t of expDisplayed) {
       const remaining = maxPerTeam > 0 ? maxPerTeam - t.risk : Infinity;
       const pct = maxPerTeam > 0 ? Math.min(100, (t.risk / maxPerTeam) * 100) : 0;
       const barColor = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--amber)' : 'var(--green)';
@@ -1631,6 +1665,15 @@
     }
 
     html += '</table></div>';
+
+    if (expHasMore) {
+      html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">' +
+        '<button class="btn" onclick="expState.showAll=true; expRerender()" style="font-size:12px; padding:4px 16px;">Show All ' + teams.length + ' Teams</button></div>';
+    } else if (expState.showAll && teams.length > expState.pageSize && !isExpFiltering) {
+      html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">' +
+        '<button class="btn" onclick="expState.showAll=false; expRerender()" style="font-size:12px; padding:4px 16px;">Show Top ' + expState.pageSize + '</button></div>';
+    }
+
     el.innerHTML = html;
   }
 
@@ -1910,7 +1953,7 @@
   // PORTFOLIO TAB
   // -----------------------------------------------------------------------
 
-  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '' };
+  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '', pageSize: 20, showAll: false };
   window.portfolioRerender = () => renderPortfolio(window._lastPortfolioData || { recentOrders: [], stats: {}, pnlBySport: {} });
   window.togglePortfolioSort = (col) => {
     if (portfolioState.sortCol === col) portfolioState.sortDir *= -1;
@@ -2159,7 +2202,7 @@
     el.innerHTML = html;
   }
 
-  const popenState = { sortCol: 'time', sortDir: -1, search: '' };
+  const popenState = { sortCol: 'time', sortDir: -1, search: '', pageSize: 15, showAll: false };
   window.popenRerender = () => renderPortfolioOpen(window._lastPopenData || []);
   window.togglePopenSort = (col) => {
     if (popenState.sortCol === col) popenState.sortDir *= -1;
@@ -2228,7 +2271,12 @@
     html += '<div style="overflow-x:auto;"><table>';
     html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Teams</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">Stake' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th></tr>';
 
-    for (const o of filtered) {
+    const isPopenFiltering = !!popenState.search;
+    const popenLimit = (popenState.showAll || isPopenFiltering) ? filtered.length : popenState.pageSize;
+    const popenDisplayed = filtered.slice(0, popenLimit);
+    const popenHasMore = filtered.length > popenLimit;
+
+    for (const o of popenDisplayed) {
       const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleString() : '-';
       const legs = o.legs || o.meta?.legs || [];
       const teams = legs.map(l => l.team || l.teamName || '?').join(', ');
@@ -2261,6 +2309,15 @@
       html += '</td></tr>';
     }
     html += '</table></div>';
+
+    if (popenHasMore) {
+      html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">' +
+        '<button class="btn" onclick="popenState.showAll=true; popenRerender()" style="font-size:12px; padding:4px 16px;">Show All ' + filtered.length + '</button></div>';
+    } else if (popenState.showAll && filtered.length > popenState.pageSize && !isPopenFiltering) {
+      html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">' +
+        '<button class="btn" onclick="popenState.showAll=false; popenRerender()" style="font-size:12px; padding:4px 16px;">Show Recent ' + popenState.pageSize + '</button></div>';
+    }
+
     el.innerHTML = html;
   }
 
@@ -2361,7 +2418,12 @@
     html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
 
-    for (const order of filtered.slice(0, 100)) {
+    const isPsFiltering = portfolioState.search || portfolioState.sportFilter || portfolioState.resultFilter;
+    const psLimit = (portfolioState.showAll || isPsFiltering) ? filtered.length : portfolioState.pageSize;
+    const psDisplayed = filtered.slice(0, psLimit);
+    const psHasMore = filtered.length > psLimit;
+
+    for (const order of psDisplayed) {
       const time = order.settledAt ? new Date(order.settledAt).toLocaleString() : order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
       const legs = order.legs || order.meta?.legs || [];
       const teams = legs.map(l => l.team || l.teamName || '?').join(', ');
@@ -2400,6 +2462,15 @@
       html += '</td></tr>';
     }
     html += '</table></div>';
+
+    if (psHasMore) {
+      html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">' +
+        '<button class="btn" onclick="portfolioState.showAll=true; portfolioRerender()" style="font-size:12px; padding:4px 16px;">Show All ' + filtered.length + '</button></div>';
+    } else if (portfolioState.showAll && filtered.length > portfolioState.pageSize && !isPsFiltering) {
+      html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">' +
+        '<button class="btn" onclick="portfolioState.showAll=false; portfolioRerender()" style="font-size:12px; padding:4px 16px;">Show Recent ' + portfolioState.pageSize + '</button></div>';
+    }
+
     el.innerHTML = html;
   }
 
