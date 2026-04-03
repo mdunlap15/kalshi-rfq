@@ -1370,7 +1370,7 @@
       <tr id="${rowKey}" style="display:${expanded ? 'table-row' : 'none'}; background: var(--surface3);">
         <td colspan="7" style="padding: 12px 16px;">
           <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
-          ${buildLegTable(legs)}
+          ${buildLegTable(legs, { vig: order.meta?.vig || order.vig || 0 })}
           <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
             Vig: ${((order.meta?.vig || order.vig || 0) * 100).toFixed(1)}% · Max Risk: $${order.maxRisk || '-'} · Decimal: ${order.meta?.decimalOdds || '-'}x · ID: ${order.parlayId || '-'}
           </div>
@@ -1495,7 +1495,7 @@
       html += '</tr>';
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
       html += '<td colspan="8" style="padding:12px 16px;">';
-      html += buildLegTable(legs, { pad: '2px 6px' });
+      html += buildLegTable(legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
     }
@@ -1816,7 +1816,7 @@
         <tr id="ord-${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
           <td colspan="10" style="padding: 12px 16px;">
             <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
-            ${buildLegTable(legs)}
+            ${buildLegTable(legs, { vig: order.meta?.vig || order.vig || 0 })}
             <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
               Vig: ${((order.meta?.vig || order.vig || 0) * 100).toFixed(1)}% ·
               Max Risk: $${order.maxRisk || 0} ·
@@ -2271,7 +2271,7 @@
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
       html += '<td colspan="6" style="padding:12px 16px;">';
       html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">PARLAY LEGS</div>';
-      html += buildLegTable(legs);
+      html += buildLegTable(legs, { vig: o.meta?.vig || o.vig || 0 });
       html += '<div style="margin-top:6px; font-size:10px; color:var(--text3);">Vig: ' + ((o.meta?.vig || o.vig || 0) * 100).toFixed(1) + '% · Max Risk: $' + (o.maxRisk || '-') + ' · ID: ' + (o.parlayId || '-') + '</div>';
       html += '</td></tr>';
     }
@@ -2410,7 +2410,7 @@
       // Expandable leg detail row
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
       html += '<td colspan="8" style="padding:12px 16px;">';
-      html += buildLegTable(legs, { pad: '2px 6px' });
+      html += buildLegTable(legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
     }
@@ -3016,11 +3016,17 @@
     el.innerHTML = svg;
   }
 
+  /**
+   * Build HTML for an expandable leg details table.
+   * @param {Array} legs - array of leg objects
+   * @param {Object} opts - { showStatus, showSport, showFairOdds, showOddsColumns, vig, pad }
+   */
   function buildLegTable(legs, opts = {}) {
     const pad = opts.pad || '4px 8px';
     const showStatus = opts.showStatus !== false;
     const showSport = opts.showSport || false;
-    const showFairOdds = opts.showFairOdds !== false;
+    const showOdds = opts.showFairOdds !== false;
+    const vig = opts.vig || 0;
 
     let h = '<table style="width:100%; font-size:12px;">';
     h += '<tr style="color:var(--text3);">';
@@ -3030,7 +3036,11 @@
     h += '<th style="text-align:left; padding:' + pad + ';">Market</th>';
     h += '<th style="text-align:left; padding:' + pad + ';">Line</th>';
     h += '<th style="text-align:left; padding:' + pad + ';">Event Time</th>';
-    if (showFairOdds) h += '<th style="text-align:right; padding:' + pad + ';">Fair Odds</th>';
+    if (showOdds) {
+      h += '<th style="text-align:right; padding:' + pad + '; color:var(--purple);">Pinnacle</th>';
+      h += '<th style="text-align:right; padding:' + pad + ';">Fair</th>';
+      h += '<th style="text-align:right; padding:' + pad + '; color:var(--accent);">My Odds</th>';
+    }
     h += '</tr>';
 
     for (const l of legs) {
@@ -3043,6 +3053,11 @@
 
       const eventTime = l.startTime ? new Date(l.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '-';
 
+      // Odds columns
+      const pinOdds = l.pinnacleOdds != null ? (l.pinnacleOdds >= 0 ? '+' : '') + l.pinnacleOdds : '-';
+      const fairOdds = l.fairProb ? decimalToAmerican(1 / l.fairProb) : '-';
+      const myOdds = (l.fairProb && vig) ? decimalToAmerican(1 / (l.fairProb * (1 + vig))) : fairOdds;
+
       h += '<tr>';
       if (showStatus) h += '<td style="padding:' + pad + '; color:' + lColor + '; font-size:14px; text-align:center; width:40px;" title="' + lTitle + '">' + lIcon + '</td>';
       if (showSport) h += '<td style="padding:' + pad + ';">' + sportPill(l.sport || 'unknown') + '</td>';
@@ -3050,7 +3065,11 @@
       h += '<td style="padding:' + pad + ';"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>';
       h += '<td style="padding:' + pad + '; color:var(--text2);">' + (l.line != null ? l.line : (l.selection || '-')) + '</td>';
       h += '<td style="padding:' + pad + '; white-space:nowrap; font-size:11px; color:var(--text3);">' + eventTime + '</td>';
-      if (showFairOdds) h += '<td style="padding:' + pad + '; text-align:right;">' + (l.fairProb ? decimalToAmerican(1/l.fairProb) : '-') + '</td>';
+      if (showOdds) {
+        h += '<td style="padding:' + pad + '; text-align:right; color:var(--purple);">' + pinOdds + '</td>';
+        h += '<td style="padding:' + pad + '; text-align:right;">' + fairOdds + '</td>';
+        h += '<td style="padding:' + pad + '; text-align:right; color:var(--accent);">' + myOdds + '</td>';
+      }
       h += '</tr>';
     }
     h += '</table>';
@@ -3221,7 +3240,7 @@
       </tr>
       <tr id="${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
         <td colspan="9" style="padding: 12px 16px;">
-          ${buildLegTable(legs, { showStatus: true, pad: '2px 6px' })}
+          ${buildLegTable(legs, { showStatus: true, pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 })}
           <div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ${order.parlayId || '-'}</div>
         </td>
       </tr>`;
