@@ -1243,22 +1243,7 @@
       <tr id="${compId}" style="display:${compExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
         <td colspan="8" style="padding: 12px 16px;">
           <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
-          <table style="width:100%; font-size: 11px;">
-            <tr style="color: var(--text3);">
-              <th style="text-align:left; padding: 2px 6px;">Sport</th>
-              <th style="text-align:left; padding: 2px 6px;">Team / Selection</th>
-              <th style="text-align:left; padding: 2px 6px;">Market</th>
-              <th style="text-align:left; padding: 2px 6px;">Line</th>
-            </tr>
-            ${(e.legs || []).map(l => {
-              return '<tr>' +
-                '<td style="padding:2px 6px;">' + sportPill(l.sport || 'unknown') + '</td>' +
-                '<td style="padding:2px 6px;">' + (l.team || 'Unknown') + '</td>' +
-                '<td style="padding:2px 6px;"><span class="market-pill">' + (l.market || '-') + '</span></td>' +
-                '<td style="padding:2px 6px;">' + (l.line != null ? l.line : '-') + '</td>' +
-              '</tr>';
-            }).join('')}
-          </table>
+          ${buildLegTable(e.legs || [], { showStatus: true, showSport: true, pad: '2px 6px' })}
           <div style="margin-top: 6px; font-size: 10px; color: var(--text3);">
             Our implied: ${e.ourProb.toFixed(1)}% · Winner implied: ${e.winProb.toFixed(1)}% · ID: ${e.parlayId || '-'}
           </div>

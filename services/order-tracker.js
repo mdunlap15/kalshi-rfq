@@ -669,8 +669,21 @@ async function pollOrderSettlements(px) {
       const uuid = pxOrder.order_uuid;
       if (!uuid) continue;
 
-      const parlayId = ordersByUuid[uuid];
-      const order = parlayId ? orders[parlayId] : null;
+      // Try UUID index first, then fallback to parlay_id match
+      let parlayId = ordersByUuid[uuid];
+      let order = parlayId ? orders[parlayId] : null;
+
+      // Fallback: if UUID not indexed, try matching by parlay_id from PX response
+      if (!order && pxOrder.parlay_id && orders[pxOrder.parlay_id]) {
+        order = orders[pxOrder.parlay_id];
+        parlayId = pxOrder.parlay_id;
+        // Backfill the UUID so future lookups work
+        order.orderUuid = uuid;
+        ordersByUuid[uuid] = parlayId;
+        log.info('Poll', `Backfilled UUID for parlay ${parlayId}: ${uuid}`);
+        db.saveOrder(order).catch(() => {});
+      }
+
       if (!order || order.status !== 'confirmed') continue;
 
       const settlementStatus = pxOrder.settlement_status;
