@@ -383,6 +383,7 @@
   <!-- TAB NAVIGATION -->
   <div style="display:flex; gap:2px; margin-bottom:16px; border-bottom:2px solid var(--border); padding-bottom:0;">
     <button class="tab-btn active" onclick="switchTab('live', this)">Live</button>
+    <button class="tab-btn" onclick="switchTab('portfolio', this)">Portfolio</button>
     <button class="tab-btn" onclick="switchTab('analytics', this)">Analytics</button>
     <button class="tab-btn" onclick="switchTab('history', this)">History</button>
     <button class="tab-btn" onclick="switchTab('intel', this)">Market Intel</button>
@@ -440,6 +441,63 @@
       </div>
       <div class="card-body" id="pnl-sport">
         <div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== TAB: PORTFOLIO ===================== -->
+  <div id="tab-portfolio" class="tab-content" style="display:none;">
+    <!-- Performance Summary -->
+    <div id="portfolio-perf-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
+
+    <div class="grid-2">
+      <!-- P&L by Sport -->
+      <div class="card">
+        <div class="card-header"><span>P&L by Sport</span></div>
+        <div class="card-body" id="portfolio-by-sport">
+          <div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>
+        </div>
+      </div>
+
+      <!-- P&L by Leg Count -->
+      <div class="card">
+        <div class="card-header"><span>P&L by Leg Count</span></div>
+        <div class="card-body" id="portfolio-by-legs">
+          <div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edge Analysis -->
+    <div class="card">
+      <div class="card-header">
+        <span>Edge Analysis</span>
+        <span id="edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" id="portfolio-edge">
+        <div class="empty-state"><div class="icon">-</div><div>Need settled orders to analyze edge</div></div>
+      </div>
+    </div>
+
+    <!-- Open Exposure -->
+    <div class="card">
+      <div class="card-header" onclick="toggleCard(this)">
+        <span><span class="toggle-icon">&#9660;</span>Open Exposure</span>
+        <span id="portfolio-exposure-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" style="padding:0;" id="portfolio-open">
+        <div class="empty-state"><div class="icon">-</div><div>No open positions</div></div>
+      </div>
+    </div>
+
+    <!-- Settled Positions Log -->
+    <div class="card">
+      <div class="card-header">
+        <span>Settled Positions</span>
+        <span id="portfolio-settled-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" style="padding:0;" id="portfolio-settled">
+        <div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div>
       </div>
     </div>
   </div>
@@ -630,6 +688,7 @@
 
       renderStatus(status);
       renderPortfolioSummary(orders.stats || {}, orders.pnlBySport || {});
+      renderPortfolio(orders);
       renderOrders(orders);
       renderPositions(orders);
       renderSettled(orders);
@@ -1698,6 +1757,472 @@
     el.style.display = opening ? 'table-row' : 'none';
     if (opening) expandedRows.add(id);
     else expandedRows.delete(id);
+  }
+
+  // -----------------------------------------------------------------------
+  // PORTFOLIO TAB
+  // -----------------------------------------------------------------------
+
+  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '' };
+  window.portfolioRerender = () => renderPortfolio(window._lastPortfolioData || { recentOrders: [], stats: {}, pnlBySport: {} });
+  window.togglePortfolioSort = (col) => {
+    if (portfolioState.sortCol === col) portfolioState.sortDir *= -1;
+    else { portfolioState.sortCol = col; portfolioState.sortDir = -1; }
+    portfolioRerender();
+  };
+
+  function renderPortfolio(data) {
+    window._lastPortfolioData = data;
+    const allOrders = data.recentOrders || [];
+    const stats = data.stats || {};
+    const settled = allOrders.filter(o => o.status && o.status.startsWith('settled_'));
+    const active = allOrders.filter(o => o.status === 'confirmed');
+
+    // --- Section 1: Performance Summary Cards ---
+    renderPortfolioPerfSummary(stats, settled);
+
+    // --- Section 2: P&L by Sport (enhanced) ---
+    renderPortfolioBySport(settled);
+
+    // --- Section 3: P&L by Leg Count ---
+    renderPortfolioByLegs(settled);
+
+    // --- Section 4: Edge Analysis ---
+    renderPortfolioEdge(settled);
+
+    // --- Section 5: Open Exposure ---
+    renderPortfolioOpen(active);
+
+    // --- Section 6: Settled Positions Log ---
+    renderPortfolioSettled(settled);
+  }
+
+  function renderPortfolioPerfSummary(stats, settled) {
+    const el = document.getElementById('portfolio-perf-summary');
+    if (!el) return;
+
+    const pnl = stats.runningPnL || 0;
+    const wins = stats.totalWins || 0;
+    const losses = stats.totalLosses || 0;
+    const totalSettled = wins + losses;
+    const winRate = totalSettled > 0 ? Math.round(wins / totalSettled * 100) : null;
+
+    let totalStaked = 0;
+    for (const o of settled) {
+      totalStaked += (o.confirmedStake || 0);
+    }
+    const roi = totalStaked > 0 ? (pnl / totalStaked * 100) : null;
+    const avgStake = totalSettled > 0 ? totalStaked / totalSettled : null;
+
+    function card(label, value, cls) {
+      return '<div style="background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:10px 14px;">' +
+        '<div style="font-size:11px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px;">' + label + '</div>' +
+        '<div style="font-size:20px; font-weight:700; margin-top:2px;" class="' + (cls || '') + '">' + value + '</div>' +
+      '</div>';
+    }
+
+    const pnlCls = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral';
+    const pnlStr = totalSettled > 0 ? (pnl >= 0 ? '+$' + pnl.toFixed(2) : '-$' + Math.abs(pnl).toFixed(2)) : '-';
+    const wrCls = winRate != null ? (winRate >= 50 ? 'positive' : 'negative') : 'neutral';
+    const roiCls = roi != null ? (roi >= 0 ? 'positive' : 'negative') : 'neutral';
+
+    el.innerHTML =
+      card('Total P&L', pnlStr, pnlCls) +
+      card('Record', totalSettled > 0 ? wins + 'W - ' + losses + 'L' : '-') +
+      card('Win Rate', winRate != null ? winRate + '%' : '-', wrCls) +
+      card('Total Staked', totalStaked > 0 ? '$' + totalStaked.toFixed(2) : '-') +
+      card('ROI', roi != null ? (roi >= 0 ? '+' : '') + roi.toFixed(1) + '%' : '-', roiCls) +
+      card('Avg Stake', avgStake != null ? '$' + avgStake.toFixed(2) : '-');
+  }
+
+  function renderPortfolioBySport(settled) {
+    const el = document.getElementById('portfolio-by-sport');
+    if (settled.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>';
+      return;
+    }
+
+    const bySport = {};
+    for (const o of settled) {
+      const legs = o.legs || o.meta?.legs || [];
+      const sport = legs[0]?.sport || 'unknown';
+      if (!bySport[sport]) bySport[sport] = { pnl: 0, wins: 0, losses: 0, staked: 0, oddsSum: 0, count: 0 };
+      bySport[sport].pnl += (o.pnl || 0);
+      bySport[sport].staked += (o.confirmedStake || 0);
+      bySport[sport].count++;
+      if (o.offeredOdds) bySport[sport].oddsSum += Math.abs(o.offeredOdds);
+      if (o.pnl > 0) bySport[sport].wins++;
+      else if (o.pnl < 0) bySport[sport].losses++;
+    }
+
+    let html = '<table><tr><th>Sport</th><th style="text-align:right">Record</th><th style="text-align:right">Staked</th><th style="text-align:right">P&L</th><th style="text-align:right">ROI</th></tr>';
+    for (const [sport, d] of Object.entries(bySport).sort((a, b) => Math.abs(b[1].pnl) - Math.abs(a[1].pnl))) {
+      const cls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
+      const roi = d.staked > 0 ? (d.pnl / d.staked * 100) : 0;
+      const roiCls = roi > 0 ? 'positive' : roi < 0 ? 'negative' : 'neutral';
+      html += '<tr>' +
+        '<td>' + sportPill(sport) + '</td>' +
+        '<td style="text-align:right">' + d.wins + '-' + d.losses + '</td>' +
+        '<td style="text-align:right">$' + d.staked.toFixed(2) + '</td>' +
+        '<td style="text-align:right" class="' + cls + '">' + (d.pnl >= 0 ? '+' : '') + '$' + d.pnl.toFixed(2) + '</td>' +
+        '<td style="text-align:right" class="' + roiCls + '">' + (roi >= 0 ? '+' : '') + roi.toFixed(1) + '%</td>' +
+      '</tr>';
+    }
+    html += '</table>';
+    el.innerHTML = html;
+  }
+
+  function renderPortfolioByLegs(settled) {
+    const el = document.getElementById('portfolio-by-legs');
+    if (settled.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>';
+      return;
+    }
+
+    const byLegs = {};
+    for (const o of settled) {
+      const legs = o.legs || o.meta?.legs || [];
+      const n = legs.length || '?';
+      if (!byLegs[n]) byLegs[n] = { pnl: 0, wins: 0, losses: 0, staked: 0, count: 0, oddsSum: 0 };
+      byLegs[n].pnl += (o.pnl || 0);
+      byLegs[n].staked += (o.confirmedStake || 0);
+      byLegs[n].count++;
+      if (o.offeredOdds) byLegs[n].oddsSum += o.offeredOdds;
+      if (o.pnl > 0) byLegs[n].wins++;
+      else if (o.pnl < 0) byLegs[n].losses++;
+    }
+
+    let html = '<table><tr><th>Legs</th><th style="text-align:right">Record</th><th style="text-align:right">Avg Odds</th><th style="text-align:right">P&L</th><th style="text-align:right">ROI</th></tr>';
+    for (const n of Object.keys(byLegs).sort((a, b) => Number(a) - Number(b))) {
+      const d = byLegs[n];
+      const cls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
+      const roi = d.staked > 0 ? (d.pnl / d.staked * 100) : 0;
+      const roiCls = roi > 0 ? 'positive' : roi < 0 ? 'negative' : 'neutral';
+      const avgOdds = d.count > 0 ? Math.round(d.oddsSum / d.count) : 0;
+      const avgOddsStr = avgOdds >= 0 ? '+' + avgOdds : '' + avgOdds;
+      html += '<tr>' +
+        '<td>' + n + '-leg</td>' +
+        '<td style="text-align:right">' + d.wins + '-' + d.losses + '</td>' +
+        '<td style="text-align:right">' + avgOddsStr + '</td>' +
+        '<td style="text-align:right" class="' + cls + '">' + (d.pnl >= 0 ? '+' : '') + '$' + d.pnl.toFixed(2) + '</td>' +
+        '<td style="text-align:right" class="' + roiCls + '">' + (roi >= 0 ? '+' : '') + roi.toFixed(1) + '%</td>' +
+      '</tr>';
+    }
+    html += '</table>';
+    el.innerHTML = html;
+  }
+
+  function renderPortfolioEdge(settled) {
+    const el = document.getElementById('portfolio-edge');
+    const summaryEl = document.getElementById('edge-summary');
+    if (settled.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need settled orders to analyze edge</div></div>';
+      if (summaryEl) summaryEl.textContent = '';
+      return;
+    }
+
+    // Calculate edge metrics
+    const withProb = settled.filter(o => o.fairParlayProb && o.fairParlayProb > 0);
+    if (withProb.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No fair probability data on settled orders</div></div>';
+      return;
+    }
+
+    // Expected P&L = sum of (stake * (1/fairProb - 1) * vigAdjustment) for wins
+    // Simpler: expected win rate vs actual win rate
+    let expectedWins = 0;
+    let actualWins = 0;
+    let totalEdge = 0;
+    const entries = [];
+
+    for (const o of withProb) {
+      const fairProb = o.fairParlayProb;
+      const offeredProb = o.offeredOdds ? americanToProb(o.offeredOdds) : null;
+      const won = o.settlementResult === 'lost'; // bettor lost = we won
+      const edge = offeredProb ? (offeredProb - fairProb) : 0; // positive = we charged more than fair
+
+      expectedWins += fairProb; // expected number of bettor wins
+      if (!won) actualWins++; // bettor actually won
+
+      entries.push({
+        parlayId: o.parlayId,
+        teams: (o.legs || o.meta?.legs || []).map(l => l.team || l.teamName || '?').join(', '),
+        legs: (o.legs || o.meta?.legs || []).length,
+        fairProb: Math.round(fairProb * 10000) / 100,
+        offeredOdds: o.offeredOdds,
+        edge: Math.round(edge * 10000) / 100,
+        result: won ? 'Won' : 'Lost',
+        resultCls: won ? 'positive' : 'negative',
+        pnl: o.pnl,
+        stake: o.confirmedStake,
+      });
+
+      totalEdge += edge;
+    }
+
+    const avgEdge = totalEdge / withProb.length;
+    const expectedBettorWinRate = (expectedWins / withProb.length * 100);
+    const actualBettorWinRate = (actualWins / withProb.length * 100);
+
+    if (summaryEl) {
+      summaryEl.textContent = withProb.length + ' settled with prob data';
+    }
+
+    // Summary cards
+    let html = '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:8px; margin-bottom:12px;">';
+
+    function miniCard(label, value, cls) {
+      return '<div style="background:var(--surface3); border-radius:6px; padding:8px 12px;">' +
+        '<div style="font-size:10px; color:var(--text3); text-transform:uppercase;">' + label + '</div>' +
+        '<div style="font-size:16px; font-weight:600; margin-top:2px;" class="' + (cls || '') + '">' + value + '</div>' +
+      '</div>';
+    }
+
+    const avgEdgeCls = avgEdge > 0 ? 'positive' : avgEdge < 0 ? 'negative' : 'neutral';
+    html += miniCard('Avg Edge (vig)', (avgEdge >= 0 ? '+' : '') + (avgEdge * 100).toFixed(2) + '%', avgEdgeCls);
+    html += miniCard('Bettor Win Rate (expected)', expectedBettorWinRate.toFixed(1) + '%');
+    html += miniCard('Bettor Win Rate (actual)', actualBettorWinRate.toFixed(1) + '%',
+      actualBettorWinRate <= expectedBettorWinRate ? 'positive' : 'negative');
+    html += miniCard('Sample Size', withProb.length + ' parlays');
+    html += '</div>';
+
+    // Edge table
+    html += '<div style="overflow-x:auto;"><table>';
+    html += '<tr><th>Teams</th><th>Legs</th><th style="text-align:right">Fair %</th><th style="text-align:right">Offered</th><th style="text-align:right">Edge</th><th style="text-align:right">Stake</th><th>Result</th><th style="text-align:right">P&L</th></tr>';
+
+    for (const e of entries.sort((a, b) => Math.abs(b.pnl || 0) - Math.abs(a.pnl || 0)).slice(0, 20)) {
+      const offeredStr = e.offeredOdds ? (e.offeredOdds >= 0 ? '+' : '') + e.offeredOdds : '-';
+      const edgeCls = e.edge > 0 ? 'positive' : e.edge < 0 ? 'negative' : 'neutral';
+      const pnlStr = e.pnl != null ? ((e.pnl >= 0 ? '+' : '') + '$' + e.pnl.toFixed(2)) : '-';
+      const pnlCls = e.pnl > 0 ? 'positive' : e.pnl < 0 ? 'negative' : 'neutral';
+      const teamsShort = e.teams.length > 40 ? e.teams.substring(0, 37) + '...' : e.teams;
+
+      html += '<tr>' +
+        '<td style="font-size:12px; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' + e.teams + '">' + teamsShort + '</td>' +
+        '<td>' + e.legs + '</td>' +
+        '<td style="text-align:right">' + e.fairProb + '%</td>' +
+        '<td style="text-align:right; font-weight:600;">' + offeredStr + '</td>' +
+        '<td style="text-align:right" class="' + edgeCls + '">' + (e.edge >= 0 ? '+' : '') + e.edge.toFixed(2) + '%</td>' +
+        '<td style="text-align:right">$' + (e.stake || 0).toFixed(2) + '</td>' +
+        '<td><span class="' + e.resultCls + '">' + e.result + '</span></td>' +
+        '<td style="text-align:right" class="' + pnlCls + '">' + pnlStr + '</td>' +
+      '</tr>';
+    }
+    html += '</table></div>';
+    el.innerHTML = html;
+  }
+
+  function renderPortfolioOpen(active) {
+    const el = document.getElementById('portfolio-open');
+    const countEl = document.getElementById('portfolio-exposure-count');
+
+    if (active.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No open positions</div></div>';
+      if (countEl) countEl.textContent = '';
+      return;
+    }
+
+    let totalStaked = 0;
+    let totalToWin = 0;
+    for (const o of active) {
+      totalStaked += (o.confirmedStake || 0);
+      if (o.confirmedStake && o.offeredOdds) {
+        const dec = o.offeredOdds >= 100 ? 1 + o.offeredOdds / 100 : 1 + 100 / Math.abs(o.offeredOdds);
+        totalToWin += o.confirmedStake * (dec - 1);
+      }
+    }
+
+    if (countEl) countEl.textContent = active.length + ' active · $' + totalStaked.toFixed(2) + ' staked · $' + totalToWin.toFixed(2) + ' at risk';
+
+    let html = '<div style="overflow-x:auto;"><table>';
+    html += '<tr><th>Confirmed</th><th>Teams</th><th>Legs</th><th style="text-align:right">Odds</th><th style="text-align:right">Stake</th><th style="text-align:right">To Win</th></tr>';
+
+    for (const o of active.sort((a, b) => (b.confirmedAt || '').localeCompare(a.confirmedAt || ''))) {
+      const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleString() : '-';
+      const legs = o.legs || o.meta?.legs || [];
+      const teams = legs.map(l => l.team || l.teamName || '?').join(', ');
+      const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
+      const oddsStr = o.offeredOdds ? (o.offeredOdds >= 0 ? '+' : '') + o.offeredOdds : '-';
+      const stake = o.confirmedStake ? '$' + o.confirmedStake.toFixed(2) : '-';
+      let toWin = '-';
+      if (o.confirmedStake && o.offeredOdds) {
+        const dec = o.offeredOdds >= 100 ? 1 + o.offeredOdds / 100 : 1 + 100 / Math.abs(o.offeredOdds);
+        toWin = '$' + (o.confirmedStake * (dec - 1)).toFixed(2);
+      }
+
+      html += '<tr>' +
+        '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>' +
+        '<td style="font-size:12px; max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>' +
+        '<td>' + legs.length + '</td>' +
+        '<td style="text-align:right; font-weight:600;">' + oddsStr + '</td>' +
+        '<td style="text-align:right">' + stake + '</td>' +
+        '<td style="text-align:right; font-weight:600;">' + toWin + '</td>' +
+      '</tr>';
+    }
+    html += '</table></div>';
+    el.innerHTML = html;
+  }
+
+  function renderPortfolioSettled(settled) {
+    const el = document.getElementById('portfolio-settled');
+    const countEl = document.getElementById('portfolio-settled-count');
+
+    if (countEl) {
+      if (settled.length > 0) {
+        const totalPnl = settled.reduce((s, o) => s + (o.pnl || 0), 0);
+        const wins = settled.filter(o => o.pnl > 0).length;
+        const losses = settled.filter(o => o.pnl < 0).length;
+        countEl.textContent = settled.length + ' settled · ' + wins + 'W ' + losses + 'L · P&L: ' + (totalPnl >= 0 ? '+' : '') + '$' + totalPnl.toFixed(2);
+      } else {
+        countEl.textContent = '';
+      }
+    }
+
+    // Apply filters
+    let filtered = settled;
+    if (portfolioState.search) {
+      const q = portfolioState.search.toLowerCase();
+      filtered = filtered.filter(o => {
+        const legs = o.legs || o.meta?.legs || [];
+        const teams = legs.map(l => (l.team || l.teamName || '')).join(' ').toLowerCase();
+        return teams.includes(q) || (o.parlayId || '').toLowerCase().includes(q);
+      });
+    }
+    if (portfolioState.sportFilter) {
+      filtered = filtered.filter(o => {
+        const legs = o.legs || o.meta?.legs || [];
+        return legs.some(l => l.sport === portfolioState.sportFilter);
+      });
+    }
+    if (portfolioState.resultFilter) {
+      filtered = filtered.filter(o => {
+        if (portfolioState.resultFilter === 'won') return o.pnl > 0;
+        if (portfolioState.resultFilter === 'lost') return o.pnl < 0;
+        return true;
+      });
+    }
+
+    // Sort
+    filtered.sort((a, b) => {
+      let va, vb;
+      switch (portfolioState.sortCol) {
+        case 'settled': va = a.settledAt || ''; vb = b.settledAt || ''; break;
+        case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
+        case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
+        default: va = a.settledAt || ''; vb = b.settledAt || '';
+      }
+      if (typeof va === 'string') return portfolioState.sortDir * va.localeCompare(vb);
+      return portfolioState.sortDir * (va - vb);
+    });
+
+    if (filtered.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No settled positions' + (portfolioState.search || portfolioState.sportFilter || portfolioState.resultFilter ? ' matching filters' : '') + '</div></div>';
+      return;
+    }
+
+    const pSortArrow = (col) => portfolioState.sortCol === col ? (portfolioState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const pSortClick = (col) => 'onclick="event.stopPropagation(); togglePortfolioSort(\'' + col + '\')" style="cursor:pointer;"';
+
+    // Get unique sports for filter
+    const sports = [...new Set(settled.flatMap(o => (o.legs || o.meta?.legs || []).map(l => l.sport).filter(Boolean)))];
+
+    let html = '<div style="padding:8px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">';
+    html += '<input type="text" placeholder="Search team..." value="' + portfolioState.search + '" oninput="portfolioState.search=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">';
+    html += '<select onchange="portfolioState.sportFilter=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
+    html += '<option value="">All sports</option>';
+    for (const s of sports) html += '<option value="' + s + '"' + (portfolioState.sportFilter === s ? ' selected' : '') + '>' + sportLabel(s) + '</option>';
+    html += '</select>';
+    html += '<select onchange="portfolioState.resultFilter=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
+    html += '<option value="">All results</option>';
+    html += '<option value="won"' + (portfolioState.resultFilter === 'won' ? ' selected' : '') + '>Won</option>';
+    html += '<option value="lost"' + (portfolioState.resultFilter === 'lost' ? ' selected' : '') + '>Lost</option>';
+    html += '</select>';
+    html += '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + settled.length + '</span>';
+    html += '</div>';
+
+    // Cumulative P&L
+    const sortedForCumul = [...filtered].sort((a, b) => (a.settledAt || a.quotedAt || '').localeCompare(b.settledAt || b.quotedAt || ''));
+    const cumulMap = {};
+    let runPnl = 0;
+    for (const o of sortedForCumul) { runPnl += (o.pnl || 0); cumulMap[o.parlayId] = runPnl; }
+
+    html += '<div style="overflow-x:auto;"><table>';
+    html += '<tr>';
+    html += '<th ' + pSortClick('settled') + '>Settled' + pSortArrow('settled') + '</th>';
+    html += '<th>Teams</th>';
+    html += '<th ' + pSortClick('legs') + '>Legs' + pSortArrow('legs') + '</th>';
+    html += '<th ' + pSortClick('odds') + '>Odds' + pSortArrow('odds') + '</th>';
+    html += '<th ' + pSortClick('stake') + ' style="text-align:right">Stake' + pSortArrow('stake') + '</th>';
+    html += '<th>Result</th>';
+    html += '<th ' + pSortClick('pnl') + ' style="text-align:right">P&L' + pSortArrow('pnl') + '</th>';
+    html += '<th style="text-align:right">Cumul.</th>';
+    html += '</tr>';
+
+    for (const order of filtered.slice(0, 100)) {
+      const time = order.settledAt ? new Date(order.settledAt).toLocaleString() : order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
+      const legs = order.legs || order.meta?.legs || [];
+      const teams = legs.map(l => l.team || l.teamName || '?').join(', ');
+      const teamsShort = teams.length > 45 ? teams.substring(0, 42) + '...' : teams;
+      const oddsStr = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
+      const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
+      const result = order.settlementResult || order.status?.replace('settled_', '') || '-';
+      const resultCls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+      const resultText = result.charAt(0).toUpperCase() + result.slice(1);
+      let pnlHtml = '-';
+      if (order.pnl != null) {
+        const cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+        pnlHtml = '<span class="' + cls + '">' + (order.pnl >= 0 ? '+' : '') + '$' + order.pnl.toFixed(2) + '</span>';
+      }
+      const cumul = cumulMap[order.parlayId];
+      const cumulHtml = cumul != null ? '<span class="' + (cumul > 0 ? 'positive' : cumul < 0 ? 'negative' : 'neutral') + '">' + (cumul >= 0 ? '+' : '') + '$' + cumul.toFixed(2) + '</span>' : '-';
+
+      const rowKey = 'pstl-' + (order.parlayId || '');
+      const expanded = expandedRows.has(rowKey);
+      html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">';
+      html += '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>';
+      html += '<td style="font-size:12px; max-width:220px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>';
+      html += '<td>' + legs.length + '</td>';
+      html += '<td style="font-weight:600;">' + oddsStr + '</td>';
+      html += '<td style="text-align:right">' + stake + '</td>';
+      html += '<td><span class="' + resultCls + '">' + resultText + '</span></td>';
+      html += '<td style="text-align:right">' + pnlHtml + '</td>';
+      html += '<td style="text-align:right">' + cumulHtml + '</td>';
+      html += '</tr>';
+
+      // Expandable leg detail row
+      html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
+      html += '<td colspan="8" style="padding:12px 16px;">';
+      html += '<table style="width:100%; font-size:11px;">';
+      html += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Result</th><th style="text-align:left; padding:2px 6px;">Team</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th><th style="text-align:right; padding:2px 6px;">Fair Odds</th></tr>';
+      for (const l of legs) {
+        const ls = l.settlementStatus || l.settlement_status || l.status || 'pending';
+        let lIcon, lColor;
+        if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; }
+        else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; }
+        else { lIcon = '&#9679;'; lColor = 'var(--text3)'; }
+        html += '<tr><td style="padding:2px 6px; color:' + lColor + '; text-align:center;">' + lIcon + '</td>';
+        html += '<td style="padding:2px 6px;">' + (l.team || l.teamName || '?') + '</td>';
+        html += '<td style="padding:2px 6px;"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>';
+        html += '<td style="padding:2px 6px;">' + (l.line != null ? l.line : (l.selection || '-')) + '</td>';
+        html += '<td style="padding:2px 6px; text-align:right;">' + (l.fairProb ? decimalToAmerican(1/l.fairProb) : '-') + '</td>';
+        html += '</tr>';
+      }
+      html += '</table>';
+      html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
+      html += '</td></tr>';
+    }
+    html += '</table></div>';
+    el.innerHTML = html;
+  }
+
+  // Helper needed for edge analysis
+  function americanToProb(odds) {
+    odds = Number(odds);
+    if (odds >= 100) return 100 / (odds + 100);
+    if (odds <= -100) return Math.abs(odds) / (Math.abs(odds) + 100);
+    return 0.5;
   }
 
   function renderPortfolioSummary(orderStats, pnlBySport) {
