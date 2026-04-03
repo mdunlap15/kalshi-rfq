@@ -396,6 +396,9 @@
       <a class="nav-item" onclick="switchSection('exposure', this)">
         <span class="nav-icon">&#9888;</span> Exposure
       </a>
+      <a class="nav-item" onclick="switchSection('analytics', this)">
+        <span class="nav-icon">&#9670;</span> Analytics
+      </a>
       <a class="nav-item" onclick="switchSection('intel', this)">
         <span class="nav-icon">&#9881;</span> Market Intel
       </a>
@@ -552,6 +555,65 @@
         </div>
       </div>
 
+      <!-- ===================== SECTION: ANALYTICS ===================== -->
+      <div id="section-analytics" class="section" style="display:none;">
+        <!-- Cumulative P&L -->
+        <div class="card">
+          <div class="card-header"><span>Cumulative P&L</span></div>
+          <div class="card-body" id="chart-cumul-pnl">
+            <div class="empty-state"><div class="icon">-</div><div>Need settled orders to chart P&L</div></div>
+          </div>
+        </div>
+
+        <!-- P&L by Sport -->
+        <div class="card">
+          <div class="card-header"><span>P&L by Sport</span></div>
+          <div class="card-body" id="chart-pnl-sport">
+            <div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>
+          </div>
+        </div>
+
+        <!-- P&L by Leg Count -->
+        <div class="card">
+          <div class="card-header"><span>P&L by Leg Count</span></div>
+          <div class="card-body" id="chart-pnl-legs">
+            <div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>
+          </div>
+        </div>
+
+        <!-- Calibration -->
+        <div class="card">
+          <div class="card-header"><span>Model Calibration</span></div>
+          <div class="card-body" id="chart-calibration">
+            <div class="empty-state"><div class="icon">-</div><div>Need settled orders to evaluate pricing accuracy</div></div>
+          </div>
+        </div>
+
+        <!-- Competitive Gap -->
+        <div class="card">
+          <div class="card-header"><span>Competitive Gap</span></div>
+          <div class="card-body" id="chart-comp-gap">
+            <div class="empty-state"><div class="icon">-</div><div>Need quoted + matched parlays</div></div>
+          </div>
+        </div>
+
+        <!-- Fill Rate vs Vig -->
+        <div class="card">
+          <div class="card-header"><span>Fill Rate vs Vig</span></div>
+          <div class="card-body" id="chart-fill-vig">
+            <div class="empty-state"><div class="icon">-</div><div>Need more quote data</div></div>
+          </div>
+        </div>
+
+        <!-- Exposure Concentration -->
+        <div class="card">
+          <div class="card-header"><span>Exposure Concentration</span></div>
+          <div class="card-body" id="chart-exposure">
+            <div class="empty-state"><div class="icon">-</div><div>Need active positions</div></div>
+          </div>
+        </div>
+      </div>
+
       <!-- ===================== SECTION: MARKET INTEL ===================== -->
       <div id="section-intel" class="section" style="display:none;">
         <div class="card">
@@ -674,6 +736,7 @@
       renderSettled(orders);
       renderMarketIntel(intel);
       renderCompetitiveness(intel);
+      renderAnalytics(orders);
       renderHistory(orders);
       addLog('system', 'Dashboard refreshed');
     } catch (err) {
@@ -2568,6 +2631,391 @@
    * @param {Array} legs - array of leg objects
    * @param {Object} opts - { showStatus: bool, showSport: bool, showFairOdds: bool, pad: '2px 6px'|'4px 8px' }
    */
+  // -----------------------------------------------------------------------
+  // ANALYTICS CHARTS (SVG-based, no external libs)
+  // -----------------------------------------------------------------------
+
+  function renderAnalytics(data) {
+    const allOrders = data.recentOrders || [];
+    const settled = allOrders.filter(o => o.status && o.status.startsWith('settled_'));
+    const confirmed = allOrders.filter(o => o.status === 'confirmed');
+    const allQuoted = allOrders.filter(o => o.offeredOdds);
+
+    renderChartCumulPnl(settled);
+    renderChartPnlSport(settled);
+    renderChartPnlLegs(settled);
+    renderChartCalibration(settled);
+    renderChartCompGap(data);
+    renderChartFillVig(allQuoted, settled);
+    renderChartExposure(confirmed);
+  }
+
+  // --- SVG helpers ---
+  function svgLine(x1, y1, x2, y2, color, width) {
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="${width || 1}" />`;
+  }
+  function svgCircle(cx, cy, r, fill) {
+    return `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}" />`;
+  }
+  function svgRect(x, y, w, h, fill, rx) {
+    return `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}" rx="${rx || 0}" />`;
+  }
+  function svgText(x, y, text, opts = {}) {
+    const anchor = opts.anchor || 'middle';
+    const fill = opts.fill || 'var(--text3)';
+    const size = opts.size || 10;
+    return `<text x="${x}" y="${y}" text-anchor="${anchor}" fill="${fill}" font-size="${size}">${text}</text>`;
+  }
+
+  // 1. Cumulative P&L line chart
+  function renderChartCumulPnl(settled) {
+    const el = document.getElementById('chart-cumul-pnl');
+    if (settled.length < 2) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders to chart P&L</div></div>'; return; }
+
+    const sorted = [...settled].sort((a, b) => (a.settledAt || '').localeCompare(b.settledAt || ''));
+    const points = [];
+    let running = 0;
+    for (const o of sorted) {
+      running += (o.pnl || 0);
+      points.push({ time: o.settledAt, pnl: running, order: o });
+    }
+
+    const W = 700, H = 200, pad = { l: 60, r: 20, t: 20, b: 30 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const minPnl = Math.min(0, ...points.map(p => p.pnl));
+    const maxPnl = Math.max(0, ...points.map(p => p.pnl));
+    const range = maxPnl - minPnl || 1;
+
+    const scaleX = (i) => pad.l + (i / (points.length - 1)) * chartW;
+    const scaleY = (v) => pad.t + chartH - ((v - minPnl) / range) * chartH;
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:250px;">`;
+    // Grid lines
+    const zeroY = scaleY(0);
+    svg += svgLine(pad.l, zeroY, W - pad.r, zeroY, 'var(--border)', 1);
+    svg += svgText(pad.l - 8, zeroY + 3, '$0', { anchor: 'end', size: 9 });
+    if (maxPnl > 0) { const y = scaleY(maxPnl); svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5); svg += svgText(pad.l - 8, y + 3, '+$' + maxPnl.toFixed(0), { anchor: 'end', size: 9, fill: 'var(--green)' }); }
+    if (minPnl < 0) { const y = scaleY(minPnl); svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5); svg += svgText(pad.l - 8, y + 3, '-$' + Math.abs(minPnl).toFixed(0), { anchor: 'end', size: 9, fill: 'var(--red)' }); }
+
+    // Area fill
+    let areaPath = `M${scaleX(0)},${zeroY}`;
+    for (let i = 0; i < points.length; i++) areaPath += ` L${scaleX(i)},${scaleY(points[i].pnl)}`;
+    areaPath += ` L${scaleX(points.length - 1)},${zeroY} Z`;
+    const areaColor = running >= 0 ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)';
+    svg += `<path d="${areaPath}" fill="${areaColor}" />`;
+
+    // Line
+    let linePath = '';
+    for (let i = 0; i < points.length; i++) {
+      linePath += (i === 0 ? 'M' : ' L') + scaleX(i) + ',' + scaleY(points[i].pnl);
+    }
+    const lineColor = running >= 0 ? 'var(--green)' : 'var(--red)';
+    svg += `<path d="${linePath}" fill="none" stroke="${lineColor}" stroke-width="2" />`;
+
+    // Dots
+    for (let i = 0; i < points.length; i++) {
+      const color = points[i].order.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      svg += svgCircle(scaleX(i), scaleY(points[i].pnl), 3, color);
+    }
+
+    // Final value label
+    const lastP = points[points.length - 1];
+    const finalLabel = (lastP.pnl >= 0 ? '+$' : '-$') + Math.abs(lastP.pnl).toFixed(2);
+    svg += svgText(scaleX(points.length - 1), scaleY(lastP.pnl) - 8, finalLabel, { size: 11, fill: lineColor });
+
+    svg += '</svg>';
+    svg += `<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">${points.length} settled parlays</div>`;
+    el.innerHTML = svg;
+  }
+
+  // 2. P&L by Sport bar chart
+  function renderChartPnlSport(settled) {
+    const el = document.getElementById('chart-pnl-sport');
+    if (settled.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>'; return; }
+
+    const bySport = {};
+    for (const o of settled) {
+      const sport = (o.legs || o.meta?.legs || [])[0]?.sport || 'unknown';
+      if (!bySport[sport]) bySport[sport] = { pnl: 0, wins: 0, losses: 0 };
+      bySport[sport].pnl += (o.pnl || 0);
+      if (o.pnl > 0) bySport[sport].wins++; else if (o.pnl < 0) bySport[sport].losses++;
+    }
+
+    const sports = Object.entries(bySport).sort((a, b) => b[1].pnl - a[1].pnl);
+    const W = 700, barH = 28, gap = 4, pad = { l: 80, r: 80, t: 10, b: 10 };
+    const H = pad.t + pad.b + sports.length * (barH + gap);
+    const maxAbs = Math.max(1, ...sports.map(([, d]) => Math.abs(d.pnl)));
+    const chartW = W - pad.l - pad.r;
+    const midX = pad.l + chartW / 2;
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:${Math.max(150, H)}px;">`;
+    svg += svgLine(midX, pad.t, midX, H - pad.b, 'var(--border)', 1);
+
+    for (let i = 0; i < sports.length; i++) {
+      const [sport, d] = sports[i];
+      const y = pad.t + i * (barH + gap);
+      const barW = (Math.abs(d.pnl) / maxAbs) * (chartW / 2 - 10);
+      const color = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const x = d.pnl >= 0 ? midX : midX - barW;
+
+      svg += svgRect(x, y, barW, barH, color, 3);
+      svg += svgText(pad.l - 4, y + barH / 2 + 4, sportLabel(sport), { anchor: 'end', size: 11, fill: 'var(--text2)' });
+      const valStr = (d.pnl >= 0 ? '+$' : '-$') + Math.abs(d.pnl).toFixed(2);
+      const valX = d.pnl >= 0 ? midX + barW + 4 : midX - barW - 4;
+      svg += svgText(valX, y + barH / 2 + 4, valStr + ' (' + d.wins + 'W-' + d.losses + 'L)', { anchor: d.pnl >= 0 ? 'start' : 'end', size: 10, fill: color });
+    }
+    svg += '</svg>';
+    el.innerHTML = svg;
+  }
+
+  // 3. P&L by Leg Count bar chart
+  function renderChartPnlLegs(settled) {
+    const el = document.getElementById('chart-pnl-legs');
+    if (settled.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>'; return; }
+
+    const byLegs = {};
+    for (const o of settled) {
+      const n = (o.legs || o.meta?.legs || []).length || '?';
+      if (!byLegs[n]) byLegs[n] = { pnl: 0, wins: 0, losses: 0 };
+      byLegs[n].pnl += (o.pnl || 0);
+      if (o.pnl > 0) byLegs[n].wins++; else if (o.pnl < 0) byLegs[n].losses++;
+    }
+
+    const legs = Object.entries(byLegs).sort((a, b) => Number(a[0]) - Number(b[0]));
+    const W = 700, barH = 28, gap = 4, pad = { l: 80, r: 80, t: 10, b: 10 };
+    const H = pad.t + pad.b + legs.length * (barH + gap);
+    const maxAbs = Math.max(1, ...legs.map(([, d]) => Math.abs(d.pnl)));
+    const chartW = W - pad.l - pad.r;
+    const midX = pad.l + chartW / 2;
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:${Math.max(120, H)}px;">`;
+    svg += svgLine(midX, pad.t, midX, H - pad.b, 'var(--border)', 1);
+
+    for (let i = 0; i < legs.length; i++) {
+      const [n, d] = legs[i];
+      const y = pad.t + i * (barH + gap);
+      const barW = (Math.abs(d.pnl) / maxAbs) * (chartW / 2 - 10);
+      const color = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const x = d.pnl >= 0 ? midX : midX - barW;
+
+      svg += svgRect(x, y, barW, barH, color, 3);
+      svg += svgText(pad.l - 4, y + barH / 2 + 4, n + '-leg', { anchor: 'end', size: 11, fill: 'var(--text2)' });
+      const valStr = (d.pnl >= 0 ? '+$' : '-$') + Math.abs(d.pnl).toFixed(2);
+      svg += svgText(d.pnl >= 0 ? midX + barW + 4 : midX - barW - 4, y + barH / 2 + 4, valStr + ' (' + d.wins + 'W-' + d.losses + 'L)', { anchor: d.pnl >= 0 ? 'start' : 'end', size: 10, fill: color });
+    }
+    svg += '</svg>';
+    el.innerHTML = svg;
+  }
+
+  // 4. Calibration chart — actual vs expected win rate by probability bucket
+  function renderChartCalibration(settled) {
+    const el = document.getElementById('chart-calibration');
+    const withProb = settled.filter(o => o.fairParlayProb && o.fairParlayProb > 0);
+    if (withProb.length < 5) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 5+ settled orders with fair probability data</div></div>'; return; }
+
+    // Bucket by fair probability ranges
+    const buckets = [
+      { min: 0, max: 0.1, label: '0-10%' }, { min: 0.1, max: 0.2, label: '10-20%' },
+      { min: 0.2, max: 0.3, label: '20-30%' }, { min: 0.3, max: 0.5, label: '30-50%' },
+      { min: 0.5, max: 1, label: '50%+' },
+    ];
+    const data = buckets.map(b => {
+      const inBucket = withProb.filter(o => o.fairParlayProb >= b.min && o.fairParlayProb < b.max);
+      const bettorWins = inBucket.filter(o => o.settlementResult !== 'lost').length; // bettor won = we lost
+      const expected = inBucket.reduce((s, o) => s + o.fairParlayProb, 0);
+      return { ...b, count: inBucket.length, bettorWins, expectedWins: expected,
+        actualRate: inBucket.length > 0 ? bettorWins / inBucket.length : 0,
+        expectedRate: inBucket.length > 0 ? expected / inBucket.length : 0 };
+    }).filter(d => d.count > 0);
+
+    if (data.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No data in probability buckets</div></div>'; return; }
+
+    const W = 700, H = 220, pad = { l: 50, r: 20, t: 20, b: 50 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const barW = Math.min(60, chartW / data.length - 10);
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:280px;">`;
+
+    // Y axis
+    for (let pct = 0; pct <= 100; pct += 25) {
+      const y = pad.t + chartH - (pct / 100) * chartH;
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5);
+      svg += svgText(pad.l - 6, y + 3, pct + '%', { anchor: 'end', size: 9 });
+    }
+
+    for (let i = 0; i < data.length; i++) {
+      const d = data[i];
+      const cx = pad.l + (i + 0.5) * (chartW / data.length);
+      const expectedH = d.expectedRate * chartH;
+      const actualH = d.actualRate * chartH;
+
+      // Expected bar (blue, semi-transparent)
+      svg += svgRect(cx - barW / 2, pad.t + chartH - expectedH, barW / 2 - 1, expectedH, 'rgba(88,166,255,0.3)', 2);
+      // Actual bar (green or red)
+      const actualColor = d.actualRate <= d.expectedRate * 1.1 ? 'var(--green)' : 'var(--red)';
+      svg += svgRect(cx + 1, pad.t + chartH - actualH, barW / 2 - 1, actualH, actualColor, 2);
+
+      // Labels
+      svg += svgText(cx, H - pad.b + 14, d.label, { size: 10 });
+      svg += svgText(cx, H - pad.b + 26, 'n=' + d.count, { size: 8, fill: 'var(--text3)' });
+    }
+
+    // Legend
+    svg += svgRect(pad.l, H - 12, 8, 8, 'rgba(88,166,255,0.3)', 1);
+    svg += svgText(pad.l + 12, H - 5, 'Expected', { anchor: 'start', size: 9 });
+    svg += svgRect(pad.l + 70, H - 12, 8, 8, 'var(--green)', 1);
+    svg += svgText(pad.l + 82, H - 5, 'Actual', { anchor: 'start', size: 9 });
+
+    svg += '</svg>';
+    el.innerHTML = svg;
+  }
+
+  // 5. Competitive Gap — scatter of our odds vs winning odds on lost quotes
+  function renderChartCompGap(data) {
+    const el = document.getElementById('chart-comp-gap');
+    const intel = window._lastIntelData;
+    if (!intel?.competitive?.entries || intel.competitive.entries.length < 3) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted & matched parlays</div></div>'; return;
+    }
+
+    const entries = intel.competitive.entries;
+    const W = 700, H = 200, pad = { l: 50, r: 20, t: 20, b: 30 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const gaps = entries.map(e => e.gapProb);
+    const maxGap = Math.max(5, ...gaps.map(g => Math.abs(g)));
+
+    const scaleX = (i) => pad.l + (i / (entries.length - 1)) * chartW;
+    const scaleY = (v) => pad.t + chartH / 2 - (v / maxGap) * (chartH / 2);
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:250px;">`;
+    // Zero line
+    svg += svgLine(pad.l, scaleY(0), W - pad.r, scaleY(0), 'var(--border)', 1);
+    svg += svgText(pad.l - 6, scaleY(0) + 3, '0%', { anchor: 'end', size: 9 });
+    svg += svgText(W - pad.r + 4, scaleY(0) - 8, 'Too tight', { anchor: 'start', size: 8, fill: 'var(--text3)' });
+    svg += svgText(W - pad.r + 4, scaleY(0) + 12, 'Too generous', { anchor: 'start', size: 8, fill: 'var(--text3)' });
+
+    // Dots
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const color = e.won ? 'var(--green)' : 'var(--red)';
+      svg += svgCircle(scaleX(i), scaleY(e.gapProb), 4, color);
+    }
+
+    // Running average line
+    let avgPath = '';
+    let runAvg = 0;
+    for (let i = 0; i < entries.length; i++) {
+      runAvg = (runAvg * i + entries[i].gapProb) / (i + 1);
+      avgPath += (i === 0 ? 'M' : ' L') + scaleX(i) + ',' + scaleY(runAvg);
+    }
+    svg += `<path d="${avgPath}" fill="none" stroke="var(--amber)" stroke-width="2" />`;
+
+    svg += '</svg>';
+    svg += '<div style="font-size:11px; color:var(--text3); text-align:center;">' +
+      '<span style="color:var(--amber);">&#9644; Running avg</span> &nbsp; ' +
+      '<span style="color:var(--green);">&#9679; Won</span> &nbsp; ' +
+      '<span style="color:var(--red);">&#9679; Lost</span> &nbsp; ' +
+      'Above zero = too tight. Below = too generous.</div>';
+    el.innerHTML = svg;
+  }
+
+  // 6. Fill Rate vs Vig — what % of quotes get filled at different vig levels?
+  function renderChartFillVig(allQuoted, settled) {
+    const el = document.getElementById('chart-fill-vig');
+    const withVig = allQuoted.filter(o => o.meta?.vig != null || o.vig != null);
+    if (withVig.length < 10) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 10+ quotes to analyze fill rate</div></div>'; return; }
+
+    // Group by vig bucket
+    const vigBuckets = {};
+    for (const o of withVig) {
+      const vig = ((o.meta?.vig || o.vig || 0) * 100).toFixed(1);
+      if (!vigBuckets[vig]) vigBuckets[vig] = { quoted: 0, filled: 0 };
+      vigBuckets[vig].quoted++;
+      if (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_'))) vigBuckets[vig].filled++;
+    }
+
+    const data = Object.entries(vigBuckets).map(([vig, d]) => ({
+      vig: parseFloat(vig), fillRate: d.quoted > 0 ? d.filled / d.quoted * 100 : 0,
+      quoted: d.quoted, filled: d.filled
+    })).sort((a, b) => a.vig - b.vig);
+
+    if (data.length < 1) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Insufficient vig diversity</div></div>'; return; }
+
+    const W = 700, H = 180, pad = { l: 50, r: 20, t: 20, b: 40 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const barW = Math.min(50, chartW / data.length - 8);
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:220px;">`;
+
+    for (let pct = 0; pct <= 100; pct += 25) {
+      const y = pad.t + chartH - (pct / 100) * chartH;
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5);
+      if (pct % 50 === 0) svg += svgText(pad.l - 6, y + 3, pct + '%', { anchor: 'end', size: 9 });
+    }
+
+    for (let i = 0; i < data.length; i++) {
+      const d = data[i];
+      const cx = pad.l + (i + 0.5) * (chartW / data.length);
+      const barHeight = (d.fillRate / 100) * chartH;
+      svg += svgRect(cx - barW / 2, pad.t + chartH - barHeight, barW, barHeight, 'var(--accent)', 2);
+      svg += svgText(cx, H - pad.b + 14, d.vig + '%', { size: 10 });
+      svg += svgText(cx, H - pad.b + 26, d.quoted + ' quotes', { size: 8, fill: 'var(--text3)' });
+      svg += svgText(cx, pad.t + chartH - barHeight - 6, d.fillRate.toFixed(0) + '%', { size: 9, fill: 'var(--accent)' });
+    }
+    svg += svgText(W / 2, H - 2, 'Vig Level', { size: 10 });
+
+    svg += '</svg>';
+    el.innerHTML = svg;
+  }
+
+  // 7. Exposure Concentration — horizontal bars showing team exposure
+  function renderChartExposure(confirmed) {
+    const el = document.getElementById('chart-exposure');
+    if (confirmed.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need active positions</div></div>'; return; }
+
+    // Aggregate exposure per team
+    const teamExp = {};
+    for (const o of confirmed) {
+      const legs = o.legs || o.meta?.legs || [];
+      let toWin = 0;
+      if (o.confirmedStake && o.offeredOdds) {
+        const dec = o.offeredOdds >= 100 ? 1 + o.offeredOdds / 100 : 1 + 100 / Math.abs(o.offeredOdds);
+        toWin = o.confirmedStake * (dec - 1);
+      }
+      for (const l of legs) {
+        const name = l.team || l.teamName || '?';
+        if (!teamExp[name]) teamExp[name] = { risk: 0, parlays: 0 };
+        teamExp[name].risk += toWin / legs.length; // simple split
+        teamExp[name].parlays++;
+      }
+    }
+
+    const teams = Object.entries(teamExp).sort((a, b) => b[1].risk - a[1].risk).slice(0, 12);
+    if (teams.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No team exposure</div></div>'; return; }
+
+    const W = 700, barH = 22, gap = 3, pad = { l: 160, r: 80, t: 10, b: 10 };
+    const H = pad.t + pad.b + teams.length * (barH + gap);
+    const maxRisk = Math.max(1, ...teams.map(([, d]) => d.risk));
+    const chartW = W - pad.l - pad.r;
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:${Math.max(150, H)}px;">`;
+
+    for (let i = 0; i < teams.length; i++) {
+      const [name, d] = teams[i];
+      const y = pad.t + i * (barH + gap);
+      const barW = (d.risk / maxRisk) * chartW;
+      const pct = (d.risk / maxRisk) * 100;
+      const color = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--amber)' : 'var(--accent)';
+      const nameShort = name.length > 22 ? name.substring(0, 19) + '...' : name;
+
+      svg += svgRect(pad.l, y, barW, barH, color, 3);
+      svg += svgText(pad.l - 6, y + barH / 2 + 4, nameShort, { anchor: 'end', size: 10, fill: 'var(--text2)' });
+      svg += svgText(pad.l + barW + 4, y + barH / 2 + 4, '$' + d.risk.toFixed(0) + ' (' + d.parlays + ')', { anchor: 'start', size: 9, fill: 'var(--text3)' });
+    }
+    svg += '</svg>';
+    el.innerHTML = svg;
+  }
+
   function buildLegTable(legs, opts = {}) {
     const pad = opts.pad || '4px 8px';
     const showStatus = opts.showStatus !== false;
@@ -2610,7 +3058,7 @@
   }
 
   // Tab switching
-  const sectionNames = { dashboard: 'Dashboard', orders: 'Orders', portfolio: 'Portfolio', exposure: 'Exposure', intel: 'Market Intel', config: 'Config' };
+  const sectionNames = { dashboard: 'Dashboard', orders: 'Orders', portfolio: 'Portfolio', exposure: 'Exposure', analytics: 'Analytics', intel: 'Market Intel', config: 'Config' };
   let activeSection = 'dashboard';
   function switchSection(section, navEl) {
     activeSection = section;
