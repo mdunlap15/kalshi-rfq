@@ -39,7 +39,7 @@ const config = {
     port: parseInt(process.env.PORT) || 3001,
   },
   logLevel: process.env.LOG_LEVEL || 'info',
-  refreshIntervalMinutes: parseInt(process.env.REFRESH_INTERVAL_MINUTES) || 2,
+  refreshIntervalMinutes: parseInt(process.env.REFRESH_INTERVAL_MINUTES) || 10,
 };
 
 // Validate required config
