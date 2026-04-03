@@ -519,8 +519,8 @@
   <!-- ===================== TAB: HISTORY ===================== -->
   <div id="tab-history" class="tab-content" style="display:none;">
     <div class="card">
-      <div class="card-header">
-        <span>All Quotes</span>
+      <div class="card-header" onclick="toggleCard(this)">
+        <span><span class="toggle-icon">&#9660;</span>All Quotes</span>
         <span id="history-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
       </div>
       <div class="card-body" style="padding: 0;">
@@ -532,8 +532,8 @@
 
     <!-- Settled Positions -->
     <div class="card">
-      <div class="card-header">
-        <span>Settled Positions (Wager Log)</span>
+      <div class="card-header" onclick="toggleCard(this)">
+        <span><span class="toggle-icon">&#9660;</span>Settled Positions (Wager Log)</span>
         <span id="settled-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
       </div>
       <div class="card-body" style="padding: 0;">
@@ -2439,6 +2439,8 @@
     sortCol: 'time', sortDir: -1,
     search: '',
     statusFilter: [],
+    pageSize: 20,
+    showAll: false,
   };
 
   function renderHistory(data) {
@@ -2525,6 +2527,12 @@
       <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${allOrders.length}</span>
     </div>`;
 
+    // Pagination — show pageSize rows unless showAll or searching/filtering
+    const isFiltering = historyState.search || historyState.statusFilter.length > 0;
+    const displayLimit = (historyState.showAll || isFiltering) ? filtered.length : historyState.pageSize;
+    const displayed = filtered.slice(0, displayLimit);
+    const hasMore = filtered.length > displayLimit;
+
     html += `<div style="overflow-x: auto;"><table>
       <tr>
         <th ${hSortClick('time')}>Time${hSortArrow('time')}</th>
@@ -2537,7 +2545,7 @@
         <th ${hSortClick('pnl')} style="text-align:right">P&L${hSortArrow('pnl')}</th>
       </tr>`;
 
-    for (const order of filtered.slice(0, 100)) {
+    for (const order of displayed) {
       const time = order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
       const legs = (order.legs || order.meta?.legs || []);
       const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
@@ -2583,6 +2591,22 @@
     }
 
     html += '</table></div>';
+
+    // Show More / Show Less button
+    if (hasMore) {
+      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
+        <button class="btn" onclick="historyState.showAll=true; historyRerender()" style="font-size:12px; padding:4px 16px;">
+          Show All ${filtered.length} Quotes
+        </button>
+      </div>`;
+    } else if (historyState.showAll && filtered.length > historyState.pageSize && !isFiltering) {
+      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
+        <button class="btn" onclick="historyState.showAll=false; historyRerender()" style="font-size:12px; padding:4px 16px;">
+          Show Recent ${historyState.pageSize}
+        </button>
+      </div>`;
+    }
+
     el.innerHTML = html;
   }
 
