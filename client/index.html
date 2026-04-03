@@ -695,7 +695,8 @@
     const isConnected = ws.connectionState === 'connected';
     badge.className = 'status-badge ' + (isConnected ? 'connected' :
       ws.connectionState === 'connecting' ? 'connecting' : 'disconnected');
-    badgeText.textContent = ws.connectionState || 'Unknown';
+    const stateText = ws.connectionState || 'Unknown';
+    badgeText.textContent = stateText.charAt(0).toUpperCase() + stateText.slice(1);
 
     // Show reconnect button when disconnected
     const reconnectBtn = document.getElementById('reconnect-btn');
