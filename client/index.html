@@ -848,6 +848,7 @@
   }
 
   function renderMarketIntel(intel) {
+    window._lastIntelData = intel;
     const el = document.getElementById('market-intel');
     const sumEl = document.getElementById('intel-summary');
     if (!intel) return;
@@ -972,7 +973,33 @@
     // Recent matched parlays table
     const matched = intel.recentMatched || [];
     if (matched.length > 0) {
+      // Filter matched parlays
+      let filteredMatched = matched;
+      if (window._intelSearch) {
+        const q = window._intelSearch.toLowerCase();
+        filteredMatched = filteredMatched.filter(m => {
+          const teams = (m.legs || []).map(l => l.team || '').join(' ').toLowerCase();
+          return teams.includes(q) || (m.parlayId || '').toLowerCase().includes(q);
+        });
+      }
+      if (window._intelResultFilter) {
+        filteredMatched = filteredMatched.filter(m => m.outcome === window._intelResultFilter);
+      }
+
       html += subSection('intel-matched', 'Recent Matched Parlays', matched.length, false);
+      html += `<div style="padding:8px 12px; display:flex; gap:8px; align-items:center; border-bottom:1px solid var(--border);">
+        <input type="text" placeholder="Search team..." value="${window._intelSearch || ''}"
+          oninput="window._intelSearch=this.value; renderMarketIntel(window._lastIntelData||{})"
+          style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">
+        <select onchange="window._intelResultFilter=this.value; renderMarketIntel(window._lastIntelData||{})"
+          style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">
+          <option value="">All results</option>
+          <option value="won" ${window._intelResultFilter==='won'?'selected':''}>Won</option>
+          <option value="lost" ${window._intelResultFilter==='lost'?'selected':''}>Lost</option>
+          <option value="missed" ${window._intelResultFilter==='missed'?'selected':''}>No quote</option>
+        </select>
+        <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filteredMatched.length} of ${matched.length}</span>
+      </div>`;
       html += `<div style="overflow-x:auto;"><table>
         <tr>
           <th>Time</th>
@@ -984,8 +1011,9 @@
           <th>Result</th>
         </tr>`;
 
-      for (let mi = 0; mi < Math.min(matched.length, 30); mi++) {
-        const m = matched[mi];
+      const matchedPage = window._intelShowAll ? filteredMatched : filteredMatched.slice(0, 20);
+      for (let mi = 0; mi < matchedPage.length; mi++) {
+        const m = matchedPage[mi];
         const time = m.matchedAt ? new Date(m.matchedAt).toLocaleTimeString() : '-';
         const knownLegs = (m.legs || []).filter(l => l.team !== 'Unknown');
         const summary = knownLegs.slice(0, 2).map(l => l.team).join(', ') + (knownLegs.length > 2 ? ` +${knownLegs.length - 2}` : '') || '-';
@@ -1016,7 +1044,17 @@
           </td>
         </tr>`;
       }
-      html += '</table></div>' + subEnd;
+      html += '</table></div>';
+      if (!window._intelShowAll && filteredMatched.length > 20) {
+        html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
+          <button class="btn" onclick="window._intelShowAll=true; renderMarketIntel(window._lastIntelData||{})" style="font-size:12px; padding:4px 16px;">Show All ${filteredMatched.length}</button>
+        </div>`;
+      } else if (window._intelShowAll && filteredMatched.length > 20) {
+        html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
+          <button class="btn" onclick="window._intelShowAll=false; renderMarketIntel(window._lastIntelData||{})" style="font-size:12px; padding:4px 16px;">Show Recent 20</button>
+        </div>`;
+      }
+      html += subEnd;
     }
 
     el.innerHTML = html || '<div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div>';
@@ -1186,43 +1224,86 @@
     el.innerHTML = html;
   }
 
+  const posState = { sortCol: 'time', sortDir: -1, search: '' };
+  window.posRerender = () => renderPositions(window._lastPosData || { recentOrders: [] });
+  window.togglePosSort = (col) => {
+    if (posState.sortCol === col) posState.sortDir *= -1;
+    else { posState.sortCol = col; posState.sortDir = -1; }
+    posRerender();
+  };
+
   function renderPositions(data) {
+    window._lastPosData = data;
     const el = document.getElementById('positions-table');
     const countEl = document.getElementById('positions-count');
     const allOrders = data.recentOrders || [];
-
-    // Open positions = confirmed but not settled
     const positions = allOrders.filter(o => o.status === 'confirmed');
 
-    if (countEl) {
-      countEl.textContent = positions.length > 0 ? positions.length + ' active' : '';
-    }
+    if (countEl) countEl.textContent = positions.length > 0 ? positions.length + ' active' : '';
 
     if (positions.length === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No open positions</div></div>';
       return;
     }
 
-    let html = `<div style="overflow-x:auto;"><table>
+    // Search
+    let filtered = positions;
+    if (posState.search) {
+      const q = posState.search.toLowerCase();
+      filtered = filtered.filter(o => {
+        const legs = o.legs || o.meta?.legs || [];
+        const teams = legs.map(l => (l.team || l.teamName || '')).join(' ').toLowerCase();
+        return teams.includes(q) || (o.parlayId || '').toLowerCase().includes(q);
+      });
+    }
+
+    // Sort
+    filtered.sort((a, b) => {
+      let va, vb;
+      switch (posState.sortCol) {
+        case 'time': va = a.confirmedAt || ''; vb = b.confirmedAt || ''; break;
+        case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
+        case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'towin':
+          const decA = a.offeredOdds >= 100 ? 1 + a.offeredOdds / 100 : 1 + 100 / Math.abs(a.offeredOdds || 1);
+          const decB = b.offeredOdds >= 100 ? 1 + b.offeredOdds / 100 : 1 + 100 / Math.abs(b.offeredOdds || 1);
+          va = (a.confirmedStake || 0) * (decA - 1); vb = (b.confirmedStake || 0) * (decB - 1); break;
+        default: va = a.confirmedAt || ''; vb = b.confirmedAt || '';
+      }
+      if (typeof va === 'string') return posState.sortDir * va.localeCompare(vb);
+      return posState.sortDir * (va - vb);
+    });
+
+    const pSortArrow = (col) => posState.sortCol === col ? (posState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const pSortClick = (col) => `onclick="event.stopPropagation(); togglePosSort('${col}')" style="cursor:pointer;"`;
+
+    let html = `<div style="padding:8px 12px; border-bottom:1px solid var(--border);">
+      <input type="text" placeholder="Search team..." value="${posState.search}"
+        oninput="posState.search=this.value; posRerender()"
+        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">
+      <span style="font-size:11px; color:var(--text3); margin-left:8px;">${filtered.length} of ${positions.length}</span>
+    </div>`;
+
+    html += `<div style="overflow-x:auto;"><table>
       <tr>
-        <th>Confirmed</th>
+        <th ${pSortClick('time')}>Confirmed${pSortArrow('time')}</th>
         <th>Teams</th>
-        <th>Legs</th>
-        <th>Offered</th>
-        <th style="text-align:right">Stake</th>
+        <th ${pSortClick('legs')}>Legs${pSortArrow('legs')}</th>
+        <th ${pSortClick('odds')}>Offered${pSortArrow('odds')}</th>
+        <th ${pSortClick('stake')} style="text-align:right">Stake${pSortArrow('stake')}</th>
         <th style="text-align:right">Max Risk</th>
-        <th style="text-align:right">To Win</th>
+        <th ${pSortClick('towin')} style="text-align:right">To Win${pSortArrow('towin')}</th>
       </tr>`;
 
-    for (const order of positions) {
-      const time = order.confirmedAt ? new Date(order.confirmedAt).toLocaleString() : order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
+    for (const order of filtered) {
+      const time = order.confirmedAt ? new Date(order.confirmedAt).toLocaleString() : '-';
       const legs = order.legs || order.meta?.legs || [];
       const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
       const teamsShort = teams.length > 60 ? teams.substring(0, 57) + '...' : teams;
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
       const maxRisk = order.maxRisk ? '$' + Number(order.maxRisk).toFixed(0) : '-';
-      // To win = stake * (decimal - 1) where decimal = offeredOdds converted
       let toWin = '-';
       if (order.confirmedStake && order.offeredOdds) {
         const dec = order.offeredOdds >= 100 ? 1 + order.offeredOdds / 100 : 1 + 100 / Math.abs(order.offeredOdds);
@@ -1377,10 +1458,19 @@
     el.innerHTML = html;
   }
 
+  const expState = { sortCol: 'risk', sortDir: -1, search: '' };
+  window.expRerender = () => renderExposure(window._lastExpData || { teams: [], maxPerTeam: 0 });
+  window.toggleExpSort = (col) => {
+    if (expState.sortCol === col) expState.sortDir *= -1;
+    else { expState.sortCol = col; expState.sortDir = -1; }
+    expRerender();
+  };
+
   function renderExposure(exp) {
+    window._lastExpData = exp;
     const el = document.getElementById('exposure-table');
     const limitEl = document.getElementById('exposure-limit');
-    const teams = exp.teams || [];
+    let teams = exp.teams || [];
     const maxPerTeam = exp.maxPerTeam || 0;
 
     if (limitEl) {
@@ -1391,6 +1481,26 @@
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No active exposure</div></div>';
       return;
     }
+
+    // Search
+    if (expState.search) {
+      const q = expState.search.toLowerCase();
+      teams = teams.filter(t => (t.name || '').toLowerCase().includes(q));
+    }
+
+    // Sort
+    teams = [...teams].sort((a, b) => {
+      let va, vb;
+      switch (expState.sortCol) {
+        case 'name': va = a.name || ''; vb = b.name || ''; return expState.sortDir * va.localeCompare(vb);
+        case 'parlays': va = a.parlays || 0; vb = b.parlays || 0; break;
+        case 'risk': va = a.risk || 0; vb = b.risk || 0; break;
+        case 'payout': va = a.notionalPayout || 0; vb = b.notionalPayout || 0; break;
+        case 'remaining': va = maxPerTeam > 0 ? maxPerTeam - (a.risk || 0) : 0; vb = maxPerTeam > 0 ? maxPerTeam - (b.risk || 0) : 0; break;
+        default: va = a.risk || 0; vb = b.risk || 0;
+      }
+      return expState.sortDir * (va - vb);
+    });
 
     // Build lookup: normalized team name → confirmed orders containing that team
     const confirmedOrders = Object.values(orderState.allOrders).filter(o => o.status === 'confirmed');
@@ -1405,18 +1515,24 @@
       }
     }
 
+    const eSortArrow = (col) => expState.sortCol === col ? (expState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const eSortClick = (col) => `onclick="event.stopPropagation(); toggleExpSort('${col}')" style="cursor:pointer;"`;
+
     let html = `
-      <div style="font-size:11px; color:var(--text3); padding:8px 12px; border-bottom:1px solid var(--border);">
-        Weighted Risk = payout × P(other legs win). A 10-leg parlay uses barely any risk budget per team. Click a row to see underlying parlays.
+      <div style="padding:8px 12px; display:flex; gap:8px; align-items:center; border-bottom:1px solid var(--border);">
+        <input type="text" placeholder="Search team..." value="${expState.search}"
+          oninput="expState.search=this.value; expRerender()"
+          style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">
+        <span style="font-size:10px; color:var(--text3);">Click row to see parlays. Weighted Risk = payout × P(other legs win).</span>
       </div>
       <div style="overflow-x: auto;">
       <table>
         <tr>
-          <th>Team / Selection</th>
-          <th style="text-align:right">Parlays</th>
-          <th style="text-align:right">Weighted Risk</th>
-          <th style="text-align:right">Notional Payout</th>
-          <th style="text-align:right">Remaining</th>
+          <th ${eSortClick('name')}>Team / Selection${eSortArrow('name')}</th>
+          <th ${eSortClick('parlays')} style="text-align:right">Parlays${eSortArrow('parlays')}</th>
+          <th ${eSortClick('risk')} style="text-align:right">Weighted Risk${eSortArrow('risk')}</th>
+          <th ${eSortClick('payout')} style="text-align:right">Notional Payout${eSortArrow('payout')}</th>
+          <th ${eSortClick('remaining')} style="text-align:right">Remaining${eSortArrow('remaining')}</th>
           <th style="width:120px;"></th>
         </tr>
     `;
@@ -1988,7 +2104,16 @@
     el.innerHTML = html;
   }
 
+  const popenState = { sortCol: 'time', sortDir: -1, search: '' };
+  window.popenRerender = () => renderPortfolioOpen(window._lastPopenData || []);
+  window.togglePopenSort = (col) => {
+    if (popenState.sortCol === col) popenState.sortDir *= -1;
+    else { popenState.sortCol = col; popenState.sortDir = -1; }
+    popenRerender();
+  };
+
   function renderPortfolioOpen(active) {
+    window._lastPopenData = active;
     const el = document.getElementById('portfolio-open');
     const countEl = document.getElementById('portfolio-exposure-count');
 
@@ -2010,10 +2135,45 @@
 
     if (countEl) countEl.textContent = active.length + ' active · $' + totalStaked.toFixed(2) + ' staked · $' + totalToWin.toFixed(2) + ' at risk';
 
-    let html = '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th>Confirmed</th><th>Teams</th><th>Legs</th><th style="text-align:right">Odds</th><th style="text-align:right">Stake</th><th style="text-align:right">To Win</th></tr>';
+    // Search
+    let filtered = active;
+    if (popenState.search) {
+      const q = popenState.search.toLowerCase();
+      filtered = filtered.filter(o => {
+        const legs = o.legs || o.meta?.legs || [];
+        return legs.map(l => (l.team || l.teamName || '')).join(' ').toLowerCase().includes(q);
+      });
+    }
 
-    for (const o of active.sort((a, b) => (b.confirmedAt || '').localeCompare(a.confirmedAt || ''))) {
+    // Sort
+    filtered = [...filtered].sort((a, b) => {
+      let va, vb;
+      switch (popenState.sortCol) {
+        case 'time': va = a.confirmedAt || ''; vb = b.confirmedAt || ''; return popenState.sortDir * va.localeCompare(vb);
+        case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
+        case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'towin':
+          const dA = a.offeredOdds >= 100 ? 1 + a.offeredOdds / 100 : 1 + 100 / Math.abs(a.offeredOdds || 1);
+          const dB = b.offeredOdds >= 100 ? 1 + b.offeredOdds / 100 : 1 + 100 / Math.abs(b.offeredOdds || 1);
+          va = (a.confirmedStake || 0) * (dA - 1); vb = (b.confirmedStake || 0) * (dB - 1); break;
+        default: va = a.confirmedAt || ''; vb = b.confirmedAt || ''; return popenState.sortDir * va.localeCompare(vb);
+      }
+      return popenState.sortDir * (va - vb);
+    });
+
+    const poSortArrow = (col) => popenState.sortCol === col ? (popenState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const poSortClick = (col) => 'onclick="event.stopPropagation(); togglePopenSort(\'' + col + '\')" style="cursor:pointer;"';
+
+    let html = '<div style="padding:8px 12px; border-bottom:1px solid var(--border);">';
+    html += '<input type="text" placeholder="Search team..." value="' + popenState.search + '" oninput="popenState.search=this.value; popenRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">';
+    html += '<span style="font-size:11px; color:var(--text3); margin-left:8px;">' + filtered.length + ' of ' + active.length + '</span>';
+    html += '</div>';
+
+    html += '<div style="overflow-x:auto;"><table>';
+    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Teams</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">Stake' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th></tr>';
+
+    for (const o of filtered) {
       const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleString() : '-';
       const legs = o.legs || o.meta?.legs || [];
       const teams = legs.map(l => l.team || l.teamName || '?').join(', ');
