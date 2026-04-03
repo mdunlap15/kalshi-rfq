@@ -100,6 +100,32 @@ async function fetchOddsForSport(sport) {
     eventMap[eventId].odds.push(row);
   }
 
+  // Supplement with Pinnacle odds from The Odds API
+  // Pinnacle events have different IDs, so match by team names and merge
+  if (PINNACLE_SPORT_MAP[sport]) {
+    const pinnacleRows = await fetchPinnacleRows(sport);
+    if (pinnacleRows.length > 0) {
+      // Build team-name lookup to match Pinnacle events to SharpAPI events
+      const teamKeyToEventId = {};
+      for (const [eid, ev] of Object.entries(eventMap)) {
+        const key = normalizeEventKey(ev.homeTeam, ev.awayTeam);
+        teamKeyToEventId[key] = eid;
+      }
+
+      let merged = 0;
+      for (const row of pinnacleRows) {
+        const key = normalizeEventKey(cleanTeamName(row.home_team), cleanTeamName(row.away_team));
+        const matchedId = teamKeyToEventId[key];
+        if (matchedId && eventMap[matchedId]) {
+          eventMap[matchedId].odds.push(row);
+          merged++;
+        }
+        // If no match, Pinnacle has an event SharpAPI doesn't — skip it
+      }
+      log.info('OddsFeed', `Pinnacle: merged ${merged} of ${pinnacleRows.length} rows into ${mapping.value} events`);
+    }
+  }
+
   // Parse into our cache format
   // Store as array per team pair to handle back-to-back series and doubleheaders
   const parsed = {};
@@ -156,6 +182,112 @@ async function fetchOddsForSport(sport) {
 
   log.info('OddsFeed', `Cached ${Object.keys(parsed).length} events for ${mapping.value}`);
   return parsed;
+}
+
+// ---------------------------------------------------------------------------
+// PINNACLE SUPPLEMENT — fetch Pinnacle odds from The Odds API and convert
+// to SharpAPI-format rows so they merge into the multi-book de-vig
+// ---------------------------------------------------------------------------
+
+// Maps our sport keys to The Odds API sport keys for Pinnacle supplement
+const PINNACLE_SPORT_MAP = {
+  'basketball_nba': 'basketball_nba',
+  'baseball_mlb': 'baseball_mlb',
+  'icehockey_nhl': 'icehockey_nhl',
+};
+
+// Market key mapping: The Odds API market → SharpAPI market_type (per sport)
+function oddsApiToSharpMarket(marketKey, sport) {
+  if (marketKey === 'h2h') return 'moneyline';
+  if (marketKey === 'spreads') {
+    if (sport === 'baseball_mlb') return 'run_line';
+    if (sport === 'icehockey_nhl') return 'puck_line';
+    return 'point_spread';
+  }
+  if (marketKey === 'totals') {
+    if (sport === 'baseball_mlb') return 'total_runs';
+    if (sport === 'icehockey_nhl') return 'total_goals';
+    return 'total_points';
+  }
+  return null;
+}
+
+/**
+ * Fetch Pinnacle odds from The Odds API and convert to SharpAPI-format rows.
+ * Returns array of rows compatible with SharpAPI's format, or empty array on failure.
+ */
+async function fetchPinnacleRows(sport) {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  const oddsApiSport = PINNACLE_SPORT_MAP[sport];
+  if (!theOddsApiKey || !oddsApiSport) return [];
+
+  const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
+    + `?apiKey=${theOddsApiKey}`
+    + `&regions=us,eu`
+    + `&markets=h2h,spreads,totals`
+    + `&bookmakers=pinnacle`
+    + `&oddsFormat=american`;
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      log.warn('OddsFeed', `Pinnacle fetch failed (${resp.status}) for ${sport}`);
+      return [];
+    }
+
+    const remaining = resp.headers.get('x-requests-remaining');
+    const used = resp.headers.get('x-requests-used');
+    if (remaining != null) {
+      log.info('OddsFeed', `The Odds API usage (Pinnacle): ${used} used, ${remaining} remaining`);
+    }
+
+    const events = await resp.json();
+    const rows = [];
+
+    for (const event of events) {
+      const pinnacle = (event.bookmakers || []).find(b => b.key === 'pinnacle');
+      if (!pinnacle) continue;
+
+      for (const market of (pinnacle.markets || [])) {
+        const marketType = oddsApiToSharpMarket(market.key, sport);
+        if (!marketType) continue;
+
+        for (const outcome of (market.outcomes || [])) {
+          const isHome = outcome.name === event.home_team;
+          const isAway = outcome.name === event.away_team;
+          const isOver = outcome.name === 'Over';
+          const isUnder = outcome.name === 'Under';
+
+          let selectionType;
+          if (market.key === 'totals') {
+            selectionType = isOver ? 'over' : isUnder ? 'under' : null;
+          } else {
+            selectionType = isHome ? 'home' : isAway ? 'away' : null;
+          }
+          if (!selectionType) continue;
+
+          rows.push({
+            event_id: event.id,
+            home_team: event.home_team,
+            away_team: event.away_team,
+            event_start_time: event.commence_time,
+            sportsbook: 'pinnacle',
+            market_type: marketType,
+            selection_type: selectionType,
+            odds_american: outcome.price,
+            odds_probability: americanToImpliedProb(outcome.price),
+            line: outcome.point != null ? outcome.point : null,
+          });
+        }
+      }
+    }
+
+    log.info('OddsFeed', `Pinnacle: ${rows.length} odds rows for ${sport} (${events.length} events)`);
+    return rows;
+  } catch (err) {
+    log.warn('OddsFeed', `Pinnacle fetch error for ${sport}: ${err.message}`);
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
