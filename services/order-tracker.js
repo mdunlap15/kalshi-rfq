@@ -457,7 +457,7 @@ function findByOrderUuid(uuid) {
   return parlayId ? orders[parlayId] : null;
 }
 
-function getRecentOrders(limit = 20) {
+function getRecentOrders(limit = 200) {
   return Object.values(orders)
     .sort((a, b) => (b.quotedAt || '').localeCompare(a.quotedAt || ''))
     .slice(0, limit);

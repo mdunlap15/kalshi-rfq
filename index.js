@@ -199,7 +199,7 @@ function startStatusServer() {
 
   // Recent orders
   app.get('/orders', (req, res) => {
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = parseInt(req.query.limit) || 100;
     res.json({
       stats: orderTracker.getStats(),
       pnlBySport: orderTracker.getPnLBySport(),
