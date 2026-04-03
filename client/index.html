@@ -1267,9 +1267,8 @@
         <th ${pSortClick('time')}>Confirmed${pSortArrow('time')}</th>
         <th>Teams</th>
         <th ${pSortClick('legs')}>Legs${pSortArrow('legs')}</th>
-        <th ${pSortClick('odds')}>Offered${pSortArrow('odds')}</th>
-        <th ${pSortClick('stake')} style="text-align:right">Stake${pSortArrow('stake')}</th>
-        <th style="text-align:right">Max Risk</th>
+        <th ${pSortClick('odds')}>Odds${pSortArrow('odds')}</th>
+        <th ${pSortClick('stake')} style="text-align:right">My Risk${pSortArrow('stake')}</th>
         <th ${pSortClick('towin')} style="text-align:right">To Win${pSortArrow('towin')}</th>
       </tr>`;
 
@@ -1284,12 +1283,15 @@
       const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
       const teamsShort = teams.length > 60 ? teams.substring(0, 57) + '...' : teams;
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
-      const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
-      const maxRisk = order.maxRisk ? '$' + Number(order.maxRisk).toFixed(0) : '-';
+      const myRisk = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
+      // To Win = counter-party's wager = what we win if parlay loses
       let toWin = '-';
       if (order.confirmedStake && order.offeredOdds) {
-        const dec = order.offeredOdds >= 100 ? 1 + order.offeredOdds / 100 : 1 + 100 / Math.abs(order.offeredOdds);
-        toWin = '$' + (order.confirmedStake * (dec - 1)).toFixed(2);
+        const odds = Math.abs(order.offeredOdds);
+        const counterStake = order.offeredOdds >= 100
+          ? order.confirmedStake * odds / 100   // positive odds: we risk less
+          : order.confirmedStake * 100 / odds;   // negative odds: we risk more
+        toWin = '$' + counterStake.toFixed(2);
       }
 
       const rowKey = 'pos-' + (order.parlayId || '');
@@ -1299,9 +1301,8 @@
         <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis;" title="${teams}">${teamsShort}</td>
         <td>${legs.length}</td>
         <td style="font-weight:600;">${offeredAm}</td>
-        <td style="text-align:right">${stake}</td>
-        <td style="text-align:right">${maxRisk}</td>
-        <td style="text-align:right; font-weight:600;">${toWin}</td>
+        <td style="text-align:right">${myRisk}</td>
+        <td style="text-align:right; font-weight:600; color:var(--green);">${toWin}</td>
       </tr>
       <tr id="${rowKey}" style="display:${expanded ? 'table-row' : 'none'}; background: var(--surface3);">
         <td colspan="7" style="padding: 12px 16px;">
@@ -1394,7 +1395,7 @@
     html += '<th>Teams</th>';
     html += '<th>Legs</th>';
     html += '<th ' + sSortClick('odds') + '>Odds' + sSortArrow('odds') + '</th>';
-    html += '<th ' + sSortClick('stake') + ' style="text-align:right">Stake' + sSortArrow('stake') + '</th>';
+    html += '<th ' + sSortClick('stake') + ' style="text-align:right">My Risk' + sSortArrow('stake') + '</th>';
     html += '<th>Result</th>';
     html += '<th ' + sSortClick('pnl') + ' style="text-align:right">P&L' + sSortArrow('pnl') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
@@ -1745,7 +1746,8 @@
         <th ${sortClick('pinnacle')}>Pinnacle${sortArrow('pinnacle')}</th>
         <th ${sortClick('offeredOdds')}>Offered${sortArrow('offeredOdds')}</th>
         <th>Winner</th>
-        <th ${sortClick('stake')} style="text-align:right">Stake${sortArrow('stake')}</th>
+        <th ${sortClick('stake')} style="text-align:right">My Risk${sortArrow('stake')}</th>
+        <th style="text-align:right">To Win</th>
         <th ${sortClick('status')}>Status${sortArrow('status')}</th>
         <th ${sortClick('pnl')} style="text-align:right">P&L${sortArrow('pnl')}</th>
       </tr>`;
@@ -1763,7 +1765,9 @@
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
       const stakeVal = order.confirmedStake || order.winningStake;
-      const stake = stakeVal ? '$' + Number(stakeVal).toFixed(2) : '-';
+      const myRiskStr = stakeVal ? '$' + Number(stakeVal).toFixed(2) : '-';
+      const cpWager = order.confirmedStake && order.offeredOdds ? counterPartyWager(order.confirmedStake, order.offeredOdds) : null;
+      const toWinStr = cpWager != null ? '$' + cpWager.toFixed(2) : '-';
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
       let pnlHtml = '-';
@@ -1783,12 +1787,13 @@
           <td style="color:var(--purple);">${pinAm}</td>
           <td style="font-weight:600;">${offeredAm}</td>
           <td style="color:${order.status === 'lost' ? 'var(--amber)' : 'var(--text3)'};">${winnerOdds}</td>
-          <td style="text-align:right">${stake}</td>
+          <td style="text-align:right">${myRiskStr}</td>
+          <td style="text-align:right; color:var(--green);">${toWinStr}</td>
           <td><span class="${statusClass}">${statusText}</span></td>
           <td style="text-align:right">${pnlHtml}</td>
         </tr>
         <tr id="ord-${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-          <td colspan="10" style="padding: 12px 16px;">
+          <td colspan="11" style="padding: 12px 16px;">
             <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
             ${buildLegTable(legs, { vig: order.meta?.vig || order.vig || 0 })}
             <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
@@ -2177,7 +2182,7 @@
       }
     }
 
-    if (countEl) countEl.textContent = active.length + ' active · $' + totalStaked.toFixed(2) + ' staked · $' + totalToWin.toFixed(2) + ' at risk';
+    if (countEl) countEl.textContent = active.length + ' active · $' + totalStaked.toFixed(2) + ' risk · $' + totalToWin.toFixed(2) + ' to win';
 
     // Search
     let filtered = active;
@@ -2215,7 +2220,7 @@
     html += '</div>';
 
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Teams</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">Stake' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th></tr>';
+    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Teams</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th></tr>';
 
     const isPopenFiltering = !!popenState.search;
     const popenLimit = (popenState.showAll || isPopenFiltering) ? filtered.length : popenState.pageSize;
@@ -2228,12 +2233,9 @@
       const teams = legs.map(l => l.team || l.teamName || '?').join(', ');
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
       const oddsStr = o.offeredOdds ? (o.offeredOdds >= 0 ? '+' : '') + o.offeredOdds : '-';
-      const stake = o.confirmedStake ? '$' + o.confirmedStake.toFixed(2) : '-';
-      let toWin = '-';
-      if (o.confirmedStake && o.offeredOdds) {
-        const dec = o.offeredOdds >= 100 ? 1 + o.offeredOdds / 100 : 1 + 100 / Math.abs(o.offeredOdds);
-        toWin = '$' + (o.confirmedStake * (dec - 1)).toFixed(2);
-      }
+      const myRisk = o.confirmedStake ? '$' + o.confirmedStake.toFixed(2) : '-';
+      const cpw = o.confirmedStake && o.offeredOdds ? counterPartyWager(o.confirmedStake, o.offeredOdds) : null;
+      const toWin = cpw != null ? '$' + cpw.toFixed(2) : '-';
 
       const rowKey = 'popen-' + (o.parlayId || '');
       const expanded = expandedRows.has(rowKey);
@@ -2242,8 +2244,8 @@
         '<td style="font-size:12px; max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>' +
         '<td>' + legs.length + '</td>' +
         '<td style="text-align:right; font-weight:600;">' + oddsStr + '</td>' +
-        '<td style="text-align:right">' + stake + '</td>' +
-        '<td style="text-align:right; font-weight:600;">' + toWin + '</td>' +
+        '<td style="text-align:right">' + myRisk + '</td>' +
+        '<td style="text-align:right; font-weight:600; color:var(--green);">' + toWin + '</td>' +
       '</tr>';
 
       // Expandable leg detail row
@@ -2358,7 +2360,7 @@
     html += '<th>Teams</th>';
     html += '<th ' + pSortClick('legs') + '>Legs' + pSortArrow('legs') + '</th>';
     html += '<th ' + pSortClick('odds') + '>Odds' + pSortArrow('odds') + '</th>';
-    html += '<th ' + pSortClick('stake') + ' style="text-align:right">Stake' + pSortArrow('stake') + '</th>';
+    html += '<th ' + pSortClick('stake') + ' style="text-align:right">My Risk' + pSortArrow('stake') + '</th>';
     html += '<th>Result</th>';
     html += '<th ' + pSortClick('pnl') + ' style="text-align:right">P&L' + pSortArrow('pnl') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
@@ -2620,6 +2622,18 @@
     };
     const cls = clsMap[label] || label.toLowerCase();
     return `<span class="sport-pill ${cls}">${label}</span>`;
+  }
+
+  /**
+   * Compute counter-party's wager from our perspective.
+   * confirmedStake = our risk, confirmedOdds = our American odds
+   * Returns what the bettor wagered (what we win if parlay loses).
+   */
+  function counterPartyWager(stake, odds) {
+    if (!stake || !odds) return 0;
+    const absOdds = Math.abs(odds);
+    if (odds >= 100) return stake * absOdds / 100; // positive odds: bettor risked more
+    return stake * 100 / absOdds; // negative odds: bettor risked less
   }
 
   function decimalToAmerican(dec) {
@@ -3203,7 +3217,7 @@
         <th ${hSortClick('fair')}>Fair${hSortArrow('fair')}</th>
         <th ${hSortClick('pinnacle')}>Pinnacle${hSortArrow('pinnacle')}</th>
         <th ${hSortClick('odds')}>Offered${hSortArrow('odds')}</th>
-        <th ${hSortClick('stake')}>Stake${hSortArrow('stake')}</th>
+        <th ${hSortClick('stake')}>My Risk${hSortArrow('stake')}</th>
         <th ${hSortClick('status')}>Status${hSortArrow('status')}</th>
         <th ${hSortClick('pnl')} style="text-align:right">P&L${hSortArrow('pnl')}</th>
       </tr>`;
