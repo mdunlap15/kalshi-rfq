@@ -1392,9 +1392,22 @@
       return;
     }
 
+    // Build lookup: normalized team name → confirmed orders containing that team
+    const confirmedOrders = Object.values(orderState.allOrders).filter(o => o.status === 'confirmed');
+    const teamParlayMap = {};
+    for (const o of confirmedOrders) {
+      const legs = o.legs || o.meta?.legs || [];
+      for (const l of legs) {
+        const name = (l.team || l.teamName || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+        if (!name) continue;
+        if (!teamParlayMap[name]) teamParlayMap[name] = [];
+        teamParlayMap[name].push(o);
+      }
+    }
+
     let html = `
       <div style="font-size:11px; color:var(--text3); padding:8px 12px; border-bottom:1px solid var(--border);">
-        Weighted Risk = payout × P(other legs win). A 10-leg parlay uses barely any risk budget per team.
+        Weighted Risk = payout × P(other legs win). A 10-leg parlay uses barely any risk budget per team. Click a row to see underlying parlays.
       </div>
       <div style="overflow-x: auto;">
       <table>
@@ -1413,8 +1426,11 @@
       const pct = maxPerTeam > 0 ? Math.min(100, (t.risk / maxPerTeam) * 100) : 0;
       const barColor = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--amber)' : 'var(--green)';
 
+      const rowKey = 'exp-' + t.key;
+      const expanded = expandedRows.has(rowKey);
+
       html += `
-        <tr>
+        <tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
           <td>${t.name}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums;">${t.parlays}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums; font-weight:600;">$${t.risk.toFixed(2)}</td>
@@ -1429,6 +1445,42 @@
           </td>
         </tr>
       `;
+
+      // Expandable detail: show the parlays driving this exposure
+      const teamParlays = teamParlayMap[t.key] || [];
+      let detailHtml = '';
+      if (teamParlays.length > 0) {
+        detailHtml += '<table style="width:100%; font-size:11px;">';
+        detailHtml += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 8px;">Confirmed</th><th style="text-align:left; padding:2px 8px;">All Legs</th><th style="text-align:right; padding:2px 8px;">Odds</th><th style="text-align:right; padding:2px 8px;">Stake</th><th style="text-align:right; padding:2px 8px;">To Win</th></tr>';
+        for (const o of teamParlays) {
+          const legs = o.legs || o.meta?.legs || [];
+          const allTeams = legs.map(l => l.team || l.teamName || '?').join(', ');
+          const oddsStr = o.offeredOdds ? (o.offeredOdds >= 0 ? '+' : '') + o.offeredOdds : '-';
+          const stake = o.confirmedStake ? '$' + o.confirmedStake.toFixed(2) : '-';
+          let toWin = '-';
+          if (o.confirmedStake && o.offeredOdds) {
+            const dec = o.offeredOdds >= 100 ? 1 + o.offeredOdds / 100 : 1 + 100 / Math.abs(o.offeredOdds);
+            toWin = '$' + (o.confirmedStake * (dec - 1)).toFixed(2);
+          }
+          const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleString() : '-';
+          detailHtml += '<tr>';
+          detailHtml += '<td style="padding:2px 8px; white-space:nowrap;">' + time + '</td>';
+          detailHtml += '<td style="padding:2px 8px; max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + allTeams + '">' + allTeams + '</td>';
+          detailHtml += '<td style="padding:2px 8px; text-align:right; font-weight:600;">' + oddsStr + '</td>';
+          detailHtml += '<td style="padding:2px 8px; text-align:right;">' + stake + '</td>';
+          detailHtml += '<td style="padding:2px 8px; text-align:right; font-weight:600;">' + toWin + '</td>';
+          detailHtml += '</tr>';
+        }
+        detailHtml += '</table>';
+      } else {
+        detailHtml = '<div style="font-size:11px; color:var(--text3);">No matching confirmed orders found</div>';
+      }
+
+      html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
+      html += '<td colspan="6" style="padding:8px 12px;">';
+      html += '<div style="font-size:11px; font-weight:600; color:var(--text2); margin-bottom:4px;">PARLAYS WITH ' + t.name.toUpperCase() + '</div>';
+      html += detailHtml;
+      html += '</td></tr>';
     }
 
     html += '</table></div>';
