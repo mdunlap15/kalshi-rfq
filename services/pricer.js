@@ -79,10 +79,17 @@ async function priceParlay(legs) {
       return null;
     }
 
+    // Look up Pinnacle's raw odds for this leg
+    const pinnacleOdds = oddsFeed.getPinnacleOdds(
+      lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
+    );
+
     pricedLegs.push({
       lineId,
       lineInfo,
       fairProb,
+      pinnacleOdds,
     });
 
     fairParlayProb *= fairProb;
@@ -142,6 +149,7 @@ async function priceParlay(legs) {
           selection: l.lineInfo.oddsApiSelection,
           line: l.lineInfo.line,
           fairProb: Math.round(l.fairProb * 10000) / 10000,
+          pinnacleOdds: l.pinnacleOdds || null,
           sport: l.lineInfo.sport,
           homeTeam: l.lineInfo.homeTeam,
           awayTeam: l.lineInfo.awayTeam,
@@ -152,6 +160,17 @@ async function priceParlay(legs) {
       offeredImpliedProb: Math.round(cappedProb * 100000) / 100000,
       decimalOdds: Math.round(decimalOdds * 100) / 100,
       americanOdds,
+      // Compute Pinnacle parlay odds from per-leg Pinnacle implied probs
+      pinnacleParlay: (() => {
+        const pinLegs = pricedLegs.filter(l => l.pinnacleOdds != null);
+        if (pinLegs.length !== pricedLegs.length) return null; // need all legs
+        let pinProb = 1;
+        for (const l of pinLegs) {
+          pinProb *= oddsFeed.americanToImpliedProb(l.pinnacleOdds);
+        }
+        if (pinProb <= 0 || pinProb >= 1) return null;
+        return decimalToAmerican(1 / pinProb);
+      })(),
       vig,
       maxRisk,
     },

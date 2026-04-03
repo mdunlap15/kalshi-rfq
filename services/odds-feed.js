@@ -477,6 +477,12 @@ function buildConsensusMoneyline(bookPairs) {
     fairProbs.home.push(fh);
     fairProbs.away.push(fa);
   }
+  // Extract Pinnacle's raw odds if present
+  const pinBook = bookPairs.find(bp => bp.book === 'pinnacle');
+  const pinnacle = pinBook ? {
+    home: pinBook.home.odds_american,
+    away: pinBook.away.odds_american,
+  } : null;
   return {
     home: {
       rawOdds: bookPairs[0].home.odds_american,
@@ -489,6 +495,7 @@ function buildConsensusMoneyline(bookPairs) {
       fairProb: avg(fairProbs.away),
     },
     books: bookPairs.length,
+    pinnacle,
   };
 }
 
@@ -512,6 +519,11 @@ function buildConsensusSpread(bookPairs) {
     fairProbs.home.push(fh);
     fairProbs.away.push(fa);
   }
+  const pinBook = matching.find(bp => bp.book === 'pinnacle');
+  const pinnacle = pinBook ? {
+    home: pinBook.home.odds_american,
+    away: pinBook.away.odds_american,
+  } : null;
   return {
     home: {
       rawOdds: matching[0].home.odds_american,
@@ -527,6 +539,7 @@ function buildConsensusSpread(bookPairs) {
     },
     line: pLine,
     books: matching.length,
+    pinnacle,
   };
 }
 
@@ -564,6 +577,10 @@ function buildConsensusTotals(bookPairs) {
     },
     line: pLine,
     books: matching.length,
+    pinnacle: (() => {
+      const pinBook = matching.find(bp => bp.book === 'pinnacle');
+      return pinBook ? { over: pinBook.over.odds_american, under: pinBook.under.odds_american } : null;
+    })(),
   };
 }
 
@@ -745,6 +762,27 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
 }
 
 /**
+ * Get Pinnacle's raw American odds for a specific selection.
+ * Returns the odds integer or null if Pinnacle data not available.
+ */
+function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime) {
+  const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
+  if (!event) return null;
+
+  const market = event.markets[marketType];
+  if (!market || !market.pinnacle) return null;
+
+  if (marketType === 'h2h' || marketType === 'spreads') {
+    if (selection === 'home') return market.pinnacle.home || null;
+    if (selection === 'away') return market.pinnacle.away || null;
+  } else if (marketType === 'totals') {
+    if (selection === 'over') return market.pinnacle.over || null;
+    if (selection === 'under') return market.pinnacle.under || null;
+  }
+  return null;
+}
+
+/**
  * Get fair probability — async version. Falls back to on-demand alt line fetch.
  */
 async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection, line, targetTime) {
@@ -900,6 +938,7 @@ module.exports = {
   refreshAllSports,
   getFairProb,
   getFairProbAsync,
+  getPinnacleOdds,
   fetchAltLines,
   getEventMarkets,
   getCacheAge,

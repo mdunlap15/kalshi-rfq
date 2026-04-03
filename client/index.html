@@ -1597,6 +1597,8 @@
     legsFilter: [],
     expandedRows: new Set(),
     allOrders: {}, // keyed by parlayId to merge across refreshes
+    pageSize: 20,
+    showAll: false,
   };
 
   function renderOrders(data) {
@@ -1656,6 +1658,7 @@
       switch (orderState.sortCol) {
         case 'time': va = a.quotedAt || ''; vb = b.quotedAt || ''; break;
         case 'fairOdds': va = fairToAmerican(a.fairParlayProb); vb = fairToAmerican(b.fairParlayProb); break;
+        case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
         case 'offeredOdds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'legs': va = (a.legs||a.meta?.legs||[]).length; vb = (b.legs||b.meta?.legs||[]).length; break;
         case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
@@ -1689,12 +1692,19 @@
     const sortArrow = (col) => orderState.sortCol === col ? (orderState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
     const sortClick = (col) => `onclick="event.stopPropagation(); toggleOrderSort('${col}')" style="cursor:pointer;"`;
 
+    // Pagination
+    const isOrderFiltering = orderState.search || orderState.statusFilter.length > 0;
+    const orderDisplayLimit = (orderState.showAll || isOrderFiltering) ? filtered.length : orderState.pageSize;
+    const orderDisplayed = filtered.slice(0, orderDisplayLimit);
+    const orderHasMore = filtered.length > orderDisplayLimit;
+
     html += `<div style="overflow-x: auto;"><table>
       <tr>
         <th ${sortClick('time')}>Time${sortArrow('time')}</th>
         <th ${sortClick('teams')}>Teams${sortArrow('teams')}</th>
         <th ${sortClick('legs')}>Legs${sortArrow('legs')}</th>
         <th ${sortClick('fairOdds')}>Fair${sortArrow('fairOdds')}</th>
+        <th ${sortClick('pinnacle')}>Pinnacle${sortArrow('pinnacle')}</th>
         <th ${sortClick('offeredOdds')}>Offered${sortArrow('offeredOdds')}</th>
         <th>Winner</th>
         <th ${sortClick('stake')} style="text-align:right">Stake${sortArrow('stake')}</th>
@@ -1702,15 +1712,16 @@
         <th ${sortClick('pnl')} style="text-align:right">P&L${sortArrow('pnl')}</th>
       </tr>`;
 
-    for (let i = 0; i < filtered.length; i++) {
-      const order = filtered[i];
+    for (let i = 0; i < orderDisplayed.length; i++) {
+      const order = orderDisplayed[i];
       const time = order.quotedAt ? new Date(order.quotedAt).toLocaleTimeString() : '-';
       const legs = (order.legs || order.meta?.legs || []);
       const teams = getOrderTeams(order);
       const teamStr = teams.join(', ');
 
       const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
-      // offeredOdds is now stored as American (integer) matching PX format
+      const pinParlay = order.meta?.pinnacleParlay;
+      const pinAm = pinParlay != null ? (pinParlay >= 0 ? '+' : '') + pinParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
       const stakeVal = order.confirmedStake || order.winningStake;
@@ -1731,6 +1742,7 @@
           <td style="font-size:12px; max-width:260px; overflow:hidden; text-overflow:ellipsis;" title="${teamStr}">${teamStr}</td>
           <td>${legs.length}</td>
           <td>${fairAm}</td>
+          <td style="color:var(--purple);">${pinAm}</td>
           <td style="font-weight:600;">${offeredAm}</td>
           <td style="color:${order.status === 'lost' ? 'var(--amber)' : 'var(--text3)'};">${winnerOdds}</td>
           <td style="text-align:right">${stake}</td>
@@ -1738,7 +1750,7 @@
           <td style="text-align:right">${pnlHtml}</td>
         </tr>
         <tr id="ord-${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-          <td colspan="9" style="padding: 12px 16px;">
+          <td colspan="10" style="padding: 12px 16px;">
             <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
             ${buildLegTable(legs)}
             <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
@@ -1752,6 +1764,18 @@
     }
 
     html += '</table></div>';
+
+    // Show More / Show Less
+    if (orderHasMore) {
+      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
+        <button class="btn" onclick="orderState.showAll=true; orderRerender()" style="font-size:12px; padding:4px 16px;">Show All ${filtered.length} Orders</button>
+      </div>`;
+    } else if (orderState.showAll && filtered.length > orderState.pageSize && !isOrderFiltering) {
+      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
+        <button class="btn" onclick="orderState.showAll=false; orderRerender()" style="font-size:12px; padding:4px 16px;">Show Recent ${orderState.pageSize}</button>
+      </div>`;
+    }
+
     el.innerHTML = html;
 
     window._lastPnlBySport = data.pnlBySport || {};
@@ -2665,6 +2689,7 @@
         case 'teams': va = (a.legs||a.meta?.legs||[]).map(l=>l.team||l.teamName||'').join(','); vb = (b.legs||b.meta?.legs||[]).map(l=>l.team||l.teamName||'').join(','); break;
         case 'legs': va = (a.legs||a.meta?.legs||[]).length; vb = (b.legs||b.meta?.legs||[]).length; break;
         case 'fair': va = a.fairParlayProb || 0; vb = b.fairParlayProb || 0; break;
+        case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
         case 'status': va = a.status || ''; vb = b.status || ''; break;
@@ -2706,6 +2731,7 @@
         <th ${hSortClick('teams')}>Teams${hSortArrow('teams')}</th>
         <th ${hSortClick('legs')}>Legs${hSortArrow('legs')}</th>
         <th ${hSortClick('fair')}>Fair${hSortArrow('fair')}</th>
+        <th ${hSortClick('pinnacle')}>Pinnacle${hSortArrow('pinnacle')}</th>
         <th ${hSortClick('odds')}>Offered${hSortArrow('odds')}</th>
         <th ${hSortClick('stake')}>Stake${hSortArrow('stake')}</th>
         <th ${hSortClick('status')}>Status${hSortArrow('status')}</th>
@@ -2718,6 +2744,8 @@
       const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
       const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
+      const pinParlay = order.meta?.pinnacleParlay;
+      const pinAm = pinParlay != null ? (pinParlay >= 0 ? '+' : '') + pinParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const stake = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
 
@@ -2736,13 +2764,14 @@
         <td style="max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="${teams}">${teamsShort}</td>
         <td>${legs.length}</td>
         <td>${fairAm}</td>
+        <td style="color:var(--purple);">${pinAm}</td>
         <td style="font-weight:600;">${offeredAm}</td>
         <td>${stake}</td>
         <td><span class="${statusClass}">${statusText}</span></td>
         <td style="text-align:right">${pnlHtml}</td>
       </tr>
       <tr id="${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-        <td colspan="8" style="padding: 12px 16px;">
+        <td colspan="9" style="padding: 12px 16px;">
           ${buildLegTable(legs, { showStatus: true, pad: '2px 6px' })}
           <div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ${order.parlayId || '-'}</div>
         </td>
