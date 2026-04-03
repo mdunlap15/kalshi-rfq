@@ -102,9 +102,9 @@
 
     /* Main layout */
     .main {
-      max-width: 1200px;
+      max-width: 1400px;
       margin: 0 auto;
-      padding: 24px;
+      padding: 0;
     }
 
     /* Cards */
@@ -306,21 +306,55 @@
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Tabs */
-    .tab-btn {
-      padding: 8px 20px;
-      border: none;
-      background: transparent;
-      color: var(--text3);
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      border-bottom: 2px solid transparent;
-      margin-bottom: -2px;
-      transition: color 0.15s, border-color 0.15s;
+    /* Sidebar layout */
+    .layout { display: flex; min-height: 100vh; }
+    .sidebar {
+      width: 220px; min-width: 220px; background: var(--surface); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; position: fixed; top: 0; left: 0; bottom: 0; z-index: 200;
     }
-    .tab-btn:hover { color: var(--text); }
-    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-    .tab-content { display: block; }
+    .sidebar-brand {
+      padding: 16px 20px; font-size: 16px; font-weight: 700; color: var(--accent);
+      letter-spacing: 1px; border-bottom: 1px solid var(--border);
+    }
+    .sidebar-status {
+      padding: 10px 20px; font-size: 11px; color: var(--text3); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .sidebar-nav { flex: 1; padding: 8px 0; overflow-y: auto; }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px; padding: 10px 20px; color: var(--text3);
+      font-size: 13px; font-weight: 500; cursor: pointer; border-left: 3px solid transparent;
+      transition: background 0.1s, color 0.1s, border-color 0.1s; text-decoration: none;
+    }
+    .nav-item:hover { background: var(--surface2); color: var(--text); }
+    .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: var(--surface2); }
+    .nav-icon { font-size: 15px; width: 20px; text-align: center; opacity: 0.7; }
+    .nav-item.active .nav-icon { opacity: 1; }
+    .sidebar-footer {
+      padding: 12px 16px; border-top: 1px solid var(--border);
+      display: flex; gap: 8px; flex-wrap: wrap;
+    }
+    .sidebar-footer .btn { flex: 1; font-size: 11px; padding: 5px 8px; }
+    .content { margin-left: 220px; flex: 1; min-width: 0; }
+    .content-header {
+      position: sticky; top: 0; z-index: 100; background: var(--bg);
+      border-bottom: 1px solid var(--border); padding: 12px 24px;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    }
+    .content-header h2 { font-size: 18px; font-weight: 600; margin: 0; white-space: nowrap; }
+    .content-body { padding: 20px 24px; }
+    .section { display: block; }
+    @media (max-width: 900px) {
+      .sidebar { width: 56px; min-width: 56px; }
+      .sidebar-brand { padding: 12px 0; text-align: center; font-size: 12px; letter-spacing: 0; }
+      .sidebar-status { display: none; }
+      .nav-item { padding: 12px 0; justify-content: center; font-size: 0; }
+      .nav-icon { font-size: 18px; margin: 0; }
+      .sidebar-footer { flex-direction: column; padding: 8px; }
+      .sidebar-footer .btn { font-size: 10px; padding: 4px; }
+      .content { margin-left: 56px; }
+      .content-body { padding: 12px; }
+    }
 
     .paused-banner {
       background: rgba(248,81,73,0.1);
@@ -338,36 +372,48 @@
 </head>
 <body>
 
-<div class="header">
-  <div class="header-left">
-    <h1>Parlay SP <span>Dashboard</span></h1>
-    <div id="ws-badge" class="status-badge disconnected">
-      <span class="dot"></span>
-      <span id="ws-badge-text">Disconnected</span>
+<div class="layout">
+  <!-- ===================== SIDEBAR ===================== -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">PARLAY SP</div>
+    <div class="sidebar-status">
+      <div id="ws-badge" class="status-badge disconnected" style="font-size:11px;">
+        <span class="dot"></span>
+        <span id="ws-badge-text">Disconnected</span>
+      </div>
+      <div id="paused-badge" style="display:none; color:var(--red); font-size:11px; font-weight:600;">Quoting OFF</div>
     </div>
-  </div>
-  <div class="header-actions">
-    <span id="countdown-display" style="font-size:11px; color:var(--text3); margin-right:4px;">Auto-refresh in 10s</span>
-    <div class="refresh-indicator" id="refresh-indicator" style="display:none;">
-      <div class="spinner"></div>
+    <nav class="sidebar-nav">
+      <a class="nav-item active" onclick="switchSection('dashboard', this)">
+        <span class="nav-icon">&#9632;</span> Dashboard
+      </a>
+      <a class="nav-item" onclick="switchSection('orders', this)">
+        <span class="nav-icon">&#9998;</span> Orders
+      </a>
+      <a class="nav-item" onclick="switchSection('portfolio', this)">
+        <span class="nav-icon">&#9733;</span> Portfolio
+      </a>
+      <a class="nav-item" onclick="switchSection('exposure', this)">
+        <span class="nav-icon">&#9888;</span> Exposure
+      </a>
+      <a class="nav-item" onclick="switchSection('intel', this)">
+        <span class="nav-icon">&#9881;</span> Market Intel
+      </a>
+      <a class="nav-item" onclick="switchSection('config', this)">
+        <span class="nav-icon">&#9881;</span> Config
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <button class="btn" id="pause-btn" onclick="togglePause()">Pause</button>
+      <button class="btn" onclick="refreshDashboard()">Refresh</button>
+      <div style="font-size:10px; color:var(--text3); width:100%; text-align:center;" id="uptime">-</div>
     </div>
-    <button class="btn" onclick="refreshDashboard()">Refresh</button>
-    <button class="btn" id="reconnect-btn" onclick="reconnectWS(this)" style="display:none;">Reconnect</button>
-    <button class="btn" onclick="toggleDefinitions()">Definitions</button>
-    <button class="btn" id="pause-btn" onclick="togglePause()">Pause</button>
-  </div>
-</div>
+  </aside>
 
-<div class="main">
-  <!-- Paused banner -->
-  <div id="paused-banner" class="paused-banner" style="display:none;">
-    <span>RFQ handling is paused. Incoming requests will be ignored.</span>
-    <button class="btn success" onclick="togglePause()">Resume</button>
-  </div>
-
-  <!-- Compact stats bar -->
-  <div class="card">
-    <div class="card-body" style="padding: 10px 16px;">
+  <!-- ===================== CONTENT ===================== -->
+  <main class="content">
+    <div class="content-header">
+      <h2 id="section-title">Dashboard</h2>
       <div class="stat-bar">
         <span class="stat-item"><span class="stat-label">Lines:</span> <span class="stat-val" id="stat-lines">-</span> <span class="stat-label" id="stat-lines-sub" style="font-size:11px;"></span></span>
         <span class="stat-item"><span class="stat-label">Quotes:</span> <span class="stat-val" id="stat-quotes">0</span></span>
@@ -375,274 +421,208 @@
         <span class="stat-item"><span class="stat-label">Settled:</span> <span class="stat-val" id="stat-settled">0</span></span>
         <span class="stat-item"><span class="stat-label">P&L:</span> <span class="stat-val" id="stat-pnl">$0.00</span></span>
         <span class="stat-item"><span class="stat-label">Win Rate:</span> <span class="stat-val" id="stat-winrate">-</span></span>
-        <span class="stat-item" style="margin-left:auto;"><span id="uptime" class="refresh-indicator"></span></span>
+        <span class="stat-item">
+          <span id="countdown-display" style="font-size:11px; color:var(--text3);">-</span>
+          <div class="refresh-indicator" id="refresh-indicator" style="display:none;"><div class="spinner"></div></div>
+        </span>
       </div>
     </div>
-  </div>
 
-  <!-- TAB NAVIGATION -->
-  <div style="display:flex; gap:2px; margin-bottom:16px; border-bottom:2px solid var(--border); padding-bottom:0;">
-    <button class="tab-btn active" onclick="switchTab('live', this)">Live</button>
-    <button class="tab-btn" onclick="switchTab('portfolio', this)">Portfolio</button>
-    <button class="tab-btn" onclick="switchTab('analytics', this)">Analytics</button>
-    <button class="tab-btn" onclick="switchTab('history', this)">History</button>
-    <button class="tab-btn" onclick="switchTab('intel', this)">Market Intel</button>
-    <button class="tab-btn" onclick="switchTab('config', this)">Config</button>
-  </div>
-
-  <!-- ===================== TAB: LIVE ===================== -->
-  <div id="tab-live" class="tab-content">
-    <!-- Portfolio Summary -->
-    <div id="portfolio-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
-
-    <!-- Open Positions -->
-    <div class="card">
-      <div class="card-header" onclick="toggleCard(this)">
-        <span><span class="toggle-icon">&#9660;</span>Open Positions</span>
-        <span id="positions-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+    <div class="content-body">
+      <!-- Paused banner -->
+      <div id="paused-banner" class="paused-banner" style="display:none;">
+        <span>RFQ handling is paused. Incoming requests will be ignored.</span>
+        <button class="btn success" onclick="togglePause()">Resume</button>
       </div>
-      <div class="card-body" style="padding: 0;">
-        <div id="positions-table">
-          <div class="empty-state"><div class="icon">-</div><div>No open positions</div></div>
+
+      <!-- ===================== SECTION: DASHBOARD ===================== -->
+      <div id="section-dashboard" class="section">
+        <div id="portfolio-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
+
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon">&#9660;</span>Open Positions</span>
+            <span id="positions-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" style="padding: 0;">
+            <div id="positions-table"><div class="empty-state"><div class="icon">-</div><div>No open positions</div></div></div>
+          </div>
         </div>
-      </div>
-    </div>
 
-    <!-- Recent Orders -->
-    <div class="card">
-      <div class="card-header" onclick="toggleCard(this)">
-        <span><span class="toggle-icon">&#9660;</span>Recent Orders</span>
-        <span id="order-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-      </div>
-      <div class="card-body" style="padding: 0;">
-        <div id="orders-table">
-          <div class="empty-state"><div class="icon">-</div><div>No orders yet. Waiting for RFQs...</div></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Team Exposure -->
-    <div class="card">
-      <div class="card-header" onclick="toggleCard(this)">
-        <span><span class="toggle-icon">&#9660;</span>Team Exposure</span>
-        <span id="exposure-limit" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-      </div>
-      <div class="card-body" style="padding: 0;">
-        <div id="exposure-table">
-          <div class="empty-state"><div class="icon">-</div><div>No active exposure</div></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- P&L by Sport -->
-    <div class="card">
-      <div class="card-header" onclick="toggleCard(this)">
-        <span><span class="toggle-icon">&#9660;</span>P&L by Sport</span>
-      </div>
-      <div class="card-body" id="pnl-sport">
-        <div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===================== TAB: PORTFOLIO ===================== -->
-  <div id="tab-portfolio" class="tab-content" style="display:none;">
-    <!-- Performance Summary -->
-    <div id="portfolio-perf-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
-
-    <div class="grid-2">
-      <!-- P&L by Sport -->
-      <div class="card">
-        <div class="card-header"><span>P&L by Sport</span></div>
-        <div class="card-body" id="portfolio-by-sport">
-          <div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>
-        </div>
-      </div>
-
-      <!-- P&L by Leg Count -->
-      <div class="card">
-        <div class="card-header"><span>P&L by Leg Count</span></div>
-        <div class="card-body" id="portfolio-by-legs">
-          <div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Edge Analysis -->
-    <div class="card">
-      <div class="card-header">
-        <span>Edge Analysis</span>
-        <span id="edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-      </div>
-      <div class="card-body" id="portfolio-edge">
-        <div class="empty-state"><div class="icon">-</div><div>Need settled orders to analyze edge</div></div>
-      </div>
-    </div>
-
-    <!-- Open Exposure -->
-    <div class="card">
-      <div class="card-header" onclick="toggleCard(this)">
-        <span><span class="toggle-icon">&#9660;</span>Open Exposure</span>
-        <span id="portfolio-exposure-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-      </div>
-      <div class="card-body" style="padding:0;" id="portfolio-open">
-        <div class="empty-state"><div class="icon">-</div><div>No open positions</div></div>
-      </div>
-    </div>
-
-    <!-- Settled Positions Log -->
-    <div class="card">
-      <div class="card-header">
-        <span>Settled Positions</span>
-        <span id="portfolio-settled-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-      </div>
-      <div class="card-body" style="padding:0;" id="portfolio-settled">
-        <div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===================== TAB: ANALYTICS ===================== -->
-  <div id="tab-analytics" class="tab-content" style="display:none;">
-    <!-- Quote Competitiveness -->
-    <div class="card">
-      <div class="card-header">
-        <span>Quote Competitiveness</span>
-        <span id="comp-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-      </div>
-      <div class="card-body" id="comp-section">
-        <div class="empty-state"><div class="icon">-</div><div>Need quoted & matched parlays to compare</div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===================== TAB: HISTORY ===================== -->
-  <div id="tab-history" class="tab-content" style="display:none;">
-    <div class="card">
-      <div class="card-header" onclick="toggleCard(this)">
-        <span><span class="toggle-icon">&#9660;</span>All Quotes</span>
-        <span id="history-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-      </div>
-      <div class="card-body" style="padding: 0;">
-        <div id="history-table">
-          <div class="empty-state"><div class="icon">-</div><div>No historical parlays yet</div></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Settled Positions -->
-    <div class="card">
-      <div class="card-header" onclick="toggleCard(this)">
-        <span><span class="toggle-icon">&#9660;</span>Settled Positions (Wager Log)</span>
-        <span id="settled-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-      </div>
-      <div class="card-body" style="padding: 0;">
-        <div id="settled-table">
-          <div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===================== TAB: MARKET INTEL ===================== -->
-  <div id="tab-intel" class="tab-content" style="display:none;">
-    <!-- Market Intelligence -->
-    <div class="card">
-      <div class="card-header">
-        <span>Market Intelligence</span>
-        <span id="intel-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-      </div>
-      <div class="card-body" id="market-intel">
-        <div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ===================== TAB: CONFIG ===================== -->
-  <div id="tab-config" class="tab-content" style="display:none;">
-    <div class="grid-2">
-      <!-- Odds Cache -->
-      <div class="card">
-        <div class="card-header">
-          <span>Odds Cache</span>
-          <button class="btn" onclick="refreshOdds(this)">Refresh</button>
-        </div>
-        <div class="card-body" id="odds-cache">
-          <div class="empty-state"><div class="icon">...</div>Loading</div>
-        </div>
-      </div>
-
-      <!-- Registered Lines -->
-      <div class="card">
-        <div class="card-header">
-          <span>Registered Lines</span>
-          <button class="btn" onclick="refreshLines(this)">Refresh</button>
-        </div>
-        <div class="card-body" id="lines-breakdown">
-          <div class="empty-state"><div class="icon">...</div>Loading</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Settlements -->
-    <div class="card">
-      <div class="card-header">
-        <span>Settlement Polling</span>
-        <button class="btn" onclick="pollSettlements(this)">Poll Settlements</button>
-      </div>
-      <div class="card-body" style="padding:12px; font-size:12px; color:var(--text3);">
-        Polls PX orders API for settlement results. Runs automatically every 2 minutes, or click to poll now.
-      </div>
-    </div>
-
-    <!-- Configuration -->
-    <div class="card">
-      <div class="card-header"><span>Configuration</span></div>
-      <div class="card-body" id="config-display">
-        <div class="empty-state"><div class="icon">...</div>Loading</div>
-      </div>
-    </div>
-
-    <!-- Definitions -->
-    <div class="card" id="definitions-card" style="display:none;">
-      <div class="card-header">
-        <span>Definitions</span>
-        <button class="btn" onclick="toggleDefinitions()">Hide</button>
-      </div>
-      <div class="card-body" id="definitions-body">
-        <table>
-          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Lines Registered</td><td>Individual betting lines registered with ProphetX.</td></tr>
-          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Quotes Sent</td><td>Parlay price quotes submitted in response to RFQs.</td></tr>
-          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Confirmed</td><td>Quotes accepted by the bettor and confirmed by us.</td></tr>
-          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Settled</td><td>Confirmed parlays that have fully settled.</td></tr>
-          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Running P&L</td><td>Cumulative profit/loss from all settled parlays.</td></tr>
-          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Fair Prob</td><td>De-vigged probability of the parlay winning.</td></tr>
-          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Offered Odds</td><td>American odds we quoted with vig margin applied.</td></tr>
-          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Vig</td><td>Our profit margin on fair probability.</td></tr>
-          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Exposure / Team</td><td>Max total risk across all active parlays per team.</td></tr>
-          <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Odds Cache</td><td>Live odds from SharpAPI and The Odds API.</td></tr>
-        </table>
-      </div>
-    </div>
-
-    <!-- Activity Log -->
-    <div class="card">
-      <div class="card-header">
-        <span>Activity Log</span>
-        <button class="btn" onclick="clearLog()">Clear</button>
-      </div>
-      <div class="card-body" style="padding: 0;">
-        <div class="log-feed" id="log-feed">
-          <div class="log-entry">
-            <span class="log-time">--:--:--</span>
-            <span class="log-cat system">System</span>
-            <span class="log-msg">Dashboard loaded. Connecting...</span>
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon">&#9660;</span>P&L by Sport</span>
+          </div>
+          <div class="card-body" id="pnl-sport">
+            <div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>
           </div>
         </div>
       </div>
-    </div>
-  </div>
-</div>
+
+      <!-- ===================== SECTION: ORDERS ===================== -->
+      <div id="section-orders" class="section" style="display:none;">
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon">&#9660;</span>Recent Orders</span>
+            <span id="order-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" style="padding: 0;">
+            <div id="orders-table"><div class="empty-state"><div class="icon">-</div><div>No orders yet. Waiting for RFQs...</div></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon">&#9660;</span>All Quotes</span>
+            <span id="history-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" style="padding: 0;">
+            <div id="history-table"><div class="empty-state"><div class="icon">-</div><div>No historical parlays yet</div></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon">&#9660;</span>Settled Positions (Wager Log)</span>
+            <span id="settled-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" style="padding: 0;">
+            <div id="settled-table"><div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== SECTION: PORTFOLIO ===================== -->
+      <div id="section-portfolio" class="section" style="display:none;">
+        <div id="portfolio-perf-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header"><span>P&L by Sport</span></div>
+            <div class="card-body" id="portfolio-by-sport"><div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span>P&L by Leg Count</span></div>
+            <div class="card-body" id="portfolio-by-legs"><div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span>Edge Analysis</span>
+            <span id="edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="portfolio-edge"><div class="empty-state"><div class="icon">-</div><div>Need settled orders to analyze edge</div></div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><span>Quote Competitiveness</span>
+            <span id="comp-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="comp-section"><div class="empty-state"><div class="icon">-</div><div>Need quoted & matched parlays to compare</div></div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <span>Settled Positions</span>
+            <span id="portfolio-settled-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" style="padding:0;" id="portfolio-settled"><div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div></div>
+        </div>
+      </div>
+
+      <!-- ===================== SECTION: EXPOSURE ===================== -->
+      <div id="section-exposure" class="section" style="display:none;">
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon">&#9660;</span>Team Exposure</span>
+            <span id="exposure-limit" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" style="padding: 0;">
+            <div id="exposure-table"><div class="empty-state"><div class="icon">-</div><div>No active exposure</div></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon">&#9660;</span>Open Positions</span>
+            <span id="portfolio-exposure-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" style="padding:0;" id="portfolio-open"><div class="empty-state"><div class="icon">-</div><div>No open positions</div></div></div>
+        </div>
+      </div>
+
+      <!-- ===================== SECTION: MARKET INTEL ===================== -->
+      <div id="section-intel" class="section" style="display:none;">
+        <div class="card">
+          <div class="card-header">
+            <span>Market Intelligence</span>
+            <span id="intel-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="market-intel"><div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div></div>
+        </div>
+      </div>
+
+      <!-- ===================== SECTION: CONFIG ===================== -->
+      <div id="section-config" class="section" style="display:none;">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header"><span>Odds Cache</span><button class="btn" onclick="refreshOdds(this)">Refresh</button></div>
+            <div class="card-body" id="odds-cache"><div class="empty-state"><div class="icon">...</div>Loading</div></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><span>Registered Lines</span><button class="btn" onclick="refreshLines(this)">Refresh</button></div>
+            <div class="card-body" id="lines-breakdown"><div class="empty-state"><div class="icon">...</div>Loading</div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><span>Settlement Polling</span><button class="btn" onclick="pollSettlements(this)">Poll Settlements</button></div>
+          <div class="card-body" style="padding:12px; font-size:12px; color:var(--text3);">Polls PX orders API for settlement results. Runs automatically every 10 minutes, or click to poll now.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><span>Configuration</span></div>
+          <div class="card-body" id="config-display"><div class="empty-state"><div class="icon">...</div>Loading</div></div>
+        </div>
+
+        <div class="card" id="definitions-card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Definitions</span>
+          </div>
+          <div class="card-body collapsed" id="definitions-body">
+            <table>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Lines Registered</td><td>Individual betting lines registered with ProphetX.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Quotes Sent</td><td>Parlay price quotes submitted in response to RFQs.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Confirmed</td><td>Quotes accepted by the bettor and confirmed by us.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Settled</td><td>Confirmed parlays that have fully settled.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Running P&L</td><td>Cumulative profit/loss from all settled parlays.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Fair Prob</td><td>De-vigged probability of the parlay winning.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Offered Odds</td><td>American odds we quoted with vig margin applied.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Vig</td><td>Our profit margin on fair probability.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Max Exposure / Team</td><td>Max total risk across all active parlays per team.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Odds Cache</td><td>Live odds from SharpAPI and The Odds API.</td></tr>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><span>Activity Log</span><button class="btn" onclick="clearLog()">Clear</button></div>
+          <div class="card-body" style="padding: 0;">
+            <div class="log-feed" id="log-feed">
+              <div class="log-entry">
+                <span class="log-time">--:--:--</span>
+                <span class="log-cat system">System</span>
+                <span class="log-msg">Dashboard loaded. Connecting...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /content-body -->
+  </main>
+</div><!-- /layout -->
 
 <script>
   const BASE = window.location.origin;
@@ -724,6 +704,8 @@
     // Paused state
     isPaused = ws.paused || false;
     document.getElementById('paused-banner').style.display = isPaused ? 'flex' : 'none';
+    const pausedBadge = document.getElementById('paused-badge');
+    if (pausedBadge) pausedBadge.style.display = isPaused ? 'block' : 'none';
     const pauseBtn = document.getElementById('pause-btn');
     pauseBtn.textContent = isPaused ? 'Resume' : 'Pause';
     pauseBtn.className = isPaused ? 'btn success' : 'btn danger';
@@ -2603,15 +2585,20 @@
   }
 
   // Tab switching
-  let activeTab = 'live';
-  function switchTab(tab, btn) {
-    activeTab = tab;
-    document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
-    document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-    const tabEl = document.getElementById('tab-' + tab);
-    if (tabEl) tabEl.style.display = 'block';
-    if (btn) btn.classList.add('active');
+  const sectionNames = { dashboard: 'Dashboard', orders: 'Orders', portfolio: 'Portfolio', exposure: 'Exposure', intel: 'Market Intel', config: 'Config' };
+  let activeSection = 'dashboard';
+  function switchSection(section, navEl) {
+    activeSection = section;
+    document.querySelectorAll('.section').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+    const sectionEl = document.getElementById('section-' + section);
+    if (sectionEl) sectionEl.style.display = 'block';
+    if (navEl) navEl.classList.add('active');
+    const titleEl = document.getElementById('section-title');
+    if (titleEl) titleEl.textContent = sectionNames[section] || section;
   }
+  // Backwards compat alias
+  function switchTab(tab, btn) { switchSection(tab, btn); }
 
   // History state — accumulates all orders across refreshes
   const historyState = {
@@ -2790,8 +2777,9 @@
   }
 
   function toggleDefinitions() {
-    const card = document.getElementById('definitions-card');
-    card.style.display = card.style.display === 'none' ? 'block' : 'none';
+    // Navigate to config section and definitions is there as a collapsible card
+    const navItems = document.querySelectorAll('.nav-item');
+    switchSection('config', navItems[navItems.length - 1]);
   }
 
   function formatDuration(seconds) {
