@@ -24,6 +24,16 @@ const ODDS_API_FALLBACK = {
     markets: 'h2h,spreads,totals',
     bookmakers: 'pinnacle,draftkings,fanduel',
   },
+  'soccer_usa_mls': {
+    oddsApiSport: 'soccer_usa_mls',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'soccer_epl': {
+    oddsApiSport: 'soccer_epl',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -481,6 +491,8 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
     'basketball_ncaab': 'basketball_ncaab',
     'baseball_mlb': 'baseball_mlb',
     'icehockey_nhl': 'icehockey_nhl',
+    'soccer_usa_mls': 'soccer_usa_mls',
+    'soccer_epl': 'soccer_epl',
   };
   const oddsApiSport = oddsApiSportMap[sport];
   if (!oddsApiSport) return null;

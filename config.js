@@ -20,10 +20,11 @@ const config = {
     offerValidSeconds: 120,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 50,
   },
-  supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,baseball_mlb,icehockey_nhl,tennis,soccer')
+  supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,baseball_mlb,icehockey_nhl,tennis,soccer,soccer_usa_mls,soccer_epl')
     .split(',').map(s => s.trim()),
   // Maps our sport keys to ProphetX sport_name values
   // Note: NBA and NCAAB both map to 'Basketball' — line manager handles both
+  // Note: MLS and EPL both map to 'Soccer' — line manager tries all matching keys
   sportNameMap: {
     'basketball_nba': 'Basketball',
     'basketball_ncaab': 'Basketball',
@@ -31,6 +32,8 @@ const config = {
     'icehockey_nhl': 'Ice Hockey',
     'tennis': 'Tennis',
     'soccer': 'Soccer',
+    'soccer_usa_mls': 'Soccer',
+    'soccer_epl': 'Soccer',
   },
   server: {
     port: parseInt(process.env.PORT) || 3001,

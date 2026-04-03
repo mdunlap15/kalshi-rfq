@@ -2372,6 +2372,8 @@
       'icehockey_nhl': 'NHL',
       'tennis': 'Tennis',
       'soccer': 'Soccer',
+      'soccer_usa_mls': 'MLS',
+      'soccer_epl': 'EPL',
     };
     return map[sport] || sport;
   }
@@ -2382,6 +2384,7 @@
     const clsMap = {
       'NBA': 'nba', 'NCAAB': 'ncaab', 'MLB': 'mlb',
       'NHL': 'nhl', 'Tennis': 'tennis', 'Soccer': 'soccer',
+      'MLS': 'soccer', 'EPL': 'soccer',
     };
     const cls = clsMap[label] || label.toLowerCase();
     return `<span class="sport-pill ${cls}">${label}</span>`;
