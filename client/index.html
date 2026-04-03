@@ -2050,7 +2050,9 @@
         toWin = '$' + (o.confirmedStake * (dec - 1)).toFixed(2);
       }
 
-      html += '<tr>' +
+      const rowKey = 'popen-' + (o.parlayId || '');
+      const expanded = expandedRows.has(rowKey);
+      html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">' +
         '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>' +
         '<td style="font-size:12px; max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>' +
         '<td>' + legs.length + '</td>' +
@@ -2058,6 +2060,31 @@
         '<td style="text-align:right">' + stake + '</td>' +
         '<td style="text-align:right; font-weight:600;">' + toWin + '</td>' +
       '</tr>';
+
+      // Expandable leg detail row
+      html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
+      html += '<td colspan="6" style="padding:12px 16px;">';
+      html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">PARLAY LEGS</div>';
+      html += '<table style="width:100%; font-size:12px;">';
+      html += '<tr style="color:var(--text3);"><th style="text-align:left; padding:4px 8px;">Status</th><th style="text-align:left; padding:4px 8px;">Team / Selection</th><th style="text-align:left; padding:4px 8px;">Market</th><th style="text-align:left; padding:4px 8px;">Line</th><th style="text-align:right; padding:4px 8px;">Fair Odds</th></tr>';
+      for (const l of legs) {
+        const ls = l.settlementStatus || l.settlement_status || l.status || 'pending';
+        let lIcon, lColor, lTitle;
+        if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; lTitle = 'Won'; }
+        else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; lTitle = 'Lost'; }
+        else if (ls === 'push' || ls === 'void') { lIcon = '&#8212;'; lColor = 'var(--amber)'; lTitle = ls.charAt(0).toUpperCase() + ls.slice(1); }
+        else { lIcon = '&#9679;'; lColor = 'var(--text3)'; lTitle = 'Pending'; }
+        html += '<tr>' +
+          '<td style="padding:4px 8px; color:' + lColor + '; font-size:14px; text-align:center; width:40px;" title="' + lTitle + '">' + lIcon + '</td>' +
+          '<td style="padding:4px 8px;">' + (l.team || l.teamName || '?') + '</td>' +
+          '<td style="padding:4px 8px;"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>' +
+          '<td style="padding:4px 8px; color:var(--text2);">' + (l.line != null ? l.line : (l.selection || '-')) + '</td>' +
+          '<td style="padding:4px 8px; text-align:right;">' + (l.fairProb ? decimalToAmerican(1/l.fairProb) : '-') + '</td>' +
+        '</tr>';
+      }
+      html += '</table>';
+      html += '<div style="margin-top:6px; font-size:10px; color:var(--text3);">Vig: ' + ((o.meta?.vig || o.vig || 0) * 100).toFixed(1) + '% · Max Risk: $' + (o.maxRisk || '-') + ' · ID: ' + (o.parlayId || '-') + '</div>';
+      html += '</td></tr>';
     }
     html += '</table></div>';
     el.innerHTML = html;
