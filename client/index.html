@@ -1131,32 +1131,16 @@
     html += `<div style="font-size:20px; font-weight:700; color:${winColor}; margin-bottom:4px;">${winRate}% win rate</div>`;
     html += `<div style="color:var(--text2); margin-bottom:16px;">Won <strong class="positive">${wins.length}</strong> of <strong>${entries.length}</strong> quoted parlays that got matched. Lost <strong class="negative">${losses.length}</strong>.</div>`;
 
-    // === CHARTS (only show with 10+ entries) ===
-    if (entries.length >= 10) {
-      html += `<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px; margin-top:16px;">TREND</div>`;
-      const trendW = 800, trendH = 200, trendPad = 50;
-      const sorted = [...entries].sort((a, b) => (a.time || '').localeCompare(b.time || ''));
-      const gaps = sorted.map(e => e.gapProb);
-      const maxGap = Math.max(5, Math.max(...gaps.map(Math.abs)) + 1);
-      let runSum = 0;
-      const runAvg = gaps.map((g, i) => { runSum += g; return runSum / (i + 1); });
-      const tX = i => trendPad + (i / Math.max(sorted.length - 1, 1)) * (trendW - 2 * trendPad);
-      const tY = g => trendPad + ((maxGap - g) / (2 * maxGap)) * (trendH - 2 * trendPad);
-
-      html += `<svg width="${trendW}" height="${trendH}" style="background:var(--surface3); border-radius:8px; width:100%; max-width:${trendW}px;">
-        <line x1="${trendPad}" y1="${tY(0)}" x2="${trendW-trendPad}" y2="${tY(0)}" stroke="var(--text3)" stroke-width="1" stroke-dasharray="4,4" opacity="0.4"/>
-        ${runAvg.length > 1 ? `<polyline fill="none" stroke="var(--amber)" stroke-width="2" opacity="0.8" points="${runAvg.map((g, i) => `${tX(i)},${tY(g)}`).join(' ')}"/>` : ''}
-        ${sorted.map((e, i) => `<circle cx="${tX(i)}" cy="${tY(e.gapProb)}" r="4" fill="${e.won ? 'var(--green)' : 'var(--red)'}" opacity="0.7"/>`).join('')}
-      </svg>
-      <div style="font-size:10px; color:var(--text3); margin-top:4px;">
-        <span style="color:var(--amber);">— Running avg</span> &nbsp; <span style="color:var(--green);">● Won</span> &nbsp; <span style="color:var(--red);">● Lost</span> &nbsp; Above zero = too tight. Below = generous.
-      </div>`;
-    }
-
     // === DETAIL TABLE ===
-    html += `<div style="overflow-x:auto; margin-top:16px;"><table style="font-size:12px;">
+    const compPageSize = 15;
+    const compShowAll = window._compShowAll || false;
+    const compLimit = compShowAll ? entries.length : compPageSize;
+    const compDisplayed = entries.slice(0, compLimit);
+    const compHasMore = entries.length > compLimit;
+
+    html += `<div style="overflow-x:auto;"><table style="font-size:12px;">
       <tr><th>Time</th><th>Teams</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:right">Stake</th><th style="text-align:center">Gap</th><th>Result</th><th>Why</th></tr>`;
-    for (let ci = 0; ci < Math.min(entries.length, 30); ci++) {
+    for (let ci = 0; ci < compDisplayed.length; ci++) {
       const e = entries[ci];
       const time = e.time ? new Date(e.time).toLocaleTimeString() : '-';
       const teamsShort = e.teams.length > 30 ? e.teams.substring(0, 27) + '...' : e.teams;
@@ -1198,6 +1182,14 @@
       </tr>`;
     }
     html += '</table></div>';
+
+    if (compHasMore) {
+      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
+        <button class="btn" onclick="window._compShowAll=true; renderCompetitiveness(window._lastIntelData||{})" style="font-size:12px; padding:4px 16px;">Show All ${entries.length}</button></div>`;
+    } else if (compShowAll && entries.length > compPageSize) {
+      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
+        <button class="btn" onclick="window._compShowAll=false; renderCompetitiveness(window._lastIntelData||{})" style="font-size:12px; padding:4px 16px;">Show Recent ${compPageSize}</button></div>`;
+    }
 
     el.innerHTML = html;
   }
