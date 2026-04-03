@@ -145,6 +145,7 @@ async function priceParlay(legs) {
           sport: l.lineInfo.sport,
           homeTeam: l.lineInfo.homeTeam,
           awayTeam: l.lineInfo.awayTeam,
+          startTime: l.lineInfo.startTime || null,
         };
       }),
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,

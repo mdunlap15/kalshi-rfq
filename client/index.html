@@ -962,15 +962,7 @@
         </tr>
         <tr id="${nmId}" style="display:${nmExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
           <td colspan="3" style="padding: 8px 12px;">
-            <table style="width:100%; font-size:11px;">
-              <tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Sport</th><th style="text-align:left; padding:2px 6px;">Team</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th></tr>
-              ${(nm.legs || []).map(l => `<tr>
-                <td style="padding:2px 6px;">${sportPill(l.sport || 'unknown')}</td>
-                <td style="padding:2px 6px;">${l.team || 'Unknown'}</td>
-                <td style="padding:2px 6px;"><span class="market-pill">${l.market || '-'}</span></td>
-                <td style="padding:2px 6px;">${l.line != null ? l.line : '-'}</td>
-              </tr>`).join('')}
-            </table>
+            ${buildLegTable(nm.legs || [], { showStatus: false, showSport: true, showFairOdds: false, pad: '2px 6px' })}
           </td>
         </tr>`;
       }
@@ -1019,15 +1011,7 @@
         </tr>
         <tr id="${mId}" style="display:${mpExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
           <td colspan="7" style="padding: 8px 12px;">
-            <table style="width:100%; font-size:11px;">
-              <tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Sport</th><th style="text-align:left; padding:2px 6px;">Team / Selection</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th></tr>
-              ${(m.legs || []).map(l => `<tr>
-                <td style="padding:2px 6px;">${sportPill(l.sport || 'unknown')}</td>
-                <td style="padding:2px 6px;">${l.team || 'Unknown'}</td>
-                <td style="padding:2px 6px;"><span class="market-pill">${l.market || '-'}</span></td>
-                <td style="padding:2px 6px;">${l.line != null ? l.line : '-'}</td>
-              </tr>`).join('')}
-            </table>
+            ${buildLegTable(m.legs || [], { showStatus: true, showSport: true, showFairOdds: false, pad: '2px 6px' })}
             <div style="margin-top:4px; font-size:10px; color:var(--text3);">Parlay ID: ${m.parlayId || '-'}</div>
           </td>
         </tr>`;
@@ -1259,32 +1243,9 @@
       <tr id="${rowKey}" style="display:${expanded ? 'table-row' : 'none'}; background: var(--surface3);">
         <td colspan="7" style="padding: 12px 16px;">
           <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
-          <table style="width:100%; font-size: 12px;">
-            <tr style="color: var(--text3);">
-              <th style="text-align:left; padding: 4px 8px;">Status</th>
-              <th style="text-align:left; padding: 4px 8px;">Team / Selection</th>
-              <th style="text-align:left; padding: 4px 8px;">Market</th>
-              <th style="text-align:left; padding: 4px 8px;">Line</th>
-              <th style="text-align:right; padding: 4px 8px;">Fair Odds</th>
-            </tr>
-            ${legs.map(l => {
-              const legStatus = l.settlementStatus || l.settlement_status || l.status || 'pending';
-              let legIcon, legColor;
-              if (legStatus === 'won') { legIcon = '&#10003;'; legColor = 'var(--green)'; }
-              else if (legStatus === 'lost') { legIcon = '&#10007;'; legColor = 'var(--red)'; }
-              else if (legStatus === 'push' || legStatus === 'void') { legIcon = '&#8212;'; legColor = 'var(--amber)'; }
-              else { legIcon = '&#9679;'; legColor = 'var(--text3)'; }
-              return '<tr>' +
-                '<td style="padding:4px 8px; color:' + legColor + '; font-size:14px; text-align:center; width:40px;" title="' + legStatus + '">' + legIcon + '</td>' +
-                '<td style="padding:4px 8px;">' + (l.team || l.teamName || 'Unknown') + '</td>' +
-                '<td style="padding:4px 8px;"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>' +
-                '<td style="padding:4px 8px; color:var(--text2);">' + (l.line != null ? l.line : (l.selection || '-')) + '</td>' +
-                '<td style="padding:4px 8px; text-align:right;">' + (l.fairProb ? decimalToAmerican(1/l.fairProb) : '-') + '</td>' +
-              '</tr>';
-            }).join('')}
-          </table>
+          ${buildLegTable(legs)}
           <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
-            Vig: ${((order.meta?.vig || order.vig || 0) * 100).toFixed(1)}% · ID: ${order.parlayId || '-'}
+            Vig: ${((order.meta?.vig || order.vig || 0) * 100).toFixed(1)}% · Max Risk: $${order.maxRisk || '-'} · Decimal: ${order.meta?.decimalOdds || '-'}x · ID: ${order.parlayId || '-'}
           </div>
         </td>
       </tr>`;
@@ -1407,20 +1368,7 @@
       html += '</tr>';
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
       html += '<td colspan="8" style="padding:12px 16px;">';
-      html += '<table style="width:100%; font-size:11px;">';
-      html += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Result</th><th style="text-align:left; padding:2px 6px;">Team</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th></tr>';
-      for (const l of legs) {
-        const ls = l.settlementStatus || l.settlement_status || l.status || 'pending';
-        let lIcon, lColor;
-        if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; }
-        else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; }
-        else { lIcon = '&#9679;'; lColor = 'var(--text3)'; }
-        html += '<tr><td style="padding:2px 6px; color:' + lColor + '; text-align:center;">' + lIcon + '</td>';
-        html += '<td style="padding:2px 6px;">' + (l.team || l.teamName || 'Unknown') + '</td>';
-        html += '<td style="padding:2px 6px;"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>';
-        html += '<td style="padding:2px 6px;">' + (l.line != null ? l.line : '-') + '</td></tr>';
-      }
-      html += '</table>';
+      html += buildLegTable(legs, { pad: '2px 6px' });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
     }
@@ -1642,35 +1590,11 @@
         <tr id="ord-${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
           <td colspan="9" style="padding: 12px 16px;">
             <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
-            <table style="width:100%; font-size: 12px;">
-              <tr style="color: var(--text3);">
-                <th style="text-align:left; padding: 4px 8px;">Status</th>
-                <th style="text-align:left; padding: 4px 8px;">Team / Selection</th>
-                <th style="text-align:left; padding: 4px 8px;">Market</th>
-                <th style="text-align:left; padding: 4px 8px;">Line</th>
-                <th style="text-align:right; padding: 4px 8px;">Fair Odds</th>
-              </tr>
-              ${legs.map(l => {
-                const legStatus = l.settlementStatus || l.settlement_status || l.status || 'pending';
-                let legIcon, legColor;
-                if (legStatus === 'won') { legIcon = '&#10003;'; legColor = 'var(--green)'; }
-                else if (legStatus === 'lost') { legIcon = '&#10007;'; legColor = 'var(--red)'; }
-                else if (legStatus === 'push' || legStatus === 'void') { legIcon = '&#8212;'; legColor = 'var(--amber)'; }
-                else { legIcon = '&#9679;'; legColor = 'var(--text3)'; }
-                return `
-                <tr>
-                  <td style="padding: 4px 8px; color: ${legColor}; font-size: 14px; text-align: center; width: 40px;" title="${legStatus}">${legIcon}</td>
-                  <td style="padding: 4px 8px; color: var(--text);">${l.team || l.teamName || 'Unknown'}</td>
-                  <td style="padding: 4px 8px;"><span class="market-pill">${l.market || l.marketType || '-'}</span></td>
-                  <td style="padding: 4px 8px; color: var(--text2);">${l.line != null ? l.line : (l.selection || '-')}</td>
-                  <td style="padding: 4px 8px; text-align:right; font-variant-numeric: tabular-nums;">${l.fairProb ? decimalToAmerican(1/l.fairProb) : '-'}</td>
-                </tr>`;
-              }).join('')}
-            </table>
+            ${buildLegTable(legs)}
             <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
               Vig: ${((order.meta?.vig || order.vig || 0) * 100).toFixed(1)}% ·
               Max Risk: $${order.maxRisk || 0} ·
-              Decimal: ${order.offeredOdds ? order.offeredOdds.toFixed(2) + 'x' : '-'} ·
+              Decimal: ${order.meta?.decimalOdds ? order.meta.decimalOdds.toFixed(2) + 'x' : '-'} ·
               ID: ${order.parlayId || '-'}
             </div>
           </td>
@@ -2065,24 +1989,7 @@
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
       html += '<td colspan="6" style="padding:12px 16px;">';
       html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">PARLAY LEGS</div>';
-      html += '<table style="width:100%; font-size:12px;">';
-      html += '<tr style="color:var(--text3);"><th style="text-align:left; padding:4px 8px;">Status</th><th style="text-align:left; padding:4px 8px;">Team / Selection</th><th style="text-align:left; padding:4px 8px;">Market</th><th style="text-align:left; padding:4px 8px;">Line</th><th style="text-align:right; padding:4px 8px;">Fair Odds</th></tr>';
-      for (const l of legs) {
-        const ls = l.settlementStatus || l.settlement_status || l.status || 'pending';
-        let lIcon, lColor, lTitle;
-        if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; lTitle = 'Won'; }
-        else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; lTitle = 'Lost'; }
-        else if (ls === 'push' || ls === 'void') { lIcon = '&#8212;'; lColor = 'var(--amber)'; lTitle = ls.charAt(0).toUpperCase() + ls.slice(1); }
-        else { lIcon = '&#9679;'; lColor = 'var(--text3)'; lTitle = 'Pending'; }
-        html += '<tr>' +
-          '<td style="padding:4px 8px; color:' + lColor + '; font-size:14px; text-align:center; width:40px;" title="' + lTitle + '">' + lIcon + '</td>' +
-          '<td style="padding:4px 8px;">' + (l.team || l.teamName || '?') + '</td>' +
-          '<td style="padding:4px 8px;"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>' +
-          '<td style="padding:4px 8px; color:var(--text2);">' + (l.line != null ? l.line : (l.selection || '-')) + '</td>' +
-          '<td style="padding:4px 8px; text-align:right;">' + (l.fairProb ? decimalToAmerican(1/l.fairProb) : '-') + '</td>' +
-        '</tr>';
-      }
-      html += '</table>';
+      html += buildLegTable(legs);
       html += '<div style="margin-top:6px; font-size:10px; color:var(--text3);">Vig: ' + ((o.meta?.vig || o.vig || 0) * 100).toFixed(1) + '% · Max Risk: $' + (o.maxRisk || '-') + ' · ID: ' + (o.parlayId || '-') + '</div>';
       html += '</td></tr>';
     }
@@ -2221,22 +2128,7 @@
       // Expandable leg detail row
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
       html += '<td colspan="8" style="padding:12px 16px;">';
-      html += '<table style="width:100%; font-size:11px;">';
-      html += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Result</th><th style="text-align:left; padding:2px 6px;">Team</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th><th style="text-align:right; padding:2px 6px;">Fair Odds</th></tr>';
-      for (const l of legs) {
-        const ls = l.settlementStatus || l.settlement_status || l.status || 'pending';
-        let lIcon, lColor;
-        if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; }
-        else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; }
-        else { lIcon = '&#9679;'; lColor = 'var(--text3)'; }
-        html += '<tr><td style="padding:2px 6px; color:' + lColor + '; text-align:center;">' + lIcon + '</td>';
-        html += '<td style="padding:2px 6px;">' + (l.team || l.teamName || '?') + '</td>';
-        html += '<td style="padding:2px 6px;"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>';
-        html += '<td style="padding:2px 6px;">' + (l.line != null ? l.line : (l.selection || '-')) + '</td>';
-        html += '<td style="padding:2px 6px; text-align:right;">' + (l.fairProb ? decimalToAmerican(1/l.fairProb) : '-') + '</td>';
-        html += '</tr>';
-      }
-      html += '</table>';
+      html += buildLegTable(legs, { pad: '2px 6px' });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
     }
@@ -2449,6 +2341,52 @@
     return '' + Math.round(-100 / (dec - 1));
   }
 
+  /**
+   * Build HTML for an expandable leg details table.
+   * @param {Array} legs - array of leg objects
+   * @param {Object} opts - { showStatus: bool, showSport: bool, showFairOdds: bool, pad: '2px 6px'|'4px 8px' }
+   */
+  function buildLegTable(legs, opts = {}) {
+    const pad = opts.pad || '4px 8px';
+    const showStatus = opts.showStatus !== false;
+    const showSport = opts.showSport || false;
+    const showFairOdds = opts.showFairOdds !== false;
+
+    let h = '<table style="width:100%; font-size:12px;">';
+    h += '<tr style="color:var(--text3);">';
+    if (showStatus) h += '<th style="text-align:left; padding:' + pad + ';">Status</th>';
+    if (showSport) h += '<th style="text-align:left; padding:' + pad + ';">Sport</th>';
+    h += '<th style="text-align:left; padding:' + pad + ';">Team / Selection</th>';
+    h += '<th style="text-align:left; padding:' + pad + ';">Market</th>';
+    h += '<th style="text-align:left; padding:' + pad + ';">Line</th>';
+    h += '<th style="text-align:left; padding:' + pad + ';">Event Time</th>';
+    if (showFairOdds) h += '<th style="text-align:right; padding:' + pad + ';">Fair Odds</th>';
+    h += '</tr>';
+
+    for (const l of legs) {
+      const ls = l.settlementStatus || l.settlement_status || l.status || 'pending';
+      let lIcon, lColor, lTitle;
+      if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; lTitle = 'Won'; }
+      else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; lTitle = 'Lost'; }
+      else if (ls === 'push' || ls === 'void') { lIcon = '&#8212;'; lColor = 'var(--amber)'; lTitle = ls.charAt(0).toUpperCase() + ls.slice(1); }
+      else { lIcon = '&#9679;'; lColor = 'var(--text3)'; lTitle = 'Pending'; }
+
+      const eventTime = l.startTime ? new Date(l.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '-';
+
+      h += '<tr>';
+      if (showStatus) h += '<td style="padding:' + pad + '; color:' + lColor + '; font-size:14px; text-align:center; width:40px;" title="' + lTitle + '">' + lIcon + '</td>';
+      if (showSport) h += '<td style="padding:' + pad + ';">' + sportPill(l.sport || 'unknown') + '</td>';
+      h += '<td style="padding:' + pad + ';">' + (l.team || l.teamName || '?') + '</td>';
+      h += '<td style="padding:' + pad + ';"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>';
+      h += '<td style="padding:' + pad + '; color:var(--text2);">' + (l.line != null ? l.line : (l.selection || '-')) + '</td>';
+      h += '<td style="padding:' + pad + '; white-space:nowrap; font-size:11px; color:var(--text3);">' + eventTime + '</td>';
+      if (showFairOdds) h += '<td style="padding:' + pad + '; text-align:right;">' + (l.fairProb ? decimalToAmerican(1/l.fairProb) : '-') + '</td>';
+      h += '</tr>';
+    }
+    h += '</table>';
+    return h;
+  }
+
   // Tab switching
   let activeTab = 'live';
   function switchTab(tab, btn) {
@@ -2603,15 +2541,7 @@
       </tr>
       <tr id="${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
         <td colspan="8" style="padding: 12px 16px;">
-          <table style="width:100%; font-size:11px;">
-            <tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Team</th><th style="text-align:left; padding:2px 6px;">Market</th><th style="text-align:left; padding:2px 6px;">Line</th><th style="text-align:right; padding:2px 6px;">Fair Odds</th></tr>
-            ${legs.map(l => `<tr>
-              <td style="padding:2px 6px;">${l.team || l.teamName || 'Unknown'}</td>
-              <td style="padding:2px 6px;"><span class="market-pill">${l.market || l.marketType || '-'}</span></td>
-              <td style="padding:2px 6px;">${l.line != null ? l.line : (l.selection || '-')}</td>
-              <td style="padding:2px 6px; text-align:right;">${l.fairProb ? decimalToAmerican(1/l.fairProb) : '-'}</td>
-            </tr>`).join('')}
-          </table>
+          ${buildLegTable(legs, { showStatus: true, pad: '2px 6px' })}
           <div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ${order.parlayId || '-'}</div>
         </td>
       </tr>`;
