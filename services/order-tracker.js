@@ -194,16 +194,19 @@ function recordSettlement(orderUuid, result, payout) {
     order.settlementResult = result; // 'won', 'lost', 'push', 'void'
 
     // Calculate P&L from SP perspective (house side)
+    // PX settlement_status is from the SP's perspective:
+    //   'won' = SP won (bettor's parlay lost) → we keep the stake
+    //   'lost' = SP lost (bettor's parlay won) → we pay out
     // confirmedOdds is American format (e.g., -221, +500)
     if (result === 'won') {
-      // Bettor won — we pay out profit
+      // SP won — bettor's parlay lost, we keep the stake
+      order.pnl = order.confirmedStake || 0;
+      stats.totalWins++;
+    } else if (result === 'lost') {
+      // SP lost — bettor's parlay won, we pay out profit
       const profit = americanOddsToProfit(order.confirmedOdds, order.confirmedStake);
       order.pnl = -profit;
       stats.totalLosses++;
-    } else if (result === 'lost') {
-      // Bettor lost — we keep the stake
-      order.pnl = order.confirmedStake || 0;
-      stats.totalWins++;
     } else if (result === 'push' || result === 'void') {
       order.pnl = 0;
     }
@@ -769,6 +772,16 @@ async function loadFromDb() {
     if (o.status === 'rejected') stats.totalRejections++;
     if (o.status?.startsWith('settled_')) {
       stats.totalSettlements++;
+      // Recalculate P&L on load to fix any prior bugs
+      const settleResult = o.status.replace('settled_', '');
+      if (settleResult === 'won') {
+        o.pnl = o.confirmedStake || 0;
+      } else if (settleResult === 'lost') {
+        o.pnl = -americanOddsToProfit(o.confirmedOdds, o.confirmedStake);
+      } else {
+        o.pnl = 0;
+      }
+      db.saveOrder(o).catch(() => {}); // persist corrected P&L
       if (o.pnl != null) {
         stats.runningPnL += o.pnl;
         if (o.pnl > 0) stats.totalWins++;
