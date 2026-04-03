@@ -59,7 +59,7 @@ async function fetchOddsForSport(sport) {
     'baseball_mlb': 'moneyline,run_line,total_runs',
     'icehockey_nhl': 'moneyline,puck_line,total_goals',
     'basketball_nba': 'moneyline,point_spread,total_points',
-    'tennis': 'moneyline',
+    'tennis': 'moneyline,point_spread,total_points',
     'soccer': 'moneyline,point_spread,total_goals',
   }[sport] || 'moneyline,point_spread,total_points';
 
