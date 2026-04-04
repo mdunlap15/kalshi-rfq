@@ -382,6 +382,7 @@
         <span class="dot"></span>
         <span id="ws-badge-text">Disconnected</span>
       </div>
+      <button id="reconnect-btn" onclick="reconnectWS(this)" style="display:none; margin-top:6px; font-size:11px; padding:4px 8px; background:var(--blue,#3b82f6); color:#fff; border:none; border-radius:4px; cursor:pointer; font-weight:600;">Reconnect</button>
       <div id="paused-badge" style="display:none; color:var(--red); font-size:11px; font-weight:600;">Quoting OFF</div>
     </div>
     <nav class="sidebar-nav">
@@ -1287,7 +1288,7 @@
     });
 
     const pSortArrow = (col) => posState.sortCol === col ? (posState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
-    const pSortClick = (col) => `onclick="event.stopPropagation(); togglePosSort('${col}')" style="cursor:pointer;"`;
+    const pSortClick = (col, align) => `onclick="event.stopPropagation(); togglePosSort('${col}')" style="cursor:pointer;${align?'text-align:'+align+';':''}"`;
 
     const dStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
     let html = `<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">
@@ -1304,8 +1305,8 @@
         <th>Selections</th>
         <th ${pSortClick('legs')}>Legs${pSortArrow('legs')}</th>
         <th ${pSortClick('odds')}>Odds${pSortArrow('odds')}</th>
-        <th ${pSortClick('stake')} style="text-align:right">My Risk${pSortArrow('stake')}</th>
-        <th ${pSortClick('towin')} style="text-align:right">To Win${pSortArrow('towin')}</th>
+        <th ${pSortClick('stake', 'right')}>My Risk${pSortArrow('stake')}</th>
+        <th ${pSortClick('towin', 'right')}>To Win${pSortArrow('towin')}</th>
       </tr>`;
 
     const isPosFiltering = posState.search || posState.dateFrom || posState.dateTo;
@@ -1562,7 +1563,7 @@
     }
 
     const eSortArrow = (col) => expState.sortCol === col ? (expState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
-    const eSortClick = (col) => `onclick="event.stopPropagation(); toggleExpSort('${col}')" style="cursor:pointer;"`;
+    const eSortClick = (col, align) => `onclick="event.stopPropagation(); toggleExpSort('${col}')" style="cursor:pointer;${align?'text-align:'+align+';':''}"`;
 
     let html = `
       <div style="padding:8px 12px; display:flex; gap:8px; align-items:center; border-bottom:1px solid var(--border);">
@@ -1575,10 +1576,10 @@
       <table>
         <tr>
           <th ${eSortClick('name')}>Team / Selection${eSortArrow('name')}</th>
-          <th ${eSortClick('parlays')} style="text-align:right">Parlays${eSortArrow('parlays')}</th>
-          <th ${eSortClick('risk')} style="text-align:right">Weighted Risk${eSortArrow('risk')}</th>
-          <th ${eSortClick('payout')} style="text-align:right">Notional Payout${eSortArrow('payout')}</th>
-          <th ${eSortClick('remaining')} style="text-align:right">Remaining${eSortArrow('remaining')}</th>
+          <th ${eSortClick('parlays', 'right')}>Parlays${eSortArrow('parlays')}</th>
+          <th ${eSortClick('risk', 'right')}>Weighted Risk${eSortArrow('risk')}</th>
+          <th ${eSortClick('payout', 'right')}>Notional Payout${eSortArrow('payout')}</th>
+          <th ${eSortClick('remaining', 'right')}>Remaining${eSortArrow('remaining')}</th>
           <th style="width:120px;"></th>
         </tr>
     `;
@@ -1968,7 +1969,7 @@
     let cls = 'neutral';
     if (text === 'quoted') cls = 'neutral';
     else if (text === 'confirmed') cls = 'positive';
-    else if (text === 'lost') cls = 'negative';
+    else if (text === 'lost') { cls = 'neutral'; text = 'Outbid'; return { cls, text }; }
     else if (text === 'rejected') cls = 'negative';
     else if (text.startsWith('settled_')) {
       const result = text.replace('settled_', '');
@@ -3607,7 +3608,7 @@
     window.historyRerender = hRerender;
 
     const hSortArrow = (col) => historyState.sortCol === col ? (historyState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
-    const hSortClick = (col) => `onclick="event.stopPropagation(); historyState.sortCol=historyState.sortCol==='${col}'?historyState.sortCol:('${col}'); if(historyState.sortCol==='${col}') historyState.sortDir*=-1; else { historyState.sortCol='${col}'; historyState.sortDir='${col}'==='time'?-1:1; } historyRerender();" style="cursor:pointer;"`;
+    const hSortClick = (col, align) => `onclick="event.stopPropagation(); historyState.sortCol=historyState.sortCol==='${col}'?historyState.sortCol:('${col}'); if(historyState.sortCol==='${col}') historyState.sortDir*=-1; else { historyState.sortCol='${col}'; historyState.sortDir='${col}'==='time'?-1:1; } historyRerender();" style="cursor:pointer;${align?'text-align:'+align+';':''}"`;
 
     const fSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
     const fInp = fSel + ' width:70px;';
@@ -3617,7 +3618,7 @@
         style="${fSel} width:160px;">
       <select onchange="historyState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); historyRerender()" style="${fSel}">
         <option value="">All statuses</option>
-        ${allStatuses.map(s => `<option value="${s}" ${historyState.statusFilter.includes(s)?'selected':''}>${s}</option>`).join('')}
+        ${allStatuses.map(s => `<option value="${s}" ${historyState.statusFilter.includes(s)?'selected':''}>${s==='lost'?'outbid':s==='won'?'won (parlay lost)':s==='lost'?'lost (parlay won)':s}</option>`).join('')}
       </select>
       <select onchange="historyState.sportFilter=this.value; historyRerender()" style="${fSel}">
         <option value="">All sports</option>
@@ -3650,10 +3651,10 @@
         <th ${hSortClick('pinnacle')}>Pinnacle${hSortArrow('pinnacle')}</th>
         <th ${hSortClick('odds')}>Offered${hSortArrow('odds')}</th>
         <th>Winner</th>
-        <th ${hSortClick('risk')} style="text-align:right">My Risk${hSortArrow('risk')}</th>
-        <th ${hSortClick('towin')} style="text-align:right">To Win${hSortArrow('towin')}</th>
+        <th ${hSortClick('risk', 'right')}>My Risk${hSortArrow('risk')}</th>
+        <th ${hSortClick('towin', 'right')}>To Win${hSortArrow('towin')}</th>
         <th ${hSortClick('status')}>Status${hSortArrow('status')}</th>
-        <th ${hSortClick('pnl')} style="text-align:right">P&L${hSortArrow('pnl')}</th>
+        <th ${hSortClick('pnl', 'right')}>P&L${hSortArrow('pnl')}</th>
       </tr>`;
 
     for (const order of displayed) {
