@@ -226,20 +226,24 @@ async function buildOffers(legs) {
  * Quick check if we should even attempt to price this parlay.
  */
 function shouldDecline(legs) {
-  if (!legs || legs.length === 0) return true;
-  if (legs.length > config.pricing.maxLegs) return true;
+  if (!legs || legs.length === 0) return { declined: true, reason: 'empty parlay', detail: null };
+  if (legs.length > config.pricing.maxLegs) {
+    return { declined: true, reason: 'too many legs', detail: `${legs.length} legs > max ${config.pricing.maxLegs}` };
+  }
 
   // Check all legs are known and events haven't started
   const resolvedLegs = [];
   for (const leg of legs) {
     const lineId = leg.line_id || leg.lineId || leg;
     const lineInfo = lineManager.lookupLine(lineId);
-    if (!lineInfo) return true;
+    if (!lineInfo) return { declined: true, reason: 'unknown legs', detail: null };
 
     // Reject if event has already started
     if (lineInfo.startTime) {
       const startMs = new Date(lineInfo.startTime).getTime();
-      if (!isNaN(startMs) && Date.now() > startMs) return true;
+      if (!isNaN(startMs) && Date.now() > startMs) {
+        return { declined: true, reason: 'event started', detail: `${lineInfo.teamName || '?'} (${lineInfo.sport || '?'}) already in progress` };
+      }
     }
 
     resolvedLegs.push({ lineId, lineInfo });
@@ -254,23 +258,25 @@ function shouldDecline(legs) {
     const eid = l.lineInfo.pxEventId;
     if (!eid) continue;
     if (!byEvent[eid]) byEvent[eid] = [];
-    byEvent[eid].push(l.lineInfo.marketType);
+    byEvent[eid].push({ market: l.lineInfo.marketType, team: l.lineInfo.teamName, home: l.lineInfo.homeTeam, away: l.lineInfo.awayTeam });
   }
-  for (const [eid, types] of Object.entries(byEvent)) {
-    if (types.length <= 1) continue;
+  for (const [eid, entries] of Object.entries(byEvent)) {
+    if (entries.length <= 1) continue;
+    const types = entries.map(e => e.market);
+    const gameLabel = entries[0].away && entries[0].home ? `${entries[0].away} @ ${entries[0].home}` : `event ${eid}`;
     const hasSpread = types.includes('spread');
     const hasMoneyline = types.includes('moneyline');
-    const hasTotal = types.includes('total');
     const uniqueTypes = new Set(types);
     // Block: two of the same type on same game
     if (uniqueTypes.size < types.length) {
-      log.info('Pricing', 'Declined: duplicate market type on same game');
-      return true;
+      const dup = types.find((t, i) => types.indexOf(t) !== i);
+      log.info('Pricing', `Declined: duplicate ${dup} on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `two ${dup} legs on same game: ${gameLabel}` };
     }
     // Block: spread + moneyline (highly correlated)
     if (hasSpread && hasMoneyline) {
-      log.info('Pricing', 'Declined: spread + moneyline on same game (correlated)');
-      return true;
+      log.info('Pricing', `Declined: spread + moneyline on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `spread + moneyline on same game: ${gameLabel}` };
     }
     // Allow: spread/moneyline + total (acceptable correlation)
   }
@@ -292,7 +298,7 @@ function shouldDecline(legs) {
   );
   if (!exposureCheck.allowed) {
     log.info('Pricing', `Exposure limit: ${exposureCheck.reason}`);
-    return true;
+    return { declined: true, reason: 'team exposure limit', detail: exposureCheck.reason };
   }
 
   // Check game-level exposure limit
@@ -300,7 +306,7 @@ function shouldDecline(legs) {
   const gameCheck = orderTracker.checkGameExposure(resolvedLegs, estPayout, maxPerGame);
   if (!gameCheck.allowed) {
     log.info('Pricing', `Game exposure limit: ${gameCheck.reason}`);
-    return true;
+    return { declined: true, reason: 'game exposure limit', detail: gameCheck.reason };
   }
 
   // Check portfolio-level drawdown limit
@@ -308,10 +314,14 @@ function shouldDecline(legs) {
   const portfolioCheck = orderTracker.checkPortfolioRisk(estPayout, maxDrawdown);
   if (!portfolioCheck.allowed) {
     log.info('Pricing', `Portfolio risk limit: $${portfolioCheck.current.toFixed(0)} + $${estPayout.toFixed(0)} > max $${portfolioCheck.limit.toFixed(0)}`);
-    return true;
+    return {
+      declined: true,
+      reason: 'portfolio drawdown limit',
+      detail: `$${portfolioCheck.current.toFixed(0)} current + $${estPayout.toFixed(0)} new > $${portfolioCheck.limit.toFixed(0)} max`,
+    };
   }
 
-  return false;
+  return { declined: false };
 }
 
 /**

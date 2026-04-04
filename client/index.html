@@ -1124,8 +1124,10 @@
               const blockerText = (m.unknownLegDetails && m.unknownLegDetails.length > 0)
                 ? m.unknownLegDetails.map(d=>escapeHtml(d)).join(' &middot; ')
                 : (blockers.length > 0 ? blockers.map(l=>escapeHtml(l.team||'?')+' ('+escapeHtml(l.market||'?')+(l.line!=null?' '+l.line:'')+')').join(' &middot; ') : '');
+              const detailLine = m.declineDetail ? '<br><strong>Detail:</strong> ' + escapeHtml(m.declineDetail) : '';
+              const blockerLine = blockerText ? '<br><strong>Blocking legs:</strong> ' + blockerText : '';
               return `<div style="margin-bottom:6px; padding:6px 8px; background:var(--surface2); border-left:3px solid var(--amber); font-size:11px;">
-                <strong style="color:var(--amber);">No quote reason:</strong> ${escapeHtml(derivedReason)}${blockerText ? '<br><strong>Blocking legs:</strong> ' + blockerText : ''}
+                <strong style="color:var(--amber);">No quote reason:</strong> ${escapeHtml(derivedReason)}${detailLine}${blockerLine}
               </div>`;
             })() : ''}
             ${buildLegTable(m.legs || [], { showStatus: true, showSport: true, showFairOdds: false, pad: '2px 6px', highlightUnregistered: m.outcome === 'missed' })}

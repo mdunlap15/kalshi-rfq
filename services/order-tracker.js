@@ -331,6 +331,7 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     legCount: resolvedLegs.length,
     // If we didn't quote, include why (so the dashboard can explain "No quote")
     declineReason: outcome === 'missed' ? (declineInfo?.reason || 'not seen (service down or pre-startup)') : null,
+    declineDetail: declineInfo?.declineDetail || null,
     unknownLegDetails: declineInfo?.unknownDetails || [],
   };
 
@@ -370,6 +371,7 @@ function recordDecline(reason, detail) {
       reason: bucket,
       unknownLineIds: detail.unknownLegs || [],
       unknownDetails: detail.unknownSports || [],
+      declineDetail: detail.declineDetail || null,
       declinedAt: new Date().toISOString(),
     };
     declineIdOrder.push(detail.parlayId);

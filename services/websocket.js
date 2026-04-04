@@ -282,7 +282,8 @@ async function handleRFQ(data) {
     log.info('RFQ', `Received: parlay=${parlayId}, legs=${legs.length}`);
 
     // Quick decline check
-    if (pricer.shouldDecline(legs)) {
+    const declineCheck = pricer.shouldDecline(legs);
+    if (declineCheck && declineCheck.declined) {
       const lineManager = require('./line-manager');
       const knownLegs = [];
       const unknownLegs = [];
@@ -320,8 +321,17 @@ async function handleRFQ(data) {
           unknownSports.push(`${baseName} ${tag} ${detail}`);
         }
       }
-      const reason = unknownLegs.length > 0 ? 'unknown legs' : 'exposure/limit';
-      orderTracker.recordDecline(reason, { parlayId, legs, knownLegs, unknownLegs, unknownSports });
+      // Use the specific reason from shouldDecline (correlation, started, limit, etc.)
+      // Fall back to 'unknown legs' if we have unknowns but shouldDecline didn't say so
+      const reason = unknownLegs.length > 0 ? 'unknown legs' : (declineCheck.reason || 'exposure/limit');
+      orderTracker.recordDecline(reason, {
+        parlayId,
+        legs,
+        knownLegs,
+        unknownLegs,
+        unknownSports,
+        declineDetail: declineCheck.detail || null,
+      });
       return;
     }
 
