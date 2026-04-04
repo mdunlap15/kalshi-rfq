@@ -1277,12 +1277,12 @@
       const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
       const teamsShort = teams.length > 60 ? teams.substring(0, 57) + '...' : teams;
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
-      // confirmedStake = our risk (what we pay if bettor wins)
-      // To Win = bettor's wager (what we keep if parlay loses)
-      const myRisk = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
-      const bwager = order.confirmedStake && order.offeredOdds
+      // confirmedStake = bettor's wager
+      // My Risk = payout if bettor wins (calculated), To Win = confirmedStake
+      const toWin = order.confirmedStake ? '$' + Number(order.confirmedStake).toFixed(2) : '-';
+      const riskVal = order.confirmedStake && order.offeredOdds
         ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
-      const toWin = bwager != null ? '$' + bwager.toFixed(2) : '-';
+      const myRisk = riskVal != null ? '$' + riskVal.toFixed(2) : '-';
 
       const rowKey = 'pos-' + (order.parlayId || '');
       const expanded = expandedRows.has(rowKey);
@@ -1754,11 +1754,11 @@
       const pinAm = pinParlay != null ? (pinParlay >= 0 ? '+' : '') + pinParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
-      // confirmedStake = our risk, bettor's wager = To Win
+      // confirmedStake = bettor's wager = To Win, My Risk = payout
       const stakeVal = order.confirmedStake || order.winningStake;
-      const myRiskStr = stakeVal ? '$' + Number(stakeVal).toFixed(2) : '-';
-      const bw = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
-      const toWinStr = bw != null ? '$' + bw.toFixed(2) : '-';
+      const toWinStr = stakeVal ? '$' + Number(stakeVal).toFixed(2) : '-';
+      const riskCalc = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
+      const myRiskStr = riskCalc != null ? '$' + riskCalc.toFixed(2) : '-';
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
       let pnlHtml = '-';
@@ -1943,8 +1943,8 @@
     const activeOrders = (allOrders || []).filter(o => o.status === 'confirmed');
     let totalRisk = 0, totalToWin = 0;
     for (const o of activeOrders) {
-      totalRisk += (o.confirmedStake || 0);
-      if (o.confirmedStake && o.offeredOdds) totalToWin += calcBettorWager(o.confirmedStake, o.offeredOdds);
+      totalToWin += (o.confirmedStake || 0);
+      if (o.confirmedStake && o.offeredOdds) totalRisk += calcBettorWager(o.confirmedStake, o.offeredOdds);
     }
 
     const pnlCls = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral';
@@ -2164,15 +2164,15 @@
     }
 
     let totalStaked = 0;
-    let totalBettorWagers = 0;
+    let totalPayouts = 0;
     for (const o of active) {
-      totalStaked += (o.confirmedStake || 0); // our risk
+      totalStaked += (o.confirmedStake || 0); // bettor's wagers = to win
       if (o.confirmedStake && o.offeredOdds) {
-        totalBettorWagers += calcBettorWager(o.confirmedStake, o.offeredOdds);
+        totalPayouts += calcBettorWager(o.confirmedStake, o.offeredOdds); // our risk
       }
     }
 
-    if (countEl) countEl.textContent = active.length + ' active · ' + fmtDollar(totalStaked) + ' risk · ' + fmtDollar(totalBettorWagers) + ' to win';
+    if (countEl) countEl.textContent = active.length + ' active · ' + fmtDollar(totalPayouts) + ' risk · ' + fmtDollar(totalStaked) + ' to win';
 
     // Search
     let filtered = active;
@@ -2223,10 +2223,10 @@
       const teams = legs.map(l => l.team || l.teamName || '?').join(', ');
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
       const oddsStr = o.offeredOdds ? (o.offeredOdds >= 0 ? '+' : '') + o.offeredOdds : '-';
-      // confirmedStake = our risk, bettor's wager = To Win
-      const myRisk = o.confirmedStake ? '$' + o.confirmedStake.toFixed(2) : '-';
-      const bw2 = o.confirmedStake && o.offeredOdds ? calcBettorWager(o.confirmedStake, o.offeredOdds) : null;
-      const toWin = bw2 != null ? '$' + bw2.toFixed(2) : '-';
+      // confirmedStake = bettor's wager = To Win, My Risk = payout
+      const toWin = o.confirmedStake ? '$' + o.confirmedStake.toFixed(2) : '-';
+      const riskV = o.confirmedStake && o.offeredOdds ? calcBettorWager(o.confirmedStake, o.offeredOdds) : null;
+      const myRisk = riskV != null ? '$' + riskV.toFixed(2) : '-';
 
       const rowKey = 'popen-' + (o.parlayId || '');
       const expanded = expandedRows.has(rowKey);
