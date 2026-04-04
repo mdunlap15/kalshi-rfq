@@ -1047,14 +1047,33 @@
         return cb - ca;
       });
       if (unknownEntries.length > 0) {
-        html += `<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:12px;">
-          <tr><th>Last Seen</th><th>Event</th><th>Why Unregistered</th><th style="text-align:right">Declines</th></tr>`;
+        html += `<div style="font-size:11px; color:var(--text3); margin:8px 0 4px;">Each row = a line we weren't tracking when an RFQ referenced it, so the whole parlay was declined.</div>
+        <div style="overflow-x:auto;"><table style="font-size:12px;">
+          <tr><th>Last Seen</th><th>Event</th><th>Category</th><th>Line / Market</th><th style="text-align:right">Declines</th></tr>`;
         for (let di = 0; di < Math.min(unknownEntries.length, 20); di++) {
           const [raw, val] = unknownEntries[di];
           const count = typeof val === 'object' ? val.count : val;
           const lastSeen = typeof val === 'object' && val.lastSeen ? new Date(val.lastSeen).toLocaleTimeString() : '-';
+          // Parse "EventName [tag] detail"
           const eventName = raw.split('[')[0].trim();
+          const tagMatch = raw.match(/\[([^\]]+)\]/);
+          const tag = tagMatch ? tagMatch[1] : 'unknown';
           const detail = raw.split(']')[1]?.trim() || '-';
+          // Human-friendly category label
+          let categoryLabel, categoryColor, categoryTitle;
+          if (tag === 'unregistered market') {
+            categoryLabel = 'Unregistered line';
+            categoryColor = 'var(--amber)';
+            categoryTitle = 'Event is tracked, but this specific line (spread/total/alt) was not registered on startup';
+          } else if (tag === 'unsupported event') {
+            categoryLabel = 'Unsupported event';
+            categoryColor = 'var(--red)';
+            categoryTitle = 'We have no lines registered for this event at all (no odds feed coverage or unmatched teams)';
+          } else {
+            categoryLabel = tag;
+            categoryColor = 'var(--text3)';
+            categoryTitle = '';
+          }
           const decId = 'dec-' + di;
           const decExpanded = expandedRows.has(decId);
           const recentDecs = (typeof val === 'object' && val.recentDeclines) ? val.recentDeclines : [];
@@ -1062,6 +1081,7 @@
           html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${decId}')">
             <td style="color:var(--text3);">${lastSeen}</td>
             <td style="max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="${eventName}">${eventName}</td>
+            <td title="${categoryTitle}"><span style="color:${categoryColor}; font-weight:600;">${categoryLabel}</span></td>
             <td style="font-family:monospace; font-size:11px; color:var(--text3);">${detail}</td>
             <td style="text-align:right; font-weight:600;">${count}</td>
           </tr>`;
@@ -1088,7 +1108,7 @@
           }
 
           html += '<tr id="' + decId + '" style="display:' + (decExpanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-          html += '<td colspan="4" style="padding:8px 12px;">' + detailHtml + '</td>';
+          html += '<td colspan="5" style="padding:8px 12px;">' + detailHtml + '</td>';
           html += '</tr>';
         }
         html += '</table></div>';
