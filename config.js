@@ -18,7 +18,7 @@ const config = {
     maxLegs: parseInt(process.env.MAX_LEGS) || 8,
     stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 15,
     offerValidSeconds: 120,
-    maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 50,
+    maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
     bankroll: parseFloat(process.env.BANKROLL) || 100000,
     maxDrawdownPct: parseFloat(process.env.MAX_DRAWDOWN_PCT) || 100,
     maxRiskPerParlayPct: parseFloat(process.env.MAX_RISK_PER_PARLAY_PCT) || 5,

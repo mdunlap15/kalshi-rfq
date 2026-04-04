@@ -1688,42 +1688,48 @@
     }
 
     let html = '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th>Game</th><th>Sport</th><th>Start</th><th style="text-align:right">Parlays</th><th style="text-align:right">Weighted Risk</th>';
+    html += '<tr><th>Game</th><th>Sport</th><th>Start</th><th style="text-align:right">Parlays</th><th style="text-align:right">Gross Risk</th><th style="text-align:right">Stakes Held</th><th style="text-align:right">Net Exposure</th>';
     if (maxPerGame > 0) html += '<th style="text-align:right">% of Limit</th>';
     html += '<th style="width:100px;"></th></tr>';
 
     for (let gi = 0; gi < Math.min(games.length, 20); gi++) {
       const g = games[gi];
-      const pct = maxPerGame > 0 ? Math.round(g.worstCase / maxPerGame * 100) : 0;
+      const pct = maxPerGame > 0 ? Math.round((g.netExposure || 0) / maxPerGame * 100) : 0;
       const barColor = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--amber)' : 'var(--green)';
       const startTime = g.startTime ? new Date(g.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '-';
       const rowKey = 'gexp-' + gi;
       const expanded = expandedRows.has(rowKey);
+
+      const netExp = g.netExposure || 0;
+      const netColor = netExp <= 0 ? 'var(--green)' : pct > 80 ? 'var(--red)' : 'var(--text)';
 
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">';
       html += '<td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;">' + g.name + '</td>';
       html += '<td>' + sportPill(g.sport || 'unknown') + '</td>';
       html += '<td style="font-size:11px; color:var(--text3); white-space:nowrap;">' + startTime + '</td>';
       html += '<td style="text-align:right">' + g.parlayCount + '</td>';
-      html += '<td style="text-align:right; font-weight:600; color:' + (pct > 80 ? 'var(--red)' : 'var(--text)') + ';">' + fmtDollar(g.worstCase) + '</td>';
+      html += '<td style="text-align:right; color:var(--text3);">' + fmtDollar(g.grossRisk || g.worstCase) + '</td>';
+      html += '<td style="text-align:right; color:var(--green);">' + fmtDollar(g.totalStakes || 0) + '</td>';
+      html += '<td style="text-align:right; font-weight:600; color:' + netColor + ';">' + fmtDollar(netExp) + '</td>';
       if (maxPerGame > 0) html += '<td style="text-align:right; color:' + barColor + ';">' + pct + '%</td>';
       html += '<td><div style="background:var(--surface); border-radius:4px; height:6px; overflow:hidden;"><div style="background:' + barColor + '; width:' + Math.min(pct, 100) + '%; height:100%; border-radius:4px;"></div></div></td>';
       html += '</tr>';
 
       // Expandable: show which parlays contribute
       let detail = '<table style="width:100%; font-size:11px;">';
-      detail += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Selection</th><th style="text-align:left; padding:2px 6px;">Legs</th><th style="text-align:right; padding:2px 6px;">Weighted Risk</th><th style="text-align:right; padding:2px 6px;">Payout</th></tr>';
+      detail += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Selection</th><th style="text-align:left; padding:2px 6px;">Legs</th><th style="text-align:right; padding:2px 6px;">Weighted Risk</th><th style="text-align:right; padding:2px 6px;">My Risk</th><th style="text-align:right; padding:2px 6px;">To Win</th></tr>';
       for (const p of (g.parlays || [])) {
         const sel = (p.market || '') + (p.selection ? ' ' + p.selection : '');
         detail += '<tr><td style="padding:2px 6px;">' + sel + '</td>';
         detail += '<td style="padding:2px 6px;">' + p.legCount + '-leg</td>';
         detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.weightedRisk) + '</td>';
-        detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.payout) + '</td></tr>';
+        detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.payout) + '</td>';
+        detail += '<td style="padding:2px 6px; text-align:right; color:var(--green);">' + fmtDollar(p.stake) + '</td></tr>';
       }
       detail += '</table>';
 
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="' + (maxPerGame > 0 ? 7 : 6) + '" style="padding:8px 12px;">';
+      html += '<td colspan="' + (maxPerGame > 0 ? 9 : 8) + '" style="padding:8px 12px;">';
       html += '<div style="font-size:11px; font-weight:600; color:var(--text2); margin-bottom:4px;">PARLAYS IN THIS GAME</div>';
       html += detail;
       html += '</td></tr>';

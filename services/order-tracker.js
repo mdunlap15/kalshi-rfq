@@ -31,13 +31,13 @@ const declineStats = {
 };
 
 // ---------------------------------------------------------------------------
-// EXPOSURE TRACKING — team/selection level risk across confirmed parlays
+// NET EXPOSURE TRACKING — tracks risk per game, accounting for collected stakes
 // ---------------------------------------------------------------------------
-const exposure = {};
-
-// GAME-LEVEL EXPOSURE — tracks weighted risk per game (pxEventId)
-// ---------------------------------------------------------------------------
+// Stores all confirmed parlay legs grouped by pxEventId (game)
+// Net exposure = weighted payouts owed - stakes collected from offsetting positions
 const gameExposure = {};  // keyed by pxEventId
+// Legacy team exposure kept for backward compat with dashboard
+const exposure = {};
 
 // Running stats
 const stats = {
@@ -581,101 +581,53 @@ function getLegsForExposure(order) {
 }
 
 /**
- * Calculate payout for an order.
- */
-/**
  * Calculate our payout (My Risk) for an order.
  * This is what we pay the bettor if their parlay wins.
- * confirmedStake = bettor's wager, confirmedOdds = negative (SP side)
- * Our payout = bettor's profit = stake × |odds| / 100
  */
 function getOrderPayout(order) {
   const stake = order.confirmedStake || 0;
   const odds = order.confirmedOdds || 0;
   if (stake && odds) {
-    // Negate SP odds to get bettor's positive odds
     const bettorOdds = Math.abs(odds);
     return americanOddsToProfit(bettorOdds, stake);
   }
-  // Fallback for quoted orders: use meta.decimalOdds
   const decimalOdds = order.meta?.decimalOdds || 0;
   if (stake && decimalOdds > 1) return stake * (decimalOdds - 1);
   return order.maxRisk || 0;
 }
 
+// ---------------------------------------------------------------------------
+// NET EXPOSURE MODEL
+// ---------------------------------------------------------------------------
+// For each game (pxEventId), we store all parlay legs touching that game.
+// Net exposure = weighted payouts owed - stakes collected from offsetting
+// positions on the OPPOSITE side of the same game.
+//
+// Example: Parlay 1 has Lakers -6.5 (+250, $1K stake, $2.5K payout)
+//          Parlay 2 has Lakers -6.5 (-350, $3.5K stake, $1K payout)
+// If Lakers cover: both legs win, weighted payouts = $2.5K×P1other + $1K×P2other
+//                  but no opposite stakes to offset
+// If Lakers DON'T cover: both parlays lose, we keep $4.5K
+//
+// Now add Parlay 3 with Celtics +6.5 (opposite side of Lakers game):
+// If Lakers cover: Parlay 3 loses → we keep its stake (offset!)
+// Net exposure = payouts owed - stakes from opposite side
+// ---------------------------------------------------------------------------
+
 /**
- * Calculate probability-weighted risk per leg for a parlay.
- * Returns [{ key, name, weightedRisk }]
+ * Add a confirmed order to exposure tracking.
  */
-function calcWeightedRisk(order) {
-  const legs = getLegsForExposure(order);
-  const payout = getOrderPayout(order);
-  if (payout <= 0 || legs.length === 0) return [];
-
-  const results = [];
-  for (let i = 0; i < legs.length; i++) {
-    const leg = legs[i];
-    const name = leg.team || leg.teamName || 'unknown';
-    const key = normalizeExposureKey(name);
-    if (!key) continue;
-
-    // Product of all OTHER legs' fair probabilities
-    let otherProb = 1;
-    for (let j = 0; j < legs.length; j++) {
-      if (j === i) continue;
-      const prob = legs[j].fairProb || 0.5; // default 50% if unknown
-      otherProb *= prob;
-    }
-
-    results.push({
-      key,
-      name,
-      weightedRisk: payout * otherProb,
-    });
-  }
-  return results;
-}
-
 function addExposure(order) {
-  const risks = calcWeightedRisk(order);
-  for (const { key, name, weightedRisk } of risks) {
-    if (!exposure[key]) {
-      exposure[key] = { risk: 0, parlays: 0, name, notionalPayout: 0 };
-    }
-    exposure[key].risk += weightedRisk;
-    exposure[key].parlays += 1;
-    exposure[key].notionalPayout += getOrderPayout(order);
-  }
-  addGameExposure(order);
-}
-
-function removeExposure(order) {
-  const risks = calcWeightedRisk(order);
-  for (const { key, weightedRisk } of risks) {
-    if (!exposure[key]) continue;
-    exposure[key].risk -= weightedRisk;
-    exposure[key].parlays -= 1;
-    exposure[key].notionalPayout -= getOrderPayout(order);
-    if (exposure[key].parlays <= 0) {
-      delete exposure[key];
-    }
-  }
-  removeGameExposure(order);
-}
-
-// ---------------------------------------------------------------------------
-// GAME-LEVEL EXPOSURE
-// ---------------------------------------------------------------------------
-
-function addGameExposure(order) {
   const legs = getLegsForExposure(order);
   const payout = getOrderPayout(order);
-  if (payout <= 0 || legs.length === 0) return;
+  const stake = order.confirmedStake || 0;
+  if (legs.length === 0) return;
 
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
     const eventId = leg.pxEventId;
-    if (!eventId) continue;
+    const name = leg.team || leg.teamName || 'unknown';
+    const key = normalizeExposureKey(name);
 
     // Product of all OTHER legs' fair probs
     let otherProb = 1;
@@ -684,63 +636,177 @@ function addGameExposure(order) {
       otherProb *= (legs[j].fairProb || 0.5);
     }
 
-    if (!gameExposure[eventId]) {
-      gameExposure[eventId] = {
-        name: (leg.awayTeam || '?') + ' @ ' + (leg.homeTeam || '?'),
-        sport: leg.sport,
-        startTime: leg.startTime,
-        parlays: [],
-      };
+    // Game-level tracking (for net exposure calc)
+    if (eventId) {
+      if (!gameExposure[eventId]) {
+        gameExposure[eventId] = {
+          name: (leg.awayTeam || '?') + ' @ ' + (leg.homeTeam || '?'),
+          sport: leg.sport,
+          startTime: leg.startTime,
+          parlays: [],
+        };
+      }
+      gameExposure[eventId].parlays.push({
+        parlayId: order.parlayId,
+        payout,
+        stake,
+        legCount: legs.length,
+        weightedRisk: payout * otherProb,
+        selection: leg.selection,
+        market: leg.market || leg.marketType,
+        teamKey: key,
+      });
     }
 
-    gameExposure[eventId].parlays.push({
-      parlayId: order.parlayId,
-      payout,
-      legCount: legs.length,
-      weightedRisk: payout * otherProb,
-      selection: leg.selection,
-      market: leg.market || leg.marketType,
-    });
+    // Legacy team-level tracking (for dashboard display)
+    if (key) {
+      if (!exposure[key]) {
+        exposure[key] = { risk: 0, parlays: 0, name, notionalPayout: 0, netExposure: 0 };
+      }
+      exposure[key].risk += payout * otherProb;
+      exposure[key].parlays += 1;
+      exposure[key].notionalPayout += payout;
+    }
   }
+
+  // Recalculate net exposure for all affected games
+  recalcNetExposure();
 }
 
-function removeGameExposure(order) {
+/**
+ * Remove a settled order from exposure tracking.
+ */
+function removeExposure(order) {
   const legs = getLegsForExposure(order);
-  for (const leg of legs) {
+  const payout = getOrderPayout(order);
+
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i];
     const eventId = leg.pxEventId;
-    if (!eventId || !gameExposure[eventId]) continue;
-    gameExposure[eventId].parlays = gameExposure[eventId].parlays.filter(
-      p => p.parlayId !== order.parlayId
-    );
-    if (gameExposure[eventId].parlays.length === 0) {
-      delete gameExposure[eventId];
+    const key = normalizeExposureKey(leg.team || leg.teamName || '');
+
+    // Remove from game exposure
+    if (eventId && gameExposure[eventId]) {
+      gameExposure[eventId].parlays = gameExposure[eventId].parlays.filter(
+        p => p.parlayId !== order.parlayId
+      );
+      if (gameExposure[eventId].parlays.length === 0) {
+        delete gameExposure[eventId];
+      }
+    }
+
+    // Remove from team exposure
+    if (key && exposure[key]) {
+      let otherProb = 1;
+      for (let j = 0; j < legs.length; j++) {
+        if (j === i) continue;
+        otherProb *= (legs[j].fairProb || 0.5);
+      }
+      exposure[key].risk -= payout * otherProb;
+      exposure[key].parlays -= 1;
+      exposure[key].notionalPayout -= payout;
+      if (exposure[key].parlays <= 0) delete exposure[key];
+    }
+  }
+
+  recalcNetExposure();
+}
+
+/**
+ * Recalculate net exposure for all games.
+ * For each game, for each possible "side" (selection), compute:
+ *   netExposure = sum(weighted payouts for winning parlays) - sum(stakes from losing parlays on opposite side)
+ * Take the worst case across all sides.
+ */
+function recalcNetExposure() {
+  // Reset team net exposure
+  for (const key of Object.keys(exposure)) {
+    exposure[key].netExposure = 0;
+  }
+
+  for (const [eventId, game] of Object.entries(gameExposure)) {
+    // Group parlays by selection within this game
+    const bySelection = {};
+    for (const p of game.parlays) {
+      const sel = (p.market || '') + ':' + (p.selection || '');
+      if (!bySelection[sel]) bySelection[sel] = [];
+      bySelection[sel].push(p);
+    }
+
+    // For each selection (e.g., "moneyline:home"), compute net exposure if that side wins
+    for (const [sel, winningParlays] of Object.entries(bySelection)) {
+      // Weighted payouts we'd owe if this selection wins
+      const weightedPayouts = winningParlays.reduce((s, p) => s + p.weightedRisk, 0);
+
+      // Stakes we'd collect from parlays on the OPPOSITE side of this game
+      // (their leg loses, so entire parlay loses, we keep their stake)
+      let oppositeStakes = 0;
+      for (const [otherSel, otherParlays] of Object.entries(bySelection)) {
+        if (otherSel === sel) continue; // same side, skip
+        // Check if this is truly opposite (same market, different selection)
+        const selMarket = sel.split(':')[0];
+        const otherMarket = otherSel.split(':')[0];
+        if (selMarket === otherMarket) {
+          // Same market type, different selection = opposite side
+          oppositeStakes += otherParlays.reduce((s, p) => s + p.stake, 0);
+        }
+      }
+
+      const netExp = Math.max(0, weightedPayouts - oppositeStakes);
+
+      // Attribute net exposure back to teams involved
+      for (const p of winningParlays) {
+        if (p.teamKey && exposure[p.teamKey]) {
+          exposure[p.teamKey].netExposure = Math.max(
+            exposure[p.teamKey].netExposure || 0,
+            netExp / winningParlays.length // distribute among teams on this side
+          );
+        }
+      }
+    }
+
+    // Store net exposure on the game itself
+    game.netExposure = 0;
+    for (const [sel, winningParlays] of Object.entries(bySelection)) {
+      const wp = winningParlays.reduce((s, p) => s + p.weightedRisk, 0);
+      let os = 0;
+      for (const [otherSel, otherParlays] of Object.entries(bySelection)) {
+        if (otherSel === sel) continue;
+        const selMarket = sel.split(':')[0];
+        const otherMarket = otherSel.split(':')[0];
+        if (selMarket === otherMarket) {
+          os += otherParlays.reduce((s, p) => s + p.stake, 0);
+        }
+      }
+      game.netExposure = Math.max(game.netExposure, Math.max(0, wp - os));
     }
   }
 }
 
 /**
- * Get game exposure snapshot — all games with weighted risk, sorted by worst case.
+ * Get game exposure snapshot with net exposure, sorted by worst case.
  */
 function getGameExposureSnapshot() {
   return Object.entries(gameExposure).map(([eventId, game]) => {
-    const totalWeightedRisk = game.parlays.reduce((s, p) => s + p.weightedRisk, 0);
+    const grossRisk = game.parlays.reduce((s, p) => s + p.weightedRisk, 0);
+    const totalStakes = game.parlays.reduce((s, p) => s + p.stake, 0);
     return {
       eventId,
       name: game.name,
       sport: game.sport,
       startTime: game.startTime,
       parlayCount: game.parlays.length,
-      worstCase: Math.round(totalWeightedRisk * 100) / 100,
+      grossRisk: Math.round(grossRisk * 100) / 100,
+      totalStakes: Math.round(totalStakes * 100) / 100,
+      netExposure: Math.round((game.netExposure || 0) * 100) / 100,
+      worstCase: Math.round((game.netExposure || grossRisk) * 100) / 100,
       parlays: game.parlays,
     };
-  }).sort((a, b) => b.worstCase - a.worstCase);
+  }).sort((a, b) => b.netExposure - a.netExposure);
 }
 
 /**
- * Check if adding a new parlay would exceed per-game exposure limits.
- * @param {Array} legs - resolved legs with pxEventId, fairProb
- * @param {number} estPayout - estimated payout of new parlay
- * @param {number} maxPerGame - max weighted risk per game
+ * Check if adding a new parlay would exceed per-game NET exposure limits.
  */
 function checkGameExposure(legs, estPayout, maxPerGame) {
   if (!maxPerGame || maxPerGame <= 0) return { allowed: true };
@@ -750,43 +816,33 @@ function checkGameExposure(legs, estPayout, maxPerGame) {
     const eventId = leg.lineInfo?.pxEventId || leg.pxEventId;
     if (!eventId) continue;
 
-    // Weighted risk contribution of this parlay to this game
     let otherProb = 1;
     for (let j = 0; j < legs.length; j++) {
       if (j === i) continue;
       otherProb *= (legs[j].lineInfo?.fairProb || legs[j].fairProb || 0.5);
     }
-    const newRisk = estPayout * otherProb;
+    const newWeightedRisk = estPayout * otherProb;
 
-    // Current game exposure
-    const current = gameExposure[eventId]
-      ? gameExposure[eventId].parlays.reduce((s, p) => s + p.weightedRisk, 0)
-      : 0;
+    // Current net exposure for this game
+    const currentNet = gameExposure[eventId]?.netExposure || 0;
 
-    if (current + newRisk > maxPerGame) {
+    // Conservative: add full weighted risk (worst case is no offsetting)
+    if (currentNet + newWeightedRisk > maxPerGame) {
       const gameName = gameExposure[eventId]?.name || eventId;
       return {
         allowed: false,
-        reason: `Game "${gameName}" exposure $${Math.round(current)} + $${Math.round(newRisk)} > max $${Math.round(maxPerGame)}`,
+        reason: `Game "${gameName}" net exposure $${Math.round(currentNet)} + $${Math.round(newWeightedRisk)} > max $${Math.round(maxPerGame)}`,
       };
     }
   }
   return { allowed: true };
 }
 
-function getExposureForTeam(teamName) {
-  const key = normalizeExposureKey(teamName);
-  return exposure[key] || null;
-}
-
 /**
- * Check if adding a parlay would exceed probability-weighted exposure limits.
- * @param {Array} legs - legs with fairProb and team/teamName
- * @param {number} payout - estimated payout if all legs win
- * @param {number} maxWeightedExposure - max weighted risk per team
+ * Check if adding a parlay would exceed per-team NET exposure limits.
  */
-function checkExposureLimits(legs, payout, maxWeightedExposure) {
-  if (!maxWeightedExposure || maxWeightedExposure <= 0) {
+function checkExposureLimits(legs, payout, maxNetExposure) {
+  if (!maxNetExposure || maxNetExposure <= 0) {
     return { allowed: true, reason: null, violations: [] };
   }
 
@@ -797,25 +853,23 @@ function checkExposureLimits(legs, payout, maxWeightedExposure) {
     const key = normalizeExposureKey(name);
     if (!key) continue;
 
-    // Product of other legs' probs
     let otherProb = 1;
     for (let j = 0; j < legs.length; j++) {
       if (j === i) continue;
-      const prob = legs[j].fairProb || legs[j].lineInfo?.fairProb || 0.5;
-      otherProb *= prob;
+      otherProb *= (legs[j].fairProb || legs[j].lineInfo?.fairProb || 0.5);
     }
 
     const newRisk = payout * otherProb;
-    const current = exposure[key]?.risk || 0;
-    const afterAdd = current + newRisk;
+    const currentNet = exposure[key]?.netExposure || 0;
+    const afterAdd = currentNet + newRisk;
 
-    if (afterAdd > maxWeightedExposure) {
+    if (afterAdd > maxNetExposure) {
       violations.push({
         team: name,
-        currentExposure: Math.round(current * 100) / 100,
+        currentExposure: Math.round(currentNet * 100) / 100,
         newRisk: Math.round(newRisk * 100) / 100,
         wouldBe: Math.round(afterAdd * 100) / 100,
-        limit: maxWeightedExposure,
+        limit: maxNetExposure,
       });
     }
   }
@@ -824,21 +878,31 @@ function checkExposureLimits(legs, payout, maxWeightedExposure) {
     const names = violations.map(v => `${v.team} ($${v.wouldBe}/$${v.limit})`).join(', ');
     return {
       allowed: false,
-      reason: `Weighted exposure limit exceeded: ${names}`,
+      reason: `Net exposure limit exceeded: ${names}`,
       violations,
     };
   }
-
   return { allowed: true, reason: null, violations: [] };
 }
 
+function getExposureForTeam(teamName) {
+  const key = normalizeExposureKey(teamName);
+  return exposure[key] || null;
+}
+
 /**
- * Get full exposure snapshot — all teams with active weighted exposure.
+ * Get full exposure snapshot — all teams with net exposure.
  */
 function getExposureSnapshot() {
   return Object.entries(exposure)
-    .map(([key, val]) => ({ key, ...val, risk: Math.round(val.risk * 100) / 100, notionalPayout: Math.round((val.notionalPayout || 0) * 100) / 100 }))
-    .sort((a, b) => b.risk - a.risk);
+    .map(([key, val]) => ({
+      key,
+      ...val,
+      risk: Math.round(val.risk * 100) / 100,
+      netExposure: Math.round((val.netExposure || 0) * 100) / 100,
+      notionalPayout: Math.round((val.notionalPayout || 0) * 100) / 100,
+    }))
+    .sort((a, b) => (b.netExposure || b.risk) - (a.netExposure || a.risk));
 }
 
 /**
