@@ -1232,17 +1232,20 @@
     filtered.sort((a, b) => {
       let va, vb;
       switch (posState.sortCol) {
-        case 'time': va = a.confirmedAt || ''; vb = b.confirmedAt || ''; break;
+        case 'time': va = a.confirmedAt || ''; vb = b.confirmedAt || '';
+          return posState.sortDir * va.localeCompare(vb);
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
-        case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'stake':
+          // My Risk = payout = calcBettorWager
+          va = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : 0;
+          vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : 0; break;
         case 'towin':
-          const decA = a.offeredOdds >= 100 ? 1 + a.offeredOdds / 100 : 1 + 100 / Math.abs(a.offeredOdds || 1);
-          const decB = b.offeredOdds >= 100 ? 1 + b.offeredOdds / 100 : 1 + 100 / Math.abs(b.offeredOdds || 1);
-          va = (a.confirmedStake || 0) * (decA - 1); vb = (b.confirmedStake || 0) * (decB - 1); break;
+          // To Win = confirmedStake (bettor's wager)
+          va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
         default: va = a.confirmedAt || ''; vb = b.confirmedAt || '';
+          return posState.sortDir * va.localeCompare(vb);
       }
-      if (typeof va === 'string') return posState.sortDir * va.localeCompare(vb);
       return posState.sortDir * (va - vb);
     });
 
