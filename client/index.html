@@ -1668,18 +1668,21 @@
   };
 
   function renderOrders(data) {
-    const el = document.getElementById('orders-table');
     const orders = data.recentOrders || [];
-
-    // Preserve search input value before DOM rebuild
-    const searchEl = document.getElementById('order-search');
-    if (searchEl) orderState.search = searchEl.value;
 
     // Merge new orders into existing set (keyed by parlayId) so data survives refreshes
     for (const o of orders) {
       if (o.parlayId) orderState.allOrders[o.parlayId] = o;
     }
-    // Convert map to sorted array, keep most recent 100
+
+    // Render P&L by Sport
+    renderPnLBySport(data.pnlBySport || {});
+
+    // The orders-table div was removed (Recent Orders replaced by All Quotes)
+    // but we still need orderState.allOrders populated for exposure/competitiveness
+    const el = document.getElementById('orders-table');
+    if (!el) return;
+
     const allOrders = Object.values(orderState.allOrders)
       .sort((a, b) => (b.quotedAt || '').localeCompare(a.quotedAt || ''))
       .slice(0, 100);
@@ -1689,7 +1692,6 @@
 
     if (allOrders.length === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No orders yet. Waiting for RFQs...</div></div>';
-      renderPnLBySport(data.pnlBySport || {});
       return;
     }
 
@@ -2713,12 +2715,18 @@
    * Format all legs of a parlay into a compact summary string.
    */
   function formatParlaySelections(legs) {
-    return (legs || []).map(l => {
-      const name = l.team || l.teamName || '?';
-      const mkt = l.market || l.marketType || '';
-      const line = l.line;
-      return formatSelection(name, mkt, line);
-    }).join(', ');
+    try {
+      if (!legs || legs.length === 0) return '-';
+      return legs.map(l => {
+        const name = l.team || l.teamName || '?';
+        const mkt = l.market || l.marketType || '';
+        const line = l.line;
+        return formatSelection(name, mkt, line);
+      }).join(', ');
+    } catch (e) {
+      // Fallback if formatting fails
+      return (legs || []).map(l => l.team || l.teamName || '?').join(', ');
+    }
   }
 
   function sportLabel(sport) {
