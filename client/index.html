@@ -437,6 +437,11 @@
         <button class="btn success" onclick="togglePause()">Resume</button>
       </div>
 
+      <!-- Limit-decline alert banner -->
+      <div id="limit-alert-banner" style="display:none; margin-bottom:12px; padding:10px 14px; background:rgba(245,158,11,0.1); border:1px solid var(--amber); border-left:4px solid var(--amber); border-radius:6px; font-size:13px;">
+        <div id="limit-alert-content"></div>
+      </div>
+
       <!-- ===================== SECTION: DASHBOARD ===================== -->
       <!-- ===================== SECTION: ORDERS ===================== -->
       <div id="section-orders" class="section">
@@ -770,6 +775,9 @@
     pauseBtn.textContent = isPaused ? 'Resume' : 'Pause';
     pauseBtn.className = isPaused ? 'btn success' : 'btn danger';
 
+    // Limit-decline alert banner
+    renderLimitAlert(data.alerts, data.portfolio);
+
     // Uptime
     const svc = data.service || {};
     document.getElementById('uptime').textContent = svc.ready ?
@@ -822,6 +830,76 @@
     // Exposure
     renderExposure(data.exposure || {});
     renderGameExposure(data.exposure || {});
+  }
+
+  function renderLimitAlert(alerts, portfolio) {
+    const banner = document.getElementById('limit-alert-banner');
+    const content = document.getElementById('limit-alert-content');
+    if (!banner || !content) return;
+    if (!alerts) { banner.style.display = 'none'; return; }
+
+    const declineCount = alerts.limitDeclineCount || 0;
+    const rejectCount = alerts.rejectCount || 0;
+    const portfolioRisk = portfolio?.currentRisk || 0;
+    const maxDrawdown = portfolio?.maxDrawdown || 0;
+    const portfolioPct = maxDrawdown > 0 ? (portfolioRisk / maxDrawdown * 100) : 0;
+
+    // Show banner if: any recent limit declines/rejects, OR portfolio is >80% utilized
+    const highUtil = portfolioPct >= 80;
+    const hasLimitHits = declineCount > 0 || rejectCount > 0;
+    if (!hasLimitHits && !highUtil) { banner.style.display = 'none'; return; }
+
+    const parts = [];
+    // Header
+    let headerIcon = highUtil && portfolioPct >= 95 ? '&#9888;' : '&#9888;';
+    let headerColor = highUtil && portfolioPct >= 95 ? 'var(--red)' : 'var(--amber)';
+    let headerText;
+    if (hasLimitHits) {
+      const total = declineCount + rejectCount;
+      headerText = `Missing quotes due to risk limits: ${total} in the last ${alerts.windowMinutes} min`;
+    } else {
+      headerText = `Portfolio risk is high: ${portfolioPct.toFixed(0)}% of drawdown limit`;
+    }
+    parts.push(`<div style="font-weight:600; color:${headerColor}; margin-bottom:6px;"><span style="font-size:16px;">${headerIcon}</span> ${headerText}</div>`);
+
+    // Decline reason breakdown
+    const lines = [];
+    if (alerts.declineByReason) {
+      for (const [reason, info] of Object.entries(alerts.declineByReason)) {
+        const detailStr = info.lastDetail ? ` &mdash; <span style="color:var(--text3);">${escapeHtml(info.lastDetail)}</span>` : '';
+        lines.push(`<li><strong>${escapeHtml(reason)}</strong>: ${info.count}${detailStr}</li>`);
+      }
+    }
+    if (alerts.rejectByBucket) {
+      for (const [bucket, info] of Object.entries(alerts.rejectByBucket)) {
+        const detailStr = info.lastReason && info.lastReason !== bucket ? ` &mdash; <span style="color:var(--text3);">${escapeHtml(info.lastReason)}</span>` : '';
+        lines.push(`<li><strong>Confirm rejected (${escapeHtml(bucket)})</strong>: ${info.count}${detailStr}</li>`);
+      }
+    }
+    if (lines.length > 0) {
+      parts.push(`<ul style="margin:4px 0 6px 18px; padding:0; font-size:12px; color:var(--text2);">${lines.join('')}</ul>`);
+    }
+
+    // Portfolio utilization bar
+    if (maxDrawdown > 0) {
+      const pctClamp = Math.min(100, portfolioPct);
+      const barColor = portfolioPct >= 95 ? 'var(--red)' : portfolioPct >= 80 ? 'var(--amber)' : 'var(--green)';
+      parts.push(`<div style="font-size:11px; color:var(--text3); margin-bottom:4px;">Portfolio Risk: <strong style="color:var(--text);">$${portfolioRisk.toFixed(0)}</strong> / $${maxDrawdown.toFixed(0)} (${portfolioPct.toFixed(0)}%)</div>
+        <div style="background:var(--surface); border-radius:4px; height:6px; overflow:hidden; max-width:300px;">
+          <div style="background:${barColor}; width:${pctClamp}%; height:100%;"></div>
+        </div>`);
+    }
+
+    // Action hint
+    parts.push(`<div style="margin-top:8px; font-size:11px; color:var(--text3);">
+      Adjust <code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">MAX_DRAWDOWN_PCT</code>,
+      <code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">MAX_RISK_PER_PARLAY</code>,
+      <code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">MAX_EXPOSURE_PER_TEAM</code>,
+      or <code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">ASSUMED_BANKROLL</code> in Railway env vars.
+    </div>`);
+
+    content.innerHTML = parts.join('');
+    banner.style.display = 'block';
   }
 
   function renderOddsCache(odds) {

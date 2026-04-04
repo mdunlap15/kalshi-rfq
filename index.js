@@ -224,7 +224,13 @@ function startStatusServer() {
         maxDrawdownPct: config.pricing.maxDrawdownPct,
         maxDrawdown: getBankroll() * config.pricing.maxDrawdownPct / 100,
         currentRisk: orderTracker.getTotalPortfolioRisk(),
+        maxRiskPerParlay: config.pricing.maxRiskPerParlay,
+        maxRiskPerParlayPct: config.pricing.maxRiskPerParlayPct,
+        maxRiskPerParlayFromPct: config.pricing.maxRiskPerParlayPct > 0
+          ? getBankroll() * config.pricing.maxRiskPerParlayPct / 100
+          : null,
       },
+      alerts: orderTracker.getAlerts(),
     });
   });
 

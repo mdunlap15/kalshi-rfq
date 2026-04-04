@@ -28,6 +28,21 @@ const declineStats = {
   reasons: {}, // { 'unknown legs': count, 'no fair value': count, etc. }
   unknownSports: {}, // { 'Soccer': count, 'unknown': count } — sports from unknown legs
   nearMisses: [], // RFQs where all legs were known but couldn't price (no fair value)
+  // Rolling log of recent declines for the alert banner
+  recent: [], // { reason, detail, time, parlayId }
+};
+// Limit-related reasons — these are the ones we alert on (user-controllable)
+const LIMIT_REASONS = new Set([
+  'team exposure limit',
+  'game exposure limit',
+  'portfolio drawdown limit',
+  'too many legs',
+]);
+// Reject reasons from risk checks at confirmation time
+const rejectStats = {
+  total: 0,
+  reasons: {}, // { 'risk $123 > max $100': count }
+  recent: [], // { reason, time, parlayId }
 };
 // Per-parlay decline lookup — lets us explain "No quote" outcomes in matched parlays
 const declinesByParlayId = {}; // { parlayId: { reason, unknownLineIds, unknownDetails, declinedAt } }
@@ -123,6 +138,21 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
 
 function recordRejection(parlayId, reason) {
   stats.totalRejections++;
+  rejectStats.total++;
+
+  // Bucket by reason prefix (strip dollar amounts for aggregation)
+  const bucket = (reason || 'unknown')
+    .replace(/\$[\d,.]+/g, '$')
+    .replace(/\s+/g, ' ')
+    .trim();
+  rejectStats.reasons[bucket] = (rejectStats.reasons[bucket] || 0) + 1;
+  rejectStats.recent.unshift({
+    reason,
+    bucket,
+    parlayId,
+    time: new Date().toISOString(),
+  });
+  if (rejectStats.recent.length > 100) rejectStats.recent.pop();
 
   const order = orders[parlayId];
   if (order) {
@@ -364,6 +394,16 @@ function recordDecline(reason, detail) {
   declineStats.total++;
   const bucket = reason || 'unknown';
   declineStats.reasons[bucket] = (declineStats.reasons[bucket] || 0) + 1;
+
+  // Rolling log (keep last 200, newest first)
+  declineStats.recent.unshift({
+    reason: bucket,
+    detail: detail?.declineDetail || null,
+    parlayId: detail?.parlayId || null,
+    time: new Date().toISOString(),
+    isLimit: LIMIT_REASONS.has(bucket),
+  });
+  if (declineStats.recent.length > 200) declineStats.recent.pop();
 
   // Index by parlayId so matched-parlay "No quote" rows can explain which leg caused the miss
   if (detail?.parlayId) {
@@ -1076,8 +1116,61 @@ module.exports = {
   recordMatchedParlay,
   recordDecline,
   getMarketIntel,
+  getAlerts,
   loadFromDb,
 };
+
+/**
+ * Return alert-relevant data: counts of limit-based declines + rejections
+ * over the last 15 minutes. Used by the dashboard to show a warning banner
+ * when the SP is missing quotes because it's hitting its own risk limits.
+ */
+function getAlerts() {
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const cutoff = now - windowMs;
+
+  // Recent limit-hit declines (within window)
+  const recentLimitDeclines = declineStats.recent.filter(d => {
+    if (!d.isLimit) return false;
+    const t = new Date(d.time).getTime();
+    return !isNaN(t) && t >= cutoff;
+  });
+
+  // Recent rejections (all reasons — these are limit hits at confirm time)
+  const recentRejects = rejectStats.recent.filter(r => {
+    const t = new Date(r.time).getTime();
+    return !isNaN(t) && t >= cutoff;
+  });
+
+  // Group declines by reason
+  const byReason = {};
+  for (const d of recentLimitDeclines) {
+    if (!byReason[d.reason]) byReason[d.reason] = { count: 0, lastDetail: null, lastTime: null };
+    byReason[d.reason].count++;
+    if (!byReason[d.reason].lastDetail) byReason[d.reason].lastDetail = d.detail;
+    if (!byReason[d.reason].lastTime) byReason[d.reason].lastTime = d.time;
+  }
+
+  // Group rejections by bucket
+  const rejectByBucket = {};
+  for (const r of recentRejects) {
+    if (!rejectByBucket[r.bucket]) rejectByBucket[r.bucket] = { count: 0, lastReason: null, lastTime: null };
+    rejectByBucket[r.bucket].count++;
+    if (!rejectByBucket[r.bucket].lastReason) rejectByBucket[r.bucket].lastReason = r.reason;
+    if (!rejectByBucket[r.bucket].lastTime) rejectByBucket[r.bucket].lastTime = r.time;
+  }
+
+  return {
+    windowMinutes: 15,
+    limitDeclineCount: recentLimitDeclines.length,
+    rejectCount: recentRejects.length,
+    declineByReason: byReason,
+    rejectByBucket,
+    allTimeLimitDeclines: declineStats.recent.filter(d => d.isLimit).length,
+    allTimeRejects: rejectStats.total,
+  };
+}
 
 /**
  * Load historical data from Supabase on startup.
