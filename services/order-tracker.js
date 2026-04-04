@@ -82,10 +82,20 @@ function recordQuote(parlayId, legs, offeredOdds, maxRisk, fairParlayProb, meta)
 }
 
 function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) {
-  stats.totalConfirmations++;
-
   const order = orders[parlayId];
   if (order) {
+    // Never revert a settled order to confirmed (duplicate/late event guard)
+    if (order.status && order.status.startsWith('settled_')) {
+      log.debug('Orders', `Ignoring late confirmation for already-settled parlay ${parlayId}`);
+      if (orderUuid && !ordersByUuid[orderUuid]) ordersByUuid[orderUuid] = parlayId;
+      return order;
+    }
+
+    // Don't double-count confirmations for the same parlay
+    if (order.status !== 'confirmed') {
+      stats.totalConfirmations++;
+    }
+
     order.status = 'confirmed';
     order.confirmedAt = new Date().toISOString();
     order.confirmedOdds = confirmedOdds;
@@ -100,7 +110,7 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
     addExposure(order);
 
     log.info('Orders', `Confirmed: parlay=${parlayId}, order=${orderUuid}, odds=${confirmedOdds}, stake=$${confirmedStake}`);
-    db.saveOrder(order).catch(() => {});
+    db.saveOrder(order).catch(err => log.error('DB', `saveOrder(confirmation) failed: ${err.message}`));
   } else {
     log.warn('Orders', `Confirmation for unknown parlay ${parlayId}`);
   }
@@ -182,8 +192,6 @@ function americanOddsToProfit(americanOdds, stake) {
 }
 
 function recordSettlement(orderUuid, result, payout) {
-  stats.totalSettlements++;
-
   const parlayId = ordersByUuid[orderUuid];
   const order = parlayId ? orders[parlayId] : null;
 
@@ -194,6 +202,7 @@ function recordSettlement(orderUuid, result, payout) {
       return order;
     }
 
+    stats.totalSettlements++;
     order.settledAt = new Date().toISOString();
     order.settlementResult = result; // 'won', 'lost', 'push', 'void'
 
@@ -229,7 +238,8 @@ function recordSettlement(orderUuid, result, payout) {
 
     order.status = `settled_${result}`;
     log.info('Orders', `Settled: order=${orderUuid}, result=${result}, pnl=$${order.pnl?.toFixed(2)}, running=$${stats.runningPnL.toFixed(2)}`);
-    db.saveOrder(order).catch(() => {});
+    // Critical — log errors on settlement saves so we never silently lose a settled order
+    db.saveOrder(order).catch(err => log.error('DB', `CRITICAL: saveOrder(settlement) failed for ${order.parlayId}: ${err.message}`));
   } else {
     log.warn('Orders', `Settlement for unknown order ${orderUuid}`);
   }
@@ -919,8 +929,8 @@ async function pollOrderSettlements(px) {
   log.info('Poll', `Checking ${confirmed.length} confirmed orders for settlement...`);
 
   try {
-    // Fetch all our orders from PX
-    const pxOrders = await px.fetchOrders(100);
+    // Fetch all our orders from PX (high limit to catch older settlements)
+    const pxOrders = await px.fetchOrders(500);
     let settled = 0;
 
     for (const pxOrder of pxOrders) {
@@ -942,10 +952,31 @@ async function pollOrderSettlements(px) {
         db.saveOrder(order).catch(() => {});
       }
 
-      if (!order || order.status !== 'confirmed') continue;
+      if (!order) continue;
+      // Skip if already settled with matching status
+      if (order.status === `settled_${pxOrder.settlement_status}`) continue;
 
       const settlementStatus = pxOrder.settlement_status;
       if (!settlementStatus || settlementStatus === 'tbd' || settlementStatus === 'requested') continue;
+
+      // If order was somehow reverted to non-settled status, fix it
+      // by temporarily clearing the settled status so recordSettlement will run
+      if (order.status && order.status.startsWith('settled_')) {
+        log.warn('Orders', `Fixing stale settlement for ${order.parlayId}: was ${order.status}, PX says ${settlementStatus}`);
+        // Reverse the old P&L before re-settling
+        if (order.pnl != null) stats.runningPnL -= order.pnl;
+        if (order.pnl > 0) stats.totalWins--;
+        else if (order.pnl < 0) stats.totalLosses--;
+        stats.totalSettlements--;
+        order.status = 'confirmed';
+        order.pnl = null;
+      }
+
+      // Backfill stake/odds from PX if missing (critical for recovering lost settlements)
+      if (!order.confirmedStake && pxOrder.stake != null) order.confirmedStake = Number(pxOrder.stake);
+      if (!order.confirmedOdds && pxOrder.odds != null) order.confirmedOdds = Number(pxOrder.odds);
+      if (!order.confirmedStake && pxOrder.confirmed_stake != null) order.confirmedStake = Number(pxOrder.confirmed_stake);
+      if (!order.confirmedOdds && pxOrder.confirmed_odds != null) order.confirmedOdds = Number(pxOrder.confirmed_odds);
 
       // Map PX settlement_status to our result format
       const result = settlementStatus; // 'won', 'lost', 'push', 'void'
@@ -1008,8 +1039,8 @@ async function loadFromDb() {
 
   log.info('DB', 'Loading historical data from Supabase...');
 
-  // Load orders
-  const dbOrders = await db.loadOrders(500);
+  // Load orders (high limit so we never drop settled history)
+  const dbOrders = await db.loadOrders(2000);
   for (const o of dbOrders) {
     orders[o.parlayId] = o;
     if (o.orderUuid) ordersByUuid[o.orderUuid] = o.parlayId;

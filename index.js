@@ -284,6 +284,26 @@ function startStatusServer() {
     }
   });
 
+  // Debug: list raw PX orders (to inspect what fields PX returns)
+  app.get('/px-orders', async (req, res) => {
+    try {
+      const limit = Number(req.query.limit) || 500;
+      const status = req.query.status || null;
+      const pxOrders = await px.fetchOrders(limit, status);
+      // Summarize by settlement_status
+      const byStatus = {};
+      for (const o of pxOrders) {
+        const s = o.settlement_status || 'none';
+        byStatus[s] = (byStatus[s] || 0) + 1;
+      }
+      // Only return settled ones in detail + summary
+      const settled = pxOrders.filter(o => o.settlement_status && !['tbd','requested','none'].includes(o.settlement_status));
+      res.json({ ok: true, total: pxOrders.length, byStatus, settled });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Pause/resume RFQ handling
   app.post('/pause', (req, res) => {
     websocket.pause();
