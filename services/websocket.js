@@ -400,9 +400,14 @@ async function handleConfirm(data) {
     const ourRisk = bettorOdds >= 100
       ? confirmedStake * bettorOdds / 100
       : confirmedStake;
-    const maxRisk = config.pricing.maxRiskPerParlay;
-    if (maxRisk > 0 && ourRisk > maxRisk) {
-      log.warn('Confirm', `Rejecting: our risk $${ourRisk.toFixed(2)} exceeds max $${maxRisk} (stake=$${confirmedStake}, odds=${confirmedOdds})`);
+    // Per-parlay limit: use % of bankroll or fixed amount, whichever is set
+    const bankroll = config.pricing.bankroll;
+    const maxRiskPct = config.pricing.maxRiskPerParlayPct;
+    const maxRiskFixed = config.pricing.maxRiskPerParlay;
+    const maxRiskFromPct = maxRiskPct > 0 ? bankroll * maxRiskPct / 100 : Infinity;
+    const maxRisk = Math.min(maxRiskFixed || Infinity, maxRiskFromPct);
+    if (maxRisk > 0 && maxRisk < Infinity && ourRisk > maxRisk) {
+      log.warn('Confirm', `Rejecting: our risk $${ourRisk.toFixed(2)} exceeds max $${maxRisk.toFixed(0)} (stake=$${confirmedStake}, odds=${confirmedOdds})`);
       orderTracker.recordRejection(parlayId, `risk $${ourRisk.toFixed(0)} > max $${maxRisk}`);
       if (callbackUrl) {
         await px.confirmOrder(callbackUrl, orderUuid, 'reject');
