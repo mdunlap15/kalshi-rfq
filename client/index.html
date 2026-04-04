@@ -553,6 +553,14 @@
 
       <!-- ===================== SECTION: ANALYTICS ===================== -->
       <div id="section-analytics" class="section" style="display:none;">
+        <!-- Daily Volume & P&L -->
+        <div class="card">
+          <div class="card-header"><span>Daily Volume & P&L</span></div>
+          <div class="card-body" id="chart-daily-volume">
+            <div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>
+          </div>
+        </div>
+
         <!-- Cumulative P&L -->
         <div class="card">
           <div class="card-header"><span>Cumulative P&L</span></div>
@@ -2925,6 +2933,7 @@
     const confirmed = allOrders.filter(o => o.status === 'confirmed');
     const allQuoted = allOrders.filter(o => o.offeredOdds);
 
+    renderChartDailyVolume(allOrders);
     renderChartCumulPnl(settled);
     renderChartPnlSport(settled);
     renderChartPnlLegs(settled);
@@ -2952,6 +2961,114 @@
   }
 
   // 1. Cumulative P&L line chart
+  // Daily Volume & P&L — grouped bar chart by day
+  function renderChartDailyVolume(allOrders) {
+    const el = document.getElementById('chart-daily-volume');
+    if (!el) return;
+
+    // Group confirmed orders by day
+    const confirmed = allOrders.filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')));
+    if (confirmed.length < 1) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>';
+      return;
+    }
+
+    const byDay = {};
+    for (const o of confirmed) {
+      const day = (o.confirmedAt || o.quotedAt || '').substring(0, 10);
+      if (!day) continue;
+      if (!byDay[day]) byDay[day] = { volume: 0, risk: 0, toWin: 0, pnl: 0, count: 0, settled: 0 };
+      byDay[day].count++;
+      byDay[day].risk += o.confirmedStake && o.offeredOdds ? calcBettorWager(o.confirmedStake, o.offeredOdds) : 0;
+      byDay[day].toWin += (o.confirmedStake || 0);
+      if (o.pnl != null) {
+        byDay[day].pnl += o.pnl;
+        byDay[day].settled++;
+      }
+    }
+
+    const days = Object.keys(byDay).sort();
+    if (days.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No daily data</div></div>';
+      return;
+    }
+
+    const W = 700, H = 250, pad = { l: 70, r: 20, t: 30, b: 50 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const barGroupW = Math.min(80, chartW / days.length - 4);
+    const barW = barGroupW / 2 - 1;
+
+    const maxRisk = Math.max(1, ...days.map(d => byDay[d].risk));
+    const maxPnl = Math.max(1, ...days.map(d => Math.abs(byDay[d].pnl)));
+    const maxVal = Math.max(maxRisk, maxPnl);
+
+    const scaleY = (v) => pad.t + chartH - (Math.abs(v) / maxVal) * chartH;
+    const zeroY = pad.t + chartH;
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:300px;">`;
+
+    // Grid lines
+    for (let pct = 0; pct <= 100; pct += 25) {
+      const y = pad.t + chartH - (pct / 100) * chartH;
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5);
+      if (pct % 50 === 0) {
+        const val = Math.round(maxVal * pct / 100);
+        svg += svgText(pad.l - 6, y + 3, fmtDollar(val).replace(/\.00$/, ''), { anchor: 'end', size: 9 });
+      }
+    }
+
+    // Bars
+    for (let i = 0; i < days.length; i++) {
+      const d = byDay[days[i]];
+      const cx = pad.l + (i + 0.5) * (chartW / days.length);
+
+      // Risk bar (blue)
+      const riskH = (d.risk / maxVal) * chartH;
+      svg += svgRect(cx - barGroupW / 2, zeroY - riskH, barW, riskH, 'var(--accent)', 2);
+
+      // P&L bar (green/red)
+      const pnlH = (Math.abs(d.pnl) / maxVal) * chartH;
+      const pnlColor = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      svg += svgRect(cx + 1, zeroY - pnlH, barW, pnlH, pnlColor, 2);
+
+      // Day label
+      const dayLabel = days[i].substring(5); // MM-DD
+      svg += svgText(cx, H - pad.b + 14, dayLabel, { size: 10 });
+
+      // Count label
+      svg += svgText(cx, H - pad.b + 26, d.count + ' fills', { size: 8, fill: 'var(--text3)' });
+
+      // Value labels on top of bars
+      if (d.risk > 0) svg += svgText(cx - barGroupW / 4, zeroY - riskH - 4, fmtDollar(d.risk).replace(/\.00$/, ''), { size: 8, fill: 'var(--accent)' });
+      if (d.pnl !== 0) svg += svgText(cx + barGroupW / 4, zeroY - pnlH - 4, fmtPnl(d.pnl), { size: 8, fill: pnlColor });
+    }
+
+    // Legend
+    svg += svgRect(pad.l, H - 10, 8, 8, 'var(--accent)', 1);
+    svg += svgText(pad.l + 12, H - 3, 'My Risk (volume)', { anchor: 'start', size: 9 });
+    svg += svgRect(pad.l + 120, H - 10, 8, 8, 'var(--green)', 1);
+    svg += svgText(pad.l + 132, H - 3, 'P&L', { anchor: 'start', size: 9 });
+
+    svg += '</svg>';
+
+    // Summary table below chart
+    svg += '<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:11px;">';
+    svg += '<tr><th>Date</th><th style="text-align:right">Fills</th><th style="text-align:right">My Risk</th><th style="text-align:right">To Win</th><th style="text-align:right">Settled</th><th style="text-align:right">P&L</th></tr>';
+    for (const day of days.reverse()) {
+      const d = byDay[day];
+      const pnlCls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
+      svg += '<tr><td>' + day + '</td>';
+      svg += '<td style="text-align:right">' + d.count + '</td>';
+      svg += '<td style="text-align:right">' + fmtDollar(d.risk) + '</td>';
+      svg += '<td style="text-align:right; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
+      svg += '<td style="text-align:right">' + d.settled + '</td>';
+      svg += '<td style="text-align:right" class="' + pnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
+    }
+    svg += '</table></div>';
+
+    el.innerHTML = svg;
+  }
+
   function renderChartCumulPnl(settled) {
     const el = document.getElementById('chart-cumul-pnl');
     if (settled.length < 2) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders to chart P&L</div></div>'; return; }
