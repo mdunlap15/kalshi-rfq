@@ -303,7 +303,12 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     ourQuote.lostAt = new Date().toISOString();
     ourQuote.winningOdds = matchedOdds != null ? -matchedOdds : null; // negated to match our format
     ourQuote.winningStake = matchedStake;
-    db.saveOrder(ourQuote).catch(() => {});
+    // Persist inside meta so we don't lose these on restart (no DB schema change needed)
+    ourQuote.meta = ourQuote.meta || {};
+    ourQuote.meta.winningOdds = ourQuote.winningOdds;
+    ourQuote.meta.winningStake = ourQuote.winningStake;
+    ourQuote.meta.lostAt = ourQuote.lostAt;
+    db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(outbid) failed: ${err.message}`));
   } else {
     outcome = 'missed';
     marketStats.missedNoQuote++;
@@ -1070,6 +1075,12 @@ async function loadFromDb() {
   // Load orders (high limit so we never drop settled history)
   const dbOrders = await db.loadOrders(2000);
   for (const o of dbOrders) {
+    // Hoist winning-quote info out of meta (stored there to avoid DB schema change)
+    if (o.meta) {
+      if (o.meta.winningOdds != null && o.winningOdds == null) o.winningOdds = o.meta.winningOdds;
+      if (o.meta.winningStake != null && o.winningStake == null) o.winningStake = o.meta.winningStake;
+      if (o.meta.lostAt && !o.lostAt) o.lostAt = o.meta.lostAt;
+    }
     orders[o.parlayId] = o;
     if (o.orderUuid) ordersByUuid[o.orderUuid] = o.parlayId;
 
