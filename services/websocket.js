@@ -409,6 +409,18 @@ async function handleConfirm(data) {
       return;
     }
 
+    // Check portfolio-level drawdown limit
+    const maxDrawdown = config.pricing.bankroll * config.pricing.maxDrawdownPct / 100;
+    const portfolioCheck = orderTracker.checkPortfolioRisk(ourRisk, maxDrawdown);
+    if (!portfolioCheck.allowed) {
+      log.warn('Confirm', `Rejecting: portfolio risk $${portfolioCheck.current.toFixed(0)} + $${ourRisk.toFixed(0)} > max drawdown $${maxDrawdown.toFixed(0)}`);
+      orderTracker.recordRejection(parlayId, `portfolio risk $${(portfolioCheck.current + ourRisk).toFixed(0)} > $${maxDrawdown.toFixed(0)}`);
+      if (callbackUrl) {
+        await px.confirmOrder(callbackUrl, orderUuid, 'reject');
+      }
+      return;
+    }
+
     // Re-validate pricing
     const validation = await pricer.validateForConfirmation(parlayId, originalOrder.meta);
     if (!validation.valid) {

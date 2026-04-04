@@ -194,6 +194,12 @@ function startStatusServer() {
         maxPerTeam: config.pricing.maxExposurePerTeam,
         teams: orderTracker.getExposureSnapshot(),
       },
+      portfolio: {
+        bankroll: config.pricing.bankroll,
+        maxDrawdownPct: config.pricing.maxDrawdownPct,
+        maxDrawdown: config.pricing.bankroll * config.pricing.maxDrawdownPct / 100,
+        currentRisk: orderTracker.getTotalPortfolioRisk(),
+      },
     });
   });
 

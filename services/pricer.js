@@ -287,6 +287,14 @@ function shouldDecline(legs) {
     return true;
   }
 
+  // Check portfolio-level drawdown limit
+  const maxDrawdown = config.pricing.bankroll * config.pricing.maxDrawdownPct / 100;
+  const portfolioCheck = orderTracker.checkPortfolioRisk(estPayout, maxDrawdown);
+  if (!portfolioCheck.allowed) {
+    log.info('Pricing', `Portfolio risk limit: $${portfolioCheck.current.toFixed(0)} + $${estPayout.toFixed(0)} > max $${portfolioCheck.limit.toFixed(0)}`);
+    return true;
+  }
+
   return false;
 }
 

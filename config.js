@@ -19,6 +19,8 @@ const config = {
     stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 15,
     offerValidSeconds: 120,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 50,
+    bankroll: parseFloat(process.env.BANKROLL) || 100000,
+    maxDrawdownPct: parseFloat(process.env.MAX_DRAWDOWN_PCT) || 25,
   },
   supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,baseball_mlb,icehockey_nhl,tennis,soccer,soccer_usa_mls,soccer_epl')
     .split(',').map(s => s.trim()),

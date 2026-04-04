@@ -730,7 +730,7 @@
       ]);
 
       renderStatus(status);
-      renderPortfolioSummary(orders.stats || {}, orders.recentOrders || []);
+      renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
       renderPortfolio(orders);
       renderOrders(orders);
       renderPositions(orders);
@@ -2424,7 +2424,7 @@
     return 0.5;
   }
 
-  function renderPortfolioSummary(orderStats, allOrders) {
+  function renderPortfolioSummary(orderStats, allOrders, portfolio) {
     const el = document.getElementById('portfolio-summary');
     if (!el) return;
 
@@ -2440,11 +2440,16 @@
     const activeOrders = (allOrders || []).filter(o => o.status === 'confirmed');
     let totalRisk = 0, totalToWin = 0;
     for (const o of activeOrders) {
-      totalRisk += (o.confirmedStake || 0);
-      if (o.confirmedStake && o.offeredOdds) {
-        totalToWin += calcBettorWager(o.confirmedStake, o.offeredOdds);
-      }
+      totalToWin += (o.confirmedStake || 0);
+      if (o.confirmedStake && o.offeredOdds) totalRisk += calcBettorWager(o.confirmedStake, o.offeredOdds);
     }
+
+    // Portfolio risk from status
+    const portRisk = portfolio?.currentRisk || totalRisk;
+    const portLimit = portfolio?.maxDrawdown || 0;
+    const portPct = portLimit > 0 ? Math.round(portRisk / portLimit * 100) : 0;
+    const portCls = portPct > 90 ? 'negative' : portPct > 70 ? '' : 'positive';
+    const portStr = portLimit > 0 ? fmtDollar(portRisk) + ' / ' + fmtDollar(portLimit) + ' (' + portPct + '%)' : fmtDollar(portRisk);
 
     const pnlCls = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral';
     const pnlStr = settled > 0 ? fmtPnl(pnl) : '-';
@@ -2461,9 +2466,8 @@
         ${stat('Record', settled > 0 ? wins + 'W-' + losses + 'L' : '-')}
         ${stat('Win Rate', wrStr, wrCls)}
         ${stat('Active', active)}
-        ${stat('Total Risk', fmtDollar(totalRisk))}
-        ${stat('Total To Win', fmtDollar(totalToWin), 'positive')}
-        ${stat('Quotes', orderStats.totalQuotes || 0)}
+        ${stat('Portfolio Risk', portStr, portCls)}
+        ${stat('To Win', fmtDollar(totalToWin), 'positive')}
         ${stat('Filled', confirmed)}
       </div>
     </div>`;

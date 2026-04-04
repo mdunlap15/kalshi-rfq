@@ -459,6 +459,36 @@ function findByParlayId(parlayId) {
   return orders[parlayId] || null;
 }
 
+/**
+ * Get total portfolio risk — sum of payouts across all confirmed orders.
+ * This is the naive worst case (all parlays win simultaneously).
+ */
+function getTotalPortfolioRisk() {
+  let total = 0;
+  for (const order of Object.values(orders)) {
+    if (order.status !== 'confirmed') continue;
+    if (order.confirmedStake && order.confirmedOdds) {
+      total += americanOddsToProfit(order.confirmedOdds, order.confirmedStake);
+    }
+  }
+  return total;
+}
+
+/**
+ * Check if adding a new parlay would exceed the portfolio drawdown limit.
+ * @param {number} additionalRisk - payout of the new parlay
+ * @param {number} maxDrawdown - max allowed total portfolio risk
+ * @returns {{ allowed: boolean, current: number, limit: number }}
+ */
+function checkPortfolioRisk(additionalRisk, maxDrawdown) {
+  if (!maxDrawdown || maxDrawdown <= 0) return { allowed: true, current: 0, limit: 0 };
+  const current = getTotalPortfolioRisk();
+  if (current + additionalRisk > maxDrawdown) {
+    return { allowed: false, current, additional: additionalRisk, limit: maxDrawdown };
+  }
+  return { allowed: true, current, limit: maxDrawdown };
+}
+
 function findByOrderUuid(uuid) {
   const parlayId = ordersByUuid[uuid];
   return parlayId ? orders[parlayId] : null;
@@ -740,6 +770,8 @@ module.exports = {
   pollOrderSettlements,
   findByParlayId,
   findByOrderUuid,
+  getTotalPortfolioRisk,
+  checkPortfolioRisk,
   getRecentOrders,
   getStats,
   getPnLBySport,
