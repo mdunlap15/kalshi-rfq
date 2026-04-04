@@ -394,8 +394,11 @@ async function handleConfirm(data) {
     }
 
     // Check stake/risk limits before accepting
-    // confirmedStake = our risk (what we pay if bettor wins)
-    const ourRisk = confirmedStake || 0;
+    // confirmedStake = bettor's wager, our risk = payout if they win
+    const absOdds = Math.abs(confirmedOdds || 0);
+    const ourRisk = absOdds >= 100
+      ? (confirmedOdds >= 100 ? confirmedStake * absOdds / 100 : confirmedStake * 100 / absOdds)
+      : confirmedStake;
     const maxRisk = config.pricing.maxRiskPerParlay;
     if (maxRisk > 0 && ourRisk > maxRisk) {
       log.warn('Confirm', `Rejecting: our risk $${ourRisk.toFixed(2)} exceeds max $${maxRisk} (stake=$${confirmedStake}, odds=${confirmedOdds})`);

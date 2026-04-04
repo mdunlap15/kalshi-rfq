@@ -175,8 +175,17 @@ async function confirmOrder(callbackUrl, orderUuid, action, confirmedOdds, confi
 // ---------------------------------------------------------------------------
 
 async function fetchBalance() {
-  const data = await pxFetch('/partner/mm/get-balance');
-  return data.data || data;
+  // Try multiple possible endpoints
+  const paths = ['/partner/mm/get-balance', '/mm/get-balance', '/parlay/sp/balance', '/partner/balance'];
+  for (const path of paths) {
+    try {
+      const data = await pxFetch(path);
+      return data.data || data;
+    } catch (err) {
+      // Try next path
+    }
+  }
+  throw new Error('Balance endpoint not found');
 }
 
 async function fetchOrders(limit = 50, status = null) {

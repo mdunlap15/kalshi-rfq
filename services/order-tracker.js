@@ -471,16 +471,18 @@ function findByParlayId(parlayId) {
 }
 
 /**
- * Get total portfolio risk — sum of confirmedStake (our max payout)
- * across all confirmed orders.
+ * Get total portfolio risk — sum of our max payouts across all confirmed orders.
  * This is the naive worst case (all parlays win simultaneously).
- * confirmedStake = what we pay if bettor wins = our risk per parlay.
+ * Our risk per parlay = americanOddsToProfit(odds, confirmedStake)
+ * where confirmedStake = bettor's wager and the profit calc gives our payout.
  */
 function getTotalPortfolioRisk() {
   let total = 0;
   for (const order of Object.values(orders)) {
     if (order.status !== 'confirmed') continue;
-    total += (order.confirmedStake || 0);
+    if (order.confirmedStake && order.confirmedOdds) {
+      total += americanOddsToProfit(order.confirmedOdds, order.confirmedStake);
+    }
   }
   return total;
 }
