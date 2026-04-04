@@ -1238,7 +1238,7 @@
     el.innerHTML = html;
   }
 
-  const posState = { sortCol: 'time', sortDir: -1, search: '', pageSize: 15, showAll: false };
+  const posState = { sortCol: 'time', sortDir: -1, search: '', pageSize: 15, showAll: false, dateFrom: '', dateTo: '', _name: 'posState' };
   window.posRerender = () => renderPositions(window._lastPosData || { recentOrders: [] });
   window.togglePosSort = (col) => {
     if (posState.sortCol === col) posState.sortDir *= -1;
@@ -1260,16 +1260,17 @@
       return;
     }
 
-    // Search
-    let filtered = positions;
-    if (posState.search) {
-      const q = posState.search.toLowerCase();
-      filtered = filtered.filter(o => {
+    // Search + date filter
+    let filtered = positions.filter(o => {
+      if (posState.search) {
+        const q = posState.search.toLowerCase();
         const legs = o.legs || o.meta?.legs || [];
         const teams = legs.map(l => (l.team || l.teamName || '')).join(' ').toLowerCase();
-        return teams.includes(q) || (o.parlayId || '').toLowerCase().includes(q);
-      });
-    }
+        if (!teams.includes(q) && !(o.parlayId || '').toLowerCase().includes(q)) return false;
+      }
+      if (!passesDateFilter(o.confirmedAt, posState.dateFrom, posState.dateTo)) return false;
+      return true;
+    });
 
     // Sort
     filtered.sort((a, b) => {
@@ -1295,11 +1296,13 @@
     const pSortArrow = (col) => posState.sortCol === col ? (posState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
     const pSortClick = (col) => `onclick="event.stopPropagation(); togglePosSort('${col}')" style="cursor:pointer;"`;
 
-    let html = `<div style="padding:8px 12px; border-bottom:1px solid var(--border);">
+    const dStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+    let html = `<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">
       <input type="text" placeholder="Search team..." value="${posState.search}"
         oninput="posState.search=this.value; posRerender()"
-        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">
-      <span style="font-size:11px; color:var(--text3); margin-left:8px;">${filtered.length} of ${positions.length}</span>
+        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">
+      ${dateFilterHtml(posState, 'posRerender', dStyle)}
+      <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${positions.length}</span>
     </div>`;
 
     html += `<div style="overflow-x:auto;"><table>
@@ -1312,7 +1315,7 @@
         <th ${pSortClick('towin')} style="text-align:right">To Win${pSortArrow('towin')}</th>
       </tr>`;
 
-    const isPosFiltering = !!posState.search;
+    const isPosFiltering = posState.search || posState.dateFrom || posState.dateTo;
     const posLimit = (posState.showAll || isPosFiltering) ? filtered.length : posState.pageSize;
     const posDisplayed = filtered.slice(0, posLimit);
     const posHasMore = filtered.length > posLimit;
@@ -1370,6 +1373,7 @@
     sortCol: 'settled', sortDir: -1,
     search: '',
     pageSize: 20, showAll: false,
+    dateFrom: '', dateTo: '', _name: 'settledState',
   };
 
   function renderSettled(data) {
@@ -1399,14 +1403,16 @@
         return 0;
       });
 
-    // Filter by search
-    const filtered = settledState.search
-      ? settled.filter(o => {
-          const q = settledState.search.toLowerCase();
-          const teams = (o.legs||o.meta?.legs||[]).map(l=>l.team||l.teamName||'').join(' ').toLowerCase();
-          return teams.includes(q) || (o.parlayId||'').toLowerCase().includes(q);
-        })
-      : settled;
+    // Filter by search + date
+    const filtered = settled.filter(o => {
+      if (settledState.search) {
+        const q = settledState.search.toLowerCase();
+        const teams = (o.legs||o.meta?.legs||[]).map(l=>l.team||l.teamName||'').join(' ').toLowerCase();
+        if (!teams.includes(q) && !(o.parlayId||'').toLowerCase().includes(q)) return false;
+      }
+      if (!passesDateFilter(o.settledAt || o.quotedAt, settledState.dateFrom, settledState.dateTo)) return false;
+      return true;
+    });
 
     if (countEl) {
       const totalPnl = settled.reduce((s, o) => s + (o.pnl || 0), 0);
@@ -1425,7 +1431,8 @@
     const sSortArrow = (col) => settledState.sortCol === col ? (settledState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
     const sSortClick = (col) => 'onclick="event.stopPropagation(); settledState.sortCol=settledState.sortCol===\'' + col + '\'?settledState.sortCol:\'' + col + '\'; if(settledState.sortCol===\'' + col + '\') settledState.sortDir*=-1; else { settledState.sortCol=\'' + col + '\'; settledState.sortDir=-1; } renderSettled({recentOrders:[]});" style="cursor:pointer;"';
 
-    let html = '<div style="padding:8px 12px; border-bottom:1px solid var(--border);"><input type="text" id="settled-search" placeholder="Search team..." value="' + settledState.search + '" oninput="settledState.search=this.value; renderSettled({recentOrders:[]})" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;"></div>';
+    const sDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+    let html = '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);"><input type="text" id="settled-search" placeholder="Search team..." value="' + settledState.search + '" oninput="settledState.search=this.value; renderSettled({recentOrders:[]})" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">' + dateFilterHtml(settledState, 'function(){renderSettled({recentOrders:[]})}', sDStyle) + '</div>';
 
     html += '<div style="overflow-x:auto;"><table>';
     html += '<tr>';
@@ -1448,7 +1455,7 @@
       cumulMap[o.parlayId] = runningPnl;
     }
 
-    const isSettledFiltering = !!settledState.search;
+    const isSettledFiltering = settledState.search || settledState.dateFrom || settledState.dateTo;
     const settledLimit = (settledState.showAll || isSettledFiltering) ? filtered.length : settledState.pageSize;
     const settledDisplayed = filtered.slice(0, settledLimit);
     const settledHasMore = filtered.length > settledLimit;
@@ -2019,7 +2026,7 @@
   // PORTFOLIO TAB
   // -----------------------------------------------------------------------
 
-  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '', pageSize: 20, showAll: false };
+  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '', pageSize: 20, showAll: false, dateFrom: '', dateTo: '', _name: 'portfolioState' };
   window.portfolioRerender = () => renderPortfolio(window._lastPortfolioData || { recentOrders: [], stats: {}, pnlBySport: {} });
   window.togglePortfolioSort = (col) => {
     if (portfolioState.sortCol === col) portfolioState.sortDir *= -1;
@@ -2268,7 +2275,7 @@
     el.innerHTML = html;
   }
 
-  const popenState = { sortCol: 'time', sortDir: -1, search: '', pageSize: 15, showAll: false };
+  const popenState = { sortCol: 'time', sortDir: -1, search: '', pageSize: 15, showAll: false, dateFrom: '', dateTo: '', _name: 'popenState' };
   window.popenRerender = () => renderPortfolioOpen(window._lastPopenData || []);
   window.togglePopenSort = (col) => {
     if (popenState.sortCol === col) popenState.sortDir *= -1;
@@ -2297,15 +2304,16 @@
 
     if (countEl) countEl.textContent = active.length + ' active · ' + fmtDollar(totalPayouts) + ' risk · ' + fmtDollar(totalStaked) + ' to win';
 
-    // Search
-    let filtered = active;
-    if (popenState.search) {
-      const q = popenState.search.toLowerCase();
-      filtered = filtered.filter(o => {
+    // Search + date filter
+    let filtered = active.filter(o => {
+      if (popenState.search) {
+        const q = popenState.search.toLowerCase();
         const legs = o.legs || o.meta?.legs || [];
-        return legs.map(l => (l.team || l.teamName || '')).join(' ').toLowerCase().includes(q);
-      });
-    }
+        if (!legs.map(l => (l.team || l.teamName || '')).join(' ').toLowerCase().includes(q)) return false;
+      }
+      if (!passesDateFilter(o.confirmedAt, popenState.dateFrom, popenState.dateTo)) return false;
+      return true;
+    });
 
     // Sort
     filtered = [...filtered].sort((a, b) => {
@@ -2329,15 +2337,17 @@
     const poSortArrow = (col) => popenState.sortCol === col ? (popenState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
     const poSortClick = (col) => 'onclick="event.stopPropagation(); togglePopenSort(\'' + col + '\')" style="cursor:pointer;"';
 
-    let html = '<div style="padding:8px 12px; border-bottom:1px solid var(--border);">';
-    html += '<input type="text" placeholder="Search team..." value="' + popenState.search + '" oninput="popenState.search=this.value; popenRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">';
-    html += '<span style="font-size:11px; color:var(--text3); margin-left:8px;">' + filtered.length + ' of ' + active.length + '</span>';
+    const poDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+    let html = '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">';
+    html += '<input type="text" placeholder="Search team..." value="' + popenState.search + '" oninput="popenState.search=this.value; popenRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">';
+    html += dateFilterHtml(popenState, 'popenRerender', poDStyle);
+    html += '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + active.length + '</span>';
     html += '</div>';
 
     html += '<div style="overflow-x:auto;"><table>';
     html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th></tr>';
 
-    const isPopenFiltering = !!popenState.search;
+    const isPopenFiltering = popenState.search || popenState.dateFrom || popenState.dateTo;
     const popenLimit = (popenState.showAll || isPopenFiltering) ? filtered.length : popenState.pageSize;
     const popenDisplayed = filtered.slice(0, popenLimit);
     const popenHasMore = filtered.length > popenLimit;
@@ -2423,6 +2433,9 @@
         return true;
       });
     }
+    if (portfolioState.dateFrom || portfolioState.dateTo) {
+      filtered = filtered.filter(o => passesDateFilter(o.settledAt || o.quotedAt, portfolioState.dateFrom, portfolioState.dateTo));
+    }
 
     // Sort
     filtered.sort((a, b) => {
@@ -2463,6 +2476,8 @@
     html += '<option value="won"' + (portfolioState.resultFilter === 'won' ? ' selected' : '') + '>Won</option>';
     html += '<option value="lost"' + (portfolioState.resultFilter === 'lost' ? ' selected' : '') + '>Lost</option>';
     html += '</select>';
+    const psDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+    html += dateFilterHtml(portfolioState, 'portfolioRerender', psDStyle);
     html += '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + settled.length + '</span>';
     html += '</div>';
 
@@ -2484,7 +2499,7 @@
     html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
 
-    const isPsFiltering = portfolioState.search || portfolioState.sportFilter || portfolioState.resultFilter;
+    const isPsFiltering = portfolioState.search || portfolioState.sportFilter || portfolioState.resultFilter || portfolioState.dateFrom || portfolioState.dateTo;
     const psLimit = (portfolioState.showAll || isPsFiltering) ? filtered.length : portfolioState.pageSize;
     const psDisplayed = filtered.slice(0, psLimit);
     const psHasMore = filtered.length > psLimit;
@@ -2859,6 +2874,21 @@
   function fmtDollar(n) { return n != null && !isNaN(n) ? '$' + fmt(Math.abs(n)) : '-'; }
   /** Format dollar with sign: +$97,397.75 or -$1,234.56 */
   function fmtPnl(n) { return n != null && !isNaN(n) ? (n >= 0 ? '+$' : '-$') + fmt(Math.abs(n)) : '-'; }
+
+  /** Check if a date string passes a from/to date filter */
+  function passesDateFilter(dateStr, dateFrom, dateTo) {
+    if (!dateFrom && !dateTo) return true;
+    if (!dateStr) return false;
+    const d = dateStr.substring(0, 10); // YYYY-MM-DD
+    if (dateFrom && d < dateFrom) return false;
+    if (dateTo && d > dateTo) return false;
+    return true;
+  }
+  /** Render date range filter inputs */
+  function dateFilterHtml(stateObj, rerenderFn, style) {
+    return '<input type="date" value="' + (stateObj.dateFrom || '') + '" onchange="' + stateObj._name + '.dateFrom=this.value; ' + rerenderFn + '()" style="' + style + '" title="From date">' +
+           '<input type="date" value="' + (stateObj.dateTo || '') + '" onchange="' + stateObj._name + '.dateTo=this.value; ' + rerenderFn + '()" style="' + style + '" title="To date">';
+  }
 
   /**
    * Compute our payout if bettor wins (= My Risk).
@@ -3377,6 +3407,7 @@
     oddsMaxFilter: '',
     pageSize: 20,
     showAll: false,
+    dateFrom: '', dateTo: '', _name: 'historyState',
   };
 
   function renderHistory(data) {
@@ -3442,6 +3473,7 @@
         const odds = o.offeredOdds || 0;
         if (odds > Number(historyState.oddsMaxFilter)) return false;
       }
+      if (!passesDateFilter(o.quotedAt, historyState.dateFrom, historyState.dateTo)) return false;
       return true;
     });
 
@@ -3496,11 +3528,12 @@
         onchange="historyState.oddsMinFilter=this.value; historyRerender()" style="${fInp}">
       <input type="number" placeholder="Max odds" value="${historyState.oddsMaxFilter}"
         onchange="historyState.oddsMaxFilter=this.value; historyRerender()" style="${fInp}">
+      ${dateFilterHtml(historyState, 'historyRerender', fSel.replace('font-size:12px', 'font-size:11px'))}
       <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${allOrders.length}</span>
     </div>`;
 
     // Pagination
-    const isFiltering = historyState.search || historyState.statusFilter.length > 0 || historyState.sportFilter || historyState.legsFilter || historyState.oddsMinFilter || historyState.oddsMaxFilter;
+    const isFiltering = historyState.search || historyState.statusFilter.length > 0 || historyState.sportFilter || historyState.legsFilter || historyState.oddsMinFilter || historyState.oddsMaxFilter || historyState.dateFrom || historyState.dateTo;
     const displayLimit = (historyState.showAll || isFiltering) ? filtered.length : historyState.pageSize;
     const displayed = filtered.slice(0, displayLimit);
     const hasMore = filtered.length > displayLimit;
