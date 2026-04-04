@@ -291,6 +291,31 @@ function startStatusServer() {
   });
 
   // Debug: list raw PX orders (to inspect what fields PX returns)
+  // Debug: list PX sport events with sport_name grouping (diagnose sport name mismatches)
+  app.get('/px-events-debug', async (req, res) => {
+    try {
+      const allEvents = await px.fetchSportEvents();
+      const bySportName = {};
+      for (const e of allEvents) {
+        const sn = e.sport_name || '(none)';
+        if (!bySportName[sn]) bySportName[sn] = { count: 0, sample: [] };
+        bySportName[sn].count++;
+        if (bySportName[sn].sample.length < 3) {
+          bySportName[sn].sample.push({
+            name: e.name,
+            event_id: e.event_id,
+            competitors: (e.competitors || []).map(c => ({ name: c.name, side: c.side })),
+            scheduled: e.scheduled,
+            status: e.status,
+          });
+        }
+      }
+      res.json({ ok: true, totalEvents: allEvents.length, bySportName });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/px-orders', async (req, res) => {
     try {
       const limit = Number(req.query.limit) || 500;
