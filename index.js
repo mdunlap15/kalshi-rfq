@@ -203,6 +203,16 @@ function startStatusServer() {
     });
   });
 
+  // Balance
+  app.get('/balance', async (req, res) => {
+    try {
+      const balance = await px.fetchBalance();
+      res.json({ ok: true, balance });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Recent orders
   app.get('/orders', (req, res) => {
     const limit = parseInt(req.query.limit) || 100;

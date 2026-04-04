@@ -174,6 +174,11 @@ async function confirmOrder(callbackUrl, orderUuid, action, confirmedOdds, confi
 // ORDERS
 // ---------------------------------------------------------------------------
 
+async function fetchBalance() {
+  const data = await pxFetch('/partner/mm/get-balance');
+  return data.data || data;
+}
+
 async function fetchOrders(limit = 50, status = null) {
   let url = `/parlay/sp/orders/?limit=${limit}`;
   if (status) url += `&status=${status}`;
@@ -265,6 +270,7 @@ module.exports = {
   registerWebSocket,
   submitOffer,
   confirmOrder,
+  fetchBalance,
   fetchOrders,
   parseMarketSelections,
 };

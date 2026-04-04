@@ -729,6 +729,12 @@
         fetchJSON('/market-intel'),
       ]);
 
+      // Fetch balance separately (don't block main refresh)
+      fetchJSON('/balance').then(b => {
+        window._pxBalance = b?.balance || null;
+        renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
+      }).catch(() => {});
+
       renderStatus(status);
       renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
       renderPortfolio(orders);
@@ -2506,6 +2512,7 @@
         ${stat('Active', active)}
         ${stat('Portfolio Risk', portStr, portCls)}
         ${stat('To Win', fmtDollar(totalToWin), 'positive')}
+        ${window._pxBalance != null ? stat('Balance', fmtDollar(window._pxBalance.balance || window._pxBalance.available || window._pxBalance)) : ''}
         ${stat('Filled', confirmed)}
       </div>
     </div>`;
