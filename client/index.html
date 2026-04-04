@@ -1561,7 +1561,7 @@
       return expState.sortDir * (va - vb);
     });
 
-    // Build lookup: normalized team name → confirmed orders containing that team
+    // Build lookup: team+eventId composite key → confirmed orders containing that team in that game
     const confirmedOrders = Object.values(orderState.allOrders).filter(o => o.status === 'confirmed');
     const teamParlayMap = {};
     for (const o of confirmedOrders) {
@@ -1569,8 +1569,9 @@
       for (const l of legs) {
         const name = (l.team || l.teamName || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
         if (!name) continue;
-        if (!teamParlayMap[name]) teamParlayMap[name] = [];
-        teamParlayMap[name].push(o);
+        const compositeKey = name + '|' + (l.pxEventId || 'noevent');
+        if (!teamParlayMap[compositeKey]) teamParlayMap[compositeKey] = [];
+        teamParlayMap[compositeKey].push(o);
       }
     }
 
@@ -1606,12 +1607,16 @@
       const pct = maxPerTeam > 0 ? Math.min(100, (t.risk / maxPerTeam) * 100) : 0;
       const barColor = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--amber)' : 'var(--green)';
 
-      const rowKey = 'exp-' + t.key;
+      // Use the composite team|event key for uniqueness (same team in diff games = diff rows)
+      const rowKey = 'exp-' + (t.key || t.teamKey || t.name).replace(/[^a-z0-9]/gi, '');
       const expanded = expandedRows.has(rowKey);
+      const startStr = t.startTime ? new Date(t.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+      const gameStr = t.eventName ? ' <span style="color:var(--text3); font-size:11px;">· ' + escapeHtml(t.eventName) + '</span>' : '';
+      const timeStr = startStr ? ' <span style="color:var(--text3); font-size:11px;">· ' + startStr + '</span>' : '';
 
       html += `
         <tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
-          <td>${t.name}</td>
+          <td>${t.name}${gameStr}${timeStr}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums;">${t.parlays}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums; font-weight:600;">${fmtDollar(t.risk)}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums; color:var(--text2);">${fmtDollar(t.notionalPayout||0).replace(/\.00$/, '')}</td>
@@ -1626,7 +1631,8 @@
         </tr>
       `;
 
-      // Expandable detail: show the parlays driving this exposure
+      // Expandable detail: show the parlays driving this exposure for THIS specific game
+      // t.key is already the composite team|eventId
       const teamParlays = teamParlayMap[t.key] || [];
       let detailHtml = '';
       if (teamParlays.length > 0) {
@@ -1979,7 +1985,7 @@
   function orderStatusDisplay(order) {
     let text = order.status || 'unknown';
     let cls = 'neutral';
-    if (text === 'quoted') cls = 'neutral';
+    if (text === 'quoted') { cls = 'neutral'; text = 'Pending Match'; return { cls, text }; }
     else if (text === 'confirmed') cls = 'positive';
     else if (text === 'lost') { cls = 'neutral'; text = 'Outbid'; return { cls, text }; }
     else if (text === 'rejected') cls = 'negative';
@@ -3637,7 +3643,10 @@
         style="${fSel} width:160px;">
       <select onchange="historyState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); historyRerender()" style="${fSel}">
         <option value="">All statuses</option>
-        ${allStatuses.map(s => `<option value="${s}" ${historyState.statusFilter.includes(s)?'selected':''}>${s==='lost'?'outbid':s==='won'?'won (parlay lost)':s==='lost'?'lost (parlay won)':s}</option>`).join('')}
+        ${allStatuses.map(s => {
+          const label = s==='quoted' ? 'pending match' : s==='lost' ? 'outbid' : s==='won' ? 'won (parlay lost)' : s==='lost' ? 'lost (parlay won)' : s;
+          return `<option value="${s}" ${historyState.statusFilter.includes(s)?'selected':''}>${label}</option>`;
+        }).join('')}
       </select>
       <select onchange="historyState.sportFilter=this.value; historyRerender()" style="${fSel}">
         <option value="">All sports</option>

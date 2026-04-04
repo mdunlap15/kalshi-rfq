@@ -670,7 +670,10 @@ function addExposure(order) {
     const leg = legs[i];
     const eventId = leg.pxEventId;
     const name = leg.team || leg.teamName || 'unknown';
-    const key = normalizeExposureKey(name);
+    const teamKey = normalizeExposureKey(name);
+    // Composite key: team + event so the same team on different games (e.g. back-to-back)
+    // is tracked as separate rows in the Team Exposure table
+    const key = teamKey + '|' + (eventId || 'noevent');
 
     // Product of all OTHER legs' fair probs
     let otherProb = 1;
@@ -701,10 +704,21 @@ function addExposure(order) {
       });
     }
 
-    // Legacy team-level tracking (for dashboard display)
-    if (key) {
+    // Team-level tracking (for dashboard display) — keyed by team+event
+    if (teamKey) {
       if (!exposure[key]) {
-        exposure[key] = { risk: 0, parlays: 0, name, notionalPayout: 0, netExposure: 0 };
+        exposure[key] = {
+          risk: 0,
+          parlays: 0,
+          name,
+          teamKey,
+          eventId: eventId || null,
+          eventName: eventId ? ((leg.awayTeam || '?') + ' @ ' + (leg.homeTeam || '?')) : null,
+          startTime: leg.startTime || null,
+          sport: leg.sport || null,
+          notionalPayout: 0,
+          netExposure: 0,
+        };
       }
       exposure[key].risk += payout * otherProb;
       exposure[key].parlays += 1;
@@ -726,7 +740,8 @@ function removeExposure(order) {
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
     const eventId = leg.pxEventId;
-    const key = normalizeExposureKey(leg.team || leg.teamName || '');
+    const teamKey = normalizeExposureKey(leg.team || leg.teamName || '');
+    const key = teamKey + '|' + (eventId || 'noevent');
 
     // Remove from game exposure
     if (eventId && gameExposure[eventId]) {
@@ -738,8 +753,8 @@ function removeExposure(order) {
       }
     }
 
-    // Remove from team exposure
-    if (key && exposure[key]) {
+    // Remove from team exposure (composite team+event key)
+    if (teamKey && exposure[key]) {
       let otherProb = 1;
       for (let j = 0; j < legs.length; j++) {
         if (j === i) continue;
@@ -893,8 +908,10 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
     const name = leg.team || leg.teamName || leg.lineInfo?.teamName || 'unknown';
-    const key = normalizeExposureKey(name);
-    if (!key) continue;
+    const teamKey = normalizeExposureKey(name);
+    if (!teamKey) continue;
+    const eventId = leg.lineInfo?.pxEventId || leg.pxEventId;
+    const key = teamKey + '|' + (eventId || 'noevent');
 
     let otherProb = 1;
     for (let j = 0; j < legs.length; j++) {
