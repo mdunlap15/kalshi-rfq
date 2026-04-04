@@ -385,10 +385,7 @@
       <div id="paused-badge" style="display:none; color:var(--red); font-size:11px; font-weight:600;">Quoting OFF</div>
     </div>
     <nav class="sidebar-nav">
-      <a class="nav-item active" onclick="switchSection('dashboard', this)">
-        <span class="nav-icon">&#9632;</span> Dashboard
-      </a>
-      <a class="nav-item" onclick="switchSection('orders', this)">
+      <a class="nav-item active" onclick="switchSection('orders', this)">
         <span class="nav-icon">&#9998;</span> Orders
       </a>
       <a class="nav-item" onclick="switchSection('portfolio', this)">
@@ -440,21 +437,9 @@
       </div>
 
       <!-- ===================== SECTION: DASHBOARD ===================== -->
-      <div id="section-dashboard" class="section">
-        <div id="portfolio-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
-
-        <div class="card">
-          <div class="card-header" onclick="toggleCard(this)">
-            <span><span class="toggle-icon collapsed">&#9660;</span>P&L by Sport</span>
-          </div>
-          <div class="card-body collapsed" id="pnl-sport">
-            <div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>
-          </div>
-        </div>
-      </div>
-
       <!-- ===================== SECTION: ORDERS ===================== -->
-      <div id="section-orders" class="section" style="display:none;">
+      <div id="section-orders" class="section">
+        <div id="portfolio-summary" style="margin-bottom:12px;"></div>
         <div class="card">
           <div class="card-header" onclick="toggleCard(this)">
             <span><span class="toggle-icon">&#9660;</span>All Quotes</span>
@@ -2624,6 +2609,7 @@
 
   function renderPnLBySport(pnl) {
     const el = document.getElementById('pnl-sport');
+    if (!el) return;
     if (!pnl || Object.keys(pnl).length === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div>';
       return;
@@ -3479,8 +3465,8 @@
   }
 
   // Tab switching
-  const sectionNames = { dashboard: 'Dashboard', orders: 'Orders', portfolio: 'Portfolio', exposure: 'Exposure', analytics: 'Analytics', intel: 'Market Intel', config: 'Config' };
-  let activeSection = 'dashboard';
+  const sectionNames = { orders: 'Orders', portfolio: 'Portfolio', exposure: 'Exposure', analytics: 'Analytics', intel: 'Market Intel', config: 'Config' };
+  let activeSection = 'orders';
   function switchPositionsTab(tab) {
     const openEl = document.getElementById('positions-table');
     const settledEl = document.getElementById('portfolio-settled');
