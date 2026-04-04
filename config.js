@@ -20,6 +20,8 @@ const config = {
     offerValidSeconds: 120,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
     bankroll: parseFloat(process.env.BANKROLL) || 100000,
+    // Sandbox testing override — when set, ignore live PX balance and use this fixed amount
+    assumedBankroll: parseFloat(process.env.ASSUMED_BANKROLL) || 600000,
     maxDrawdownPct: parseFloat(process.env.MAX_DRAWDOWN_PCT) || 100,
     maxRiskPerParlayPct: parseFloat(process.env.MAX_RISK_PER_PARLAY_PCT) || 5,
     maxExposurePerGamePct: parseFloat(process.env.MAX_EXPOSURE_PER_GAME_PCT) || 10,
@@ -48,9 +50,13 @@ const config = {
 };
 
 /**
- * Get effective bankroll — live PX balance if available, fallback to env var.
+ * Get effective bankroll — assumed override (sandbox testing) takes priority,
+ * then live PX balance, then fallback to env var.
  */
 function getBankroll() {
+  if (config.pricing.assumedBankroll && config.pricing.assumedBankroll > 0) {
+    return config.pricing.assumedBankroll;
+  }
   return config.pricing.liveBankroll || config.pricing.bankroll;
 }
 
