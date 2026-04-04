@@ -467,20 +467,10 @@
       <div id="section-orders" class="section" style="display:none;">
         <div class="card">
           <div class="card-header" onclick="toggleCard(this)">
-            <span><span class="toggle-icon collapsed">&#9660;</span>Recent Orders</span>
-            <span id="order-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-          </div>
-          <div class="card-body collapsed" style="padding: 0;">
-            <div id="orders-table"><div class="empty-state"><div class="icon">-</div><div>No orders yet. Waiting for RFQs...</div></div></div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-header" onclick="toggleCard(this)">
-            <span><span class="toggle-icon collapsed">&#9660;</span>All Quotes</span>
+            <span><span class="toggle-icon">&#9660;</span>All Quotes</span>
             <span id="history-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
-          <div class="card-body collapsed" style="padding: 0;">
+          <div class="card-body" style="padding: 0;">
             <div id="history-table"><div class="empty-state"><div class="icon">-</div><div>No historical parlays yet</div></div></div>
           </div>
         </div>
@@ -1694,8 +1684,8 @@
       .sort((a, b) => (b.quotedAt || '').localeCompare(a.quotedAt || ''))
       .slice(0, 100);
 
-    document.getElementById('order-count').textContent = allOrders.length > 0 ?
-      `${allOrders.length} total` : '';
+    const orderCountEl = document.getElementById('order-count');
+    if (orderCountEl) orderCountEl.textContent = allOrders.length > 0 ? `${allOrders.length} total` : '';
 
     if (allOrders.length === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No orders yet. Waiting for RFQs...</div></div>';
@@ -3186,6 +3176,10 @@
     sortCol: 'time', sortDir: -1,
     search: '',
     statusFilter: [],
+    sportFilter: '',
+    legsFilter: '',
+    oddsMinFilter: '',
+    oddsMaxFilter: '',
     pageSize: 20,
     showAll: false,
   };
@@ -3220,6 +3214,9 @@
       return s;
     }))];
 
+    // Collect all sports for filter
+    const allSports = [...new Set(allOrders.flatMap(o => (o.legs || o.meta?.legs || []).map(l => l.sport).filter(Boolean)))];
+
     // Filter
     let filtered = allOrders.filter(o => {
       if (historyState.search) {
@@ -3234,6 +3231,22 @@
         if (s.startsWith('settled_')) s = s.replace('settled_', '');
         if (!historyState.statusFilter.includes(s)) return false;
       }
+      if (historyState.sportFilter) {
+        const legs = (o.legs || o.meta?.legs || []);
+        if (!legs.some(l => l.sport === historyState.sportFilter)) return false;
+      }
+      if (historyState.legsFilter) {
+        const n = (o.legs || o.meta?.legs || []).length;
+        if (String(n) !== historyState.legsFilter) return false;
+      }
+      if (historyState.oddsMinFilter) {
+        const odds = o.offeredOdds || 0;
+        if (odds < Number(historyState.oddsMinFilter)) return false;
+      }
+      if (historyState.oddsMaxFilter) {
+        const odds = o.offeredOdds || 0;
+        if (odds > Number(historyState.oddsMaxFilter)) return false;
+      }
       return true;
     });
 
@@ -3247,7 +3260,10 @@
         case 'fair': va = a.fairParlayProb || 0; vb = b.fairParlayProb || 0; break;
         case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
-        case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'risk':
+          va = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : 0;
+          vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : 0; break;
+        case 'towin': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
         case 'status': va = a.status || ''; vb = b.status || ''; break;
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
         default: va = 0; vb = 0;
@@ -3263,20 +3279,33 @@
     const hSortArrow = (col) => historyState.sortCol === col ? (historyState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
     const hSortClick = (col) => `onclick="event.stopPropagation(); historyState.sortCol=historyState.sortCol==='${col}'?historyState.sortCol:('${col}'); if(historyState.sortCol==='${col}') historyState.sortDir*=-1; else { historyState.sortCol='${col}'; historyState.sortDir='${col}'==='time'?-1:1; } historyRerender();" style="cursor:pointer;"`;
 
-    let html = `<div style="padding: 8px 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--border);">
+    const fSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
+    const fInp = fSel + ' width:70px;';
+    let html = `<div style="padding: 8px 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--border);">
       <input type="text" id="history-search" placeholder="Search team or ID..." value="${historyState.search}"
         oninput="historyState.search=this.value; historyRerender()"
-        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">
-      <select onchange="historyState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); historyRerender()"
-        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">
+        style="${fSel} width:160px;">
+      <select onchange="historyState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); historyRerender()" style="${fSel}">
         <option value="">All statuses</option>
         ${allStatuses.map(s => `<option value="${s}" ${historyState.statusFilter.includes(s)?'selected':''}>${s}</option>`).join('')}
       </select>
+      <select onchange="historyState.sportFilter=this.value; historyRerender()" style="${fSel}">
+        <option value="">All sports</option>
+        ${allSports.map(s => `<option value="${s}" ${historyState.sportFilter===s?'selected':''}>${sportLabel(s)}</option>`).join('')}
+      </select>
+      <select onchange="historyState.legsFilter=this.value; historyRerender()" style="${fSel}">
+        <option value="">All legs</option>
+        ${[2,3,4,5,6,7,8].map(n => `<option value="${n}" ${historyState.legsFilter===String(n)?'selected':''}>${n}-leg</option>`).join('')}
+      </select>
+      <input type="number" placeholder="Min odds" value="${historyState.oddsMinFilter}"
+        onchange="historyState.oddsMinFilter=this.value; historyRerender()" style="${fInp}">
+      <input type="number" placeholder="Max odds" value="${historyState.oddsMaxFilter}"
+        onchange="historyState.oddsMaxFilter=this.value; historyRerender()" style="${fInp}">
       <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${allOrders.length}</span>
     </div>`;
 
-    // Pagination — show pageSize rows unless showAll or searching/filtering
-    const isFiltering = historyState.search || historyState.statusFilter.length > 0;
+    // Pagination
+    const isFiltering = historyState.search || historyState.statusFilter.length > 0 || historyState.sportFilter || historyState.legsFilter || historyState.oddsMinFilter || historyState.oddsMaxFilter;
     const displayLimit = (historyState.showAll || isFiltering) ? filtered.length : historyState.pageSize;
     const displayed = filtered.slice(0, displayLimit);
     const hasMore = filtered.length > displayLimit;
@@ -3289,7 +3318,9 @@
         <th ${hSortClick('fair')}>Fair${hSortArrow('fair')}</th>
         <th ${hSortClick('pinnacle')}>Pinnacle${hSortArrow('pinnacle')}</th>
         <th ${hSortClick('odds')}>Offered${hSortArrow('odds')}</th>
-        <th ${hSortClick('stake')}>My Risk${hSortArrow('stake')}</th>
+        <th>Winner</th>
+        <th ${hSortClick('risk')} style="text-align:right">My Risk${hSortArrow('risk')}</th>
+        <th ${hSortClick('towin')} style="text-align:right">To Win${hSortArrow('towin')}</th>
         <th ${hSortClick('status')}>Status${hSortArrow('status')}</th>
         <th ${hSortClick('pnl')} style="text-align:right">P&L${hSortArrow('pnl')}</th>
       </tr>`;
@@ -3303,7 +3334,10 @@
       const pinParlay = order.meta?.pinnacleParlay;
       const pinAm = pinParlay != null ? (pinParlay >= 0 ? '+' : '') + pinParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
-      const stake = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
+      const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
+      const toWin = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
+      const riskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
+      const myRisk = riskVal != null ? fmtDollar(riskVal) : '-';
 
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
@@ -3322,12 +3356,14 @@
         <td>${fairAm}</td>
         <td style="color:var(--purple);">${pinAm}</td>
         <td style="font-weight:600;">${offeredAm}</td>
-        <td>${stake}</td>
+        <td style="color:${order.status === 'lost' ? 'var(--amber)' : 'var(--text3)'};">${winnerOdds}</td>
+        <td style="text-align:right">${myRisk}</td>
+        <td style="text-align:right; color:var(--green);">${toWin}</td>
         <td><span class="${statusClass}">${statusText}</span></td>
         <td style="text-align:right">${pnlHtml}</td>
       </tr>
       <tr id="${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-        <td colspan="9" style="padding: 12px 16px;">
+        <td colspan="11" style="padding: 12px 16px;">
           ${buildLegTable(legs, { showStatus: true, pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 })}
           <div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ${order.parlayId || '-'}</div>
         </td>
