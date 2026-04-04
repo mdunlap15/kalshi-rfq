@@ -199,9 +199,10 @@ function recordSettlement(orderUuid, result, payout) {
     //   'lost' = SP lost (bettor's parlay won) → we pay out the payout
     //
     // confirmedStake = bettor's wager (what they risked)
-    // confirmedOdds = American odds (from SP perspective)
-    // Our payout = americanOddsToProfit(odds, stake) = what we pay if bettor wins
-    const ourPayout = americanOddsToProfit(order.confirmedOdds, order.confirmedStake);
+    // confirmedOdds = negative American odds (SP perspective), negate for bettor's odds
+    // Our payout = bettor's profit if they win
+    const bettorOdds = -order.confirmedOdds;
+    const ourPayout = americanOddsToProfit(bettorOdds, order.confirmedStake);
 
     if (result === 'won') {
       // SP won — bettor's parlay lost, we keep their stake
@@ -481,7 +482,10 @@ function getTotalPortfolioRisk() {
   for (const order of Object.values(orders)) {
     if (order.status !== 'confirmed') continue;
     if (order.confirmedStake && order.confirmedOdds) {
-      total += americanOddsToProfit(order.confirmedOdds, order.confirmedStake);
+      // Our risk = bettor's profit if they win
+      // confirmedOdds is negative (SP side), negate to get bettor's positive odds
+      const bettorOdds = -order.confirmedOdds;
+      total += americanOddsToProfit(bettorOdds, order.confirmedStake);
     }
   }
   return total;
@@ -822,9 +826,9 @@ async function loadFromDb() {
     if (o.status?.startsWith('settled_')) {
       stats.totalSettlements++;
       // Recalculate P&L on load to fix any prior bugs
-      // confirmedStake = bettor's wager, ourPayout = what we pay if they win
+      // confirmedStake = bettor's wager, negate odds for bettor's perspective
       const settleResult = o.status.replace('settled_', '');
-      const ourPay = americanOddsToProfit(o.confirmedOdds, o.confirmedStake);
+      const ourPay = americanOddsToProfit(-o.confirmedOdds, o.confirmedStake);
       if (settleResult === 'won') {
         o.pnl = o.confirmedStake || 0; // we keep bettor's stake
       } else if (settleResult === 'lost') {

@@ -394,10 +394,11 @@ async function handleConfirm(data) {
     }
 
     // Check stake/risk limits before accepting
-    // confirmedStake = bettor's wager, our risk = payout if they win
-    const absOdds = Math.abs(confirmedOdds || 0);
-    const ourRisk = absOdds >= 100
-      ? (confirmedOdds >= 100 ? confirmedStake * absOdds / 100 : confirmedStake * 100 / absOdds)
+    // confirmedStake = bettor's wager, confirmedOdds = negative (SP side)
+    // Our risk = bettor's profit = stake × |odds| / 100 (using bettor's positive odds)
+    const bettorOdds = Math.abs(confirmedOdds || 0);
+    const ourRisk = bettorOdds >= 100
+      ? confirmedStake * bettorOdds / 100
       : confirmedStake;
     const maxRisk = config.pricing.maxRiskPerParlay;
     if (maxRisk > 0 && ourRisk > maxRisk) {
