@@ -189,13 +189,7 @@
     }
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: var(--surface2); }
-    /* Center-align numeric columns (overrides inline text-align:right) */
-    th[style*="text-align:right"], td[style*="text-align:right"],
-    th[style*="text-align: right"], td[style*="text-align: right"],
-    th[style*="text-align:center"], td[style*="text-align:center"],
-    th[style*="text-align: center"], td[style*="text-align: center"] {
-      text-align: center !important;
-    }
+    /* No blanket alignment override — use inline styles consistently */
 
     /* Line pills */
     .sport-pill {
