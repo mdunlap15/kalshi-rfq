@@ -422,7 +422,7 @@
         <span class="stat-item"><span class="stat-label">Confirmed:</span> <span class="stat-val" id="stat-confirmed">0</span></span>
         <span class="stat-item"><span class="stat-label">Settled:</span> <span class="stat-val" id="stat-settled">0</span></span>
         <span class="stat-item"><span class="stat-label">P&L:</span> <span class="stat-val" id="stat-pnl">$0.00</span></span>
-        <span class="stat-item"><span class="stat-label">Win Rate:</span> <span class="stat-val" id="stat-winrate">-</span></span>
+        <span class="stat-item" title="Percentage of settled parlays where we won (bettor's parlay lost)"><span class="stat-label">Settled Win Rate:</span> <span class="stat-val" id="stat-winrate">-</span></span>
         <span class="stat-item">
           <span id="countdown-display" style="font-size:11px; color:var(--text3);">-</span>
           <div class="refresh-indicator" id="refresh-indicator" style="display:none;"><div class="spinner"></div></div>
@@ -904,17 +904,18 @@
       const parts = [];
       if (s.totalMatched) parts.push(`${s.totalMatched} matched`);
       if (s.weQuoted) parts.push(`${s.weQuoted} quoted`);
-      if (s.weWon) parts.push(`${s.weWon} won`);
+      if (s.weWon) parts.push(`${s.weWon} matched`);
       sumEl.textContent = parts.join(' · ');
     }
 
-    // Stats bar
-    let html = `<div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:16px; font-size:13px;">
+    // Stats bar — these are QUOTE-level outcomes (did we win the RFQ auction?)
+    let html = `<div style="margin-bottom:6px; font-size:11px; color:var(--text3); font-style:italic;">Quote auction outcomes (whether our offer was accepted)</div>
+    <div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:16px; font-size:13px;">
       <span><span style="color:var(--text3)">Matched (all SPs):</span> <strong>${s.totalMatched || 0}</strong></span>
-      <span><span style="color:var(--text3)">We quoted:</span> <strong>${s.weQuoted || 0}</strong> (${intel.coverageRate || '-'})</span>
-      <span><span style="color:var(--text3)">Won:</span> <strong class="positive">${s.weWon || 0}</strong></span>
-      <span><span style="color:var(--text3)">Lost:</span> <strong class="negative">${s.weLost || 0}</strong></span>
-      <span><span style="color:var(--text3)">Missed:</span> <strong>${s.missedNoQuote || 0}</strong></span>
+      <span><span style="color:var(--text3)">We Quoted:</span> <strong>${s.weQuoted || 0}</strong> (${intel.coverageRate || '-'})</span>
+      <span><span style="color:var(--text3)" title="Our quote was accepted by the bettor">Matched by us:</span> <strong class="positive">${s.weWon || 0}</strong></span>
+      <span><span style="color:var(--text3)" title="Another SP's quote was accepted instead of ours">Outbid:</span> <strong class="negative">${s.weLost || 0}</strong></span>
+      <span><span style="color:var(--text3)" title="We didn't submit a quote for this RFQ">No Quote:</span> <strong>${s.missedNoQuote || 0}</strong></span>
     </div>`;
 
     // Helper for collapsible sub-sections with persistent state
@@ -1066,10 +1067,10 @@
           style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">
         <select onchange="window._intelResultFilter=this.value; renderMarketIntel(window._lastIntelData||{})"
           style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">
-          <option value="">All results</option>
-          <option value="won" ${window._intelResultFilter==='won'?'selected':''}>Won</option>
-          <option value="lost" ${window._intelResultFilter==='lost'?'selected':''}>Lost</option>
-          <option value="missed" ${window._intelResultFilter==='missed'?'selected':''}>No quote</option>
+          <option value="">All outcomes</option>
+          <option value="won" ${window._intelResultFilter==='won'?'selected':''}>Matched by us</option>
+          <option value="lost" ${window._intelResultFilter==='lost'?'selected':''}>Outbid</option>
+          <option value="missed" ${window._intelResultFilter==='missed'?'selected':''}>No Quote</option>
         </select>
         <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filteredMatched.length} of ${matched.length}</span>
       </div>`;
@@ -1082,7 +1083,7 @@
           <th style="text-align:right">My Risk</th>
           <th style="text-align:right">To Win</th>
           <th>Our Price</th>
-          <th>Result</th>
+          <th title="Quote auction outcome">Quote Outcome</th>
         </tr>`;
 
       const matchedPage = window._intelShowAll ? filteredMatched : filteredMatched.slice(0, 20);
@@ -1099,9 +1100,9 @@
         const ourPrice = m.ourAmericanOdds || '-';
 
         let resultClass, resultText;
-        if (m.outcome === 'won') { resultClass = 'positive'; resultText = 'Won'; }
-        else if (m.outcome === 'lost') { resultClass = 'negative'; resultText = 'Lost'; }
-        else { resultClass = 'neutral'; resultText = 'No quote'; }
+        if (m.outcome === 'won') { resultClass = 'positive'; resultText = 'Matched'; }
+        else if (m.outcome === 'lost') { resultClass = 'negative'; resultText = 'Outbid'; }
+        else { resultClass = 'neutral'; resultText = 'No Quote'; }
 
         const mId = 'mp-' + mi;
         const mpExpanded = expandedRows.has(mId);
@@ -1156,7 +1157,7 @@
     const summary = comp.summary;
 
     if (sumEl) {
-      sumEl.textContent = entries.length > 0 ? `${summary?.wins || 0} won · ${summary?.losses || 0} lost of ${entries.length}` : '';
+      sumEl.textContent = entries.length > 0 ? `${summary?.wins || 0} matched · ${summary?.losses || 0} outbid of ${entries.length}` : '';
     }
 
     if (entries.length === 0) {
@@ -1170,8 +1171,8 @@
     const winRate = entries.length > 0 ? (wins.length / entries.length * 100).toFixed(0) : 0;
 
     const winColor = winRate >= 50 ? 'var(--green)' : winRate >= 25 ? 'var(--amber)' : 'var(--red)';
-    html += `<div style="font-size:20px; font-weight:700; color:${winColor}; margin-bottom:4px;">${winRate}% win rate</div>`;
-    html += `<div style="color:var(--text2); margin-bottom:16px;">Won <strong class="positive">${wins.length}</strong> of <strong>${entries.length}</strong> quoted parlays that got matched. Lost <strong class="negative">${losses.length}</strong>.</div>`;
+    html += `<div style="font-size:20px; font-weight:700; color:${winColor}; margin-bottom:4px;">${winRate}% quote match rate</div>`;
+    html += `<div style="color:var(--text2); margin-bottom:16px;">Our quote was accepted on <strong class="positive">${wins.length}</strong> of <strong>${entries.length}</strong> quoted parlays that got matched by any SP. Outbid on <strong class="negative">${losses.length}</strong>.</div>`;
 
     // === DETAIL TABLE ===
     const compPageSize = 15;
@@ -1181,7 +1182,7 @@
     const compHasMore = entries.length > compLimit;
 
     html += `<div style="overflow-x:auto;"><table style="font-size:12px;">
-      <tr><th>Time</th><th>Selections</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:right">My Risk</th><th style="text-align:right">To Win</th><th style="text-align:center">Gap</th><th>Result</th><th>Why</th></tr>`;
+      <tr><th>Time</th><th>Selections</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:right">My Risk</th><th style="text-align:right">To Win</th><th style="text-align:center">Gap</th><th title="Quote auction outcome">Quote Outcome</th><th>Why</th></tr>`;
     for (let ci = 0; ci < compDisplayed.length; ci++) {
       const e = entries[ci];
       const time = e.time ? new Date(e.time).toLocaleTimeString() : '-';
@@ -1193,7 +1194,7 @@
       const myRiskFmt = compRiskVal != null ? fmtDollar(compRiskVal) : '-';
       const gapAbs = Math.abs(e.gapProb);
       let why = '';
-      if (e.won) { why = '<span style="color:var(--green);">Won</span>'; }
+      if (e.won) { why = '<span style="color:var(--green);">Matched</span>'; }
       else if (gapAbs <= 0.5) { why = '<span style="color:var(--text3);">Speed</span>'; }
       else if (e.gapProb > 0) { why = '<span style="color:var(--red);">Price</span>'; }
       else { why = '<span style="color:var(--amber);">Unknown</span>'; }
@@ -1216,7 +1217,7 @@
         <td style="text-align:right;">${myRiskFmt}</td>
         <td style="text-align:right; color:var(--green);">${toWinFmt}</td>
         <td style="text-align:center; color:var(--text3);">${(e.gapProb >= 0 ? '+' : '') + e.gapProb.toFixed(1)}pp</td>
-        <td><span class="${e.won ? 'positive' : 'negative'}">${e.won ? 'Won' : 'Lost'}</span></td>
+        <td><span class="${e.won ? 'positive' : 'negative'}">${e.won ? 'Matched' : 'Outbid'}</span></td>
         <td>${why}</td>
       </tr>
       <tr id="${compId}" style="display:${compExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
@@ -1433,7 +1434,7 @@
     }
 
     const sSortArrow = (col) => settledState.sortCol === col ? (settledState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
-    const sSortClick = (col) => 'onclick="event.stopPropagation(); settledState.sortCol=settledState.sortCol===\'' + col + '\'?settledState.sortCol:\'' + col + '\'; if(settledState.sortCol===\'' + col + '\') settledState.sortDir*=-1; else { settledState.sortCol=\'' + col + '\'; settledState.sortDir=-1; } renderSettled({recentOrders:[]});" style="cursor:pointer;"';
+    const sSortClick = (col, align) => 'onclick="event.stopPropagation(); settledState.sortCol=settledState.sortCol===\'' + col + '\'?settledState.sortCol:\'' + col + '\'; if(settledState.sortCol===\'' + col + '\') settledState.sortDir*=-1; else { settledState.sortCol=\'' + col + '\'; settledState.sortDir=-1; } renderSettled({recentOrders:[]});" style="cursor:pointer;' + (align?'text-align:'+align+';':'') + '"';
 
     const sDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
     let html = '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);"><input type="text" id="settled-search" placeholder="Search team..." value="' + settledState.search + '" oninput="settledState.search=this.value; renderSettled({recentOrders:[]})" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">' + dateFilterHtml(settledState, 'function(){renderSettled({recentOrders:[]})}', sDStyle) + '</div>';
@@ -1444,9 +1445,9 @@
     html += '<th>Selections</th>';
     html += '<th>Legs</th>';
     html += '<th ' + sSortClick('odds') + '>Odds' + sSortArrow('odds') + '</th>';
-    html += '<th ' + sSortClick('stake') + ' style="text-align:right">My Risk' + sSortArrow('stake') + '</th>';
-    html += '<th>Result</th>';
-    html += '<th ' + sSortClick('pnl') + ' style="text-align:right">P&L' + sSortArrow('pnl') + '</th>';
+    html += '<th ' + sSortClick('stake', 'right') + '>My Risk' + sSortArrow('stake') + '</th>';
+    html += '<th title="Settlement outcome from our (SP) perspective">SP Result</th>';
+    html += '<th ' + sSortClick('pnl', 'right') + '>P&L' + sSortArrow('pnl') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
 
@@ -1474,6 +1475,7 @@
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
       const result = order.settlementResult || order.status?.replace('settled_', '') || '-';
       const resultCls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+      const resultTitle = result === 'won' ? 'We won — bettor&#39;s parlay lost' : result === 'lost' ? 'We lost — bettor&#39;s parlay won' : result === 'push' ? 'Push — no money changed hands' : result === 'void' ? 'Void — bet cancelled' : '-';
       const resultText = result.charAt(0).toUpperCase() + result.slice(1);
       let pnlHtml = '-';
       if (order.pnl != null) {
@@ -1491,7 +1493,7 @@
       html += '<td>' + legs.length + '</td>';
       html += '<td style="font-weight:600;">' + offeredAm + '</td>';
       html += '<td style="text-align:right">' + stake + '</td>';
-      html += '<td><span class="' + resultCls + '">' + resultText + '</span></td>';
+      html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
       html += '<td style="text-align:right">' + cumulHtml + '</td>';
       html += '</tr>';
@@ -2093,8 +2095,8 @@
     el.innerHTML = '<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">' +
       '<div class="stat-bar" style="gap:6px 18px;">' +
         stat('P&L', pnlStr, pnlCls) +
-        stat('Record', totalSettled > 0 ? wins + 'W-' + losses + 'L' : '-') +
-        stat('Win Rate', winRate != null ? winRate + '%' : '-', wrCls) +
+        stat('Settled Record', totalSettled > 0 ? wins + 'W-' + losses + 'L' : '-') +
+        stat('Settled Win Rate', winRate != null ? winRate + '%' : '-', wrCls) +
         stat('Active', activeOrders.length) +
         stat('Total Risk', fmtDollar(totalRisk)) +
         stat('Total To Win', fmtDollar(totalToWin), 'positive') +
@@ -2255,7 +2257,7 @@
 
     // Edge table
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th>Selections</th><th>Legs</th><th style="text-align:right">Fair %</th><th style="text-align:right">Offered</th><th style="text-align:right">Edge</th><th style="text-align:right">To Win</th><th>Result</th><th style="text-align:right">P&L</th></tr>';
+    html += '<tr><th>Selections</th><th>Legs</th><th style="text-align:right">Fair %</th><th style="text-align:right">Offered</th><th style="text-align:right">Edge</th><th style="text-align:right">To Win</th><th title="Settlement outcome from our (SP) perspective">SP Result</th><th style="text-align:right">P&L</th></tr>';
 
     for (const e of entries.sort((a, b) => Math.abs(b.pnl || 0) - Math.abs(a.pnl || 0)).slice(0, 20)) {
       const offeredStr = e.offeredOdds ? (e.offeredOdds >= 0 ? '+' : '') + e.offeredOdds : '-';
@@ -2271,7 +2273,7 @@
         '<td style="text-align:right; font-weight:600;">' + offeredStr + '</td>' +
         '<td style="text-align:right" class="' + edgeCls + '">' + (e.edge >= 0 ? '+' : '') + e.edge.toFixed(2) + '%</td>' +
         '<td style="text-align:right">$' + (e.stake || 0).toFixed(2) + '</td>' +
-        '<td><span class="' + e.resultCls + '">' + e.result + '</span></td>' +
+        '<td title="' + (e.result === 'Won' ? 'We won — bettor&#39;s parlay lost' : 'We lost — bettor&#39;s parlay won') + '"><span class="' + e.resultCls + '">' + e.result + '</span></td>' +
         '<td style="text-align:right" class="' + pnlCls + '">' + pnlStr + '</td>' +
       '</tr>';
     }
@@ -2464,7 +2466,7 @@
     }
 
     const pSortArrow = (col) => portfolioState.sortCol === col ? (portfolioState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
-    const pSortClick = (col) => 'onclick="event.stopPropagation(); togglePortfolioSort(\'' + col + '\')" style="cursor:pointer;"';
+    const pSortClick = (col, align) => 'onclick="event.stopPropagation(); togglePortfolioSort(\'' + col + '\')" style="cursor:pointer;' + (align?'text-align:'+align+';':'') + '"';
 
     // Get unique sports for filter
     const sports = [...new Set(settled.flatMap(o => (o.legs || o.meta?.legs || []).map(l => l.sport).filter(Boolean)))];
@@ -2476,9 +2478,9 @@
     for (const s of sports) html += '<option value="' + s + '"' + (portfolioState.sportFilter === s ? ' selected' : '') + '>' + sportLabel(s) + '</option>';
     html += '</select>';
     html += '<select onchange="portfolioState.resultFilter=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
-    html += '<option value="">All results</option>';
-    html += '<option value="won"' + (portfolioState.resultFilter === 'won' ? ' selected' : '') + '>Won</option>';
-    html += '<option value="lost"' + (portfolioState.resultFilter === 'lost' ? ' selected' : '') + '>Lost</option>';
+    html += '<option value="">All settlements</option>';
+    html += '<option value="won"' + (portfolioState.resultFilter === 'won' ? ' selected' : '') + '>Won (parlay lost)</option>';
+    html += '<option value="lost"' + (portfolioState.resultFilter === 'lost' ? ' selected' : '') + '>Lost (parlay won)</option>';
     html += '</select>';
     const psDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
     html += dateFilterHtml(portfolioState, 'portfolioRerender', psDStyle);
@@ -2497,9 +2499,9 @@
     html += '<th>Selections</th>';
     html += '<th ' + pSortClick('legs') + '>Legs' + pSortArrow('legs') + '</th>';
     html += '<th ' + pSortClick('odds') + '>Odds' + pSortArrow('odds') + '</th>';
-    html += '<th ' + pSortClick('stake') + ' style="text-align:right">My Risk' + pSortArrow('stake') + '</th>';
-    html += '<th>Result</th>';
-    html += '<th ' + pSortClick('pnl') + ' style="text-align:right">P&L' + pSortArrow('pnl') + '</th>';
+    html += '<th ' + pSortClick('stake', 'right') + '>My Risk' + pSortArrow('stake') + '</th>';
+    html += '<th title="Settlement outcome from our (SP) perspective">SP Result</th>';
+    html += '<th ' + pSortClick('pnl', 'right') + '>P&L' + pSortArrow('pnl') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
 
@@ -2518,6 +2520,7 @@
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
       const result = order.settlementResult || order.status?.replace('settled_', '') || '-';
       const resultCls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
+      const resultTitle = result === 'won' ? 'We won — bettor&#39;s parlay lost' : result === 'lost' ? 'We lost — bettor&#39;s parlay won' : result === 'push' ? 'Push — no money changed hands' : result === 'void' ? 'Void — bet cancelled' : '-';
       const resultText = result.charAt(0).toUpperCase() + result.slice(1);
       let pnlHtml = '-';
       if (order.pnl != null) {
@@ -2535,7 +2538,7 @@
       html += '<td>' + legs.length + '</td>';
       html += '<td style="font-weight:600;">' + oddsStr + '</td>';
       html += '<td style="text-align:right">' + stake + '</td>';
-      html += '<td><span class="' + resultCls + '">' + resultText + '</span></td>';
+      html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
       html += '<td style="text-align:right">' + cumulHtml + '</td>';
       html += '</tr>';
@@ -2607,8 +2610,8 @@
     el.innerHTML = `<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">
       <div class="stat-bar" style="gap:6px 18px;">
         ${stat('P&L', pnlStr, pnlCls)}
-        ${stat('Record', settled > 0 ? wins + 'W-' + losses + 'L' : '-')}
-        ${stat('Win Rate', wrStr, wrCls)}
+        ${stat('Settled Record', settled > 0 ? wins + 'W-' + losses + 'L' : '-')}
+        ${stat('Settled Win Rate', wrStr, wrCls)}
         ${stat('Active', active)}
         ${stat('Portfolio Risk', portStr, portCls)}
         ${stat('To Win', fmtDollar(totalToWin), 'positive')}
@@ -3311,8 +3314,8 @@
     svg += '</svg>';
     svg += '<div style="font-size:11px; color:var(--text3); text-align:center;">' +
       '<span style="color:var(--amber);">&#9644; Running avg</span> &nbsp; ' +
-      '<span style="color:var(--green);">&#9679; Won</span> &nbsp; ' +
-      '<span style="color:var(--red);">&#9679; Lost</span> &nbsp; ' +
+      '<span style="color:var(--green);">&#9679; Matched</span> &nbsp; ' +
+      '<span style="color:var(--red);">&#9679; Outbid</span> &nbsp; ' +
       'Above zero = too tight. Below = too generous.</div>';
     el.innerHTML = svg;
   }
@@ -3442,8 +3445,8 @@
     for (const l of legs) {
       const ls = l.settlementStatus || l.settlement_status || l.status || 'pending';
       let lIcon, lColor, lTitle;
-      if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; lTitle = 'Won'; }
-      else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; lTitle = 'Lost'; }
+      if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; lTitle = 'Selection hit (bad for SP — counts toward bettor&#39;s parlay winning)'; }
+      else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; lTitle = 'Selection missed (good for SP — kills bettor&#39;s parlay)'; }
       else if (ls === 'push' || ls === 'void') { lIcon = '&#8212;'; lColor = 'var(--amber)'; lTitle = ls.charAt(0).toUpperCase() + ls.slice(1); }
       else { lIcon = '&#9679;'; lColor = 'var(--text3)'; lTitle = 'Pending'; }
 
