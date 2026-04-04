@@ -3088,9 +3088,18 @@
       h += '<tr>';
       if (showStatus) h += '<td style="padding:' + pad + '; color:' + lColor + '; font-size:14px; text-align:center; width:40px;" title="' + lTitle + '">' + lIcon + '</td>';
       if (showSport) h += '<td style="padding:' + pad + ';">' + sportPill(l.sport || 'unknown') + '</td>';
-      h += '<td style="padding:' + pad + ';">' + (l.team || l.teamName || '?') + '</td>';
-      h += '<td style="padding:' + pad + ';"><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>';
-      h += '<td style="padding:' + pad + '; color:var(--text2);">' + (l.line != null ? l.line : (l.selection || '-')) + '</td>';
+      // Build team name — include line number for spreads/totals
+      const mkt = l.market || l.marketType || '';
+      let teamLabel = l.team || l.teamName || '?';
+      if ((mkt === 'spread' || mkt === 'total') && l.line != null) {
+        teamLabel += ' ' + (l.line >= 0 ? '+' : '') + l.line;
+      }
+      // Line column: show number for spreads/totals, dash for moneylines
+      const lineDisplay = (mkt === 'spread' || mkt === 'total') && l.line != null ? l.line : '-';
+
+      h += '<td style="padding:' + pad + ';">' + teamLabel + '</td>';
+      h += '<td style="padding:' + pad + ';"><span class="market-pill">' + (mkt || '-') + '</span></td>';
+      h += '<td style="padding:' + pad + '; color:var(--text2);">' + lineDisplay + '</td>';
       h += '<td style="padding:' + pad + '; white-space:nowrap; font-size:11px; color:var(--text3);">' + eventTime + '</td>';
       if (showOdds) {
         h += '<td style="padding:' + pad + '; text-align:right; color:var(--purple);">' + pinOdds + '</td>';
