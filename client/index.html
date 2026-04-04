@@ -497,28 +497,33 @@
 
         <div class="grid-2">
           <div class="card">
-            <div class="card-header"><span>P&L by Sport</span></div>
-            <div class="card-body" id="portfolio-by-sport"><div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div></div>
+            <div class="card-header" onclick="toggleCard(this)">
+              <span><span class="toggle-icon collapsed">&#9660;</span>P&L by Sport</span>
+            </div>
+            <div class="card-body collapsed" id="portfolio-by-sport"><div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div></div>
           </div>
           <div class="card">
-            <div class="card-header"><span>P&L by Leg Count</span></div>
-            <div class="card-body" id="portfolio-by-legs"><div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div></div>
+            <div class="card-header" onclick="toggleCard(this)">
+              <span><span class="toggle-icon collapsed">&#9660;</span>P&L by Leg Count</span>
+            </div>
+            <div class="card-body collapsed" id="portfolio-by-legs"><div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div></div>
           </div>
         </div>
 
         <div class="card">
-          <div class="card-header">
-            <span>Edge Analysis</span>
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Edge Analysis</span>
             <span id="edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
-          <div class="card-body" id="portfolio-edge"><div class="empty-state"><div class="icon">-</div><div>Need settled orders to analyze edge</div></div></div>
+          <div class="card-body collapsed" id="portfolio-edge"><div class="empty-state"><div class="icon">-</div><div>Need settled orders to analyze edge</div></div></div>
         </div>
 
         <div class="card">
-          <div class="card-header"><span>Quote Competitiveness</span>
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Quote Competitiveness</span>
             <span id="comp-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
-          <div class="card-body" id="comp-section"><div class="empty-state"><div class="icon">-</div><div>Need quoted & matched parlays to compare</div></div></div>
+          <div class="card-body collapsed" id="comp-section"><div class="empty-state"><div class="icon">-</div><div>Need quoted & matched parlays to compare</div></div></div>
         </div>
       </div>
 
