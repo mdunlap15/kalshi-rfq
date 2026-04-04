@@ -23,7 +23,7 @@ const config = {
     maxDrawdownPct: parseFloat(process.env.MAX_DRAWDOWN_PCT) || 100,
     maxRiskPerParlayPct: parseFloat(process.env.MAX_RISK_PER_PARLAY_PCT) || 5,
     maxExposurePerGamePct: parseFloat(process.env.MAX_EXPOSURE_PER_GAME_PCT) || 10,
-    maxOdds: parseInt(process.env.MAX_ODDS) || 1000,
+    maxOdds: parseInt(process.env.MAX_ODDS) || 1500,
   },
   supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,baseball_mlb,icehockey_nhl,tennis,soccer,soccer_usa_mls,soccer_epl')
     .split(',').map(s => s.trim()),
