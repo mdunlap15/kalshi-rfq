@@ -583,11 +583,23 @@ function getLegsForExposure(order) {
 /**
  * Calculate payout for an order.
  */
+/**
+ * Calculate our payout (My Risk) for an order.
+ * This is what we pay the bettor if their parlay wins.
+ * confirmedStake = bettor's wager, confirmedOdds = negative (SP side)
+ * Our payout = bettor's profit = stake × |odds| / 100
+ */
 function getOrderPayout(order) {
   const stake = order.confirmedStake || 0;
+  const odds = order.confirmedOdds || 0;
+  if (stake && odds) {
+    // Negate SP odds to get bettor's positive odds
+    const bettorOdds = Math.abs(odds);
+    return americanOddsToProfit(bettorOdds, stake);
+  }
+  // Fallback for quoted orders: use meta.decimalOdds
   const decimalOdds = order.meta?.decimalOdds || 0;
   if (stake && decimalOdds > 1) return stake * (decimalOdds - 1);
-  // Fallback: use maxRisk as rough payout estimate
   return order.maxRisk || 0;
 }
 
