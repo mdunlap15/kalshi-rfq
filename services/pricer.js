@@ -118,6 +118,13 @@ async function priceParlay(legs) {
   // PX web UI and matched orders all use American format.
   const americanOdds = decimalToAmerican(decimalOdds);
 
+  // Don't quote on very high odds parlays — even small stakes create huge payouts
+  const maxOdds = config.pricing.maxOdds || 1000;
+  if (americanOdds > maxOdds) {
+    log.debug('Pricing', `Declined: odds +${americanOdds} exceed max +${maxOdds}`);
+    return null;
+  }
+
   // Build estimated_price (per-leg breakdown) — American odds per leg
   const estimatedPrice = pricedLegs.map(leg => ({
     line_id: leg.lineId,
