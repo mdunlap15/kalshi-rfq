@@ -291,6 +291,43 @@ function startStatusServer() {
   });
 
   // Debug: list raw PX orders (to inspect what fields PX returns)
+  // Decline audit: rank unknown events/sports by how often they're declining parlays
+  app.get('/decline-audit', (req, res) => {
+    try {
+      const intel = orderTracker.getMarketIntel(1000);
+      const declines = intel.declines || {};
+      // Group the unknownSports entries by the inferred sport/league
+      const byKey = {};
+      for (const [raw, val] of Object.entries(declines.unknownSports || {})) {
+        const count = typeof val === 'object' ? val.count : val;
+        const lastSeen = typeof val === 'object' ? val.lastSeen : null;
+        const tagMatch = raw.match(/\[([^\]]+)\]/);
+        const tag = tagMatch ? tagMatch[1] : 'unknown';
+        const eventName = raw.split('[')[0].trim();
+        byKey[raw] = { eventName, tag, count, lastSeen };
+      }
+      // Sort by count desc
+      const ranked = Object.values(byKey).sort((a, b) => b.count - a.count);
+      // Aggregate by tag
+      const byTag = {};
+      for (const r of ranked) {
+        if (!byTag[r.tag]) byTag[r.tag] = { count: 0, distinctEvents: 0 };
+        byTag[r.tag].count += r.count;
+        byTag[r.tag].distinctEvents++;
+      }
+      // Aggregate decline reasons
+      res.json({
+        ok: true,
+        totalDeclines: declines.total,
+        byReason: declines.reasons,
+        byTag,
+        topUnknowns: ranked.slice(0, 50),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Debug: list PX sport events with sport_name grouping (diagnose sport name mismatches)
   app.get('/px-events-debug', async (req, res) => {
     try {

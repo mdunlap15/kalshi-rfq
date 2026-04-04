@@ -24,6 +24,21 @@ const ODDS_API_FALLBACK = {
     markets: 'h2h,spreads,totals',
     bookmakers: 'pinnacle,draftkings,fanduel',
   },
+  'americanfootball_nfl': {
+    oddsApiSport: 'americanfootball_nfl',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'americanfootball_ncaaf': {
+    oddsApiSport: 'americanfootball_ncaaf',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'basketball_wnba': {
+    oddsApiSport: 'basketball_wnba',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
   'soccer_usa_mls': {
     oddsApiSport: 'soccer_usa_mls',
     markets: 'h2h,spreads,totals',
@@ -31,6 +46,36 @@ const ODDS_API_FALLBACK = {
   },
   'soccer_epl': {
     oddsApiSport: 'soccer_epl',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'soccer_uefa_champs_league': {
+    oddsApiSport: 'soccer_uefa_champs_league',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'soccer_uefa_europa_league': {
+    oddsApiSport: 'soccer_uefa_europa_league',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'soccer_spain_la_liga': {
+    oddsApiSport: 'soccer_spain_la_liga',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'soccer_italy_serie_a': {
+    oddsApiSport: 'soccer_italy_serie_a',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'soccer_germany_bundesliga': {
+    oddsApiSport: 'soccer_germany_bundesliga',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'soccer_france_ligue_one': {
+    oddsApiSport: 'soccer_france_ligue_one',
     markets: 'h2h,spreads,totals',
     bookmakers: 'pinnacle,draftkings,fanduel',
   },

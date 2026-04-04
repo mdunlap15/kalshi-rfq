@@ -2965,12 +2965,21 @@
     const map = {
       'basketball_nba': 'NBA',
       'basketball_ncaab': 'NCAAB',
+      'basketball_wnba': 'WNBA',
       'baseball_mlb': 'MLB',
       'icehockey_nhl': 'NHL',
       'tennis': 'Tennis',
+      'americanfootball_nfl': 'NFL',
+      'americanfootball_ncaaf': 'NCAAF',
       'soccer': 'Soccer',
       'soccer_usa_mls': 'MLS',
       'soccer_epl': 'EPL',
+      'soccer_uefa_champs_league': 'UCL',
+      'soccer_uefa_europa_league': 'UEL',
+      'soccer_spain_la_liga': 'La Liga',
+      'soccer_italy_serie_a': 'Serie A',
+      'soccer_germany_bundesliga': 'Bundesliga',
+      'soccer_france_ligue_one': 'Ligue 1',
     };
     return map[sport] || sport;
   }
@@ -2979,9 +2988,11 @@
     const label = sportLabel(sport);
     // Map label to CSS class
     const clsMap = {
-      'NBA': 'nba', 'NCAAB': 'ncaab', 'MLB': 'mlb',
+      'NBA': 'nba', 'NCAAB': 'ncaab', 'WNBA': 'nba', 'MLB': 'mlb',
       'NHL': 'nhl', 'Tennis': 'tennis', 'Soccer': 'soccer',
-      'MLS': 'soccer', 'EPL': 'soccer',
+      'NFL': 'nfl', 'NCAAF': 'nfl',
+      'MLS': 'soccer', 'EPL': 'soccer', 'UCL': 'soccer', 'UEL': 'soccer',
+      'La Liga': 'soccer', 'Serie A': 'soccer', 'Bundesliga': 'soccer', 'Ligue 1': 'soccer',
     };
     const cls = clsMap[label] || label.toLowerCase();
     return `<span class="sport-pill ${cls}">${label}</span>`;

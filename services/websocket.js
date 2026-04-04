@@ -281,6 +281,22 @@ async function handleRFQ(data) {
 
     log.info('RFQ', `Received: parlay=${parlayId}, legs=${legs.length}`);
 
+    // Attempt on-demand resolution of any unknown lines where the event IS known
+    // (e.g., alt spreads/totals not pre-registered at startup).
+    const lineManagerEarly = require('./line-manager');
+    const unknownAtStart = legs.filter(l => {
+      const lid = l.line_id || l.lineId || l;
+      return !lineManagerEarly.lookupLine(lid);
+    });
+    if (unknownAtStart.length > 0) {
+      const resolvePromises = unknownAtStart.map(leg => lineManagerEarly.resolveUnknownLine(leg));
+      const resolved = await Promise.all(resolvePromises);
+      const resolvedCount = resolved.filter(Boolean).length;
+      if (resolvedCount > 0) {
+        log.info('RFQ', `On-demand resolved ${resolvedCount}/${unknownAtStart.length} unknown lines for parlay=${parlayId}`);
+      }
+    }
+
     // Quick decline check
     const declineCheck = pricer.shouldDecline(legs);
     if (declineCheck && declineCheck.declined) {

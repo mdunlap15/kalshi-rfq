@@ -372,6 +372,169 @@ function lookupLine(lineId) {
   return lineIndex[lineId] || null;
 }
 
+// Track in-flight resolution attempts to avoid duplicate work / rate limiting
+const inFlightResolutions = new Map(); // lineId -> Promise
+// Cache events we've already fetched markets for to avoid re-fetching
+const resolvedEventMarkets = new Map(); // eventId -> { time, markets }
+const RESOLVED_MARKET_TTL_MS = 60 * 1000; // 60s
+
+/**
+ * On-demand registration: when an RFQ references a line we don't know,
+ * attempt to fetch the event's markets from PX, locate the line, build
+ * its metadata, and register it. Returns the line info or null on failure.
+ *
+ * This enables alt-line quoting without pre-registering every possible
+ * spread/total during startup seeding.
+ */
+async function resolveUnknownLine(rfqLeg) {
+  const lineId = rfqLeg.line_id || rfqLeg.lineId || rfqLeg;
+  if (!lineId) return null;
+  if (lineIndex[lineId]) return lineIndex[lineId]; // already resolved
+
+  // Reuse in-flight resolution
+  if (inFlightResolutions.has(lineId)) {
+    return inFlightResolutions.get(lineId);
+  }
+
+  const eventId = rfqLeg.sport_event_id;
+  if (!eventId) {
+    log.debug('Lines', `Cannot resolve ${lineId}: no sport_event_id in RFQ leg`);
+    return null;
+  }
+
+  const event = eventIndex[eventId];
+  if (!event) {
+    log.debug('Lines', `Cannot resolve ${lineId}: unknown event ${eventId}`);
+    return null;
+  }
+
+  // Determine sport key
+  const possibleSportKeys = Object.entries(config.sportNameMap)
+    .filter(([k, v]) => v === event.sportName)
+    .map(([k]) => k);
+  if (possibleSportKeys.length === 0) return null;
+
+  // Identify home/away teams (reuse same logic as seed)
+  let homeComp = (event.competitors || []).find(c => c.side === 'home');
+  let awayComp = (event.competitors || []).find(c => c.side === 'away');
+  if ((!homeComp || !awayComp) && (event.competitors || []).length >= 2) {
+    homeComp = event.competitors[0];
+    awayComp = event.competitors[1];
+  }
+  if (!homeComp || !awayComp) return null;
+
+  // Try to match teams to odds feed for one of the possible sport keys
+  const oddsApiEvents = oddsFeed.getAllCachedEvents();
+  let matchedHome = null, matchedAway = null, sportKey = possibleSportKeys[0];
+  for (const tryKey of possibleSportKeys) {
+    const uniqueTeams = [...new Set(oddsApiEvents.filter(e => e.sport === tryKey).flatMap(e => [e.homeTeam, e.awayTeam]))];
+    const tryHome = matchTeamName(homeComp.name, uniqueTeams);
+    const tryAway = matchTeamName(awayComp.name, uniqueTeams);
+    if (tryHome && tryAway) {
+      const pxTime = event.scheduled || null;
+      const oddsEvt = oddsFeed.getEventMarkets(tryKey, tryHome, tryAway, pxTime) || oddsFeed.getEventMarkets(tryKey, tryAway, tryHome, pxTime);
+      if (oddsEvt) {
+        matchedHome = tryHome;
+        matchedAway = tryAway;
+        sportKey = tryKey;
+        break;
+      }
+    }
+  }
+  if (!matchedHome || !matchedAway) {
+    log.debug('Lines', `Cannot resolve ${lineId}: no odds feed match for ${event.name}`);
+    return null;
+  }
+
+  const promise = (async () => {
+    try {
+      // Fetch markets for this event (cached briefly to avoid re-fetching on chains of RFQs)
+      const now = Date.now();
+      let cached = resolvedEventMarkets.get(eventId);
+      let markets;
+      if (cached && now - cached.time < RESOLVED_MARKET_TTL_MS) {
+        markets = cached.markets;
+      } else {
+        markets = await px.fetchMarkets(eventId);
+        resolvedEventMarkets.set(eventId, { time: now, markets });
+      }
+
+      // Find the line in the markets
+      let foundInfo = null;
+      for (const market of markets || []) {
+        if (!['moneyline', 'spread', 'total'].includes(market.type)) continue;
+        const parsed = px.parseMarketSelections(market);
+        for (const sel of parsed) {
+          if (sel.lineId !== lineId) continue;
+          // Determine oddsApiSelection
+          let oddsApiSelection = null;
+          const oddsApiMarket = MARKET_TYPE_MAP[sel.marketType];
+          if (sel.marketType === 'moneyline') {
+            if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
+            else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
+          } else if (sel.marketType === 'spread') {
+            if (matchTeamName(sel.teamName, [matchedHome]) ||
+                sel.teamName.toLowerCase().includes(normalizeTeamName(matchedHome).split(' ').pop())) {
+              oddsApiSelection = 'home';
+            } else {
+              oddsApiSelection = 'away';
+            }
+          } else if (sel.marketType === 'total') {
+            oddsApiSelection = sel.selection;
+          }
+          if (!oddsApiSelection || !oddsApiMarket) continue;
+
+          const pxTime = event.scheduled || null;
+          const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxTime);
+          const startTime = oddsEvt?.commenceTime || event.scheduled || null;
+
+          foundInfo = {
+            sport: sportKey,
+            pxEventId: eventId,
+            pxEventName: event.name,
+            marketType: sel.marketType,
+            selection: oddsApiSelection,
+            teamName: sel.teamName,
+            line: sel.line,
+            homeTeam: matchedHome,
+            awayTeam: matchedAway,
+            oddsApiSport: sportKey,
+            oddsApiMarket,
+            oddsApiSelection,
+            competitorId: sel.competitorId,
+            startTime,
+            onDemand: true,
+          };
+          break;
+        }
+        if (foundInfo) break;
+      }
+
+      if (!foundInfo) {
+        log.debug('Lines', `Could not locate line ${lineId} in event ${eventId} markets`);
+        return null;
+      }
+
+      // Add to index locally
+      lineIndex[lineId] = foundInfo;
+      log.info('Lines', `On-demand registered ${sportKey}/${foundInfo.marketType} line for ${foundInfo.teamName} ${foundInfo.line != null ? foundInfo.line : ''} (${event.name})`);
+
+      // Fire-and-forget PX registration — the RFQ we're responding to already
+      // has the line_id, so we don't need to wait for PX to acknowledge
+      px.registerSupportedLines([lineId]).catch(err => {
+        log.warn('Lines', `PX registration of ${lineId} failed: ${err.message}`);
+      });
+
+      return foundInfo;
+    } finally {
+      inFlightResolutions.delete(lineId);
+    }
+  })();
+
+  inFlightResolutions.set(lineId, promise);
+  return promise;
+}
+
 function getRegisteredLineIds() {
   return Object.keys(lineIndex);
 }
@@ -432,6 +595,7 @@ module.exports = {
   seedAllLines,
   refreshLines,
   lookupLine,
+  resolveUnknownLine,
   getRegisteredLineIds,
   getStats,
   getLineCount,
