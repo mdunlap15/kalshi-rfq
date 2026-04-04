@@ -1459,7 +1459,8 @@
       const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
-      const stake = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
+      const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
+      const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
       const result = order.settlementResult || order.status?.replace('settled_', '') || '-';
       const resultCls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
       const resultText = result.charAt(0).toUpperCase() + result.slice(1);
@@ -2483,7 +2484,8 @@
       const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 45 ? teams.substring(0, 42) + '...' : teams;
       const oddsStr = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
-      const stake = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
+      const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
+      const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
       const result = order.settlementResult || order.status?.replace('settled_', '') || '-';
       const resultCls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
       const resultText = result.charAt(0).toUpperCase() + result.slice(1);
