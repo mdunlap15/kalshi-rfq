@@ -941,7 +941,7 @@
     if (Object.keys(bySport).length > 0) {
       html += subSection('intel-by-sport', 'Matched Parlays by Sport', Object.keys(bySport).length + ' sports', false);
       html += `<div style="overflow-x:auto;"><table style="font-size:12px;">
-        <tr><th>Sport</th><th style="text-align:right">Parlays</th><th style="text-align:right">We Quoted</th><th style="text-align:right">Missed</th><th style="text-align:right">Avg Stake</th></tr>`;
+        <tr><th>Sport</th><th style="text-align:right">Parlays</th><th style="text-align:right">We Quoted</th><th style="text-align:right">Missed</th><th style="text-align:right">Avg To Win</th></tr>`;
       for (const [sport, info] of Object.entries(bySport).sort((a,b) => b[1].count - a[1].count)) {
         html += `<tr>
           <td>${sportPill(sport)}</td>
@@ -1083,7 +1083,8 @@
           <th>Summary</th>
           <th>Legs</th>
           <th>Winning Price</th>
-          <th>Stake</th>
+          <th style="text-align:right">My Risk</th>
+          <th style="text-align:right">To Win</th>
           <th>Our Price</th>
           <th>Result</th>
         </tr>`;
@@ -1094,8 +1095,11 @@
         const time = m.matchedAt ? new Date(m.matchedAt).toLocaleTimeString() : '-';
         const knownLegs = (m.legs || []).filter(l => l.team !== 'Unknown');
         const summary = knownLegs.slice(0, 2).map(l => l.team).join(', ') + (knownLegs.length > 2 ? ` +${knownLegs.length - 2}` : '') || '-';
-        const winPrice = m.matchedAmericanOdds != null ? (m.matchedAmericanOdds >= 0 ? '+' : '') + m.matchedAmericanOdds : '-';
-        const stake = m.matchedStake != null ? fmtDollar(m.matchedStake) : '-';
+        const winOdds = m.matchedAmericanOdds != null ? m.matchedAmericanOdds : null;
+        const winPrice = winOdds != null ? (winOdds >= 0 ? '+' : '') + winOdds : '-';
+        const toWin = m.matchedStake != null ? fmtDollar(m.matchedStake) : '-';
+        const myRiskVal = m.matchedStake != null && winOdds != null ? calcBettorWager(m.matchedStake, winOdds) : null;
+        const myRisk = myRiskVal != null ? fmtDollar(myRiskVal) : '-';
         const ourPrice = m.ourAmericanOdds || '-';
 
         let resultClass, resultText;
@@ -1110,12 +1114,13 @@
           <td style="font-size:12px; max-width:220px; overflow:hidden; text-overflow:ellipsis;" title="${knownLegs.map(l=>l.team).join(', ')}">${summary}</td>
           <td>${m.legCount || '-'}</td>
           <td style="font-weight:600;">${winPrice}</td>
-          <td>${stake}</td>
+          <td style="text-align:right">${myRisk}</td>
+          <td style="text-align:right; color:var(--green);">${toWin}</td>
           <td>${ourPrice}</td>
           <td><span class="${resultClass}">${resultText}</span></td>
         </tr>
         <tr id="${mId}" style="display:${mpExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
-          <td colspan="7" style="padding: 8px 12px;">
+          <td colspan="8" style="padding: 8px 12px;">
             ${buildLegTable(m.legs || [], { showStatus: true, showSport: true, showFairOdds: false, pad: '2px 6px' })}
             <div style="margin-top:4px; font-size:10px; color:var(--text3);">Parlay ID: ${m.parlayId || '-'}</div>
           </td>
@@ -1170,14 +1175,16 @@
     const compHasMore = entries.length > compLimit;
 
     html += `<div style="overflow-x:auto;"><table style="font-size:12px;">
-      <tr><th>Time</th><th>Teams</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:right">Stake</th><th style="text-align:center">Gap</th><th>Result</th><th>Why</th></tr>`;
+      <tr><th>Time</th><th>Teams</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:right">My Risk</th><th style="text-align:right">To Win</th><th style="text-align:center">Gap</th><th>Result</th><th>Why</th></tr>`;
     for (let ci = 0; ci < compDisplayed.length; ci++) {
       const e = entries[ci];
       const time = e.time ? new Date(e.time).toLocaleTimeString() : '-';
       const teamsShort = e.teams.length > 30 ? e.teams.substring(0, 27) + '...' : e.teams;
       const ourFmt = e.ourOdds >= 0 ? '+' + e.ourOdds : '' + e.ourOdds;
       const winFmt = e.winOdds >= 0 ? '+' + e.winOdds : '' + e.winOdds;
-      const stakeFmt = e.stake ? fmtDollar(e.stake) : '-';
+      const toWinFmt = e.stake ? fmtDollar(e.stake) : '-';
+      const compRiskVal = e.stake && e.winOdds ? calcBettorWager(e.stake, e.winOdds) : null;
+      const myRiskFmt = compRiskVal != null ? fmtDollar(compRiskVal) : '-';
       const gapAbs = Math.abs(e.gapProb);
       let why = '';
       if (e.won) { why = '<span style="color:var(--green);">Won</span>'; }
@@ -1197,13 +1204,14 @@
         <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis;" title="${e.teams}">${teamsShort}</td>
         <td style="text-align:right; font-weight:600;">${ourFmt}</td>
         <td style="text-align:right;">${winFmt}</td>
-        <td style="text-align:right;">${stakeFmt}</td>
+        <td style="text-align:right;">${myRiskFmt}</td>
+        <td style="text-align:right; color:var(--green);">${toWinFmt}</td>
         <td style="text-align:center; color:var(--text3);">${(e.gapProb >= 0 ? '+' : '') + e.gapProb.toFixed(1)}pp</td>
         <td><span class="${e.won ? 'positive' : 'negative'}">${e.won ? 'Won' : 'Lost'}</span></td>
         <td>${why}</td>
       </tr>
       <tr id="${compId}" style="display:${compExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
-        <td colspan="8" style="padding: 12px 16px;">
+        <td colspan="9" style="padding: 12px 16px;">
           <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
           ${buildLegTable(enrichedLegs, { showStatus: true, showSport: true, pad: '2px 6px', vig: orderVig })}
           <div style="margin-top: 6px; font-size: 10px; color: var(--text3);">
@@ -1602,7 +1610,7 @@
       let detailHtml = '';
       if (teamParlays.length > 0) {
         detailHtml += '<table style="width:100%; font-size:11px;">';
-        detailHtml += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 8px;">Confirmed</th><th style="text-align:left; padding:2px 8px;">All Legs</th><th style="text-align:right; padding:2px 8px;">Odds</th><th style="text-align:right; padding:2px 8px;">Stake</th><th style="text-align:right; padding:2px 8px;">To Win</th></tr>';
+        detailHtml += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 8px;">Confirmed</th><th style="text-align:left; padding:2px 8px;">All Legs</th><th style="text-align:right; padding:2px 8px;">Odds</th><th style="text-align:right; padding:2px 8px;">My Risk</th><th style="text-align:right; padding:2px 8px;">To Win</th></tr>';
         for (const o of teamParlays) {
           const legs = o.legs || o.meta?.legs || [];
           const allTeams = legs.map(l => l.team || l.teamName || '?').join(', ');
@@ -2153,7 +2161,7 @@
 
     // Edge table
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th>Teams</th><th>Legs</th><th style="text-align:right">Fair %</th><th style="text-align:right">Offered</th><th style="text-align:right">Edge</th><th style="text-align:right">Stake</th><th>Result</th><th style="text-align:right">P&L</th></tr>';
+    html += '<tr><th>Teams</th><th>Legs</th><th style="text-align:right">Fair %</th><th style="text-align:right">Offered</th><th style="text-align:right">Edge</th><th style="text-align:right">To Win</th><th>Result</th><th style="text-align:right">P&L</th></tr>';
 
     for (const e of entries.sort((a, b) => Math.abs(b.pnl || 0) - Math.abs(a.pnl || 0)).slice(0, 20)) {
       const offeredStr = e.offeredOdds ? (e.offeredOdds >= 0 ? '+' : '') + e.offeredOdds : '-';
