@@ -1611,19 +1611,17 @@
           const legs = o.legs || o.meta?.legs || [];
           const allTeams = formatParlaySelections(legs);
           const oddsStr = o.offeredOdds ? (o.offeredOdds >= 0 ? '+' : '') + o.offeredOdds : '-';
-          const stake = o.confirmedStake ? fmtDollar(o.confirmedStake) : '-';
-          let toWin = '-';
-          if (o.confirmedStake && o.offeredOdds) {
-            const dec = o.offeredOdds >= 100 ? 1 + o.offeredOdds / 100 : 1 + 100 / Math.abs(o.offeredOdds);
-            toWin = fmtDollar(o.confirmedStake * (dec - 1));
-          }
+          // confirmedStake = bettor's wager (To Win), calculated payout = My Risk
+          const toWin = o.confirmedStake ? fmtDollar(o.confirmedStake) : '-';
+          const myRiskVal = o.confirmedStake && o.offeredOdds ? calcBettorWager(o.confirmedStake, o.offeredOdds) : null;
+          const myRisk = myRiskVal != null ? fmtDollar(myRiskVal) : '-';
           const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleString() : '-';
           detailHtml += '<tr>';
           detailHtml += '<td style="padding:2px 8px; white-space:nowrap;">' + time + '</td>';
           detailHtml += '<td style="padding:2px 8px; max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + allTeams + '">' + allTeams + '</td>';
           detailHtml += '<td style="padding:2px 8px; text-align:right; font-weight:600;">' + oddsStr + '</td>';
-          detailHtml += '<td style="padding:2px 8px; text-align:right;">' + stake + '</td>';
-          detailHtml += '<td style="padding:2px 8px; text-align:right; font-weight:600;">' + toWin + '</td>';
+          detailHtml += '<td style="padding:2px 8px; text-align:right;">' + myRisk + '</td>';
+          detailHtml += '<td style="padding:2px 8px; text-align:right; font-weight:600; color:var(--green);">' + toWin + '</td>';
           detailHtml += '</tr>';
         }
         detailHtml += '</table>';
