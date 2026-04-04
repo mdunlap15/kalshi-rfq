@@ -1037,7 +1037,7 @@
       for (let ni = 0; ni < Math.min(nearMisses.length, 10); ni++) {
         const nm = nearMisses[ni];
         const time = nm.time ? new Date(nm.time).toLocaleTimeString() : '-';
-        const summary = (nm.legs || []).slice(0, 2).map(l => l.team).join(', ') + ((nm.legs||[]).length > 2 ? ` +${(nm.legs||[]).length - 2}` : '');
+        const summary = formatParlaySelections((nm.legs || []).slice(0, 2)) + ((nm.legs||[]).length > 2 ? ` +${(nm.legs||[]).length - 2}` : '');
         const nmId = 'nm-' + ni;
         const nmExpanded = expandedRows.has(nmId);
         html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${nmId}')">
@@ -1101,7 +1101,7 @@
         const m = matchedPage[mi];
         const time = m.matchedAt ? new Date(m.matchedAt).toLocaleTimeString() : '-';
         const knownLegs = (m.legs || []).filter(l => l.team !== 'Unknown');
-        const summary = knownLegs.slice(0, 2).map(l => l.team).join(', ') + (knownLegs.length > 2 ? ` +${knownLegs.length - 2}` : '') || '-';
+        const summary = formatParlaySelections(knownLegs.slice(0, 2)) + (knownLegs.length > 2 ? ` +${knownLegs.length - 2}` : '') || '-';
         const winOdds = m.matchedAmericanOdds != null ? m.matchedAmericanOdds : null;
         const winPrice = winOdds != null ? (winOdds >= 0 ? '+' : '') + winOdds : '-';
         const toWin = m.matchedStake != null ? fmtDollar(m.matchedStake) : '-';
@@ -1199,16 +1199,19 @@
       else if (e.gapProb > 0) { why = '<span style="color:var(--red);">Price</span>'; }
       else { why = '<span style="color:var(--amber);">Unknown</span>'; }
 
-      // Enrich legs from order data (which has fairProb, pinnacleOdds, startTime)
+      // Enrich legs from order data (which has fairProb, pinnacleOdds, startTime, market, line)
       const orderData = e.parlayId ? orderState.allOrders[e.parlayId] : null;
       const enrichedLegs = orderData ? (orderData.legs || orderData.meta?.legs || e.legs || []) : (e.legs || []);
       const orderVig = orderData?.meta?.vig || orderData?.vig || 0;
+      // Use formatted selections from enriched legs if available
+      const selectionsStr = enrichedLegs.length > 0 ? formatParlaySelections(enrichedLegs) : e.teams;
+      const selectionsShort = selectionsStr.length > 30 ? selectionsStr.substring(0, 27) + '...' : selectionsStr;
 
       const compId = 'comp-' + ci;
       const compExpanded = expandedRows.has(compId);
       html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${compId}')">
         <td style="color:var(--text3);">${time}</td>
-        <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis;" title="${e.teams}">${teamsShort}</td>
+        <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis;" title="${selectionsStr}">${selectionsShort}</td>
         <td style="text-align:right; font-weight:600;">${ourFmt}</td>
         <td style="text-align:right;">${winFmt}</td>
         <td style="text-align:right;">${myRiskFmt}</td>
@@ -1389,7 +1392,9 @@
         let va, vb;
         switch (settledState.sortCol) {
           case 'settled': va = a.settledAt || a.quotedAt || ''; vb = b.settledAt || b.quotedAt || ''; break;
-          case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+          case 'stake':
+          va = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : (a.confirmedStake || 0);
+          vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
           case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
           case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
           default: va = 0; vb = 0;
@@ -1806,7 +1811,9 @@
         case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
         case 'offeredOdds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'legs': va = (a.legs||a.meta?.legs||[]).length; vb = (b.legs||b.meta?.legs||[]).length; break;
-        case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'stake':
+          va = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : (a.confirmedStake || 0);
+          vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
         case 'status': va = a.status || ''; vb = b.status || ''; break;
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
         case 'teams': va = getOrderTeams(a).join(','); vb = getOrderTeams(b).join(','); break;
@@ -2194,7 +2201,7 @@
 
       entries.push({
         parlayId: o.parlayId,
-        teams: (o.legs || o.meta?.legs || []).map(l => l.team || l.teamName || '?').join(', '),
+        teams: formatParlaySelections(o.legs || o.meta?.legs || []),
         legs: (o.legs || o.meta?.legs || []).length,
         fairProb: Math.round(fairProb * 10000) / 100,
         offeredOdds: o.offeredOdds,
@@ -2307,7 +2314,9 @@
         case 'time': va = a.confirmedAt || ''; vb = b.confirmedAt || ''; return popenState.sortDir * va.localeCompare(vb);
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
-        case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'stake':
+          va = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : (a.confirmedStake || 0);
+          vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
         case 'towin':
           const dA = a.offeredOdds >= 100 ? 1 + a.offeredOdds / 100 : 1 + 100 / Math.abs(a.offeredOdds || 1);
           const dB = b.offeredOdds >= 100 ? 1 + b.offeredOdds / 100 : 1 + 100 / Math.abs(b.offeredOdds || 1);
@@ -2420,7 +2429,9 @@
       let va, vb;
       switch (portfolioState.sortCol) {
         case 'settled': va = a.settledAt || ''; vb = b.settledAt || ''; break;
-        case 'stake': va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'stake':
+          va = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : (a.confirmedStake || 0);
+          vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
@@ -2849,6 +2860,13 @@
   /** Format dollar with sign: +$97,397.75 or -$1,234.56 */
   function fmtPnl(n) { return n != null && !isNaN(n) ? (n >= 0 ? '+$' : '-$') + fmt(Math.abs(n)) : '-'; }
 
+  /**
+   * Compute our payout if bettor wins (= My Risk).
+   * @param {number} stake - confirmedStake = bettor's wager
+   * @param {number} odds - American odds (positive from bettor's view)
+   * @returns {number} Our payout = bettor's profit if they win
+   * Example: stake=$81, odds=+1347 → $81 × 1347/100 = $1,092
+   */
   function calcBettorWager(stake, odds) {
     if (!stake || !odds) return 0;
     const absOdds = Math.abs(odds);
@@ -3213,15 +3231,12 @@
     const teamExp = {};
     for (const o of confirmed) {
       const legs = o.legs || o.meta?.legs || [];
-      let toWin = 0;
-      if (o.confirmedStake && o.offeredOdds) {
-        const dec = o.offeredOdds >= 100 ? 1 + o.offeredOdds / 100 : 1 + 100 / Math.abs(o.offeredOdds);
-        toWin = o.confirmedStake * (dec - 1);
-      }
+      // Our payout (My Risk) if bettor wins
+      const ourPayout = o.confirmedStake && o.offeredOdds ? calcBettorWager(o.confirmedStake, o.offeredOdds) : 0;
       for (const l of legs) {
         const name = l.team || l.teamName || '?';
         if (!teamExp[name]) teamExp[name] = { risk: 0, parlays: 0 };
-        teamExp[name].risk += toWin / legs.length; // simple split
+        teamExp[name].risk += ourPayout / legs.length; // simple split
         teamExp[name].parlays++;
       }
     }
