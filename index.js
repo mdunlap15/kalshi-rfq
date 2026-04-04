@@ -4,7 +4,7 @@
 // =============================================================================
 console.log('[BOOT] Process starting, NODE_ENV=' + process.env.NODE_ENV + ', PORT=' + process.env.PORT);
 
-const { config, validate } = require('./config');
+const { config, validate, getBankroll } = require('./config');
 const log = require('./services/logger');
 const px = require('./services/prophetx');
 const oddsFeed = require('./services/odds-feed');
@@ -121,14 +121,36 @@ async function startup() {
     }
   }, refreshMs);
 
-  // Poll PX for settlement updates every 2 minutes
+  // Poll PX for settlement updates and refresh balance
   settlementPollTimer = setInterval(async () => {
     try {
       await orderTracker.pollOrderSettlements(px);
     } catch (err) {
       log.error('Refresh', `Settlement poll failed: ${err.message}`);
     }
+    try {
+      const bal = await px.fetchBalance();
+      const amount = bal?.balance ?? bal?.available ?? (typeof bal === 'number' ? bal : null);
+      if (amount != null && amount > 0) {
+        config.pricing.liveBankroll = amount;
+        log.debug('Balance', `PX balance: $${amount}`);
+      }
+    } catch (err) {
+      log.debug('Balance', `Balance fetch failed: ${err.message}`);
+    }
   }, refreshMs);
+
+  // Initial balance fetch
+  try {
+    const bal = await px.fetchBalance();
+    const amount = bal?.balance ?? bal?.available ?? (typeof bal === 'number' ? bal : null);
+    if (amount != null && amount > 0) {
+      config.pricing.liveBankroll = amount;
+      log.info('Startup', `    ✓ PX balance: $${amount}`);
+    }
+  } catch (err) {
+    log.warn('Startup', `    ⚠ Balance fetch failed: ${err.message}`);
+  }
 
   serviceReady = true;
   log.info('Startup', `=== Service ready! Refreshing every ${config.refreshIntervalMinutes}min ===`);
@@ -195,9 +217,9 @@ function startStatusServer() {
         teams: orderTracker.getExposureSnapshot(),
       },
       portfolio: {
-        bankroll: config.pricing.bankroll,
+        bankroll: getBankroll(),
         maxDrawdownPct: config.pricing.maxDrawdownPct,
-        maxDrawdown: config.pricing.bankroll * config.pricing.maxDrawdownPct / 100,
+        maxDrawdown: getBankroll() * config.pricing.maxDrawdownPct / 100,
         currentRisk: orderTracker.getTotalPortfolioRisk(),
       },
     });

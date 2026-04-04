@@ -1,5 +1,5 @@
 const Pusher = require('pusher-js');
-const { config } = require('../config');
+const { config, getBankroll } = require('../config');
 const log = require('./logger');
 const px = require('./prophetx');
 const pricer = require('./pricer');
@@ -401,7 +401,7 @@ async function handleConfirm(data) {
       ? confirmedStake * bettorOdds / 100
       : confirmedStake;
     // Per-parlay limit: use % of bankroll or fixed amount, whichever is set
-    const bankroll = config.pricing.bankroll;
+    const bankroll = getBankroll();
     const maxRiskPct = config.pricing.maxRiskPerParlayPct;
     const maxRiskFixed = config.pricing.maxRiskPerParlay;
     const maxRiskFromPct = maxRiskPct > 0 ? bankroll * maxRiskPct / 100 : Infinity;
@@ -416,7 +416,7 @@ async function handleConfirm(data) {
     }
 
     // Check portfolio-level drawdown limit
-    const maxDrawdown = config.pricing.bankroll * config.pricing.maxDrawdownPct / 100;
+    const maxDrawdown = getBankroll() * config.pricing.maxDrawdownPct / 100;
     const portfolioCheck = orderTracker.checkPortfolioRisk(ourRisk, maxDrawdown);
     if (!portfolioCheck.allowed) {
       log.warn('Confirm', `Rejecting: portfolio risk $${portfolioCheck.current.toFixed(0)} + $${ourRisk.toFixed(0)} > max drawdown $${maxDrawdown.toFixed(0)}`);

@@ -45,6 +45,13 @@ const config = {
   refreshIntervalMinutes: parseInt(process.env.REFRESH_INTERVAL_MINUTES) || 10,
 };
 
+/**
+ * Get effective bankroll — live PX balance if available, fallback to env var.
+ */
+function getBankroll() {
+  return config.pricing.liveBankroll || config.pricing.bankroll;
+}
+
 // Validate required config
 function validate() {
   const missing = [];
@@ -56,4 +63,4 @@ function validate() {
   }
 }
 
-module.exports = { config, validate };
+module.exports = { config, validate, getBankroll };
