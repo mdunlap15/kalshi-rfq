@@ -25,13 +25,16 @@ function decimalToAmerican(dec) {
  * Returns an offer object if we can price it.
  */
 async function priceParlay(legs) {
+  priceParlay._lastFailure = null; // clear any prior failure
   // Validate leg count
   if (!legs || legs.length === 0) {
     log.debug('Pricing', 'Declined: no legs');
+    priceParlay._lastFailure = { reason: 'empty', detail: null, blockerLeg: null };
     return null;
   }
   if (legs.length > config.pricing.maxLegs) {
     log.debug('Pricing', `Declined: ${legs.length} legs exceeds max ${config.pricing.maxLegs}`);
+    priceParlay._lastFailure = { reason: 'too many legs', detail: `${legs.length} > max ${config.pricing.maxLegs}`, blockerLeg: null };
     return null;
   }
 
@@ -45,21 +48,35 @@ async function priceParlay(legs) {
 
     if (!lineInfo) {
       log.debug('Pricing', `Declined: unknown line_id ${lineId}`);
+      priceParlay._lastFailure = { reason: 'unknown line', detail: null, blockerLeg: null };
       return null;
     }
+
+    const legLabel = `${lineInfo.teamName || '?'} (${lineInfo.marketType || '?'}${lineInfo.line != null ? ' ' + lineInfo.line : ''})`;
+    const legDescriptor = {
+      team: lineInfo.teamName,
+      market: lineInfo.marketType,
+      line: lineInfo.line,
+      sport: lineInfo.sport,
+      homeTeam: lineInfo.homeTeam,
+      awayTeam: lineInfo.awayTeam,
+    };
 
     // Check if event has already started — don't quote with stale pre-game odds
     if (lineInfo.startTime) {
       const startMs = new Date(lineInfo.startTime).getTime();
       if (!isNaN(startMs) && Date.now() > startMs) {
         log.debug('Pricing', `Declined: event already started (${lineInfo.teamName}, started ${lineInfo.startTime})`);
+        priceParlay._lastFailure = { reason: 'event started', detail: `${legLabel} already in progress`, blockerLeg: legDescriptor };
         return null;
       }
     }
 
     // Check if prices are stale for this sport
     if (oddsFeed.isStale(lineInfo.sport)) {
-      log.debug('Pricing', `Declined: stale prices for ${lineInfo.sport} (${Math.round(oddsFeed.getCacheAge(lineInfo.sport))}min old)`);
+      const ageMin = Math.round(oddsFeed.getCacheAge(lineInfo.sport));
+      log.debug('Pricing', `Declined: stale prices for ${lineInfo.sport} (${ageMin}min old)`);
+      priceParlay._lastFailure = { reason: 'stale odds', detail: `${lineInfo.sport} odds ${ageMin}m old`, blockerLeg: legDescriptor };
       return null;
     }
 
@@ -76,6 +93,11 @@ async function priceParlay(legs) {
 
     if (fairProb == null || fairProb <= 0 || fairProb >= 1) {
       log.debug('Pricing', `Declined: no fair value for ${lineInfo.teamName} ${lineInfo.marketType}`);
+      priceParlay._lastFailure = {
+        reason: 'no fair value',
+        detail: `no ${lineInfo.oddsApiMarket || lineInfo.marketType} quote for ${legLabel} in our odds feed`,
+        blockerLeg: legDescriptor,
+      };
       return null;
     }
 
@@ -98,6 +120,11 @@ async function priceParlay(legs) {
   // Sanity check — if fair parlay prob is extremely small, decline
   if (fairParlayProb < 0.001) {
     log.debug('Pricing', `Declined: fair parlay prob too small (${fairParlayProb.toFixed(6)})`);
+    priceParlay._lastFailure = {
+      reason: 'parlay too unlikely',
+      detail: `combined fair prob ${(fairParlayProb * 100).toFixed(3)}% < 0.1% threshold`,
+      blockerLeg: null,
+    };
     return null;
   }
 
@@ -122,6 +149,11 @@ async function priceParlay(legs) {
   const maxOdds = config.pricing.maxOdds || 1000;
   if (americanOdds > maxOdds) {
     log.debug('Pricing', `Declined: odds +${americanOdds} exceed max +${maxOdds}`);
+    priceParlay._lastFailure = {
+      reason: 'odds too high',
+      detail: `offered +${americanOdds} > max +${maxOdds}`,
+      blockerLeg: null,
+    };
     return null;
   }
 
@@ -348,9 +380,14 @@ async function validateForConfirmation(parlayId, originalMeta) {
   return { valid: true, currentPricing };
 }
 
+function getLastPriceFailure() {
+  return priceParlay._lastFailure || null;
+}
+
 module.exports = {
   priceParlay,
   buildOffers,
   shouldDecline,
   validateForConfirmation,
+  getLastPriceFailure,
 };

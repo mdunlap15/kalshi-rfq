@@ -338,7 +338,8 @@ async function handleRFQ(data) {
     // Price the parlay
     const result = await pricer.priceParlay(legs);
     if (!result) {
-      // Near miss — all legs known but couldn't get fair values
+      // Near miss — all legs known but couldn't price. Get the specific blocker.
+      const failure = pricer.getLastPriceFailure() || { reason: 'no fair value', detail: null, blockerLeg: null };
       const lineManager = require('./line-manager');
       const knownLegs = legs.map(l => {
         const info = lineManager.lookupLine(l.line_id || l.lineId || l);
@@ -348,9 +349,25 @@ async function handleRFQ(data) {
         if (info.marketType === 'total' && info.homeTeam && info.awayTeam) {
           team = `${team} (${info.awayTeam} @ ${info.homeTeam})`;
         }
-        return { team, market: info.marketType, sport: info.sport, line: info.line, homeTeam: info.homeTeam, awayTeam: info.awayTeam };
+        // Flag the specific leg that blocked pricing
+        const blocker = failure.blockerLeg;
+        const isBlocker = blocker != null
+          && blocker.team === info.teamName
+          && blocker.market === info.marketType
+          && blocker.line === info.line;
+        return {
+          team, market: info.marketType, sport: info.sport, line: info.line,
+          homeTeam: info.homeTeam, awayTeam: info.awayTeam,
+          isBlocker,
+        };
       }).filter(Boolean);
-      orderTracker.recordDecline('no fair value', { parlayId, knownLegs });
+      // Use the specific failure reason (may be more precise than 'no fair value')
+      const declineReason = failure.reason === 'no fair value' ? 'no fair value' : failure.reason;
+      orderTracker.recordDecline(declineReason, {
+        parlayId,
+        knownLegs,
+        declineDetail: failure.detail,
+      });
       return;
     }
 

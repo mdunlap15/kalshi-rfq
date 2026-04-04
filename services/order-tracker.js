@@ -444,14 +444,17 @@ function recordDecline(reason, detail) {
   }
 
   // Track near-misses (all legs known but couldn't price)
-  if (reason === 'no fair value' && detail) {
+  // Near-miss reasons include: 'no fair value', 'stale odds', 'parlay too unlikely', 'odds too high'
+  const nearMissReasons = new Set(['no fair value', 'stale odds', 'parlay too unlikely', 'odds too high', 'event started']);
+  if (nearMissReasons.has(reason) && detail) {
     declineStats.nearMisses.unshift({
       parlayId: detail.parlayId,
       legs: detail.knownLegs || [],
       time: new Date().toISOString(),
-      reason: 'no fair value for one or more legs',
+      reason,
+      detail: detail.declineDetail || null,
     });
-    if (declineStats.nearMisses.length > 50) declineStats.nearMisses.pop();
+    if (declineStats.nearMisses.length > 100) declineStats.nearMisses.pop();
   }
 }
 

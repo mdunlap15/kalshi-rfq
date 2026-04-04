@@ -1119,23 +1119,37 @@
     // Near misses
     const nearMisses = d.recentNearMisses || [];
     if (nearMisses.length > 0) {
-      html += subSection('intel-near-miss', 'Near Misses (all legs known, no fair value)', d.nearMissCount || nearMisses.length, false);
+      html += subSection('intel-near-miss', 'Near Misses (all legs known, could not price)', d.nearMissCount || nearMisses.length, false);
+      html += `<div style="padding:6px 12px; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border);">All legs were registered, but a specific blocker stopped pricing. Click a row to see which leg caused the miss.</div>`;
       html += `<div style="overflow-x:auto;"><table style="font-size:12px;">
-        <tr><th>Time</th><th>Summary</th><th>Legs</th></tr>`;
+        <tr><th>Time</th><th>Summary</th><th>Legs</th><th>Blocker Reason</th><th>Detail</th></tr>`;
       for (let ni = 0; ni < Math.min(nearMisses.length, 10); ni++) {
         const nm = nearMisses[ni];
         const time = nm.time ? new Date(nm.time).toLocaleTimeString() : '-';
         const summary = formatParlaySelections((nm.legs || []).slice(0, 2)) + ((nm.legs||[]).length > 2 ? ` +${(nm.legs||[]).length - 2}` : '');
         const nmId = 'nm-' + ni;
         const nmExpanded = expandedRows.has(nmId);
+        const nmReason = nm.reason || 'no fair value';
+        const nmDetail = nm.detail || '';
+        // Color by reason type
+        let reasonColor = 'var(--amber)';
+        if (nmReason === 'stale odds') reasonColor = 'var(--amber)';
+        else if (nmReason === 'no fair value') reasonColor = 'var(--red)';
+        else if (nmReason === 'event started') reasonColor = 'var(--text3)';
+        else if (nmReason === 'odds too high' || nmReason === 'parlay too unlikely') reasonColor = 'var(--blue, #3b82f6)';
         html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${nmId}')">
           <td>${time}</td>
-          <td style="max-width:350px; overflow:hidden; text-overflow:ellipsis;">${summary}</td>
+          <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(summary)}">${summary}</td>
           <td>${(nm.legs||[]).length}</td>
+          <td><span style="color:${reasonColor}; font-weight:600;">${escapeHtml(nmReason)}</span></td>
+          <td style="font-size:11px; color:var(--text3); max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(nmDetail)}">${escapeHtml(nmDetail)}</td>
         </tr>
         <tr id="${nmId}" style="display:${nmExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
-          <td colspan="3" style="padding: 8px 12px;">
-            ${buildLegTable(nm.legs || [], { showStatus: false, showSport: true, showFairOdds: false, pad: '2px 6px' })}
+          <td colspan="5" style="padding: 8px 12px;">
+            <div style="font-size:11px; color:var(--text3); margin-bottom:6px;">
+              <strong style="color:${reasonColor};">${escapeHtml(nmReason)}</strong>${nmDetail ? ' &mdash; ' + escapeHtml(nmDetail) : ''}
+            </div>
+            ${buildLegTable(nm.legs || [], { showStatus: false, showSport: true, showFairOdds: false, pad: '2px 6px', highlightBlocker: true })}
           </td>
         </tr>`;
       }
@@ -3548,6 +3562,7 @@
     h += '</tr>';
 
     const highlightUnregistered = opts.highlightUnregistered || false;
+    const highlightBlocker = opts.highlightBlocker || false;
     for (const l of legs) {
       const ls = l.settlementStatus || l.settlement_status || l.status || 'pending';
       let lIcon, lColor, lTitle;
@@ -3564,9 +3579,15 @@
       const myOdds = (l.fairProb && vig) ? decimalToAmerican(1 / (l.fairProb * (1 + vig))) : fairOdds;
 
       // Highlight legs that blocked us from quoting
-      const isBlocker = highlightUnregistered && l.wasUnregistered;
-      const rowStyle = isBlocker ? ' style="background:rgba(245,158,11,0.08);"' : '';
-      const blockerBadge = isBlocker ? ' <span title="This leg was not registered — blocked quoting" style="color:var(--amber); font-size:10px; margin-left:4px;">&#9888; unregistered</span>' : '';
+      const isUnregBlocker = highlightUnregistered && l.wasUnregistered;
+      const isPricingBlocker = highlightBlocker && l.isBlocker;
+      const rowStyle = (isUnregBlocker || isPricingBlocker) ? ' style="background:rgba(245,158,11,0.08);"' : '';
+      let blockerBadge = '';
+      if (isUnregBlocker) {
+        blockerBadge = ' <span title="This leg was not registered — blocked quoting" style="color:var(--amber); font-size:10px; margin-left:4px;">&#9888; unregistered</span>';
+      } else if (isPricingBlocker) {
+        blockerBadge = ' <span title="This leg is why we could not price the parlay" style="color:var(--amber); font-size:10px; margin-left:4px;">&#9888; blocker</span>';
+      }
 
       h += '<tr' + rowStyle + '>';
       if (showStatus) h += '<td style="padding:' + pad + '; color:' + lColor + '; font-size:14px; text-align:center; width:40px;" title="' + lTitle + '">' + lIcon + '</td>';
