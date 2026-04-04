@@ -29,6 +29,10 @@ const declineStats = {
   unknownSports: {}, // { 'Soccer': count, 'unknown': count } — sports from unknown legs
   nearMisses: [], // RFQs where all legs were known but couldn't price (no fair value)
 };
+// Per-parlay decline lookup — lets us explain "No quote" outcomes in matched parlays
+const declinesByParlayId = {}; // { parlayId: { reason, unknownLineIds, unknownDetails, declinedAt } }
+const MAX_DECLINE_ENTRIES = 2000;
+const declineIdOrder = []; // FIFO to cap memory
 
 // ---------------------------------------------------------------------------
 // NET EXPOSURE TRACKING — tracks risk per game, accounting for collected stakes
@@ -261,6 +265,10 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
   const ourQuote = orders[parlayId] || null;
   const weQuoted = !!ourQuote;
 
+  // Lookup decline info for this parlay so we can flag the problematic leg(s)
+  const declineInfo = declinesByParlayId[parlayId] || null;
+  const unknownSet = new Set(declineInfo?.unknownLineIds || []);
+
   // Resolve leg info from line_ids
   const resolvedLegs = (legs || []).map(l => {
     const lineId = l.line_id || l.lineId;
@@ -276,6 +284,8 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
       market: info?.marketType || '-',
       line: info?.line ?? l.line ?? null,
       sport: info?.sport || 'unknown',
+      // Flag legs that blocked us from quoting
+      wasUnregistered: unknownSet.has(lineId) || !info,
     };
   });
 
@@ -314,6 +324,9 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     matchedAmericanOdds: matchedOdds != null ? -matchedOdds : null,
     outcome,
     legCount: resolvedLegs.length,
+    // If we didn't quote, include why (so the dashboard can explain "No quote")
+    declineReason: outcome === 'missed' ? (declineInfo?.reason || 'not seen (service down or pre-startup)') : null,
+    unknownLegDetails: declineInfo?.unknownDetails || [],
   };
 
   matchedParlays.unshift(entry); // newest first
@@ -345,6 +358,21 @@ function recordDecline(reason, detail) {
   declineStats.total++;
   const bucket = reason || 'unknown';
   declineStats.reasons[bucket] = (declineStats.reasons[bucket] || 0) + 1;
+
+  // Index by parlayId so matched-parlay "No quote" rows can explain which leg caused the miss
+  if (detail?.parlayId) {
+    declinesByParlayId[detail.parlayId] = {
+      reason: bucket,
+      unknownLineIds: detail.unknownLegs || [],
+      unknownDetails: detail.unknownSports || [],
+      declinedAt: new Date().toISOString(),
+    };
+    declineIdOrder.push(detail.parlayId);
+    while (declineIdOrder.length > MAX_DECLINE_ENTRIES) {
+      const old = declineIdOrder.shift();
+      delete declinesByParlayId[old];
+    }
+  }
 
   // Track sports from unknown legs
   if (detail?.unknownSports) {
