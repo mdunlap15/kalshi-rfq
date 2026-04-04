@@ -154,6 +154,7 @@ async function priceParlay(legs) {
           homeTeam: l.lineInfo.homeTeam,
           awayTeam: l.lineInfo.awayTeam,
           startTime: l.lineInfo.startTime || null,
+          pxEventId: l.lineInfo.pxEventId || null,
         };
       }),
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
@@ -284,6 +285,14 @@ function shouldDecline(legs) {
   );
   if (!exposureCheck.allowed) {
     log.info('Pricing', `Exposure limit: ${exposureCheck.reason}`);
+    return true;
+  }
+
+  // Check game-level exposure limit
+  const maxPerGame = getBankroll() * config.pricing.maxExposurePerGamePct / 100;
+  const gameCheck = orderTracker.checkGameExposure(resolvedLegs, estPayout, maxPerGame);
+  if (!gameCheck.allowed) {
+    log.info('Pricing', `Game exposure limit: ${gameCheck.reason}`);
     return true;
   }
 

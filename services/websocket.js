@@ -416,6 +416,21 @@ async function handleConfirm(data) {
     }
 
     // Check portfolio-level drawdown limit
+    // Check game-level exposure
+    const maxPerGame = getBankroll() * config.pricing.maxExposurePerGamePct / 100;
+    const origLegs = originalOrder.legs || originalOrder.meta?.legs || [];
+    const gameCheck = orderTracker.checkGameExposure(
+      origLegs.map(l => ({ ...l, lineInfo: l })), ourRisk, maxPerGame
+    );
+    if (!gameCheck.allowed) {
+      log.warn('Confirm', `Rejecting: ${gameCheck.reason}`);
+      orderTracker.recordRejection(parlayId, gameCheck.reason);
+      if (callbackUrl) {
+        await px.confirmOrder(callbackUrl, orderUuid, 'reject');
+      }
+      return;
+    }
+
     const maxDrawdown = getBankroll() * config.pricing.maxDrawdownPct / 100;
     const portfolioCheck = orderTracker.checkPortfolioRisk(ourRisk, maxDrawdown);
     if (!portfolioCheck.allowed) {

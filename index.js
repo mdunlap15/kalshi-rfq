@@ -215,6 +215,9 @@ function startStatusServer() {
       exposure: {
         maxPerTeam: config.pricing.maxExposurePerTeam,
         teams: orderTracker.getExposureSnapshot(),
+        maxPerGamePct: config.pricing.maxExposurePerGamePct,
+        maxPerGame: getBankroll() * config.pricing.maxExposurePerGamePct / 100,
+        games: orderTracker.getGameExposureSnapshot(),
       },
       portfolio: {
         bankroll: getBankroll(),

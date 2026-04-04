@@ -35,6 +35,10 @@ const declineStats = {
 // ---------------------------------------------------------------------------
 const exposure = {};
 
+// GAME-LEVEL EXPOSURE — tracks weighted risk per game (pxEventId)
+// ---------------------------------------------------------------------------
+const gameExposure = {};  // keyed by pxEventId
+
 // Running stats
 const stats = {
   totalQuotes: 0,
@@ -630,6 +634,7 @@ function addExposure(order) {
     exposure[key].parlays += 1;
     exposure[key].notionalPayout += getOrderPayout(order);
   }
+  addGameExposure(order);
 }
 
 function removeExposure(order) {
@@ -643,6 +648,118 @@ function removeExposure(order) {
       delete exposure[key];
     }
   }
+  removeGameExposure(order);
+}
+
+// ---------------------------------------------------------------------------
+// GAME-LEVEL EXPOSURE
+// ---------------------------------------------------------------------------
+
+function addGameExposure(order) {
+  const legs = getLegsForExposure(order);
+  const payout = getOrderPayout(order);
+  if (payout <= 0 || legs.length === 0) return;
+
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i];
+    const eventId = leg.pxEventId;
+    if (!eventId) continue;
+
+    // Product of all OTHER legs' fair probs
+    let otherProb = 1;
+    for (let j = 0; j < legs.length; j++) {
+      if (j === i) continue;
+      otherProb *= (legs[j].fairProb || 0.5);
+    }
+
+    if (!gameExposure[eventId]) {
+      gameExposure[eventId] = {
+        name: (leg.awayTeam || '?') + ' @ ' + (leg.homeTeam || '?'),
+        sport: leg.sport,
+        startTime: leg.startTime,
+        parlays: [],
+      };
+    }
+
+    gameExposure[eventId].parlays.push({
+      parlayId: order.parlayId,
+      payout,
+      legCount: legs.length,
+      weightedRisk: payout * otherProb,
+      selection: leg.selection,
+      market: leg.market || leg.marketType,
+    });
+  }
+}
+
+function removeGameExposure(order) {
+  const legs = getLegsForExposure(order);
+  for (const leg of legs) {
+    const eventId = leg.pxEventId;
+    if (!eventId || !gameExposure[eventId]) continue;
+    gameExposure[eventId].parlays = gameExposure[eventId].parlays.filter(
+      p => p.parlayId !== order.parlayId
+    );
+    if (gameExposure[eventId].parlays.length === 0) {
+      delete gameExposure[eventId];
+    }
+  }
+}
+
+/**
+ * Get game exposure snapshot — all games with weighted risk, sorted by worst case.
+ */
+function getGameExposureSnapshot() {
+  return Object.entries(gameExposure).map(([eventId, game]) => {
+    const totalWeightedRisk = game.parlays.reduce((s, p) => s + p.weightedRisk, 0);
+    return {
+      eventId,
+      name: game.name,
+      sport: game.sport,
+      startTime: game.startTime,
+      parlayCount: game.parlays.length,
+      worstCase: Math.round(totalWeightedRisk * 100) / 100,
+      parlays: game.parlays,
+    };
+  }).sort((a, b) => b.worstCase - a.worstCase);
+}
+
+/**
+ * Check if adding a new parlay would exceed per-game exposure limits.
+ * @param {Array} legs - resolved legs with pxEventId, fairProb
+ * @param {number} estPayout - estimated payout of new parlay
+ * @param {number} maxPerGame - max weighted risk per game
+ */
+function checkGameExposure(legs, estPayout, maxPerGame) {
+  if (!maxPerGame || maxPerGame <= 0) return { allowed: true };
+
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i];
+    const eventId = leg.lineInfo?.pxEventId || leg.pxEventId;
+    if (!eventId) continue;
+
+    // Weighted risk contribution of this parlay to this game
+    let otherProb = 1;
+    for (let j = 0; j < legs.length; j++) {
+      if (j === i) continue;
+      otherProb *= (legs[j].lineInfo?.fairProb || legs[j].fairProb || 0.5);
+    }
+    const newRisk = estPayout * otherProb;
+
+    // Current game exposure
+    const current = gameExposure[eventId]
+      ? gameExposure[eventId].parlays.reduce((s, p) => s + p.weightedRisk, 0)
+      : 0;
+
+    if (current + newRisk > maxPerGame) {
+      const gameName = gameExposure[eventId]?.name || eventId;
+      return {
+        allowed: false,
+        reason: `Game "${gameName}" exposure $${Math.round(current)} + $${Math.round(newRisk)} > max $${Math.round(maxPerGame)}`,
+      };
+    }
+  }
+  return { allowed: true };
 }
 
 function getExposureForTeam(teamName) {
@@ -789,6 +906,8 @@ module.exports = {
   findByOrderUuid,
   getTotalPortfolioRisk,
   checkPortfolioRisk,
+  getGameExposureSnapshot,
+  checkGameExposure,
   getRecentOrders,
   getStats,
   getPnLBySport,

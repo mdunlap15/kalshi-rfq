@@ -539,6 +539,16 @@
 
         <div class="card">
           <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Game Exposure</span>
+            <span id="game-exposure-limit" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body collapsed" style="padding: 0;">
+            <div id="game-exposure-table"><div class="empty-state"><div class="icon">-</div><div>No active game exposure</div></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
             <span><span class="toggle-icon collapsed">&#9660;</span>Open Positions</span>
             <span id="portfolio-exposure-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
@@ -822,6 +832,7 @@
 
     // Exposure
     renderExposure(data.exposure || {});
+    renderGameExposure(data.exposure || {});
   }
 
   function renderOddsCache(odds) {
@@ -1646,6 +1657,73 @@
         '<button class="btn" onclick="expState.showAll=false; expRerender()" style="font-size:12px; padding:4px 16px;">Show Top ' + expState.pageSize + '</button></div>';
     }
 
+    el.innerHTML = html;
+  }
+
+  // -----------------------------------------------------------------------
+  // RENDER GAME EXPOSURE
+  // -----------------------------------------------------------------------
+
+  function renderGameExposure(exp) {
+    const el = document.getElementById('game-exposure-table');
+    const limitEl = document.getElementById('game-exposure-limit');
+    const games = exp.games || [];
+    const maxPerGame = exp.maxPerGame || 0;
+
+    if (limitEl) {
+      limitEl.textContent = maxPerGame > 0
+        ? 'Max per game: ' + fmtDollar(maxPerGame) + ' (' + (exp.maxPerGamePct || 10) + '% of balance)'
+        : '';
+    }
+
+    if (!el || games.length === 0) {
+      if (el) el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No active game exposure</div></div>';
+      return;
+    }
+
+    let html = '<div style="overflow-x:auto;"><table>';
+    html += '<tr><th>Game</th><th>Sport</th><th>Start</th><th style="text-align:right">Parlays</th><th style="text-align:right">Weighted Risk</th>';
+    if (maxPerGame > 0) html += '<th style="text-align:right">% of Limit</th>';
+    html += '<th style="width:100px;"></th></tr>';
+
+    for (let gi = 0; gi < Math.min(games.length, 20); gi++) {
+      const g = games[gi];
+      const pct = maxPerGame > 0 ? Math.round(g.worstCase / maxPerGame * 100) : 0;
+      const barColor = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--amber)' : 'var(--green)';
+      const startTime = g.startTime ? new Date(g.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '-';
+      const rowKey = 'gexp-' + gi;
+      const expanded = expandedRows.has(rowKey);
+
+      html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">';
+      html += '<td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;">' + g.name + '</td>';
+      html += '<td>' + sportPill(g.sport || 'unknown') + '</td>';
+      html += '<td style="font-size:11px; color:var(--text3); white-space:nowrap;">' + startTime + '</td>';
+      html += '<td style="text-align:right">' + g.parlayCount + '</td>';
+      html += '<td style="text-align:right; font-weight:600; color:' + (pct > 80 ? 'var(--red)' : 'var(--text)') + ';">' + fmtDollar(g.worstCase) + '</td>';
+      if (maxPerGame > 0) html += '<td style="text-align:right; color:' + barColor + ';">' + pct + '%</td>';
+      html += '<td><div style="background:var(--surface); border-radius:4px; height:6px; overflow:hidden;"><div style="background:' + barColor + '; width:' + Math.min(pct, 100) + '%; height:100%; border-radius:4px;"></div></div></td>';
+      html += '</tr>';
+
+      // Expandable: show which parlays contribute
+      let detail = '<table style="width:100%; font-size:11px;">';
+      detail += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Selection</th><th style="text-align:left; padding:2px 6px;">Legs</th><th style="text-align:right; padding:2px 6px;">Weighted Risk</th><th style="text-align:right; padding:2px 6px;">Payout</th></tr>';
+      for (const p of (g.parlays || [])) {
+        const sel = (p.market || '') + (p.selection ? ' ' + p.selection : '');
+        detail += '<tr><td style="padding:2px 6px;">' + sel + '</td>';
+        detail += '<td style="padding:2px 6px;">' + p.legCount + '-leg</td>';
+        detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.weightedRisk) + '</td>';
+        detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.payout) + '</td></tr>';
+      }
+      detail += '</table>';
+
+      html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
+      html += '<td colspan="' + (maxPerGame > 0 ? 7 : 6) + '" style="padding:8px 12px;">';
+      html += '<div style="font-size:11px; font-weight:600; color:var(--text2); margin-bottom:4px;">PARLAYS IN THIS GAME</div>';
+      html += detail;
+      html += '</td></tr>';
+    }
+
+    html += '</table></div>';
     el.innerHTML = html;
   }
 
