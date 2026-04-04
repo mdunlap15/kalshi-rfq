@@ -1171,7 +1171,7 @@
     const compHasMore = entries.length > compLimit;
 
     html += `<div style="overflow-x:auto;"><table style="font-size:12px;">
-      <tr><th>Time</th><th>Teams</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:right">My Risk</th><th style="text-align:right">To Win</th><th style="text-align:center">Gap</th><th>Result</th><th>Why</th></tr>`;
+      <tr><th>Time</th><th>Selections</th><th style="text-align:right">Ours</th><th style="text-align:right">Winner</th><th style="text-align:right">My Risk</th><th style="text-align:right">To Win</th><th style="text-align:center">Gap</th><th>Result</th><th>Why</th></tr>`;
     for (let ci = 0; ci < compDisplayed.length; ci++) {
       const e = entries[ci];
       const time = e.time ? new Date(e.time).toLocaleTimeString() : '-';
@@ -1296,7 +1296,7 @@
     html += `<div style="overflow-x:auto;"><table>
       <tr>
         <th ${pSortClick('time')}>Confirmed${pSortArrow('time')}</th>
-        <th>Teams</th>
+        <th>Selections</th>
         <th ${pSortClick('legs')}>Legs${pSortArrow('legs')}</th>
         <th ${pSortClick('odds')}>Odds${pSortArrow('odds')}</th>
         <th ${pSortClick('stake')} style="text-align:right">My Risk${pSortArrow('stake')}</th>
@@ -1311,7 +1311,7 @@
     for (const order of posDisplayed) {
       const time = order.confirmedAt ? new Date(order.confirmedAt).toLocaleString() : '-';
       const legs = order.legs || order.meta?.legs || [];
-      const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
+      const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 60 ? teams.substring(0, 57) + '...' : teams;
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       // confirmedStake = bettor's wager
@@ -1419,7 +1419,7 @@
     html += '<div style="overflow-x:auto;"><table>';
     html += '<tr>';
     html += '<th ' + sSortClick('settled') + '>Settled' + sSortArrow('settled') + '</th>';
-    html += '<th>Teams</th>';
+    html += '<th>Selections</th>';
     html += '<th>Legs</th>';
     html += '<th ' + sSortClick('odds') + '>Odds' + sSortArrow('odds') + '</th>';
     html += '<th ' + sSortClick('stake') + ' style="text-align:right">My Risk' + sSortArrow('stake') + '</th>';
@@ -1445,7 +1445,7 @@
     for (const order of settledDisplayed) {
       const time = order.settledAt ? new Date(order.settledAt).toLocaleString() : order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
       const legs = order.legs || order.meta?.legs || [];
-      const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
+      const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const stake = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
@@ -1609,7 +1609,7 @@
         detailHtml += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 8px;">Confirmed</th><th style="text-align:left; padding:2px 8px;">All Legs</th><th style="text-align:right; padding:2px 8px;">Odds</th><th style="text-align:right; padding:2px 8px;">My Risk</th><th style="text-align:right; padding:2px 8px;">To Win</th></tr>';
         for (const o of teamParlays) {
           const legs = o.legs || o.meta?.legs || [];
-          const allTeams = legs.map(l => l.team || l.teamName || '?').join(', ');
+          const allTeams = formatParlaySelections(legs);
           const oddsStr = o.offeredOdds ? (o.offeredOdds >= 0 ? '+' : '') + o.offeredOdds : '-';
           const stake = o.confirmedStake ? fmtDollar(o.confirmedStake) : '-';
           let toWin = '-';
@@ -1767,7 +1767,7 @@
     html += `<div style="overflow-x: auto;"><table>
       <tr>
         <th ${sortClick('time')}>Time${sortArrow('time')}</th>
-        <th ${sortClick('teams')}>Teams${sortArrow('teams')}</th>
+        <th ${sortClick('teams')}>Selections${sortArrow('teams')}</th>
         <th ${sortClick('legs')}>Legs${sortArrow('legs')}</th>
         <th ${sortClick('fairOdds')}>Fair${sortArrow('fairOdds')}</th>
         <th ${sortClick('pinnacle')}>Pinnacle${sortArrow('pinnacle')}</th>
@@ -2157,7 +2157,7 @@
 
     // Edge table
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th>Teams</th><th>Legs</th><th style="text-align:right">Fair %</th><th style="text-align:right">Offered</th><th style="text-align:right">Edge</th><th style="text-align:right">To Win</th><th>Result</th><th style="text-align:right">P&L</th></tr>';
+    html += '<tr><th>Selections</th><th>Legs</th><th style="text-align:right">Fair %</th><th style="text-align:right">Offered</th><th style="text-align:right">Edge</th><th style="text-align:right">To Win</th><th>Result</th><th style="text-align:right">P&L</th></tr>';
 
     for (const e of entries.sort((a, b) => Math.abs(b.pnl || 0) - Math.abs(a.pnl || 0)).slice(0, 20)) {
       const offeredStr = e.offeredOdds ? (e.offeredOdds >= 0 ? '+' : '') + e.offeredOdds : '-';
@@ -2247,7 +2247,7 @@
     html += '</div>';
 
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Teams</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th></tr>';
+    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th></tr>';
 
     const isPopenFiltering = !!popenState.search;
     const popenLimit = (popenState.showAll || isPopenFiltering) ? filtered.length : popenState.pageSize;
@@ -2257,7 +2257,7 @@
     for (const o of popenDisplayed) {
       const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleString() : '-';
       const legs = o.legs || o.meta?.legs || [];
-      const teams = legs.map(l => l.team || l.teamName || '?').join(', ');
+      const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
       const oddsStr = o.offeredOdds ? (o.offeredOdds >= 0 ? '+' : '') + o.offeredOdds : '-';
       // confirmedStake = bettor's wager = To Win, My Risk = payout
@@ -2385,7 +2385,7 @@
     html += '<div style="overflow-x:auto;"><table>';
     html += '<tr>';
     html += '<th ' + pSortClick('settled') + '>Settled' + pSortArrow('settled') + '</th>';
-    html += '<th>Teams</th>';
+    html += '<th>Selections</th>';
     html += '<th ' + pSortClick('legs') + '>Legs' + pSortArrow('legs') + '</th>';
     html += '<th ' + pSortClick('odds') + '>Odds' + pSortArrow('odds') + '</th>';
     html += '<th ' + pSortClick('stake') + ' style="text-align:right">My Risk' + pSortArrow('stake') + '</th>';
@@ -2402,7 +2402,7 @@
     for (const order of psDisplayed) {
       const time = order.settledAt ? new Date(order.settledAt).toLocaleString() : order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
       const legs = order.legs || order.meta?.legs || [];
-      const teams = legs.map(l => l.team || l.teamName || '?').join(', ');
+      const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 45 ? teams.substring(0, 42) + '...' : teams;
       const oddsStr = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const stake = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
@@ -2639,6 +2639,87 @@
   // -----------------------------------------------------------------------
   // HELPERS
   // -----------------------------------------------------------------------
+
+  // Team abbreviations for compact display
+  const TEAM_ABBR = {
+    // MLB
+    'arizona diamondbacks':'ARI','atlanta braves':'ATL','baltimore orioles':'BAL','boston red sox':'BOS',
+    'chicago cubs':'CHC','chicago white sox':'CWS','cincinnati reds':'CIN','cleveland guardians':'CLE',
+    'colorado rockies':'COL','detroit tigers':'DET','houston astros':'HOU','kansas city royals':'KC',
+    'los angeles angels':'LAA','los angeles dodgers':'LAD','miami marlins':'MIA','milwaukee brewers':'MIL',
+    'minnesota twins':'MIN','new york mets':'NYM','new york yankees':'NYY','athletics':'OAK','oakland athletics':'OAK',
+    'philadelphia phillies':'PHI','pittsburgh pirates':'PIT','san diego padres':'SD','san francisco giants':'SF',
+    'seattle mariners':'SEA','st. louis cardinals':'STL','tampa bay rays':'TB','texas rangers':'TEX',
+    'toronto blue jays':'TOR','washington nationals':'WSH',
+    // NBA
+    'atlanta hawks':'ATL','boston celtics':'BOS','brooklyn nets':'BKN','charlotte hornets':'CHA',
+    'chicago bulls':'CHI','cleveland cavaliers':'CLE','dallas mavericks':'DAL','denver nuggets':'DEN',
+    'detroit pistons':'DET','golden state warriors':'GSW','houston rockets':'HOU','indiana pacers':'IND',
+    'los angeles clippers':'LAC','los angeles lakers':'LAL','memphis grizzlies':'MEM','miami heat':'MIA',
+    'milwaukee bucks':'MIL','minnesota timberwolves':'MIN','new orleans pelicans':'NOP',
+    'new york knicks':'NYK','oklahoma city thunder':'OKC','orlando magic':'ORL','philadelphia 76ers':'PHI',
+    'phoenix suns':'PHX','portland trail blazers':'POR','sacramento kings':'SAC','san antonio spurs':'SAS',
+    'toronto raptors':'TOR','utah jazz':'UTA','washington wizards':'WAS',
+    // NHL
+    'anaheim ducks':'ANA','arizona coyotes':'ARI','boston bruins':'BOS','buffalo sabres':'BUF',
+    'calgary flames':'CGY','carolina hurricanes':'CAR','chicago blackhawks':'CHI','colorado avalanche':'COL',
+    'columbus blue jackets':'CBJ','dallas stars':'DAL','detroit red wings':'DET','edmonton oilers':'EDM',
+    'florida panthers':'FLA','los angeles kings':'LAK','minnesota wild':'MIN','montreal canadiens':'MTL',
+    'nashville predators':'NSH','new jersey devils':'NJD','new york islanders':'NYI','new york rangers':'NYR',
+    'ottawa senators':'OTT','philadelphia flyers':'PHI','pittsburgh penguins':'PIT','san jose sharks':'SJS',
+    'seattle kraken':'SEA','st. louis blues':'STL','tampa bay lightning':'TBL','toronto maple leafs':'TOR',
+    'vancouver canucks':'VAN','vegas golden knights':'VGK','washington capitals':'WSH','winnipeg jets':'WPG',
+    // NCAAB / other
+    'baylor bears':'BAY','auburn tigers':'AUB','west virginia mountaineers':'WVU','tulsa golden hurricane':'TLSA',
+    'utah mammoth':'UTAH','creighton bluejays':'CREI','oklahoma sooners':'OU','orlando magic':'ORL',
+  };
+
+  function teamAbbr(name) {
+    if (!name) return '?';
+    const lower = name.toLowerCase().trim();
+    return TEAM_ABBR[lower] || name.split(' ').pop(); // fallback to last word
+  }
+
+  /**
+   * Format a selection name for compact display.
+   * - Moneylines: "Team Name" → "Team Name"
+   * - Totals: "over (Los Angeles Dodgers @ Washington Nationals)" → "LAD @ WSH O 6.5"
+   * - Spreads: "Chicago Cubs" with line -1.5 → "Chicago Cubs -1.5"
+   */
+  function formatSelection(teamStr, market, line) {
+    if (!teamStr) return '?';
+    const mkt = (market || '').toLowerCase();
+
+    // Handle totals: "over (Team A @ Team B)" or "under (Team A @ Team B)"
+    const totalMatch = teamStr.match(/^(over|under)\s*\((.+?)\s*@\s*(.+?)\)$/i);
+    if (totalMatch) {
+      const side = totalMatch[1].charAt(0).toUpperCase(); // O or U
+      const away = teamAbbr(totalMatch[2].trim());
+      const home = teamAbbr(totalMatch[3].trim());
+      const lineStr = line != null ? ' ' + line : '';
+      return `${away} @ ${home} ${side}${lineStr}`;
+    }
+
+    // Handle spreads: append line
+    if (mkt === 'spread' && line != null) {
+      return teamStr + ' ' + (line >= 0 ? '+' : '') + line;
+    }
+
+    // Capitalize first letter
+    return teamStr.charAt(0).toUpperCase() + teamStr.slice(1);
+  }
+
+  /**
+   * Format all legs of a parlay into a compact summary string.
+   */
+  function formatParlaySelections(legs) {
+    return (legs || []).map(l => {
+      const name = l.team || l.teamName || '?';
+      const mkt = l.market || l.marketType || '';
+      const line = l.line;
+      return formatSelection(name, mkt, line);
+    }).join(', ');
+  }
 
   function sportLabel(sport) {
     const map = {
@@ -3313,7 +3394,7 @@
     html += `<div style="overflow-x: auto;"><table>
       <tr>
         <th ${hSortClick('time')}>Time${hSortArrow('time')}</th>
-        <th ${hSortClick('teams')}>Teams${hSortArrow('teams')}</th>
+        <th ${hSortClick('teams')}>Selections${hSortArrow('teams')}</th>
         <th ${hSortClick('legs')}>Legs${hSortArrow('legs')}</th>
         <th ${hSortClick('fair')}>Fair${hSortArrow('fair')}</th>
         <th ${hSortClick('pinnacle')}>Pinnacle${hSortArrow('pinnacle')}</th>
@@ -3328,7 +3409,7 @@
     for (const order of displayed) {
       const time = order.quotedAt ? new Date(order.quotedAt).toLocaleString() : '-';
       const legs = (order.legs || order.meta?.legs || []);
-      const teams = legs.map(l => l.team || l.teamName || 'Unknown').join(', ');
+      const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
       const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
       const pinParlay = order.meta?.pinnacleParlay;
