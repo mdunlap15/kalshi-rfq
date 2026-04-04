@@ -79,6 +79,27 @@ const ODDS_API_FALLBACK = {
     markets: 'h2h,spreads,totals',
     bookmakers: 'pinnacle,draftkings,fanduel',
   },
+  'soccer_usa_nwsl': {
+    oddsApiSport: 'soccer_usa_nwsl',
+    markets: 'h2h,spreads,totals',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  // Golf and combat sports — h2h only (no spreads/totals on these markets)
+  'golf_pga_championship': {
+    oddsApiSport: 'golf_pga_championship',
+    markets: 'h2h,outrights',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'mma_mixed_martial_arts': {
+    oddsApiSport: 'mma_mixed_martial_arts',
+    markets: 'h2h',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
+  'boxing_boxing': {
+    oddsApiSport: 'boxing_boxing',
+    markets: 'h2h',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
 };
 
 // ---------------------------------------------------------------------------

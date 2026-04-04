@@ -50,6 +50,10 @@ const config = {
     'soccer_italy_serie_a': 'Soccer',
     'soccer_germany_bundesliga': 'Soccer',
     'soccer_france_ligue_one': 'Soccer',
+    'soccer_usa_nwsl': 'Soccer',
+    'golf_pga_championship': 'Golf',
+    'mma_mixed_martial_arts': 'Mixed Martial Arts',
+    'boxing_boxing': 'Boxing',
   },
   server: {
     port: parseInt(process.env.PORT) || 3001,
