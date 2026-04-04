@@ -974,17 +974,47 @@
       if (unknownEntries.length > 0) {
         html += `<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:12px;">
           <tr><th>Last Seen</th><th>Event</th><th>Why Unregistered</th><th style="text-align:right">Declines</th></tr>`;
-        for (const [raw, val] of unknownEntries.slice(0, 20)) {
+        for (let di = 0; di < Math.min(unknownEntries.length, 20); di++) {
+          const [raw, val] = unknownEntries[di];
           const count = typeof val === 'object' ? val.count : val;
           const lastSeen = typeof val === 'object' && val.lastSeen ? new Date(val.lastSeen).toLocaleTimeString() : '-';
           const eventName = raw.split('[')[0].trim();
           const detail = raw.split(']')[1]?.trim() || '-';
-          html += `<tr>
+          const decId = 'dec-' + di;
+          const decExpanded = expandedRows.has(decId);
+          const recentDecs = (typeof val === 'object' && val.recentDeclines) ? val.recentDeclines : [];
+
+          html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${decId}')">
             <td style="color:var(--text3);">${lastSeen}</td>
             <td style="max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="${eventName}">${eventName}</td>
             <td style="font-family:monospace; font-size:11px; color:var(--text3);">${detail}</td>
             <td style="text-align:right; font-weight:600;">${count}</td>
           </tr>`;
+
+          // Expandable detail row
+          let detailHtml = '';
+          if (recentDecs.length > 0) {
+            detailHtml += '<div style="font-size:11px; font-weight:600; color:var(--text2); margin-bottom:4px;">RECENT DECLINED PARLAYS</div>';
+            detailHtml += '<table style="width:100%; font-size:11px;">';
+            detailHtml += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Time</th><th style="text-align:left; padding:2px 6px;">Parlay ID</th><th style="text-align:left; padding:2px 6px;">Total Legs</th><th style="text-align:left; padding:2px 6px;">Known Legs</th></tr>';
+            for (const rd of recentDecs) {
+              const rdTime = rd.time ? new Date(rd.time).toLocaleTimeString() : '-';
+              const knownTeams = (rd.knownLegs || []).map(l => l.team || '?').join(', ') || '-';
+              detailHtml += '<tr>';
+              detailHtml += '<td style="padding:2px 6px; color:var(--text3);">' + rdTime + '</td>';
+              detailHtml += '<td style="padding:2px 6px; font-family:monospace; font-size:10px;">' + (rd.parlayId || '-').substring(0, 20) + '...</td>';
+              detailHtml += '<td style="padding:2px 6px;">' + (rd.legCount || '-') + '</td>';
+              detailHtml += '<td style="padding:2px 6px; max-width:200px; overflow:hidden; text-overflow:ellipsis;">' + knownTeams + '</td>';
+              detailHtml += '</tr>';
+            }
+            detailHtml += '</table>';
+          } else {
+            detailHtml = '<div style="font-size:11px; color:var(--text3);">No recent decline details available</div>';
+          }
+
+          html += '<tr id="' + decId + '" style="display:' + (decExpanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
+          html += '<td colspan="4" style="padding:8px 12px;">' + detailHtml + '</td>';
+          html += '</tr>';
         }
         html += '</table></div>';
       }

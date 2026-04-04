@@ -335,10 +335,21 @@ function recordDecline(reason, detail) {
   if (detail?.unknownSports) {
     for (const sport of detail.unknownSports) {
       if (!declineStats.unknownSports[sport]) {
-        declineStats.unknownSports[sport] = { count: 0, lastSeen: null };
+        declineStats.unknownSports[sport] = { count: 0, lastSeen: null, recentDeclines: [] };
       }
       declineStats.unknownSports[sport].count++;
       declineStats.unknownSports[sport].lastSeen = new Date().toISOString();
+      // Store recent decline detail for this event
+      declineStats.unknownSports[sport].recentDeclines.unshift({
+        parlayId: detail.parlayId,
+        knownLegs: detail.knownLegs || [],
+        unknownLegs: detail.unknownLegs || [],
+        time: new Date().toISOString(),
+        legCount: (detail.legs || []).length,
+      });
+      if (declineStats.unknownSports[sport].recentDeclines.length > 5) {
+        declineStats.unknownSports[sport].recentDeclines.pop();
+      }
     }
   }
 
