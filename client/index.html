@@ -2403,10 +2403,64 @@
     const probWin = results.filter(r => r > 0).length / nSims;
     const probBreakeven = results.filter(r => r >= 0).length / nSims;
 
+    // Diagnostics: expected bettor-leg hit rate distribution
+    let legsWithProb = 0, legsMissingProb = 0, legProbSum = 0;
+    let totalSpRisk = 0, totalSpProfit = 0;
+    const hitRates = [];
+    for (const spec of orderSpecs) {
+      totalSpRisk += spec.spRisk;
+      totalSpProfit += spec.spProfit;
+      let hitProb = 1;
+      for (const ls of spec.legSpecs) {
+        const m = marketIndex[ls.mKey];
+        if (!m) continue;
+        const p = ls.wantsRef ? m.refProb : (1 - m.refProb);
+        hitProb *= p;
+        legsWithProb++;
+        legProbSum += p;
+      }
+      hitRates.push(hitProb);
+    }
+    for (const o of confirmed) {
+      const legs = (o.meta?.legs || o.legs || []);
+      for (const l of legs) {
+        const hasP = l.liveFairProb != null || l.fairProb != null;
+        if (!hasP) legsMissingProb++;
+      }
+    }
+    const avgLegProb = legsWithProb ? legProbSum / legsWithProb : null;
+    hitRates.sort((a, b) => a - b);
+    const medianHitRate = hitRates.length ? hitRates[Math.floor(hitRates.length / 2)] : null;
+    // Analytic expected SP P&L using independence assumption:
+    // E[pnl] = sum( (1 - hitProb_i) * spProfit_i - hitProb_i * spRisk_i )
+    let analyticExpected = 0;
+    for (let i = 0; i < orderSpecs.length; i++) {
+      const h = hitRates[i]; // NOTE: hitRates was re-sorted, so this doesn't line up
+    }
+    // Redo properly with unsorted array
+    let analytic = 0;
+    for (const spec of orderSpecs) {
+      let h = 1;
+      for (const ls of spec.legSpecs) {
+        const m = marketIndex[ls.mKey];
+        if (!m) continue;
+        const p = ls.wantsRef ? m.refProb : (1 - m.refProb);
+        h *= p;
+      }
+      analytic += (1 - h) * spec.spProfit - h * spec.spRisk;
+    }
+
     return {
       nSims,
       orderCount: orderSpecs.length,
       marketCount: marketKeys.length,
+      totalSpRisk,
+      totalSpProfit,
+      avgLegProb,
+      medianHitRate,
+      legsWithProb,
+      legsMissingProb,
+      analyticExpected: analytic,
       mean,
       min: results[0],
       max: results[results.length - 1],
@@ -2480,7 +2534,7 @@
       + '</div>';
 
     // Histogram — much bigger, proper axes
-    const histW = 760, histH = 380, hPad = { l: 56, r: 18, t: 18, b: 44 };
+    const histW = 760, histH = 400, hPad = { l: 72, r: 20, t: 22, b: 58 };
     const hChartW = histW - hPad.l - hPad.r;
     const hChartH = histH - hPad.t - hPad.b;
     const bins = 60;
@@ -2533,7 +2587,7 @@
     for (const t of yTicks) {
       const y = yToPx(t);
       svg += svgLine(hPad.l, y, hPad.l + hChartW, y, 'var(--border)', 1);
-      svg += svgText(hPad.l - 8, y + 4, t.toLocaleString(), { anchor: 'end', size: 11, fill: 'var(--text3)' });
+      svg += svgText(hPad.l - 10, y + 5, t.toLocaleString(), { anchor: 'end', size: 13, fill: 'var(--text2)' });
     }
 
     // Bars
@@ -2556,27 +2610,49 @@
     svg += svgLine(hPad.l, hPad.t + hChartH, hPad.l + hChartW, hPad.t + hChartH, 'var(--text3)', 1);
     for (const t of xTicks) {
       const x = xToPx(t);
-      svg += svgLine(x, hPad.t + hChartH, x, hPad.t + hChartH + 4, 'var(--text3)', 1);
+      svg += svgLine(x, hPad.t + hChartH, x, hPad.t + hChartH + 5, 'var(--text3)', 1);
       const isZero = Math.abs(t) < xStep * 0.01;
-      svg += svgText(x, hPad.t + hChartH + 18, fmtTick(t), {
-        anchor: 'middle', size: 12,
-        fill: isZero ? 'var(--text1)' : 'var(--text3)'
+      svg += svgText(x, hPad.t + hChartH + 22, fmtTick(t), {
+        anchor: 'middle', size: 14,
+        fill: isZero ? '#ffffff' : 'var(--text2)'
       });
     }
 
     // Median marker
     const medX = xToPx(r.p50);
     svg += svgLine(medX, hPad.t, medX, hPad.t + hChartH, 'var(--amber)', 1.5);
-    svg += svgText(medX, hPad.t + 10, 'Median', { anchor: 'middle', size: 11, fill: 'var(--amber)' });
+    svg += svgText(medX, hPad.t + 12, 'Median', { anchor: 'middle', size: 13, fill: 'var(--amber)' });
 
     // Axis titles
-    svg += svgText(hPad.l + hChartW / 2, histH - 6, 'P&L outcome ($)', { anchor: 'middle', size: 12, fill: 'var(--text2)' });
-    svg += '<text x="14" y="' + (hPad.t + hChartH / 2) + '" text-anchor="middle" fill="var(--text2)" font-size="12" transform="rotate(-90, 14, ' + (hPad.t + hChartH / 2) + ')">Frequency</text>';
+    svg += svgText(hPad.l + hChartW / 2, histH - 4, 'P&L outcome ($)', { anchor: 'middle', size: 14, fill: 'var(--text1)' });
+    svg += '<text x="14" y="' + (hPad.t + hChartH / 2) + '" text-anchor="middle" fill="var(--text1)" font-size="14" transform="rotate(-90, 14, ' + (hPad.t + hChartH / 2) + ')">Frequency</text>';
 
     svg += '</svg>';
 
     html += '<div style="flex:1; min-width:420px;">' + svg + '</div>';
     html += '</div>';
+
+    // Input diagnostics — shows what probabilities are driving the sim
+    const pct = (v) => v != null ? (v * 100).toFixed(1) + '%' : '-';
+    const diagRow = (l, v, hint) => '<div style="display:flex; justify-content:space-between; gap:16px; padding:6px 0; border-bottom:1px solid var(--border);"><span style="color:var(--text3); font-size:12px;">' + l + (hint ? ' <span style="color:var(--text3); opacity:0.6;">(' + hint + ')</span>' : '') + '</span><span style="font-family:monospace; font-size:13px; color:var(--text1);">' + v + '</span></div>';
+
+    html += '<div style="margin-top:20px; padding:14px 18px; background:var(--surface2); border:1px solid var(--border); border-radius:6px;">';
+    html += '<div style="font-size:12px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px; font-weight:600; margin-bottom:8px;">Simulation Inputs (sanity check)</div>';
+    html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:0 28px;">';
+    html += '<div>';
+    html += diagRow('Total SP risk (sum if ALL bettor parlays hit)', fmtDollar(r.totalSpRisk), 'max loss');
+    html += diagRow('Total SP profit (sum if ALL bettor parlays miss)', fmtDollar(r.totalSpProfit), 'max gain');
+    html += diagRow('Avg leg win-prob used', pct(r.avgLegProb), 'bettor side');
+    html += diagRow('Median parlay hit-prob', pct(r.medianHitRate), 'bettor wins parlay');
+    html += '</div><div>';
+    html += diagRow('Legs with stored fairProb', r.legsWithProb.toLocaleString());
+    html += diagRow('Legs missing fairProb (→ default 0.5)', r.legsMissingProb.toLocaleString(), r.legsMissingProb > 0 ? 'may skew results' : '');
+    html += diagRow('Analytic E[P&L] (independence)', fmtPnl(r.analyticExpected), 'should match mean');
+    html += diagRow('Simulated mean vs analytic', fmtPnl(r.mean - r.analyticExpected), 'correlation effect');
+    html += '</div></div>';
+    html += '<div style="margin-top:10px; font-size:11px; color:var(--text3); line-height:1.6;">If avg leg prob is far from ~0.5 or many legs are missing fairProb, the sim\'s outcome distribution will be biased. Compare median hit-prob to your real SP win rate — if they disagree sharply, the per-leg probabilities stored on your confirmed parlays are wrong (stale or missing).</div>';
+    html += '</div>';
+
     html += '<div style="margin-top:18px; text-align:center;"><button onclick="renderRiskSim()" class="btn" style="font-size:13px; padding:8px 24px;">Re-run Simulation</button></div>';
     html += '<div style="margin-top:10px; font-size:12px; color:var(--text3); text-align:center; line-height:1.5;">Simulates each market outcome once per trial; parlays with shared legs are correlated, opposite-side legs are anti-correlated. Uses live odds where available.</div>';
 
