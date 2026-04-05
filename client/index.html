@@ -3208,59 +3208,105 @@
     const el = document.getElementById('chart-cumul-pnl');
     if (settled.length < 2) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders to chart P&L</div></div>'; return; }
 
-    const sorted = [...settled].sort((a, b) => (a.settledAt || '').localeCompare(b.settledAt || ''));
+    // Sort by settlement time and parse timestamps into ms
+    const sorted = [...settled]
+      .filter(o => o.settledAt)
+      .sort((a, b) => (a.settledAt || '').localeCompare(b.settledAt || ''));
+    if (sorted.length < 2) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders to chart P&L</div></div>'; return; }
+
     const points = [];
     let running = 0;
     for (const o of sorted) {
       running += (o.pnl || 0);
-      points.push({ time: o.settledAt, pnl: running, order: o });
+      const t = new Date(o.settledAt).getTime();
+      if (!isNaN(t)) points.push({ t, pnl: running, order: o });
     }
+    if (points.length < 2) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders with timestamps</div></div>'; return; }
 
-    const W = 700, H = 200, pad = { l: 60, r: 20, t: 20, b: 30 };
+    const W = 720, H = 220, pad = { l: 60, r: 50, t: 20, b: 40 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
     const minPnl = Math.min(0, ...points.map(p => p.pnl));
     const maxPnl = Math.max(0, ...points.map(p => p.pnl));
     const range = maxPnl - minPnl || 1;
 
-    const scaleX = (i) => pad.l + (i / (points.length - 1)) * chartW;
+    const tMin = points[0].t;
+    const tMax = points[points.length - 1].t;
+    const tRange = Math.max(1, tMax - tMin);
+
+    const scaleX = (t) => pad.l + ((t - tMin) / tRange) * chartW;
     const scaleY = (v) => pad.t + chartH - ((v - minPnl) / range) * chartH;
 
-    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:250px;">`;
-    // Grid lines
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:270px;">`;
+
+    // Y grid lines + labels
     const zeroY = scaleY(0);
     svg += svgLine(pad.l, zeroY, W - pad.r, zeroY, 'var(--border)', 1);
     svg += svgText(pad.l - 8, zeroY + 3, '$0', { anchor: 'end', size: 9 });
     if (maxPnl > 0) { const y = scaleY(maxPnl); svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5); svg += svgText(pad.l - 8, y + 3, '+$' + maxPnl.toFixed(0), { anchor: 'end', size: 9, fill: 'var(--green)' }); }
     if (minPnl < 0) { const y = scaleY(minPnl); svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5); svg += svgText(pad.l - 8, y + 3, '-$' + Math.abs(minPnl).toFixed(0), { anchor: 'end', size: 9, fill: 'var(--red)' }); }
 
+    // X-axis: time-based tick marks. Pick tick interval based on span.
+    const spanMs = tRange;
+    const spanHours = spanMs / (1000 * 60 * 60);
+    const spanDays = spanMs / (1000 * 60 * 60 * 24);
+    let tickMs, tickFmt;
+    if (spanHours <= 6) {
+      // Hourly ticks, show time only
+      tickMs = 60 * 60 * 1000;
+      tickFmt = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    } else if (spanHours <= 36) {
+      // 2-hour ticks, show time (and date on first tick per day)
+      tickMs = 2 * 60 * 60 * 1000;
+      tickFmt = (d) => d.toLocaleTimeString([], { hour: 'numeric' });
+    } else if (spanDays <= 14) {
+      // Daily ticks
+      tickMs = 24 * 60 * 60 * 1000;
+      tickFmt = (d) => d.toLocaleDateString([], { month: 'numeric', day: 'numeric' });
+    } else {
+      // Weekly ticks
+      tickMs = 7 * 24 * 60 * 60 * 1000;
+      tickFmt = (d) => d.toLocaleDateString([], { month: 'numeric', day: 'numeric' });
+    }
+    // Floor start tick to the interval boundary
+    const firstTick = Math.ceil(tMin / tickMs) * tickMs;
+    const xAxisY = pad.t + chartH;
+    for (let t = firstTick; t <= tMax; t += tickMs) {
+      const x = scaleX(t);
+      svg += svgLine(x, pad.t, x, xAxisY, 'var(--border)', 0.3);
+      svg += svgText(x, xAxisY + 14, tickFmt(new Date(t)), { size: 9, fill: 'var(--text3)' });
+    }
+    // Always show start and end labels
+    svg += svgText(pad.l, H - 6, new Date(tMin).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }), { anchor: 'start', size: 9, fill: 'var(--text3)' });
+    svg += svgText(W - pad.r, H - 6, new Date(tMax).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }), { anchor: 'end', size: 9, fill: 'var(--text3)' });
+
     // Area fill
-    let areaPath = `M${scaleX(0)},${zeroY}`;
-    for (let i = 0; i < points.length; i++) areaPath += ` L${scaleX(i)},${scaleY(points[i].pnl)}`;
-    areaPath += ` L${scaleX(points.length - 1)},${zeroY} Z`;
+    let areaPath = `M${scaleX(points[0].t)},${zeroY}`;
+    for (const p of points) areaPath += ` L${scaleX(p.t)},${scaleY(p.pnl)}`;
+    areaPath += ` L${scaleX(points[points.length - 1].t)},${zeroY} Z`;
     const areaColor = running >= 0 ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)';
     svg += `<path d="${areaPath}" fill="${areaColor}" />`;
 
     // Line
     let linePath = '';
     for (let i = 0; i < points.length; i++) {
-      linePath += (i === 0 ? 'M' : ' L') + scaleX(i) + ',' + scaleY(points[i].pnl);
+      linePath += (i === 0 ? 'M' : ' L') + scaleX(points[i].t) + ',' + scaleY(points[i].pnl);
     }
     const lineColor = running >= 0 ? 'var(--green)' : 'var(--red)';
     svg += `<path d="${linePath}" fill="none" stroke="${lineColor}" stroke-width="2" />`;
 
-    // Dots
-    for (let i = 0; i < points.length; i++) {
-      const color = points[i].order.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-      svg += svgCircle(scaleX(i), scaleY(points[i].pnl), 3, color);
+    // Dots — green for wins (pnl>0), red for losses
+    for (const p of points) {
+      const color = p.order.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      svg += svgCircle(scaleX(p.t), scaleY(p.pnl), 3, color);
     }
 
     // Final value label
     const lastP = points[points.length - 1];
     const finalLabel = (lastP.pnl >= 0 ? '+$' : '-$') + Math.abs(lastP.pnl).toFixed(2);
-    svg += svgText(scaleX(points.length - 1), scaleY(lastP.pnl) - 8, finalLabel, { size: 11, fill: lineColor });
+    svg += svgText(scaleX(lastP.t) + 4, scaleY(lastP.pnl) + 3, finalLabel, { anchor: 'start', size: 11, fill: lineColor });
 
     svg += '</svg>';
-    svg += `<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">${points.length} settled parlays</div>`;
+    svg += `<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">${points.length} settled parlays &middot; x-axis by settlement time</div>`;
     el.innerHTML = svg;
   }
 
