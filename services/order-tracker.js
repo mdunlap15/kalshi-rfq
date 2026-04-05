@@ -1155,15 +1155,58 @@ async function pollOrderSettlements(px) {
       let parlayId = ordersByUuid[uuid];
       let order = parlayId ? orders[parlayId] : null;
 
-      // Fallback: if UUID not indexed, try matching by parlay_id from PX response
-      if (!order && pxOrder.parlay_id && orders[pxOrder.parlay_id]) {
-        order = orders[pxOrder.parlay_id];
-        parlayId = pxOrder.parlay_id;
+      // Fallback: match by parlay_id. PX uses `p_id` as the canonical field name.
+      const pxParlayId = pxOrder.p_id || pxOrder.parlay_id;
+      if (!order && pxParlayId && orders[pxParlayId]) {
+        order = orders[pxParlayId];
+        parlayId = pxParlayId;
         // Backfill the UUID so future lookups work
         order.orderUuid = uuid;
         ordersByUuid[uuid] = parlayId;
         log.info('Poll', `Backfilled UUID for parlay ${parlayId}: ${uuid}`);
         db.saveOrder(order).catch(() => {});
+      }
+
+      // If still no match: reconstruct the order from PX data so P&L is captured.
+      // This handles cases where we missed the confirmation WS event entirely
+      // (e.g., service was down) but PX knows about the settled order.
+      if (!order && pxParlayId) {
+        const settlementStatus = pxOrder.settlement_status;
+        if (settlementStatus && !['tbd','requested'].includes(settlementStatus)) {
+          log.info('Poll', `Reconstructing missing settled order ${pxParlayId} (uuid=${uuid})`);
+          order = {
+            parlayId: pxParlayId,
+            status: 'confirmed', // will be set to settled_* below by recordSettlement
+            legs: (pxOrder.legs || []).map(l => ({
+              lineId: l.line_id,
+              sport: 'unknown',
+              team: '?',
+              market: null,
+              line: l.line,
+              selection: null,
+              pxEventId: l.sport_event_id,
+              settlementStatus: l.settlement_status,
+            })),
+            offeredOdds: pxOrder.confirmed_odds != null ? -pxOrder.confirmed_odds : null,
+            fairParlayProb: null,
+            maxRisk: null,
+            vig: null,
+            confirmedOdds: pxOrder.confirmed_odds != null ? Number(pxOrder.confirmed_odds) : null,
+            confirmedStake: pxOrder.confirmed_stake != null ? Number(pxOrder.confirmed_stake) : null,
+            orderUuid: uuid,
+            quotedAt: null,
+            confirmedAt: new Date((pxOrder.updated_at || 0) * 1000).toISOString(),
+            settledAt: null,
+            pnl: null,
+            settlementResult: null,
+            meta: { reconstructed: true },
+          };
+          orders[pxParlayId] = order;
+          ordersByUuid[uuid] = pxParlayId;
+          parlayId = pxParlayId;
+          // Persist to DB
+          db.saveOrder(order).catch(err => log.error('DB', `saveOrder(reconstructed) failed: ${err.message}`));
+        }
       }
 
       if (!order) continue;
