@@ -1174,19 +1174,40 @@ async function pollOrderSettlements(px) {
         const settlementStatus = pxOrder.settlement_status;
         if (settlementStatus && !['tbd','requested'].includes(settlementStatus)) {
           log.info('Poll', `Reconstructing missing settled order ${pxParlayId} (uuid=${uuid})`);
+          // Enrich legs from lineManager where possible
+          const lineManager = require('./line-manager');
+          const enrichedLegs = (pxOrder.legs || []).map(l => {
+            const info = lineManager.lookupLine(l.line_id);
+            const eventName = l.sport_event_id ? lineManager.getEventName(l.sport_event_id) : null;
+            let team = info?.teamName || '?';
+            // If we only have the event name, use that as team context for totals/spreads
+            if (!info && eventName) team = eventName;
+            // Totals display prefix (over/under) when we know the market type
+            if (info?.marketType === 'total' && info?.homeTeam && info?.awayTeam) {
+              team = `${team} (${info.awayTeam} @ ${info.homeTeam})`;
+            }
+            return {
+              lineId: l.line_id,
+              sport: info?.sport || 'unknown',
+              team,
+              teamName: info?.teamName || team,
+              market: info?.marketType || null,
+              marketType: info?.marketType || null,
+              line: l.line,
+              selection: info?.selection || null,
+              homeTeam: info?.homeTeam || null,
+              awayTeam: info?.awayTeam || null,
+              pxEventId: l.sport_event_id,
+              pxEventName: eventName || null,
+              startTime: info?.startTime || null,
+              settlementStatus: l.settlement_status,
+              settlement_status: l.settlement_status,
+            };
+          });
           order = {
             parlayId: pxParlayId,
             status: 'confirmed', // will be set to settled_* below by recordSettlement
-            legs: (pxOrder.legs || []).map(l => ({
-              lineId: l.line_id,
-              sport: 'unknown',
-              team: '?',
-              market: null,
-              line: l.line,
-              selection: null,
-              pxEventId: l.sport_event_id,
-              settlementStatus: l.settlement_status,
-            })),
+            legs: enrichedLegs,
             offeredOdds: pxOrder.confirmed_odds != null ? -pxOrder.confirmed_odds : null,
             fairParlayProb: null,
             maxRisk: null,
@@ -1199,7 +1220,7 @@ async function pollOrderSettlements(px) {
             settledAt: null,
             pnl: null,
             settlementResult: null,
-            meta: { reconstructed: true },
+            meta: { reconstructed: true, legs: enrichedLegs },
           };
           orders[pxParlayId] = order;
           ordersByUuid[uuid] = pxParlayId;
@@ -1284,8 +1305,60 @@ module.exports = {
   getAlerts,
   refreshLiveOdds,
   rebuildAllExposure,
+  enrichReconstructedOrders,
   loadFromDb,
 };
+
+/**
+ * Walk all in-memory orders, find ones flagged meta.reconstructed=true with
+ * missing team names, and enrich them from the current lineManager index.
+ * Persists enriched versions back to DB.
+ */
+function enrichReconstructedOrders() {
+  const lineManager = require('./line-manager');
+  let enriched = 0;
+  let scanned = 0;
+  for (const order of Object.values(orders)) {
+    const legs = order.legs || order.meta?.legs || [];
+    // Check if any leg has '?' or null team (reconstructed signature)
+    const needsEnrichment = legs.some(l => !l.team || l.team === '?' || l.team === 'unknown');
+    if (!needsEnrichment) continue;
+    scanned++;
+    let changed = false;
+    const newLegs = legs.map(l => {
+      const info = l.lineId ? lineManager.lookupLine(l.lineId) : null;
+      const eventName = l.pxEventId ? lineManager.getEventName(l.pxEventId) : null;
+      if (!info && !eventName) return l; // nothing new to add
+      let team = info?.teamName || l.team;
+      if (!info && eventName) team = eventName;
+      if (info?.marketType === 'total' && info?.homeTeam && info?.awayTeam) {
+        team = `${team} (${info.awayTeam} @ ${info.homeTeam})`;
+      }
+      if (team && team !== '?' && team !== l.team) changed = true;
+      return {
+        ...l,
+        team: team || l.team,
+        teamName: info?.teamName || l.teamName || team,
+        sport: info?.sport || l.sport || 'unknown',
+        market: info?.marketType || l.market,
+        marketType: info?.marketType || l.marketType,
+        selection: info?.selection || l.selection,
+        homeTeam: info?.homeTeam || l.homeTeam,
+        awayTeam: info?.awayTeam || l.awayTeam,
+        pxEventName: eventName || l.pxEventName,
+        startTime: info?.startTime || l.startTime,
+      };
+    });
+    if (changed) {
+      order.legs = newLegs;
+      if (order.meta) order.meta.legs = newLegs;
+      enriched++;
+      db.saveOrder(order).catch(() => {});
+    }
+  }
+  log.info('Orders', `Enrichment: scanned ${scanned} orders with unresolved legs, enriched ${enriched}`);
+  return { scanned, enriched };
+}
 
 /**
  * Return alert-relevant data: counts of limit-based declines + rejections

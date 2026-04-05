@@ -290,6 +290,18 @@ function startStatusServer() {
     }
   });
 
+  // Enrich reconstructed orders by looking up lineIds in the current lineManager.
+  // Reconstructed orders are ones rebuilt from PX settlement data when we missed
+  // the WS confirmation event — their legs initially have team='?' etc.
+  app.post('/enrich-reconstructed', (req, res) => {
+    try {
+      const result = orderTracker.enrichReconstructedOrders();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Manual settlement poll
   app.post('/poll-settlements', async (req, res) => {
     try {
