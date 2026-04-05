@@ -2053,10 +2053,12 @@
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
-      const result = order.settlementResult || order.status?.replace('settled_', '') || '-';
+      const rawResult = order.settlementResult || order.status?.replace('settled_', '') || '-';
+      // Raw status is BETTOR-perspective; flip for SP display.
+      const spResult = rawResult === 'won' ? 'lost' : rawResult === 'lost' ? 'won' : rawResult;
       const resultCls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
-      const resultTitle = result === 'won' ? 'We won — bettor&#39;s parlay lost' : result === 'lost' ? 'We lost — bettor&#39;s parlay won' : result === 'push' ? 'Push — no money changed hands' : result === 'void' ? 'Void — bet cancelled' : '-';
-      const resultText = result.charAt(0).toUpperCase() + result.slice(1);
+      const resultTitle = spResult === 'won' ? 'We won — bettor&#39;s parlay missed a leg' : spResult === 'lost' ? 'We lost — all of bettor&#39;s legs hit' : spResult === 'push' ? 'Push — no money changed hands' : spResult === 'void' ? 'Void — bet cancelled' : '-';
+      const resultText = spResult.charAt(0).toUpperCase() + spResult.slice(1);
       let pnlHtml = '-';
       if (order.pnl != null) {
         const cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
@@ -3773,10 +3775,11 @@
       const oddsStr = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
-      const result = order.settlementResult || order.status?.replace('settled_', '') || '-';
+      const rawResult = order.settlementResult || order.status?.replace('settled_', '') || '-';
+      const spResult = rawResult === 'won' ? 'lost' : rawResult === 'lost' ? 'won' : rawResult;
       const resultCls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
-      const resultTitle = result === 'won' ? 'We won — bettor&#39;s parlay lost' : result === 'lost' ? 'We lost — bettor&#39;s parlay won' : result === 'push' ? 'Push — no money changed hands' : result === 'void' ? 'Void — bet cancelled' : '-';
-      const resultText = result.charAt(0).toUpperCase() + result.slice(1);
+      const resultTitle = spResult === 'won' ? 'We won — bettor&#39;s parlay missed a leg' : spResult === 'lost' ? 'We lost — all of bettor&#39;s legs hit' : spResult === 'push' ? 'Push — no money changed hands' : spResult === 'void' ? 'Void — bet cancelled' : '-';
+      const resultText = spResult.charAt(0).toUpperCase() + spResult.slice(1);
       let pnlHtml = '-';
       if (order.pnl != null) {
         const cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
