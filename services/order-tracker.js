@@ -241,21 +241,20 @@ function recordSettlement(orderUuid, result, payout) {
     order.settlementResult = result; // 'won', 'lost', 'push', 'void'
 
     // Calculate P&L from SP perspective (house side).
-    // PX's settlement_status is BETTOR-perspective (matches leg-level):
-    //   'won'  = bettor's parlay won  (all legs hit) → SP LOSES confirmedStake
-    //   'lost' = bettor's parlay lost (≥1 leg missed) → SP WINS bettor's wager
-    // User rule: "I win the stake the user places if any leg loses.
-    //             If all legs win, the user wins the to-win I put up."
+    // `result` is ALWAYS passed as SP-perspective by callers:
+    //   'won'  = SP won (bettor's parlay missed ≥1 leg) → +bettor's wager
+    //   'lost' = SP lost (all bettor legs hit) → -confirmedStake
+    // Callers (WS handler, poll) normalize before calling this function.
     //   confirmedStake = SP's to-win amount = bettor's potential payout
     //   bettor's wager = americanOddsToProfit(confirmedOdds, confirmedStake)
     const bettorWager = americanOddsToProfit(order.confirmedOdds, order.confirmedStake);
 
-    if (result === 'lost') {
-      // Bettor's parlay lost — SP wins, keeps bettor's wager
+    if (result === 'won') {
+      // SP won — bettor's parlay lost, we keep their wager
       order.pnl = bettorWager;
       stats.totalWins++;
-    } else if (result === 'won') {
-      // Bettor's parlay won — SP loses our to-win amount
+    } else if (result === 'lost') {
+      // SP lost — bettor's parlay won, we pay out our stake
       order.pnl = -(order.confirmedStake || 0);
       stats.totalLosses++;
     } else if (result === 'push' || result === 'void') {
@@ -1231,7 +1230,11 @@ async function pollOrderSettlements(px) {
 
       if (!order) continue;
       // Skip if already settled with matching status
-      if (order.status === `settled_${pxOrder.settlement_status}`) continue;
+      // Skip if already settled — compare against SP-perspective status
+      const pxSpResult = pxOrder.settlement_status === 'won' ? 'lost'
+                       : pxOrder.settlement_status === 'lost' ? 'won'
+                       : pxOrder.settlement_status;
+      if (order.status === `settled_${pxSpResult}`) continue;
 
       const settlementStatus = pxOrder.settlement_status;
       if (!settlementStatus || settlementStatus === 'tbd' || settlementStatus === 'requested') continue;
@@ -1255,9 +1258,14 @@ async function pollOrderSettlements(px) {
       if (!order.confirmedStake && pxOrder.confirmed_stake != null) order.confirmedStake = Number(pxOrder.confirmed_stake);
       if (!order.confirmedOdds && pxOrder.confirmed_odds != null) order.confirmedOdds = Number(pxOrder.confirmed_odds);
 
-      // Map PX settlement_status to our result format
-      const result = settlementStatus; // 'won', 'lost', 'push', 'void'
-      recordSettlement(uuid, result, pxOrder.profit || 0);
+      // PX REST API settlement_status is BETTOR-perspective:
+      //   'won'  = bettor's parlay won  = SP LOST
+      //   'lost' = bettor's parlay lost = SP WON
+      // Flip to SP-perspective before calling recordSettlement.
+      const spResult = settlementStatus === 'won' ? 'lost'
+                     : settlementStatus === 'lost' ? 'won'
+                     : settlementStatus; // push/void stay as-is
+      recordSettlement(uuid, spResult, pxOrder.profit || 0);
       settled++;
 
       // Update per-leg settlement from PX response
@@ -1530,19 +1538,34 @@ async function loadFromDb() {
     if (o.status === 'rejected') stats.totalRejections++;
     if (o.status?.startsWith('settled_')) {
       stats.totalSettlements++;
-      // Recalculate P&L on load. Status is BETTOR-perspective:
-      //   settled_won  = bettor's parlay won  → SP LOST confirmedStake
-      //   settled_lost = bettor's parlay lost → SP WON bettor's wager
+
+      // MIGRATION: poll-reconstructed orders stored bettor-perspective status
+      // (e.g., settled_lost = bettor lost) but WS orders stored SP-perspective
+      // (settled_won = SP won). Normalize everything to SP-perspective.
+      // Reconstructed orders are tagged with meta.reconstructed=true.
+      if (o.meta?.reconstructed) {
+        const raw = o.status.replace('settled_', '');
+        const flipped = raw === 'won' ? 'lost' : raw === 'lost' ? 'won' : raw;
+        if (flipped !== raw) {
+          o.status = `settled_${flipped}`;
+          o.settlementResult = flipped;
+          log.debug('DB', `Migrated reconstructed order ${o.parlayId}: settled_${raw} → settled_${flipped}`);
+        }
+      }
+
+      // Recalculate P&L on load. Status is SP-perspective:
+      //   settled_won  = SP won (bettor's parlay lost) → +bettor's wager
+      //   settled_lost = SP lost (bettor's parlay won) → -confirmedStake
       const settleResult = o.status.replace('settled_', '');
       const bettorWager = americanOddsToProfit(o.confirmedOdds, o.confirmedStake);
-      if (settleResult === 'lost') {
-        o.pnl = bettorWager;           // SP wins
-      } else if (settleResult === 'won') {
-        o.pnl = -(o.confirmedStake || 0); // SP loses
+      if (settleResult === 'won') {
+        o.pnl = bettorWager;              // SP won
+      } else if (settleResult === 'lost') {
+        o.pnl = -(o.confirmedStake || 0); // SP lost
       } else {
         o.pnl = 0;
       }
-      db.saveOrder(o).catch(() => {}); // persist corrected P&L
+      db.saveOrder(o).catch(() => {}); // persist corrected P&L + migrated status
       if (o.pnl != null) {
         stats.runningPnL += o.pnl;
         if (o.pnl > 0) stats.totalWins++;

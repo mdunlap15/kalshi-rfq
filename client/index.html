@@ -2055,12 +2055,11 @@
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
-      const rawResult = order.settlementResult || order.status?.replace('settled_', '') || '-';
-      // Raw status is BETTOR-perspective; flip for SP display.
-      const spResult = rawResult === 'won' ? 'lost' : rawResult === 'lost' ? 'won' : rawResult;
+      // settlementResult is stored as SP-perspective (normalized at input)
+      const result = order.settlementResult || order.status?.replace('settled_', '') || '-';
       const resultCls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
-      const resultTitle = spResult === 'won' ? 'We won — bettor&#39;s parlay missed a leg' : spResult === 'lost' ? 'We lost — all of bettor&#39;s legs hit' : spResult === 'push' ? 'Push — no money changed hands' : spResult === 'void' ? 'Void — bet cancelled' : '-';
-      const resultText = spResult.charAt(0).toUpperCase() + spResult.slice(1);
+      const resultTitle = result === 'won' ? 'We won — bettor&#39;s parlay missed a leg' : result === 'lost' ? 'We lost — all of bettor&#39;s legs hit' : result === 'push' ? 'Push — no money changed hands' : result === 'void' ? 'Void — bet cancelled' : '-';
+      const resultText = result.charAt(0).toUpperCase() + result.slice(1);
       let pnlHtml = '-';
       if (order.pnl != null) {
         const cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
@@ -3315,7 +3314,7 @@
     for (const o of withProb) {
       const fairProb = o.fairParlayProb;
       const offeredProb = o.offeredOdds ? americanToProb(o.offeredOdds) : null;
-      const won = o.settlementResult === 'lost'; // bettor lost = we won
+      const won = o.settlementResult === 'won'; // SP won (stored as SP-perspective)
       const edge = offeredProb ? (offeredProb - fairProb) : 0; // positive = we charged more than fair
 
       expectedWins += fairProb; // expected number of bettor wins
@@ -3781,11 +3780,11 @@
       const oddsStr = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
-      const rawResult = order.settlementResult || order.status?.replace('settled_', '') || '-';
-      const spResult = rawResult === 'won' ? 'lost' : rawResult === 'lost' ? 'won' : rawResult;
+      // settlementResult is stored as SP-perspective (normalized at input)
+      const result = order.settlementResult || order.status?.replace('settled_', '') || '-';
       const resultCls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
-      const resultTitle = spResult === 'won' ? 'We won — bettor&#39;s parlay missed a leg' : spResult === 'lost' ? 'We lost — all of bettor&#39;s legs hit' : spResult === 'push' ? 'Push — no money changed hands' : spResult === 'void' ? 'Void — bet cancelled' : '-';
-      const resultText = spResult.charAt(0).toUpperCase() + spResult.slice(1);
+      const resultTitle = result === 'won' ? 'We won — bettor&#39;s parlay missed a leg' : result === 'lost' ? 'We lost — all of bettor&#39;s legs hit' : result === 'push' ? 'Push — no money changed hands' : result === 'void' ? 'Void — bet cancelled' : '-';
+      const resultText = result.charAt(0).toUpperCase() + result.slice(1);
       let pnlHtml = '-';
       if (order.pnl != null) {
         const cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
@@ -4743,7 +4742,7 @@
     ];
     const data = buckets.map(b => {
       const inBucket = withProb.filter(o => o.fairParlayProb >= b.min && o.fairParlayProb < b.max);
-      const bettorWins = inBucket.filter(o => o.settlementResult !== 'lost').length; // bettor won = we lost
+      const bettorWins = inBucket.filter(o => o.settlementResult === 'lost').length; // settled_lost = SP lost = bettor won
       const expected = inBucket.reduce((s, o) => s + o.fairParlayProb, 0);
       return { ...b, count: inBucket.length, bettorWins, expectedWins: expected,
         actualRate: inBucket.length > 0 ? bettorWins / inBucket.length : 0,
