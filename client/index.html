@@ -717,19 +717,21 @@
           </div>
         </div>
 
-        <!-- P&L by Sport -->
+        <!-- P&L Breakdown (combined, with tab toggle) -->
         <div class="card">
-          <div class="card-header"><span>P&L by Sport</span></div>
-          <div class="card-body" id="chart-pnl-sport">
-            <div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>
+          <div class="card-header" style="padding-bottom:0; border-bottom:none;">
+            <div style="display:flex; gap:0;">
+              <button class="btn" id="pnl-tab-sport" onclick="switchPnlBreakdown('sport')" style="border-radius:4px 4px 0 0; border-bottom:2px solid var(--accent); font-size:12px; padding:6px 16px;">P&L by Sport</button>
+              <button class="btn" id="pnl-tab-legs" onclick="switchPnlBreakdown('legs')" style="border-radius:4px 4px 0 0; border-bottom:2px solid transparent; font-size:12px; padding:6px 16px; color:var(--text3);">P&L by Leg Count</button>
+            </div>
           </div>
-        </div>
-
-        <!-- P&L by Leg Count -->
-        <div class="card">
-          <div class="card-header"><span>P&L by Leg Count</span></div>
-          <div class="card-body" id="chart-pnl-legs">
-            <div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>
+          <div class="card-body">
+            <div id="chart-pnl-sport">
+              <div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>
+            </div>
+            <div id="chart-pnl-legs" style="display:none;">
+              <div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>
+            </div>
           </div>
         </div>
 
@@ -2120,7 +2122,6 @@
     html += '<th ' + sSortClick('stake', 'right') + '>My Risk' + sSortArrow('stake') + '</th>';
     html += '<th title="Settlement outcome from our (SP) perspective">SP Result</th>';
     html += '<th ' + sSortClick('pnl', 'right') + '>P&L' + sSortArrow('pnl') + '</th>';
-    html += '<th ' + sSortClick('roi', 'right') + ' title="ROI = P&L / My Risk for this parlay">ROI' + sSortArrow('roi') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
 
@@ -2168,18 +2169,10 @@
       html += '<td style="text-align:right">' + stake + '</td>';
       html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
-      // ROI per parlay
-      let roiHtml = '-';
-      if (order.pnl != null && myRiskVal && myRiskVal > 0) {
-        const roiPct = (order.pnl / myRiskVal) * 100;
-        const roiCls = roiPct > 0 ? 'positive' : roiPct < 0 ? 'negative' : 'neutral';
-        roiHtml = '<span class="' + roiCls + '">' + (roiPct >= 0 ? '+' : '') + roiPct.toFixed(1) + '%</span>';
-      }
-      html += '<td style="text-align:right">' + roiHtml + '</td>';
       html += '<td style="text-align:right">' + cumulHtml + '</td>';
       html += '</tr>';
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="9" style="padding:12px 16px;">';
+      html += '<td colspan="8" style="padding:12px 16px;">';
       html += buildLegTable(legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
@@ -3485,7 +3478,6 @@
     html += '<th ' + pSortClick('stake', 'right') + '>My Risk' + pSortArrow('stake') + '</th>';
     html += '<th title="Settlement outcome from our (SP) perspective">SP Result</th>';
     html += '<th ' + pSortClick('pnl', 'right') + '>P&L' + pSortArrow('pnl') + '</th>';
-    html += '<th ' + pSortClick('roi', 'right') + ' title="ROI = P&L / My Risk for this parlay">ROI' + pSortArrow('roi') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
 
@@ -3524,20 +3516,12 @@
       html += '<td style="text-align:right">' + stake + '</td>';
       html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
-      // ROI per parlay
-      let roiHtml = '-';
-      if (order.pnl != null && myRiskVal && myRiskVal > 0) {
-        const roiPct = (order.pnl / myRiskVal) * 100;
-        const roiCls = roiPct > 0 ? 'positive' : roiPct < 0 ? 'negative' : 'neutral';
-        roiHtml = '<span class="' + roiCls + '">' + (roiPct >= 0 ? '+' : '') + roiPct.toFixed(1) + '%</span>';
-      }
-      html += '<td style="text-align:right">' + roiHtml + '</td>';
       html += '<td style="text-align:right">' + cumulHtml + '</td>';
       html += '</tr>';
 
       // Expandable leg detail row
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="9" style="padding:12px 16px;">';
+      html += '<td colspan="8" style="padding:12px 16px;">';
       html += buildLegTable(legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
@@ -4394,8 +4378,9 @@
       svg += svgRect(x, y, barW, barH, color, 3);
       svg += svgText(pad.l - 4, y + barH / 2 + 4, sportLabel(sport), { anchor: 'end', size: 11, fill: 'var(--text2)' });
       const valStr = (d.pnl >= 0 ? '+$' : '-$') + Math.abs(d.pnl).toFixed(2);
-      const valX = d.pnl >= 0 ? midX + barW + 4 : midX - barW - 4;
-      svg += svgText(valX, y + barH / 2 + 4, valStr + ' (' + d.wins + 'W-' + d.losses + 'L)', { anchor: d.pnl >= 0 ? 'start' : 'end', size: 10, fill: color });
+      // Always place value to the right of the bar's rightmost edge so it never collides with team labels
+      const valX = d.pnl >= 0 ? midX + barW + 4 : midX + 4;
+      svg += svgText(valX, y + barH / 2 + 4, valStr + ' (' + d.wins + 'W-' + d.losses + 'L)', { anchor: 'start', size: 10, fill: color });
     }
     svg += '</svg>';
     el.innerHTML = svg;
@@ -4434,7 +4419,9 @@
       svg += svgRect(x, y, barW, barH, color, 3);
       svg += svgText(pad.l - 4, y + barH / 2 + 4, n + '-leg', { anchor: 'end', size: 11, fill: 'var(--text2)' });
       const valStr = (d.pnl >= 0 ? '+$' : '-$') + Math.abs(d.pnl).toFixed(2);
-      svg += svgText(d.pnl >= 0 ? midX + barW + 4 : midX - barW - 4, y + barH / 2 + 4, valStr + ' (' + d.wins + 'W-' + d.losses + 'L)', { anchor: d.pnl >= 0 ? 'start' : 'end', size: 10, fill: color });
+      // Always place value to the right of the bar's rightmost edge so it never collides with labels
+      const valX = d.pnl >= 0 ? midX + barW + 4 : midX + 4;
+      svg += svgText(valX, y + barH / 2 + 4, valStr + ' (' + d.wins + 'W-' + d.losses + 'L)', { anchor: 'start', size: 10, fill: color });
     }
     svg += '</svg>';
     el.innerHTML = svg;
@@ -4726,6 +4713,24 @@
   // Tab switching
   const sectionNames = { orders: 'Orders', portfolio: 'Portfolio', exposure: 'Exposure', analytics: 'Analytics', intel: 'Market Intel', config: 'Config' };
   let activeSection = 'orders';
+  function switchPnlBreakdown(tab) {
+    const sportEl = document.getElementById('chart-pnl-sport');
+    const legsEl = document.getElementById('chart-pnl-legs');
+    const sportBtn = document.getElementById('pnl-tab-sport');
+    const legsBtn = document.getElementById('pnl-tab-legs');
+    if (tab === 'sport') {
+      if (sportEl) sportEl.style.display = 'block';
+      if (legsEl) legsEl.style.display = 'none';
+      if (sportBtn) { sportBtn.style.borderBottomColor = 'var(--accent)'; sportBtn.style.color = 'var(--text)'; }
+      if (legsBtn) { legsBtn.style.borderBottomColor = 'transparent'; legsBtn.style.color = 'var(--text3)'; }
+    } else {
+      if (sportEl) sportEl.style.display = 'none';
+      if (legsEl) legsEl.style.display = 'block';
+      if (sportBtn) { sportBtn.style.borderBottomColor = 'transparent'; sportBtn.style.color = 'var(--text3)'; }
+      if (legsBtn) { legsBtn.style.borderBottomColor = 'var(--accent)'; legsBtn.style.color = 'var(--text)'; }
+    }
+  }
+
   function switchPositionsTab(tab) {
     const openEl = document.getElementById('positions-table');
     const settledEl = document.getElementById('portfolio-settled');

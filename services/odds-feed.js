@@ -7,6 +7,8 @@ const log = require('./logger');
 // ---------------------------------------------------------------------------
 // Structure: { [league]: { fetchedAt, events: { [eventKey]: { ... } } } }
 const oddsCache = {};
+// Live (in-play) odds cache — only populated when in-progress games need refreshing
+const liveOddsCache = {};
 
 // SharpAPI league/sport keys mapping
 const LEAGUE_MAP = {
@@ -111,9 +113,15 @@ const ODDS_API_FALLBACK = {
  * Gets moneyline, spread, and total markets from all available books,
  * then de-vigs by averaging across books.
  */
-async function fetchOddsForSport(sport) {
+async function fetchOddsForSport(sport, opts) {
+  opts = opts || {};
+  const liveMode = !!opts.live;
   // Check if this sport uses The Odds API fallback
   if (ODDS_API_FALLBACK[sport]) {
+    if (liveMode) {
+      // Live odds for Odds-API-fallback sports not implemented yet
+      return null;
+    }
     return fetchFromTheOddsApi(sport);
   }
 
@@ -132,10 +140,10 @@ async function fetchOddsForSport(sport) {
   const url = `${config.oddsApi.baseUrl}/odds`
     + `?${mapping.param}=${mapping.value}`
     + `&market=${marketTypes}`
-    + `&live=false`
+    + `&live=${liveMode ? 'true' : 'false'}`
     + `&limit=200`;
 
-  log.info('OddsFeed', `Fetching ${mapping.value} odds from SharpAPI...`);
+  log.info('OddsFeed', `Fetching ${liveMode ? 'LIVE ' : ''}${mapping.value} odds from SharpAPI...`);
 
   const resp = await fetch(url, {
     headers: { 'X-API-Key': config.oddsApi.apiKey },
@@ -241,12 +249,13 @@ async function fetchOddsForSport(sport) {
     }
   }
 
-  oddsCache[sport] = {
+  const targetCache = liveMode ? liveOddsCache : oddsCache;
+  targetCache[sport] = {
     fetchedAt: Date.now(),
     events: parsed,
   };
 
-  log.info('OddsFeed', `Cached ${Object.keys(parsed).length} events for ${mapping.value}`);
+  log.info('OddsFeed', `Cached ${Object.keys(parsed).length} ${liveMode ? 'LIVE ' : ''}events for ${mapping.value}`);
   return parsed;
 }
 
@@ -895,6 +904,67 @@ function getAltLineFairProb(eventKey, marketType, selection, line) {
  * Get event markets, optionally matching by time for back-to-back/doubleheaders.
  * @param {string} targetTime - ISO timestamp to match closest event (optional)
  */
+function getLiveEventMarkets(sport, homeTeam, awayTeam, targetTime) {
+  const sportCache = liveOddsCache[sport];
+  if (!sportCache) return null;
+  const key = normalizeEventKey(homeTeam, awayTeam);
+  const events = sportCache.events[key];
+  if (!events || events.length === 0) return null;
+  if (events.length === 1 || !targetTime) return events[0];
+  const targetMs = new Date(targetTime).getTime();
+  if (isNaN(targetMs)) return events[0];
+  let closest = events[0];
+  let closestDiff = Infinity;
+  for (const ev of events) {
+    const evMs = new Date(ev.commenceTime).getTime();
+    if (isNaN(evMs)) continue;
+    const diff = Math.abs(evMs - targetMs);
+    if (diff < closestDiff) { closestDiff = diff; closest = ev; }
+  }
+  return closest;
+}
+
+/**
+ * Get LIVE fair prob from liveOddsCache. Returns null if no live data available
+ * (caller should fall back to pre-game fair prob).
+ */
+function getLiveFairProb(sport, homeTeam, awayTeam, marketType, selection, line, targetTime) {
+  const event = getLiveEventMarkets(sport, homeTeam, awayTeam, targetTime);
+  if (!event || !event.markets) return null;
+  // Reuse same probe-by-market-type logic as getFairProb — we search the markets object
+  // in the live event's payload, same structure as getEventMarkets output
+  const m = event.markets;
+  if (marketType === 'h2h' && m.h2h) {
+    const pick = selection === 'home' ? m.h2h.home : m.h2h.away;
+    return pick && pick.fairProb ? pick.fairProb : null;
+  }
+  if (marketType === 'spreads' && m.spreads) {
+    const group = m.spreads[line != null ? Math.abs(line) : (m.spreads._primary || 0)];
+    if (!group) return null;
+    const pick = selection === 'home' ? group.home : group.away;
+    return pick && pick.fairProb ? pick.fairProb : null;
+  }
+  if (marketType === 'totals' && m.totals) {
+    const group = m.totals[line];
+    if (!group) return null;
+    const pick = selection === 'over' ? group.over : group.under;
+    return pick && pick.fairProb ? pick.fairProb : null;
+  }
+  return null;
+}
+
+function getLiveCacheStatus() {
+  const status = {};
+  for (const [sport, cache] of Object.entries(liveOddsCache)) {
+    const totalEvents = Object.values(cache.events).reduce((s, arr) => s + arr.length, 0);
+    status[sport] = {
+      eventCount: totalEvents,
+      ageMinutes: Math.round((Date.now() - cache.fetchedAt) / (1000 * 60) * 10) / 10,
+    };
+  }
+  return status;
+}
+
 function getEventMarkets(sport, homeTeam, awayTeam, targetTime) {
   const sportCache = oddsCache[sport];
   if (!sportCache) return null;
@@ -1007,6 +1077,9 @@ module.exports = {
   getPinnacleOdds,
   fetchAltLines,
   getEventMarkets,
+  getLiveEventMarkets,
+  getLiveFairProb,
+  getLiveCacheStatus,
   getCacheAge,
   isStale,
   getCacheStatus,
