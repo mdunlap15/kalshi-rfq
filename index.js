@@ -313,6 +313,16 @@ function startStatusServer() {
     }
   });
 
+  // Delete settled orders with all-unknown ('?') selections
+  app.post('/delete-unknown-settled', async (req, res) => {
+    try {
+      const result = await orderTracker.deleteUnknownSettledOrders();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // DB vs in-memory diagnostic: shows DB row counts alongside loaded counts
   app.get('/db-diag', async (req, res) => {
     try {

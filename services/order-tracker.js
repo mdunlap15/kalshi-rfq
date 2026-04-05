@@ -1286,6 +1286,49 @@ async function pollOrderSettlements(px) {
   }
 }
 
+/**
+ * Delete settled orders whose legs are all unresolved ('?' team names).
+ * Removes from in-memory store, reverses P&L stats, and deletes from DB.
+ */
+async function deleteUnknownSettledOrders() {
+  let deleted = 0;
+  const parlayIds = [];
+  for (const [parlayId, order] of Object.entries(orders)) {
+    if (!order.status?.startsWith('settled_')) continue;
+    const legs = order.legs || order.meta?.legs || [];
+    const allUnknown = legs.length > 0 && legs.every(l => !l.team || l.team === '?' || l.team === 'unknown');
+    if (!allUnknown) continue;
+
+    // Reverse stats
+    if (order.pnl != null) {
+      stats.runningPnL -= order.pnl;
+      if (order.pnl > 0) stats.totalWins--;
+      else if (order.pnl < 0) stats.totalLosses--;
+    }
+    stats.totalSettlements--;
+
+    // Remove from in-memory stores
+    if (order.orderUuid) delete ordersByUuid[order.orderUuid];
+    delete orders[parlayId];
+    parlayIds.push(parlayId);
+    deleted++;
+  }
+
+  // Delete from Supabase
+  if (parlayIds.length > 0) {
+    const supabase = db.getClient();
+    if (supabase) {
+      for (const pid of parlayIds) {
+        const { error } = await supabase.from('parlay_orders').delete().eq('parlay_id', pid);
+        if (error) log.error('DB', `Failed to delete ${pid}: ${error.message}`);
+      }
+    }
+  }
+
+  log.info('Orders', `Deleted ${deleted} unknown settled orders (P&L now: $${stats.runningPnL.toFixed(2)})`);
+  return { deleted, parlayIds };
+}
+
 module.exports = {
   recordQuote,
   recordConfirmation,
@@ -1294,6 +1337,7 @@ module.exports = {
   recordSettlement,
   recordLegSettlement,
   pollOrderSettlements,
+  deleteUnknownSettledOrders,
   findByParlayId,
   findByOrderUuid,
   getTotalPortfolioRisk,
