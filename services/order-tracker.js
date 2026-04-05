@@ -368,7 +368,7 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
 
   matchedParlays.unshift(entry); // newest first
   db.saveMatchedParlay(entry).catch(() => {});
-  if (matchedParlays.length > 200) matchedParlays.pop(); // cap memory
+  if (matchedParlays.length > 5000) matchedParlays.pop(); // cap memory
 
   if (weQuoted && outcome === 'lost') {
     log.info('Market', `Lost quote: parlay=${parlayId.substring(0,8)}, our=${entry.ourAmericanOdds}, winning=${matchedOdds}, stake=$${matchedStake}`);
@@ -1312,8 +1312,8 @@ async function loadFromDb() {
 
   log.info('DB', 'Loading historical data from Supabase...');
 
-  // Load orders (high limit so we never drop settled history)
-  const dbOrders = await db.loadOrders(2000);
+  // Load orders (very high limit to pull ALL history; loadOrders paginates)
+  const dbOrders = await db.loadOrders(20000);
   for (const o of dbOrders) {
     // Hoist winning-quote info out of meta (stored there to avoid DB schema change)
     if (o.meta) {
@@ -1358,8 +1358,8 @@ async function loadFromDb() {
   }
   log.info('DB', `Loaded ${dbOrders.length} orders (P&L: $${stats.runningPnL.toFixed(2)})`);
 
-  // Load matched parlays
-  const dbMatched = await db.loadMatchedParlays(200);
+  // Load matched parlays (paginated in loadMatchedParlays)
+  const dbMatched = await db.loadMatchedParlays(10000);
   for (const m of dbMatched) {
     matchedParlays.push(m);
     marketStats.totalMatched++;

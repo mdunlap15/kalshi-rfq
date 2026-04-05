@@ -63,20 +63,31 @@ async function loadOrders(limit = 100) {
   const db = getClient();
   if (!db) return [];
 
+  // Supabase caps single queries at 1000 rows by default. Paginate via .range()
+  // to fetch all requested orders beyond that cap.
+  const PAGE_SIZE = 1000;
+  const all = [];
   try {
-    const { data, error } = await db
-      .from('parlay_orders')
-      .select('*')
-      .order('quoted_at', { ascending: false })
-      .limit(limit);
-
-    if (error) {
-      log.error('DB', `Failed to load orders: ${error.message}`);
-      return [];
+    let offset = 0;
+    while (offset < limit) {
+      const pageSize = Math.min(PAGE_SIZE, limit - offset);
+      const { data, error } = await db
+        .from('parlay_orders')
+        .select('*')
+        .order('quoted_at', { ascending: false })
+        .range(offset, offset + pageSize - 1);
+      if (error) {
+        log.error('DB', `Failed to load orders (page at offset ${offset}): ${error.message}`);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < pageSize) break; // reached end
+      offset += pageSize;
     }
 
     // Convert DB rows back to order format
-    return (data || []).map(row => ({
+    return all.map(row => ({
       parlayId: row.parlay_id,
       status: row.status,
       legs: row.legs,
@@ -135,20 +146,27 @@ async function saveMatchedParlay(entry) {
 async function loadMatchedParlays(limit = 200) {
   const db = getClient();
   if (!db) return [];
-
+  const PAGE_SIZE = 1000;
+  const all = [];
   try {
-    const { data, error } = await db
-      .from('matched_parlays')
-      .select('*')
-      .order('matched_at', { ascending: false })
-      .limit(limit);
-
-    if (error) {
-      log.error('DB', `Failed to load matched parlays: ${error.message}`);
-      return [];
+    let offset = 0;
+    while (offset < limit) {
+      const pageSize = Math.min(PAGE_SIZE, limit - offset);
+      const { data, error } = await db
+        .from('matched_parlays')
+        .select('*')
+        .order('matched_at', { ascending: false })
+        .range(offset, offset + pageSize - 1);
+      if (error) {
+        log.error('DB', `Failed to load matched parlays (page at offset ${offset}): ${error.message}`);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < pageSize) break;
+      offset += pageSize;
     }
-
-    return (data || []).map(row => ({
+    return all.map(row => ({
       parlayId: row.parlay_id,
       matchedAmericanOdds: row.matched_odds,
       matchedStake: row.matched_stake ? Number(row.matched_stake) : null,
@@ -202,17 +220,27 @@ async function saveDecline(entry) {
 async function loadDeclines(limit = 2000) {
   const db = getClient();
   if (!db) return [];
+  const PAGE_SIZE = 1000;
+  const all = [];
   try {
-    const { data, error } = await db
-      .from('declines')
-      .select('*')
-      .order('declined_at', { ascending: false })
-      .limit(limit);
-    if (error) {
-      log.warn('DB', `loadDeclines failed (table may not exist yet): ${error.message}`);
-      return [];
+    let offset = 0;
+    while (offset < limit) {
+      const pageSize = Math.min(PAGE_SIZE, limit - offset);
+      const { data, error } = await db
+        .from('declines')
+        .select('*')
+        .order('declined_at', { ascending: false })
+        .range(offset, offset + pageSize - 1);
+      if (error) {
+        log.warn('DB', `loadDeclines failed (table may not exist yet): ${error.message}`);
+        return [];
+      }
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < pageSize) break;
+      offset += pageSize;
     }
-    return (data || []).map(row => ({
+    return all.map(row => ({
       parlayId: row.parlay_id,
       reason: row.reason,
       detail: row.detail,
