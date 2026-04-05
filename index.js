@@ -302,6 +302,17 @@ function startStatusServer() {
     }
   });
 
+  // Deep enrichment: fetch historical markets from PX for each pxEventId on
+  // reconstructed orders and resolve team names directly from the PX API.
+  app.post('/enrich-reconstructed-deep', async (req, res) => {
+    try {
+      const result = await orderTracker.enrichReconstructedFromPx();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Manual settlement poll
   app.post('/poll-settlements', async (req, res) => {
     try {

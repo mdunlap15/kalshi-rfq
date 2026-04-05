@@ -1306,6 +1306,7 @@ module.exports = {
   refreshLiveOdds,
   rebuildAllExposure,
   enrichReconstructedOrders,
+  enrichReconstructedFromPx,
   loadFromDb,
 };
 
@@ -1358,6 +1359,94 @@ function enrichReconstructedOrders() {
   }
   log.info('Orders', `Enrichment: scanned ${scanned} orders with unresolved legs, enriched ${enriched}`);
   return { scanned, enriched };
+}
+
+/**
+ * Deep-enrich reconstructed orders by fetching historical markets from PX for
+ * each unique pxEventId referenced by unresolved legs. Writes team/market/line
+ * info directly onto order legs and persists to DB. Does NOT register lines
+ * back into lineManager (these events are historical and should not affect
+ * live quoting).
+ */
+async function enrichReconstructedFromPx() {
+  const px = require('./prophetx');
+  let scanned = 0, enriched = 0, eventsFetched = 0, eventsFailed = 0;
+
+  // Collect unique pxEventIds from orders that need enrichment
+  const eventIdToOrders = new Map(); // eventId -> Set of parlayIds
+  for (const order of Object.values(orders)) {
+    const legs = order.legs || order.meta?.legs || [];
+    const needsEnrichment = legs.some(l => !l.team || l.team === '?' || l.team === 'unknown');
+    if (!needsEnrichment) continue;
+    scanned++;
+    for (const l of legs) {
+      const eid = l.pxEventId || l.sport_event_id;
+      if (!eid) continue;
+      if (!eventIdToOrders.has(eid)) eventIdToOrders.set(eid, new Set());
+      eventIdToOrders.get(eid).add(order.parlayId);
+    }
+  }
+
+  // Fetch markets for each unique event and build a lineId -> {team, market, line, ...} map
+  const lineIdInfo = {}; // lineId -> { teamName, marketType, line, ... }
+  const eventNames = {}; // eventId -> name (best-effort)
+  for (const [eventId, parlayIds] of eventIdToOrders.entries()) {
+    try {
+      const markets = await px.fetchMarkets(eventId);
+      eventsFetched++;
+      for (const market of markets || []) {
+        if (!['moneyline', 'spread', 'total'].includes(market.type)) continue;
+        if (market.event_name && !eventNames[eventId]) eventNames[eventId] = market.event_name;
+        const parsed = px.parseMarketSelections(market);
+        for (const sel of parsed) {
+          if (!sel.lineId) continue;
+          lineIdInfo[sel.lineId] = {
+            teamName: sel.teamName,
+            marketType: sel.marketType,
+            selection: sel.selection,
+            line: sel.line,
+            competitorId: sel.competitorId,
+          };
+        }
+      }
+    } catch (err) {
+      eventsFailed++;
+      log.debug('Orders', `enrichReconstructedFromPx: fetchMarkets(${eventId}) failed: ${err.message}`);
+    }
+  }
+
+  // Apply enrichment
+  for (const order of Object.values(orders)) {
+    const legs = order.legs || order.meta?.legs || [];
+    const needsEnrichment = legs.some(l => !l.team || l.team === '?' || l.team === 'unknown');
+    if (!needsEnrichment) continue;
+    let changed = false;
+    const newLegs = legs.map(l => {
+      const info = l.lineId ? lineIdInfo[l.lineId] : null;
+      if (!info) return l;
+      const team = info.teamName || l.team;
+      if (team && team !== '?' && team !== l.team) changed = true;
+      return {
+        ...l,
+        team: team || l.team,
+        teamName: info.teamName || l.teamName,
+        market: info.marketType || l.market,
+        marketType: info.marketType || l.marketType,
+        selection: info.selection || l.selection,
+        line: info.line != null ? info.line : l.line,
+        pxEventName: eventNames[l.pxEventId] || l.pxEventName,
+      };
+    });
+    if (changed) {
+      order.legs = newLegs;
+      if (order.meta) order.meta.legs = newLegs;
+      enriched++;
+      db.saveOrder(order).catch(() => {});
+    }
+  }
+
+  log.info('Orders', `Deep enrichment: ${scanned} orders scanned, ${eventsFetched} events fetched (${eventsFailed} failed), ${enriched} orders enriched`);
+  return { scanned, enriched, eventsFetched, eventsFailed, uniqueEvents: eventIdToOrders.size };
 }
 
 /**
