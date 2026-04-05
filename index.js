@@ -386,16 +386,18 @@ function startStatusServer() {
   app.get('/px-orders-raw', async (req, res) => {
     try {
       const limit = Number(req.query.limit) || 100;
-      const offset = Number(req.query.offset) || 0;
       const status = req.query.status || null;
-      const nextCursor = req.query.next_cursor || req.query.cursor || null;
+      // Pass through any query param PX might support for pagination
+      const extraParams = [];
+      for (const k of Object.keys(req.query)) {
+        if (['limit','status'].includes(k)) continue;
+        extraParams.push(`${k}=${encodeURIComponent(req.query[k])}`);
+      }
       let url = `/parlay/sp/orders/?limit=${limit}`;
       if (status) url += `&status=${status}`;
-      if (offset) url += `&offset=${offset}`;
-      if (nextCursor) url += `&next_cursor=${encodeURIComponent(nextCursor)}`;
-      // Expose the raw response object from PX
-      const raw = await px.pxFetch ? await px.pxFetch(url) : null;
-      res.json({ ok: true, url, raw });
+      if (extraParams.length) url += '&' + extraParams.join('&');
+      const raw = await px.pxFetch(url);
+      res.json({ ok: true, url, firstUuid: raw?.data?.orders?.[0]?.order_uuid, orderCount: raw?.data?.orders?.length, token: raw?.data?.token });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
