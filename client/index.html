@@ -1234,6 +1234,11 @@
           if (!teams.includes(nmSearch) && !(nm.parlayId || '').toLowerCase().includes(nmSearch)) return false;
         }
         if (nmReasonFilter && nm.reason !== nmReasonFilter) return false;
+        if (!passesRangeFilter((nm.legs||[]).length, window._nmLegsMin || '', window._nmLegsMax || '')) return false;
+        // Time range filter
+        if (window._nmDateFrom || window._nmDateTo) {
+          if (!passesDateFilter(nm.time, window._nmDateFrom || '', window._nmDateTo || '')) return false;
+        }
         return true;
       });
       const nmSortCol = window._nmSortCol || 'time';
@@ -1261,6 +1266,10 @@
         + '<option value="">All reasons</option>'
         + nmReasons.map(r => '<option value="' + r + '"' + (nmReasonFilter === r ? ' selected' : '') + '>' + r + '</option>').join('')
         + '</select>'
+        + '<input type="number" step="1" placeholder="Min legs" value="' + (window._nmLegsMin || '') + '" oninput="window._nmLegsMin=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + ' width:70px;" title="Min legs">'
+        + '<input type="number" step="1" placeholder="Max legs" value="' + (window._nmLegsMax || '') + '" oninput="window._nmLegsMax=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + ' width:70px;" title="Max legs">'
+        + '<input type="datetime-local" value="' + (window._nmDateFrom || '') + '" onchange="window._nmDateFrom=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + '" title="From date/time">'
+        + '<input type="datetime-local" value="' + (window._nmDateTo || '') + '" onchange="window._nmDateTo=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + '" title="To date/time">'
         + '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + nmList.length + ' of ' + allNearMisses.length + '</span>'
         + '</div>';
       const nmPageSize = window._nmShowAll ? nmList.length : 15;
@@ -1333,6 +1342,14 @@
       if (window._intelSportFilter) {
         filteredMatched = filteredMatched.filter(m => (m.legs || []).some(l => l.sport === window._intelSportFilter));
       }
+      // Advanced range filters
+      filteredMatched = filteredMatched.filter(m => {
+        if (!passesRangeFilter(m.legCount, window._intelLegsMin || '', window._intelLegsMax || '')) return false;
+        if (!passesRangeFilter(m.matchedAmericanOdds, window._intelWinOddsMin || '', window._intelWinOddsMax || '')) return false;
+        if (!passesRangeFilter(m.ourAmericanOdds, window._intelOurOddsMin || '', window._intelOurOddsMax || '')) return false;
+        if (!passesRangeFilter(m.matchedStake, window._intelStakeMin || '', window._intelStakeMax || '')) return false;
+        return true;
+      });
       // Sort
       const mpSortCol = window._intelSortCol || 'time';
       const mpSortDir = window._intelSortDir || -1;
@@ -1370,8 +1387,21 @@
           <option value="">All sports</option>
           ${mpSports.map(s => '<option value="' + s + '"' + (window._intelSportFilter === s ? ' selected' : '') + '>' + sportLabel(s) + '</option>').join('')}
         </select>
+        <button onclick="window._intelShowAdvanced=!window._intelShowAdvanced; renderMarketIntel(window._lastIntelData||{})" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; cursor:pointer;">${window._intelShowAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
         <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filteredMatched.length} of ${matched.length}</span>
       </div>`;
+      if (window._intelShowAdvanced) {
+        const intelDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+        const intelRerend = 'renderMarketIntel(window._lastIntelData||{})';
+        const rngI = (key, title, w) => '<input type="number" step="any" placeholder="Min" value="' + (window['_intel'+key+'Min'] || '') + '" oninput="window._intel' + key + 'Min=this.value; ' + intelRerend + '" style="' + intelDStyle + ' width:' + w + ';" title="' + title + ' min">'
+          + '<input type="number" step="any" placeholder="Max" value="' + (window['_intel'+key+'Max'] || '') + '" oninput="window._intel' + key + 'Max=this.value; ' + intelRerend + '" style="' + intelDStyle + ' width:' + w + ';" title="' + title + ' max">';
+        html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
+          + '<span style="color:var(--text3);">Legs:</span>' + rngI('Legs', 'Legs', '55px')
+          + '<span style="color:var(--text3); margin-left:8px;">Winning Price:</span>' + rngI('WinOdds', 'Winning price', '70px')
+          + '<span style="color:var(--text3); margin-left:8px;">Our Price:</span>' + rngI('OurOdds', 'Our price', '70px')
+          + '<span style="color:var(--text3); margin-left:8px;">To Win $:</span>' + rngI('Stake', 'Matched stake', '70px')
+          + '</div>';
+      }
       html += `<div style="overflow-x:auto;"><table>
         <tr>
           <th ${mpSortClick('time')}>Time${mpSortArrow('time')}</th>
@@ -1481,6 +1511,13 @@
       if (compSearch && !(e.teams || '').toLowerCase().includes(compSearch) && !(e.parlayId || '').toLowerCase().includes(compSearch)) return false;
       if (compOutcomeFilter === 'matched' && !e.won) return false;
       if (compOutcomeFilter === 'outbid' && e.won) return false;
+      // Advanced range filters
+      if (!passesRangeFilter(e.ourOdds, window._compOursMin || '', window._compOursMax || '')) return false;
+      if (!passesRangeFilter(e.winOdds, window._compWinMin || '', window._compWinMax || '')) return false;
+      const compRisk = (e.stake && e.winOdds) ? calcBettorWager(e.stake, e.winOdds) : 0;
+      if (!passesRangeFilter(compRisk, window._compRiskMin || '', window._compRiskMax || '')) return false;
+      if (!passesRangeFilter(e.stake, window._compStakeMin || '', window._compStakeMax || '')) return false;
+      if (!passesRangeFilter(e.gapProb, window._compGapMin || '', window._compGapMax || '')) return false;
       return true;
     });
     const compSortCol = window._compSortCol || 'time';
@@ -1513,8 +1550,21 @@
       + '<option value="matched"' + (compOutcomeFilter === 'matched' ? ' selected' : '') + '>Matched</option>'
       + '<option value="outbid"' + (compOutcomeFilter === 'outbid' ? ' selected' : '') + '>Outbid</option>'
       + '</select>'
+      + '<button onclick="window._compShowAdvanced=!window._compShowAdvanced; compRerender()" style="' + compFSel + ' cursor:pointer;">' + (window._compShowAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>'
       + '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filteredComp.length + ' of ' + entries.length + '</span>'
       + '</div>';
+    if (window._compShowAdvanced) {
+      const compDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+      const rngC = (key, title, w) => '<input type="number" step="any" placeholder="Min" value="' + (window['_comp'+key+'Min'] || '') + '" oninput="window._comp' + key + 'Min=this.value; compRerender()" style="' + compDStyle + ' width:' + w + ';" title="' + title + ' min">'
+        + '<input type="number" step="any" placeholder="Max" value="' + (window['_comp'+key+'Max'] || '') + '" oninput="window._comp' + key + 'Max=this.value; compRerender()" style="' + compDStyle + ' width:' + w + ';" title="' + title + ' max">';
+      html += '<div style="padding:8px 0; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); margin-bottom:6px; background:var(--surface2); font-size:11px;">'
+        + '<span style="color:var(--text3);">Ours:</span>' + rngC('Ours', 'Our odds', '70px')
+        + '<span style="color:var(--text3); margin-left:8px;">Winner:</span>' + rngC('Win', 'Winner odds', '70px')
+        + '<span style="color:var(--text3); margin-left:8px;">My Risk $:</span>' + rngC('Risk', 'My Risk', '70px')
+        + '<span style="color:var(--text3); margin-left:8px;">To Win $:</span>' + rngC('Stake', 'To Win', '70px')
+        + '<span style="color:var(--text3); margin-left:8px;">Gap pp:</span>' + rngC('Gap', 'Gap prob %', '55px')
+        + '</div>';
+    }
 
     const compPageSize = 15;
     const compShowAll = window._compShowAll || false;
@@ -2003,7 +2053,7 @@
     el.innerHTML = html;
   }
 
-  const expState = { sortCol: 'risk', sortDir: -1, search: '', pageSize: 15, showAll: false };
+  const expState = { sortCol: 'risk', sortDir: -1, search: '', parlaysMin: '', parlaysMax: '', riskMin: '', riskMax: '', payoutMin: '', payoutMax: '', showAdvanced: false, pageSize: 15, showAll: false };
   window.expRerender = () => renderExposure(window._lastExpData || { teams: [], maxPerTeam: 0 });
   window.toggleExpSort = (col) => {
     if (expState.sortCol === col) expState.sortDir *= -1;
@@ -2032,6 +2082,13 @@
       const q = expState.search.toLowerCase();
       teams = teams.filter(t => (t.name || '').toLowerCase().includes(q));
     }
+    // Advanced range filters
+    teams = teams.filter(t => {
+      if (!passesRangeFilter(t.parlays, expState.parlaysMin, expState.parlaysMax)) return false;
+      if (!passesRangeFilter(t.risk, expState.riskMin, expState.riskMax)) return false;
+      if (!passesRangeFilter(t.notionalPayout, expState.payoutMin, expState.payoutMax)) return false;
+      return true;
+    });
 
     // Sort
     teams = [...teams].sort((a, b) => {
@@ -2064,14 +2121,27 @@
     const eSortArrow = (col) => expState.sortCol === col ? (expState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
     const eSortClick = (col, align) => `onclick="event.stopPropagation(); toggleExpSort('${col}')" style="cursor:pointer;${align?'text-align:'+align+';':''}"`;
 
+    const eDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+    const eFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
     let html = `
-      <div style="padding:8px 12px; display:flex; gap:8px; align-items:center; border-bottom:1px solid var(--border);">
+      <div style="padding:8px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">
         <input type="text" placeholder="Search team..." value="${expState.search}"
           oninput="expState.search=this.value; expRerender()"
-          style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">
-        <span style="font-size:10px; color:var(--text3);">Click row to see parlays. Weighted Risk = payout × P(other legs win).</span>
-      </div>
-      <div style="overflow-x: auto;">
+          style="${eFSel} width:180px;">
+        <button onclick="expState.showAdvanced=!expState.showAdvanced; expRerender()" style="${eFSel} cursor:pointer;">${expState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
+        <span style="font-size:10px; color:var(--text3); margin-left:8px;">Click row to see parlays. Weighted Risk = payout × P(other legs win).</span>
+      </div>`;
+    if (expState.showAdvanced) {
+      html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
+        + '<span style="color:var(--text3);">Parlays:</span>'
+        + rangeFilterHtml('expState', 'parlaysMin', 'parlaysMax', expState, 'expRerender()', eDStyle, { title: 'Parlay count', width: '55px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">Weighted Risk $:</span>'
+        + rangeFilterHtml('expState', 'riskMin', 'riskMax', expState, 'expRerender()', eDStyle, { title: 'Weighted risk', width: '80px' })
+        + '<span style="color:var(--text3); margin-left:8px;">Notional Payout $:</span>'
+        + rangeFilterHtml('expState', 'payoutMin', 'payoutMax', expState, 'expRerender()', eDStyle, { title: 'Notional payout', width: '80px' })
+        + '</div>';
+    }
+    html += `<div style="overflow-x: auto;">
       <table>
         <tr>
           <th ${eSortClick('name')}>Team / Selection${eSortArrow('name')}</th>
@@ -2083,7 +2153,7 @@
         </tr>
     `;
 
-    const isExpFiltering = !!expState.search;
+    const isExpFiltering = !!(expState.search || expState.parlaysMin || expState.parlaysMax || expState.riskMin || expState.riskMax || expState.payoutMin || expState.payoutMax);
     const expLimit = (expState.showAll || isExpFiltering) ? teams.length : expState.pageSize;
     const expDisplayed = teams.slice(0, expLimit);
     const expHasMore = teams.length > expLimit;
@@ -2171,7 +2241,7 @@
   // -----------------------------------------------------------------------
 
   // Persistent state for Game Exposure table
-  const gameExpState = { sortCol: 'netExposure', sortDir: -1, search: '', sportFilter: '', started: '', pageSize: 20, showAll: false };
+  const gameExpState = { sortCol: 'netExposure', sortDir: -1, search: '', sportFilter: '', started: '', parlaysMin: '', parlaysMax: '', grossMin: '', grossMax: '', netMin: '', netMax: '', stakesMin: '', stakesMax: '', showAdvanced: false, pageSize: 20, showAll: false };
   window.gameExpRerender = () => renderGameExposure(window._lastExposureData || {});
   window.toggleGameExpSort = (col) => {
     if (gameExpState.sortCol === col) gameExpState.sortDir *= -1;
@@ -2214,6 +2284,11 @@
         if (gameExpState.started === 'upcoming' && st <= now) return false;
         if (gameExpState.started === 'started' && st > now) return false;
       }
+      // Advanced range filters
+      if (!passesRangeFilter(g.parlayCount, gameExpState.parlaysMin, gameExpState.parlaysMax)) return false;
+      if (!passesRangeFilter(g.grossRisk, gameExpState.grossMin, gameExpState.grossMax)) return false;
+      if (!passesRangeFilter(g.netExposure, gameExpState.netMin, gameExpState.netMax)) return false;
+      if (!passesRangeFilter(g.totalStakes, gameExpState.stakesMin, gameExpState.stakesMax)) return false;
       return true;
     });
 
@@ -2247,8 +2322,22 @@
       + '<option value="upcoming"' + (gameExpState.started === 'upcoming' ? ' selected' : '') + '>Upcoming only</option>'
       + '<option value="started"' + (gameExpState.started === 'started' ? ' selected' : '') + '>Started only</option>'
       + '</select>'
+      + '<button onclick="gameExpState.showAdvanced=!gameExpState.showAdvanced; gameExpRerender()" style="' + fSel + ' cursor:pointer;">' + (gameExpState.showAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>'
       + '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + games.length + ' of ' + allGames.length + '</span>'
       + '</div>';
+    if (gameExpState.showAdvanced) {
+      const gDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+      html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
+        + '<span style="color:var(--text3);">Parlays:</span>'
+        + rangeFilterHtml('gameExpState', 'parlaysMin', 'parlaysMax', gameExpState, 'gameExpRerender()', gDStyle, { title: 'Parlay count', width: '55px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">Gross Risk $:</span>'
+        + rangeFilterHtml('gameExpState', 'grossMin', 'grossMax', gameExpState, 'gameExpRerender()', gDStyle, { title: 'Gross risk', width: '80px' })
+        + '<span style="color:var(--text3); margin-left:8px;">Stakes Held $:</span>'
+        + rangeFilterHtml('gameExpState', 'stakesMin', 'stakesMax', gameExpState, 'gameExpRerender()', gDStyle, { title: 'Stakes held', width: '80px' })
+        + '<span style="color:var(--text3); margin-left:8px;">Net Exposure $:</span>'
+        + rangeFilterHtml('gameExpState', 'netMin', 'netMax', gameExpState, 'gameExpRerender()', gDStyle, { title: 'Net exposure', width: '80px' })
+        + '</div>';
+    }
 
     html += '<div style="overflow-x:auto;"><table>';
     html += '<tr>';
@@ -2860,6 +2949,13 @@
       }
       if (edgeResult && e.result.toLowerCase() !== edgeResult) return false;
       if (edgeLegs && String(e.legs) !== edgeLegs) return false;
+      // Advanced range filters
+      if (!passesRangeFilter(e.legs, window._edgeLegsMin || '', window._edgeLegsMax || '')) return false;
+      if (!passesRangeFilter(e.fairProb, window._edgeFairMin || '', window._edgeFairMax || '')) return false;
+      if (!passesRangeFilter(e.offeredOdds, window._edgeOddsMin || '', window._edgeOddsMax || '')) return false;
+      if (!passesRangeFilter(e.edge, window._edgeEdgeMin || '', window._edgeEdgeMax || '')) return false;
+      if (!passesRangeFilter(e.stake, window._edgeStakeMin || '', window._edgeStakeMax || '')) return false;
+      if (!passesRangeFilter(e.pnl, window._edgePnlMin || '', window._edgePnlMax || '')) return false;
       return true;
     });
     const edgeSortCol = window._edgeSortCol || 'absPnl';
@@ -2895,8 +2991,22 @@
       + '<select onchange="window._edgeLegs=this.value; ' + edgeRerend + '" style="' + edgeFSel + '"><option value="">All legs</option>'
       + [2,3,4,5,6,7,8].map(n => '<option value="' + n + '"' + (edgeLegs === String(n) ? ' selected' : '') + '>' + n + '-leg</option>').join('')
       + '</select>'
+      + '<button onclick="window._edgeShowAdvanced=!window._edgeShowAdvanced; ' + edgeRerend + '" style="' + edgeFSel + ' cursor:pointer;">' + (window._edgeShowAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>'
       + '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filteredEdge.length + ' of ' + entries.length + '</span>'
       + '</div>';
+    if (window._edgeShowAdvanced) {
+      const edgeDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+      const rng = (key, title, w) => '<input type="number" step="any" placeholder="Min" value="' + (window['_edge'+key+'Min'] || '') + '" oninput="window._edge' + key + 'Min=this.value; ' + edgeRerend + '" style="' + edgeDStyle + ' width:' + w + ';" title="' + title + ' min">'
+        + '<input type="number" step="any" placeholder="Max" value="' + (window['_edge'+key+'Max'] || '') + '" oninput="window._edge' + key + 'Max=this.value; ' + edgeRerend + '" style="' + edgeDStyle + ' width:' + w + ';" title="' + title + ' max">';
+      html += '<div style="padding:8px 0; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); margin-bottom:6px; background:var(--surface2); font-size:11px;">'
+        + '<span style="color:var(--text3);">Legs:</span>' + rng('Legs', 'Legs', '55px')
+        + '<span style="color:var(--text3); margin-left:8px;">Fair %:</span>' + rng('Fair', 'Fair probability %', '55px')
+        + '<span style="color:var(--text3); margin-left:8px;">Offered:</span>' + rng('Odds', 'Offered odds', '70px')
+        + '<span style="color:var(--text3); margin-left:8px;">Edge %:</span>' + rng('Edge', 'Edge %', '55px')
+        + '<span style="color:var(--text3); margin-left:8px;">To Win $:</span>' + rng('Stake', 'Stake', '70px')
+        + '<span style="color:var(--text3); margin-left:8px;">P&amp;L $:</span>' + rng('Pnl', 'P&L', '70px')
+        + '</div>';
+    }
 
     const edgePageSize = 20;
     const edgeShowAll = window._edgeShowAll || false;
