@@ -683,6 +683,17 @@ function getLegsForExposure(order) {
 }
 
 /**
+ * Effective probability for a leg — prefers live odds if available.
+ * liveFairProb is set by refreshLiveOdds for legs of in-progress games.
+ * Falls back to the pre-game fairProb, then 0.5 if neither exists.
+ */
+function legEffectiveProb(leg) {
+  if (leg.liveFairProb != null && leg.liveFairProb > 0 && leg.liveFairProb < 1) return leg.liveFairProb;
+  if (leg.fairProb != null && leg.fairProb > 0 && leg.fairProb < 1) return leg.fairProb;
+  return 0.5;
+}
+
+/**
  * Calculate our payout (My Risk) for an order.
  * This is what we pay the bettor if their parlay wins.
  */
@@ -734,11 +745,11 @@ function addExposure(order) {
     // is tracked as separate rows in the Team Exposure table
     const key = teamKey + '|' + (eventId || 'noevent');
 
-    // Product of all OTHER legs' fair probs
+    // Product of all OTHER legs' effective probs (live if available, else pre-game)
     let otherProb = 1;
     for (let j = 0; j < legs.length; j++) {
       if (j === i) continue;
-      otherProb *= (legs[j].fairProb || 0.5);
+      otherProb *= legEffectiveProb(legs[j]);
     }
 
     // Game-level tracking (for net exposure calc)
@@ -817,7 +828,7 @@ function removeExposure(order) {
       let otherProb = 1;
       for (let j = 0; j < legs.length; j++) {
         if (j === i) continue;
-        otherProb *= (legs[j].fairProb || 0.5);
+        otherProb *= legEffectiveProb(legs[j]);
       }
       exposure[key].risk -= payout * otherProb;
       exposure[key].parlays -= 1;
@@ -907,6 +918,14 @@ function getGameExposureSnapshot() {
   return Object.entries(gameExposure).map(([eventId, game]) => {
     const grossRisk = game.parlays.reduce((s, p) => s + p.weightedRisk, 0);
     const totalStakes = game.parlays.reduce((s, p) => s + p.stake, 0);
+    // Check if ANY leg in ANY parlay contributing to this game uses live odds
+    let hasLiveOdds = false;
+    for (const p of game.parlays) {
+      const order = orders[p.parlayId];
+      if (!order) continue;
+      const legs = order.legs || order.meta?.legs || [];
+      if (legs.some(l => l.liveFairProb != null)) { hasLiveOdds = true; break; }
+    }
     return {
       eventId,
       name: game.name,
@@ -917,6 +936,7 @@ function getGameExposureSnapshot() {
       totalStakes: Math.round(totalStakes * 100) / 100,
       netExposure: Math.round((game.netExposure || 0) * 100) / 100,
       worstCase: Math.round((game.netExposure || grossRisk) * 100) / 100,
+      hasLiveOdds,
       parlays: game.parlays,
     };
   }).sort((a, b) => b.netExposure - a.netExposure);
@@ -1028,6 +1048,100 @@ function getExposureSnapshot() {
  * Poll PX orders API for settlement updates.
  * Catches settlements that WebSocket events may have missed.
  */
+/**
+ * Clear all exposure state and rebuild from scratch by re-adding every
+ * confirmed order. Picks up any updated liveFairProb values on legs.
+ */
+function rebuildAllExposure() {
+  // Clear state
+  for (const k of Object.keys(exposure)) delete exposure[k];
+  for (const k of Object.keys(gameExposure)) delete gameExposure[k];
+  // Re-add all confirmed orders
+  for (const order of Object.values(orders)) {
+    if (order.status === 'confirmed') {
+      addExposure(order);
+    }
+  }
+}
+
+/**
+ * Refresh live odds for in-progress games and update weighted risk
+ * calculations. Pulls live odds from the odds feed (live=true) for each
+ * sport that has any in-progress game in a confirmed parlay, updates
+ * leg.liveFairProb on affected legs, then rebuilds exposure.
+ *
+ * Returns a summary: { sportsRefreshed, legsUpdated, inProgressGames }.
+ */
+async function refreshLiveOdds(oddsFeed) {
+  const now = Date.now();
+  // Find all in-progress legs across confirmed orders
+  const inProgressLegsBySport = {}; // sport -> list of { order, leg }
+  let inProgressGames = 0;
+  const seenEvents = new Set();
+  for (const order of Object.values(orders)) {
+    if (order.status !== 'confirmed') continue;
+    const legs = order.legs || order.meta?.legs || [];
+    for (const leg of legs) {
+      const startMs = leg.startTime ? new Date(leg.startTime).getTime() : null;
+      if (!startMs || isNaN(startMs)) continue;
+      if (startMs > now) continue; // not started yet
+      // Skip legs where game is likely over (>4h since start)
+      if (now - startMs > 4 * 60 * 60 * 1000) continue;
+      const sport = leg.sport || leg.oddsApiSport;
+      if (!sport) continue;
+      if (!inProgressLegsBySport[sport]) inProgressLegsBySport[sport] = [];
+      inProgressLegsBySport[sport].push({ order, leg });
+      const eventKey = sport + '|' + (leg.pxEventId || (leg.homeTeam + '@' + leg.awayTeam));
+      if (!seenEvents.has(eventKey)) { seenEvents.add(eventKey); inProgressGames++; }
+    }
+  }
+
+  const sports = Object.keys(inProgressLegsBySport);
+  if (sports.length === 0) {
+    return { sportsRefreshed: 0, legsUpdated: 0, inProgressGames: 0 };
+  }
+
+  // Fetch live odds for each sport with in-progress games
+  let sportsRefreshed = 0;
+  for (const sport of sports) {
+    try {
+      const result = await oddsFeed.fetchOddsForSport(sport, { live: true });
+      if (result != null) sportsRefreshed++;
+    } catch (err) {
+      log.warn('LiveOdds', `Failed to fetch live odds for ${sport}: ${err.message}`);
+    }
+  }
+
+  // Update liveFairProb on each in-progress leg
+  let legsUpdated = 0;
+  for (const [sport, legRecords] of Object.entries(inProgressLegsBySport)) {
+    for (const { leg } of legRecords) {
+      const prob = oddsFeed.getLiveFairProb(
+        leg.oddsApiSport || sport,
+        leg.homeTeam,
+        leg.awayTeam,
+        leg.oddsApiMarket || leg.market || leg.marketType,
+        leg.oddsApiSelection || leg.selection,
+        leg.line != null ? Math.abs(leg.line) : null,
+        leg.startTime
+      );
+      if (prob != null && prob > 0 && prob < 1) {
+        leg.liveFairProb = prob;
+        leg.liveFairProbUpdatedAt = new Date().toISOString();
+        legsUpdated++;
+      }
+    }
+  }
+
+  // Rebuild exposure with new probs (if any legs were updated)
+  if (legsUpdated > 0) {
+    rebuildAllExposure();
+  }
+
+  log.info('LiveOdds', `Refreshed ${sportsRefreshed}/${sports.length} sports, updated ${legsUpdated} legs across ${inProgressGames} in-progress games`);
+  return { sportsRefreshed, legsUpdated, inProgressGames, sportsWithInProgress: sports };
+}
+
 async function pollOrderSettlements(px) {
   const confirmed = Object.values(orders).filter(o => o.status === 'confirmed' && o.orderUuid);
   if (confirmed.length === 0) {
@@ -1134,6 +1248,8 @@ module.exports = {
   recordDecline,
   getMarketIntel,
   getAlerts,
+  refreshLiveOdds,
+  rebuildAllExposure,
   loadFromDb,
 };
 

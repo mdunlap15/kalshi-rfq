@@ -521,6 +521,13 @@
 
       <!-- ===================== SECTION: EXPOSURE ===================== -->
       <div id="section-exposure" class="section" style="display:none;">
+        <!-- Live odds refresh indicator -->
+        <div id="live-odds-indicator" style="margin-bottom:10px; padding:6px 10px; background:var(--surface2); border-left:3px solid var(--text3); border-radius:4px; font-size:11px; color:var(--text3); display:flex; align-items:center; gap:8px;">
+          <span id="live-odds-dot" style="display:inline-block; width:8px; height:8px; background:var(--text3); border-radius:50%;"></span>
+          <span id="live-odds-status">Live odds refresh idle &mdash; will run every 60s while this tab is open</span>
+          <button onclick="refreshLiveOddsNow()" style="margin-left:auto; background:var(--surface3); border:1px solid var(--border); color:var(--text2); padding:2px 8px; border-radius:4px; font-size:10px; cursor:pointer;">Refresh now</button>
+        </div>
+
         <!-- Exposure reference / how-it-works -->
         <div class="card">
           <div class="card-header" onclick="toggleCard(this)">
@@ -2509,8 +2516,11 @@
       const netExp = g.netExposure || 0;
       const netColor = netExp <= 0 ? 'var(--green)' : pct > 80 ? 'var(--red)' : 'var(--text)';
 
+      const liveBadge = g.hasLiveOdds
+        ? ' <span title="Weighted risk includes live in-play odds updates" style="display:inline-block; background:var(--green); color:#000; font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;">LIVE</span>'
+        : '';
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">';
-      html += '<td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' + escapeHtml(g.name) + '">' + escapeHtml(g.name) + '</td>';
+      html += '<td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' + escapeHtml(g.name) + '">' + escapeHtml(g.name) + liveBadge + '</td>';
       html += '<td>' + sportPill(g.sport || 'unknown') + '</td>';
       html += '<td style="font-size:11px; white-space:nowrap;">' + startCell + '</td>';
       html += '<td style="text-align:right">' + g.parlayCount + '</td>';
@@ -4749,6 +4759,47 @@
     }
   }
 
+  // Live odds refresh timer — only runs while Exposure tab is active
+  let liveOddsTimer = null;
+  async function refreshLiveOddsNow() {
+    const statusEl = document.getElementById('live-odds-status');
+    const dotEl = document.getElementById('live-odds-dot');
+    if (statusEl) statusEl.textContent = 'Fetching live odds...';
+    if (dotEl) dotEl.style.background = 'var(--amber)';
+    try {
+      const r = await fetch('/refresh-live-odds', { method: 'POST' }).then(r => r.json());
+      if (r && r.ok) {
+        window._lastLiveOddsRefresh = { at: Date.now(), ...r };
+        if (statusEl) {
+          const ts = new Date().toLocaleTimeString();
+          if (r.inProgressGames === 0) {
+            statusEl.innerHTML = 'No in-progress games &middot; last checked ' + ts;
+            if (dotEl) dotEl.style.background = 'var(--text3)';
+          } else {
+            statusEl.innerHTML = '<strong style="color:var(--green);">LIVE</strong> &middot; ' + r.legsUpdated + ' legs updated across ' + r.inProgressGames + ' in-progress games (' + (r.sportsWithInProgress||[]).join(', ') + ') &middot; ' + ts;
+            if (dotEl) dotEl.style.background = 'var(--green)';
+          }
+        }
+        // Trigger a full refresh so exposure tables re-render with new data
+        refreshDashboard();
+      } else {
+        if (statusEl) statusEl.textContent = 'Live odds refresh failed: ' + (r && r.error || 'unknown');
+        if (dotEl) dotEl.style.background = 'var(--red)';
+      }
+    } catch (e) {
+      if (statusEl) statusEl.textContent = 'Live odds refresh error: ' + e.message;
+      if (dotEl) dotEl.style.background = 'var(--red)';
+    }
+  }
+  function startLiveOddsRefresh() {
+    if (liveOddsTimer) return;
+    refreshLiveOddsNow();
+    liveOddsTimer = setInterval(refreshLiveOddsNow, 60 * 1000);
+  }
+  function stopLiveOddsRefresh() {
+    if (liveOddsTimer) { clearInterval(liveOddsTimer); liveOddsTimer = null; }
+  }
+
   function switchSection(section, navEl) {
     activeSection = section;
     document.querySelectorAll('.section').forEach(el => el.style.display = 'none');
@@ -4758,6 +4809,9 @@
     if (navEl) navEl.classList.add('active');
     const titleEl = document.getElementById('section-title');
     if (titleEl) titleEl.textContent = sectionNames[section] || section;
+    // Start/stop live odds refresh based on which tab is active
+    if (section === 'exposure') startLiveOddsRefresh();
+    else stopLiveOddsRefresh();
   }
   // Backwards compat alias
   function switchTab(tab, btn) { switchSection(tab, btn); }

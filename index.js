@@ -280,6 +280,16 @@ function startStatusServer() {
     }
   });
 
+  // Refresh live odds for in-progress games and update weighted exposure
+  app.post('/refresh-live-odds', async (req, res) => {
+    try {
+      const result = await orderTracker.refreshLiveOdds(oddsFeed);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Manual settlement poll
   app.post('/poll-settlements', async (req, res) => {
     try {
