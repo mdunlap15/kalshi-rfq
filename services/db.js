@@ -165,6 +165,69 @@ async function loadMatchedParlays(limit = 200) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// DECLINES — persistent record of every declined RFQ
+// ---------------------------------------------------------------------------
+
+async function saveDecline(entry) {
+  const db = getClient();
+  if (!db) return;
+  try {
+    const row = {
+      parlay_id: entry.parlayId || null,
+      reason: entry.reason || 'unknown',
+      detail: entry.detail || null,
+      known_legs: entry.knownLegs || [],
+      unknown_line_ids: entry.unknownLineIds || [],
+      unknown_details: entry.unknownDetails || [],
+      is_limit: !!entry.isLimit,
+      declined_at: entry.declinedAt || new Date().toISOString(),
+    };
+    const { error } = await db.from('declines').insert(row);
+    if (error) {
+      // Table may not exist — log once and keep going
+      if (!saveDecline._warned) {
+        log.error('DB', `saveDecline failed (run the SQL migration to create 'declines' table): ${error.message}`);
+        saveDecline._warned = true;
+      }
+    }
+  } catch (err) {
+    if (!saveDecline._warned) {
+      log.error('DB', `saveDecline error: ${err.message}`);
+      saveDecline._warned = true;
+    }
+  }
+}
+
+async function loadDeclines(limit = 2000) {
+  const db = getClient();
+  if (!db) return [];
+  try {
+    const { data, error } = await db
+      .from('declines')
+      .select('*')
+      .order('declined_at', { ascending: false })
+      .limit(limit);
+    if (error) {
+      log.warn('DB', `loadDeclines failed (table may not exist yet): ${error.message}`);
+      return [];
+    }
+    return (data || []).map(row => ({
+      parlayId: row.parlay_id,
+      reason: row.reason,
+      detail: row.detail,
+      knownLegs: row.known_legs || [],
+      unknownLineIds: row.unknown_line_ids || [],
+      unknownDetails: row.unknown_details || [],
+      isLimit: !!row.is_limit,
+      declinedAt: row.declined_at,
+    }));
+  } catch (err) {
+    log.error('DB', `loadDeclines error: ${err.message}`);
+    return [];
+  }
+}
+
 module.exports = {
   getClient,
   isEnabled,
@@ -172,4 +235,6 @@ module.exports = {
   loadOrders,
   saveMatchedParlay,
   loadMatchedParlays,
+  saveDecline,
+  loadDeclines,
 };

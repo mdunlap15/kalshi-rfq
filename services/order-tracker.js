@@ -394,14 +394,16 @@ function recordDecline(reason, detail) {
   declineStats.total++;
   const bucket = reason || 'unknown';
   declineStats.reasons[bucket] = (declineStats.reasons[bucket] || 0) + 1;
+  const declinedAt = new Date().toISOString();
+  const isLimit = LIMIT_REASONS.has(bucket);
 
   // Rolling log (keep last 200, newest first)
   declineStats.recent.unshift({
     reason: bucket,
     detail: detail?.declineDetail || null,
     parlayId: detail?.parlayId || null,
-    time: new Date().toISOString(),
-    isLimit: LIMIT_REASONS.has(bucket),
+    time: declinedAt,
+    isLimit,
   });
   if (declineStats.recent.length > 200) declineStats.recent.pop();
 
@@ -412,7 +414,7 @@ function recordDecline(reason, detail) {
       unknownLineIds: detail.unknownLegs || [],
       unknownDetails: detail.unknownSports || [],
       declineDetail: detail.declineDetail || null,
-      declinedAt: new Date().toISOString(),
+      declinedAt,
     };
     declineIdOrder.push(detail.parlayId);
     while (declineIdOrder.length > MAX_DECLINE_ENTRIES) {
@@ -420,6 +422,18 @@ function recordDecline(reason, detail) {
       delete declinesByParlayId[old];
     }
   }
+
+  // Persist to Supabase (fire-and-forget)
+  db.saveDecline({
+    parlayId: detail?.parlayId || null,
+    reason: bucket,
+    detail: detail?.declineDetail || null,
+    knownLegs: detail?.knownLegs || [],
+    unknownLineIds: detail?.unknownLegs || [],
+    unknownDetails: detail?.unknownSports || [],
+    isLimit,
+    declinedAt,
+  }).catch(() => {});
 
   // Track sports from unknown legs
   if (detail?.unknownSports) {
@@ -1245,4 +1259,69 @@ async function loadFromDb() {
     }
   }
   log.info('DB', `Loaded ${dbMatched.length} matched parlays`);
+
+  // Load declines (restores declineStats, declinesByParlayId, nearMisses)
+  const dbDeclines = await db.loadDeclines(2000);
+  const nearMissReasons = new Set(['no fair value', 'stale odds', 'parlay too unlikely', 'odds too high', 'event started']);
+  // dbDeclines are newest-first; iterate oldest-first to rebuild counters
+  for (let i = dbDeclines.length - 1; i >= 0; i--) {
+    const d = dbDeclines[i];
+    declineStats.total++;
+    declineStats.reasons[d.reason] = (declineStats.reasons[d.reason] || 0) + 1;
+    declineStats.recent.unshift({
+      reason: d.reason,
+      detail: d.detail,
+      parlayId: d.parlayId,
+      time: d.declinedAt,
+      isLimit: d.isLimit,
+    });
+    if (declineStats.recent.length > 200) declineStats.recent.pop();
+
+    if (d.parlayId) {
+      declinesByParlayId[d.parlayId] = {
+        reason: d.reason,
+        unknownLineIds: d.unknownLineIds || [],
+        unknownDetails: d.unknownDetails || [],
+        declineDetail: d.detail,
+        declinedAt: d.declinedAt,
+      };
+      declineIdOrder.push(d.parlayId);
+      while (declineIdOrder.length > MAX_DECLINE_ENTRIES) {
+        const old = declineIdOrder.shift();
+        delete declinesByParlayId[old];
+      }
+    }
+
+    // Reconstruct unknownSports aggregations
+    for (const ud of (d.unknownDetails || [])) {
+      if (!declineStats.unknownSports[ud]) {
+        declineStats.unknownSports[ud] = { count: 0, lastSeen: null, recentDeclines: [] };
+      }
+      declineStats.unknownSports[ud].count++;
+      declineStats.unknownSports[ud].lastSeen = d.declinedAt;
+      declineStats.unknownSports[ud].recentDeclines.unshift({
+        parlayId: d.parlayId,
+        knownLegs: d.knownLegs || [],
+        unknownLegs: d.unknownLineIds || [],
+        time: d.declinedAt,
+        legCount: (d.knownLegs || []).length + (d.unknownLineIds || []).length,
+      });
+      if (declineStats.unknownSports[ud].recentDeclines.length > 5) {
+        declineStats.unknownSports[ud].recentDeclines.pop();
+      }
+    }
+
+    // Near misses
+    if (nearMissReasons.has(d.reason)) {
+      declineStats.nearMisses.unshift({
+        parlayId: d.parlayId,
+        legs: d.knownLegs || [],
+        time: d.declinedAt,
+        reason: d.reason,
+        detail: d.detail,
+      });
+      if (declineStats.nearMisses.length > 100) declineStats.nearMisses.pop();
+    }
+  }
+  log.info('DB', `Loaded ${dbDeclines.length} declines`);
 }
