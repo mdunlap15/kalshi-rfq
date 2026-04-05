@@ -588,12 +588,8 @@ function getTotalPortfolioRisk() {
   let total = 0;
   for (const order of Object.values(orders)) {
     if (order.status !== 'confirmed') continue;
-    if (order.confirmedStake && order.confirmedOdds) {
-      // Our risk = bettor's profit if they win
-      // confirmedOdds is negative (SP side), negate to get bettor's positive odds
-      const bettorOdds = -order.confirmedOdds;
-      total += americanOddsToProfit(bettorOdds, order.confirmedStake);
-    }
+    // confirmedStake IS our SP risk (verified from PX payload). No multiplication.
+    total += (order.confirmedStake || 0);
   }
   return total;
 }

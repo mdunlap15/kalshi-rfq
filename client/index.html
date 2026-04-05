@@ -3003,8 +3003,10 @@
     const activeOrders = (allOrders || []).filter(o => o.status === 'confirmed');
     let totalRisk = 0, totalToWin = 0;
     for (const o of activeOrders) {
-      totalToWin += (o.confirmedStake || 0);
-      if (o.confirmedStake && o.offeredOdds) totalRisk += calcBettorWager(o.confirmedStake, o.offeredOdds);
+      // Risk = our SP stake (= confirmedStake directly)
+      totalRisk += (o.confirmedStake || 0);
+      // To Win = our profit if SP wins (= bettor's original stake)
+      if (o.confirmedStake && o.offeredOdds) totalToWin += calcSpProfit(o.confirmedStake, o.offeredOdds);
     }
 
     // ROI = sum of settled P&L / sum of settled risk
@@ -3679,8 +3681,10 @@
     const activeOrders = (allOrders || []).filter(o => o.status === 'confirmed');
     let totalRisk = 0, totalToWin = 0;
     for (const o of activeOrders) {
-      totalToWin += (o.confirmedStake || 0);
-      if (o.confirmedStake && o.offeredOdds) totalRisk += calcBettorWager(o.confirmedStake, o.offeredOdds);
+      // Risk = our SP stake (= confirmedStake directly)
+      totalRisk += (o.confirmedStake || 0);
+      // To Win = our profit if SP wins (= bettor's original stake)
+      if (o.confirmedStake && o.offeredOdds) totalToWin += calcSpProfit(o.confirmedStake, o.offeredOdds);
     }
 
     // Portfolio risk from status
