@@ -528,151 +528,6 @@
           <button onclick="refreshLiveOddsNow()" style="margin-left:auto; background:var(--surface3); border:1px solid var(--border); color:var(--text2); padding:2px 8px; border-radius:4px; font-size:10px; cursor:pointer;">Refresh now</button>
         </div>
 
-        <!-- Exposure reference / how-it-works -->
-        <div class="card">
-          <div class="card-header" onclick="toggleCard(this)">
-            <span><span class="toggle-icon collapsed">&#9660;</span>How Exposure Works &mdash; definitions + examples</span>
-            <span style="color: var(--text3); font-weight: 400; font-size: 12px;">reference</span>
-          </div>
-          <div class="card-body collapsed" style="padding: 14px 18px; font-size: 13px; color: var(--text2); line-height: 1.55;">
-            <div style="margin-bottom:12px; padding:10px 12px; background:var(--surface2); border-left:3px solid var(--blue, #3b82f6); border-radius:4px; font-size:12px;">
-              <strong>Mental model:</strong> Team Exposure answers <em>"how concentrated am I on this team?"</em>
-              Game Exposure answers <em>"how much could I actually lose from this game?"</em>
-            </div>
-
-            <h4 style="color:var(--text); margin:12px 0 6px; font-size:13px;">The setup</h4>
-            <p style="margin:4px 0;">
-              When a bettor puts down $X on a parlay at +2000, they risk $X to win $X&times;20.
-              You&rsquo;re the counterparty &mdash; if they win you pay out, if they miss ANY leg you keep their stake.
-              Parlays must hit every leg, which is why these tables use probability-weighted math rather than raw payouts.
-            </p>
-
-            <h4 style="color:var(--text); margin:14px 0 6px; font-size:13px;">Example used below</h4>
-            <p style="margin:4px 0;">
-              3 confirmed parlays all touching the Lakers @ Celtics game.
-              Parlays A &amp; B contain Lakers. Parlay C contains Celtics (opposite side of the same game).
-              Fair probs shown in parens.
-            </p>
-            <div style="overflow-x:auto; margin:6px 0;"><table style="font-size:12px; border-collapse:collapse;">
-              <tr style="color:var(--text3);"><th style="text-align:left; padding:3px 10px;">Parlay</th><th style="text-align:left; padding:3px 10px;">Legs</th><th style="text-align:right; padding:3px 10px;">Odds</th><th style="text-align:right; padding:3px 10px;">Stake</th><th style="text-align:right; padding:3px 10px;">Payout</th></tr>
-              <tr><td style="padding:3px 10px;">A</td><td style="padding:3px 10px;">Lakers ML (60%) &middot; Yankees ML (55%) &middot; NHL Over (50%)</td><td style="padding:3px 10px; text-align:right;">+400</td><td style="padding:3px 10px; text-align:right;">$200</td><td style="padding:3px 10px; text-align:right;">$800</td></tr>
-              <tr><td style="padding:3px 10px;">B</td><td style="padding:3px 10px;">Lakers ML (60%) &middot; MLB Over (52%)</td><td style="padding:3px 10px; text-align:right;">+250</td><td style="padding:3px 10px; text-align:right;">$400</td><td style="padding:3px 10px; text-align:right;">$1,000</td></tr>
-              <tr><td style="padding:3px 10px;">C</td><td style="padding:3px 10px;">Celtics ML (40%) &middot; MLB Under (48%)</td><td style="padding:3px 10px; text-align:right;">+350</td><td style="padding:3px 10px; text-align:right;">$100</td><td style="padding:3px 10px; text-align:right;">$350</td></tr>
-            </table></div>
-
-            <h4 style="color:var(--text); margin:16px 0 6px; font-size:13px;">Team Exposure columns</h4>
-
-            <div style="margin:8px 0;">
-              <strong style="color:var(--blue, #3b82f6);">Weighted Risk</strong>
-              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: payout &times; P(all OTHER legs in the parlay hit)</div>
-              <p style="margin:4px 0;">
-                The probability-weighted payout attributed to one specific leg.
-                Answers: <em>&ldquo;given this leg won, what do I expect to owe?&rdquo;</em>
-              </p>
-              <div style="padding:6px 10px; background:var(--surface3); border-radius:4px; font-family:monospace; font-size:11px;">
-                Lakers leg in Parlay A: $800 &times; 0.55 &times; 0.50 = $220<br>
-                Lakers leg in Parlay B: $1,000 &times; 0.52 = $520<br>
-                <strong>Team &ldquo;Lakers&rdquo; Weighted Risk = $220 + $520 = $740</strong>
-              </div>
-            </div>
-
-            <div style="margin:8px 0;">
-              <strong style="color:var(--blue, #3b82f6);">Notional Payout</strong>
-              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: sum of full payouts across parlays where this team appears</div>
-              <p style="margin:4px 0;">
-                Unweighted dollar volume tied to this team.
-                Theoretical liability if every parlay containing this team fully hits.
-                Useful as a quick volume gauge, less useful as a risk gauge.
-              </p>
-              <div style="padding:6px 10px; background:var(--surface3); border-radius:4px; font-family:monospace; font-size:11px;">
-                Lakers Notional Payout = $800 + $1,000 = <strong>$1,800</strong>
-              </div>
-            </div>
-
-            <div style="margin:8px 0;">
-              <strong style="color:var(--blue, #3b82f6);">Remaining</strong>
-              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: MAX_EXPOSURE_PER_TEAM &minus; Weighted Risk</div>
-              <p style="margin:4px 0;">
-                Your capacity to take more exposure on this team-game before the risk gate blocks new quotes.
-                The progress bar visualizes utilization (green &lt; 50%, amber 50&ndash;80%, red &gt; 80%).
-              </p>
-            </div>
-
-            <h4 style="color:var(--text); margin:16px 0 6px; font-size:13px;">Game Exposure columns</h4>
-
-            <div style="margin:8px 0;">
-              <strong style="color:var(--blue, #3b82f6);">Gross Risk</strong>
-              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: sum of weighted risks for every leg touching this game</div>
-              <p style="margin:4px 0;">
-                Probability-weighted payout across ALL positions on this game, ignoring offsets.
-                Combines both sides (Lakers AND Celtics legs in the Lakers @ Celtics matchup).
-              </p>
-              <div style="padding:6px 10px; background:var(--surface3); border-radius:4px; font-family:monospace; font-size:11px;">
-                Lakers legs: $220 + $520 = $740<br>
-                Celtics leg in Parlay C: $350 &times; 0.48 = $168<br>
-                <strong>Gross Risk = $740 + $168 = $908</strong>
-              </div>
-            </div>
-
-            <div style="margin:8px 0;">
-              <strong style="color:var(--blue, #3b82f6);">Stakes Held</strong>
-              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: sum of bettor stakes on parlays touching this game</div>
-              <p style="margin:4px 0;">
-                Money already in your pocket from bettors on this game.
-                If all parlays lose, you keep this amount.
-              </p>
-              <div style="padding:6px 10px; background:var(--surface3); border-radius:4px; font-family:monospace; font-size:11px;">
-                Stakes Held = $200 + $400 + $100 = <strong>$700</strong>
-              </div>
-            </div>
-
-            <div style="margin:8px 0;">
-              <strong style="color:var(--green);">Net Exposure &#9733; most important</strong>
-              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: max(for each side: weighted payouts owed &minus; stakes kept from opposite side)</div>
-              <p style="margin:4px 0;">
-                The true worst-case loss after offsets. Key insight:
-                exactly one side wins the market, so opposite-side stakes always offset.
-              </p>
-              <div style="padding:6px 10px; background:var(--surface3); border-radius:4px; font-family:monospace; font-size:11px;">
-                If Lakers win: $740 owed &minus; $100 kept (Parlay C dies) = <strong>$640</strong><br>
-                If Celtics win: $168 owed &minus; $600 kept (A+B die) = max(0, &minus;$432) = <strong>$0</strong><br>
-                <strong>Net Exposure = max($640, $0) = $640</strong>
-              </div>
-              <p style="margin:4px 0; color:var(--text3); font-size:11px;">
-                Gross was $908 but Net is only $640 because Parlay C offsets A+B.
-                <strong style="color:var(--text2);">For risk decisions, watch Net Exposure.</strong>
-              </p>
-            </div>
-
-            <div style="margin:8px 0;">
-              <strong style="color:var(--blue, #3b82f6);">% of Limit</strong>
-              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: Net Exposure / (bankroll &times; MAX_EXPOSURE_PER_GAME_PCT)</div>
-              <p style="margin:4px 0;">
-                How close this game is to the per-game cap.
-                Over 80% turns the bar amber; over 95% turns it red.
-              </p>
-            </div>
-
-            <h4 style="color:var(--text); margin:16px 0 6px; font-size:13px;">Why Team and Game tables can show different numbers</h4>
-            <p style="margin:4px 0;">
-              Team Exposure is <strong>gross</strong> (no netting). Game Exposure is <strong>net</strong> (post-offset).
-              A team with high Weighted Risk may appear in a game with tiny Net Exposure because the opposite side of the game offsets it.
-              That&rsquo;s why the Nets could show $6,723 in Team Exposure while the Nets game barely appeared at the top of Game Exposure.
-            </p>
-
-            <h4 style="color:var(--text); margin:16px 0 6px; font-size:13px;">Quick reference: what to do</h4>
-            <div style="overflow-x:auto;"><table style="font-size:12px; border-collapse:collapse; width:100%;">
-              <tr style="color:var(--text3);"><th style="text-align:left; padding:4px 10px;">If you see...</th><th style="text-align:left; padding:4px 10px;">Action</th></tr>
-              <tr><td style="padding:4px 10px;">High Team Weighted Risk, low Game Net Exposure</td><td style="padding:4px 10px; color:var(--green);">Safe &mdash; offsets are working</td></tr>
-              <tr><td style="padding:4px 10px;">High Team Weighted Risk AND high Game Net Exposure</td><td style="padding:4px 10px; color:var(--amber);">Concentrated &mdash; consider pausing quotes on this team</td></tr>
-              <tr><td style="padding:4px 10px;">Remaining near zero on a Team row</td><td style="padding:4px 10px; color:var(--amber);">At per-team cap &mdash; new parlays on that team declined</td></tr>
-              <tr><td style="padding:4px 10px;">% of Limit &gt; 80% on Game Exposure</td><td style="padding:4px 10px; color:var(--amber);">Near per-game cap &mdash; new parlays on that game declined</td></tr>
-              <tr><td style="padding:4px 10px;">Negative Net Exposure on a game with many parlays</td><td style="padding:4px 10px; color:var(--green);">Guaranteed profit locked &mdash; you can&rsquo;t lose on this game</td></tr>
-              <tr><td style="padding:4px 10px;">Notional Payout &gt;&gt; Weighted Risk</td><td style="padding:4px 10px; color:var(--text3);">Long-odds parlays &mdash; unlikely hit but costly if they do</td></tr>
-            </table></div>
-          </div>
-        </div>
-
         <div class="card">
           <div class="card-header" onclick="toggleCard(this)">
             <span><span class="toggle-icon collapsed">&#9660;</span>Team Exposure</span>
@@ -690,6 +545,49 @@
           </div>
           <div class="card-body collapsed" style="padding: 0;">
             <div id="game-exposure-table"><div class="empty-state"><div class="icon">-</div><div>No active game exposure</div></div></div>
+          </div>
+        </div>
+
+        <!-- Risk Simulation (Monte Carlo) -->
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Risk Simulation</span>
+            <span id="risk-sim-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body collapsed" id="risk-sim-body" style="padding: 14px;">
+            <div class="empty-state">
+              <div class="icon">-</div>
+              <div style="margin-bottom:10px;">Simulates P&L distribution from all your open positions using their current probabilities (live where available)</div>
+              <button onclick="renderRiskSim()" class="btn" style="font-size:12px; padding:6px 20px;">Run Simulation</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Exposure glossary (compact lookup) -->
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Glossary</span>
+            <span style="color: var(--text3); font-weight: 400; font-size: 12px;">column definitions</span>
+          </div>
+          <div class="card-body collapsed" style="padding:0;">
+            <div style="overflow-x:auto;"><table style="font-size:12px; width:100%;">
+              <tr style="color:var(--text3);">
+                <th style="text-align:left; padding:6px 12px; width:150px;">Term</th>
+                <th style="text-align:left; padding:6px 12px; width:320px;">Formula</th>
+                <th style="text-align:left; padding:6px 12px;">Meaning</th>
+              </tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Weighted Risk</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">payout &times; P(other legs hit)</td><td style="padding:4px 12px; color:var(--text2);">Probability-weighted payout attributed to one leg</td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Notional Payout</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">sum of full payouts</td><td style="padding:4px 12px; color:var(--text2);">Unweighted liability if every parlay fully hits</td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Remaining</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">max_per_team &minus; weighted risk</td><td style="padding:4px 12px; color:var(--text2);">Capacity before risk gate blocks new quotes</td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Gross Risk</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">sum of weighted risks in a game</td><td style="padding:4px 12px; color:var(--text2);">Total weighted payout across all sides of a game</td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Stakes Held</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">sum of bettor stakes on a game</td><td style="padding:4px 12px; color:var(--text2);">Money in pocket; kept if parlays lose</td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--green);">Net Exposure &#9733;</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">max over sides of (payouts owed &minus; opposite stakes)</td><td style="padding:4px 12px; color:var(--text2);">True worst-case loss after offsets. <strong>The one to watch.</strong></td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">% of Limit</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">net / (bankroll &times; max_per_game_pct)</td><td style="padding:4px 12px; color:var(--text2);">Game&rsquo;s share of the per-game cap</td></tr>
+            </table></div>
+            <div style="padding:10px 14px; font-size:11px; color:var(--text3); border-top:1px solid var(--border);">
+              <strong style="color:var(--text2);">Team</strong> Exposure is gross (no netting). <strong style="color:var(--text2);">Game</strong> Exposure is net (post-offset).
+              Same team can look big in Team but tiny in Game if the opposite side offsets it.
+            </div>
           </div>
         </div>
 
@@ -2393,6 +2291,213 @@
     else { gameExpState.sortCol = col; gameExpState.sortDir = -1; }
     gameExpRerender();
   };
+
+  // ===================== RISK SIMULATION (MONTE CARLO) =====================
+  // Simulates possible P&L outcomes from all confirmed open positions.
+  // For each unique market (game+marketType+line), draws once per sim to
+  // keep legs on the same market properly correlated (same-side legs all
+  // win or lose together; opposite-side legs are anti-correlated).
+  function runRiskSimulation(nSims) {
+    nSims = nSims || 10000;
+    const confirmed = Object.values(orderState.allOrders || {}).filter(o => o.status === 'confirmed');
+    if (confirmed.length === 0) return null;
+
+    // Build market index: marketKey -> reference prob of home/over side
+    // legs with matching side will hit together; opposite side is 1 - prob
+    const marketIndex = {};
+    for (const o of confirmed) {
+      const legs = o.legs || o.meta?.legs || [];
+      for (const l of legs) {
+        const market = l.market || l.marketType;
+        const line = (market === 'spread' || market === 'total') && l.line != null ? Math.abs(l.line) : '';
+        const mKey = (l.pxEventId || '?') + '|' + market + '|' + line;
+        const prob = (l.liveFairProb != null ? l.liveFairProb : l.fairProb) || 0.5;
+        const selection = l.selection || l.oddsApiSelection || 'home';
+        // Determine "reference" side: home for ml/spread, over for total
+        const refSide = market === 'total' ? 'over' : 'home';
+        const isRef = selection === refSide;
+        const refProb = isRef ? prob : (1 - prob);
+        // If market already indexed, keep existing (first-seen wins)
+        if (!marketIndex[mKey]) {
+          marketIndex[mKey] = { refSide, refProb };
+        }
+      }
+    }
+
+    // For each order, map legs to marketKey + expected side match
+    const orderSpecs = [];
+    for (const o of confirmed) {
+      const legs = o.legs || o.meta?.legs || [];
+      if (legs.length === 0) continue;
+      const stake = o.confirmedStake || 0;
+      const payout = (stake && o.offeredOdds) ? calcBettorWager(stake, o.offeredOdds) : 0;
+      if (!stake || !payout) continue;
+      const legSpecs = legs.map(l => {
+        const market = l.market || l.marketType;
+        const line = (market === 'spread' || market === 'total') && l.line != null ? Math.abs(l.line) : '';
+        const mKey = (l.pxEventId || '?') + '|' + market + '|' + line;
+        const selection = l.selection || l.oddsApiSelection || 'home';
+        const refSide = market === 'total' ? 'over' : 'home';
+        const wantsRef = selection === refSide;
+        return { mKey, wantsRef };
+      });
+      orderSpecs.push({ stake, payout, legSpecs });
+    }
+
+    if (orderSpecs.length === 0) return null;
+
+    const marketKeys = Object.keys(marketIndex);
+    const results = new Array(nSims);
+
+    for (let i = 0; i < nSims; i++) {
+      // Draw each market outcome (true = reference side wins)
+      const draws = {};
+      for (const k of marketKeys) {
+        draws[k] = Math.random() < marketIndex[k].refProb;
+      }
+      // Evaluate each parlay
+      let pnl = 0;
+      for (const spec of orderSpecs) {
+        let allHit = true;
+        for (const ls of spec.legSpecs) {
+          const refWon = draws[ls.mKey];
+          const legHit = ls.wantsRef ? refWon : !refWon;
+          if (!legHit) { allHit = false; break; }
+        }
+        if (allHit) pnl -= spec.payout; // bettor wins parlay, we pay out
+        else pnl += spec.stake; // bettor loses, we keep stake
+      }
+      results[i] = pnl;
+    }
+
+    results.sort((a, b) => a - b);
+    const pctl = (p) => results[Math.min(results.length - 1, Math.max(0, Math.floor(p * results.length)))];
+    const mean = results.reduce((s, v) => s + v, 0) / nSims;
+    const probWin = results.filter(r => r > 0).length / nSims;
+    const probBreakeven = results.filter(r => r >= 0).length / nSims;
+
+    return {
+      nSims,
+      orderCount: orderSpecs.length,
+      marketCount: marketKeys.length,
+      mean,
+      min: results[0],
+      max: results[results.length - 1],
+      p01: pctl(0.01),
+      p05: pctl(0.05),
+      p10: pctl(0.10),
+      p25: pctl(0.25),
+      p50: pctl(0.50),
+      p75: pctl(0.75),
+      p90: pctl(0.90),
+      p95: pctl(0.95),
+      p99: pctl(0.99),
+      probWin,
+      probBreakeven,
+      results, // keep for histogram
+    };
+  }
+
+  function renderRiskSim() {
+    const el = document.getElementById('risk-sim-body');
+    const sumEl = document.getElementById('risk-sim-summary');
+    if (!el) return;
+    const confirmedCount = Object.values(orderState.allOrders || {}).filter(o => o.status === 'confirmed').length;
+    if (confirmedCount === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No confirmed positions to simulate</div></div>';
+      return;
+    }
+
+    const r = runRiskSimulation(10000);
+    if (!r) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No positions with valid stake/odds data</div></div>';
+      return;
+    }
+
+    if (sumEl) {
+      const meanCls = r.mean >= 0 ? 'positive' : 'negative';
+      sumEl.innerHTML = 'Expected: <span class="' + meanCls + '">' + fmtPnl(r.mean) + '</span> &middot; P(profit): ' + (r.probWin * 100).toFixed(1) + '%';
+    }
+
+    // Percentile table
+    const formatCls = (v) => v > 0 ? 'positive' : v < 0 ? 'negative' : 'neutral';
+    const row = (label, v, color) => '<tr><td style="padding:3px 12px; color:' + (color || 'var(--text3)') + '; font-size:11px;">' + label + '</td><td style="padding:3px 12px; text-align:right; font-family:monospace; font-size:12px;" class="' + formatCls(v) + '">' + fmtPnl(v) + '</td></tr>';
+
+    let html = '<div style="display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start;">';
+    // Key stats block
+    html += '<div style="min-width:260px;">'
+      + '<div style="font-size:11px; color:var(--text3); margin-bottom:6px; text-transform:uppercase;">Distribution (' + r.nSims.toLocaleString() + ' sims, ' + r.orderCount + ' positions)</div>'
+      + '<table>'
+      + row('Worst 1% (P01)', r.p01, 'var(--red)')
+      + row('Worst 5% (P05)', r.p05, 'var(--red)')
+      + row('Worst 10% (P10)', r.p10, 'var(--amber)')
+      + row('Q1 (P25)', r.p25)
+      + '<tr><td style="padding:3px 12px; font-size:11px; font-weight:600;">Median (P50)</td><td style="padding:3px 12px; text-align:right; font-family:monospace; font-size:12px; font-weight:600;" class="' + formatCls(r.p50) + '">' + fmtPnl(r.p50) + '</td></tr>'
+      + row('Q3 (P75)', r.p75)
+      + row('Best 10% (P90)', r.p90, 'var(--green)')
+      + row('Best 5% (P95)', r.p95, 'var(--green)')
+      + row('Best 1% (P99)', r.p99, 'var(--green)')
+      + '<tr><td colspan="2" style="border-top:1px solid var(--border); padding:0; font-size:1px;"></td></tr>'
+      + row('Expected (mean)', r.mean, 'var(--text2)')
+      + row('Min outcome', r.min)
+      + row('Max outcome', r.max)
+      + '</table>'
+      + '<div style="margin-top:10px; font-size:11px; color:var(--text3);">'
+      + 'P(profit): <strong class="' + formatCls(r.probWin) + '">' + (r.probWin * 100).toFixed(1) + '%</strong> &middot; '
+      + 'P(breakeven+): ' + (r.probBreakeven * 100).toFixed(1) + '%'
+      + '</div>'
+      + '</div>';
+
+    // Histogram
+    const histW = 420, histH = 220, hPad = { l: 10, r: 10, t: 10, b: 30 };
+    const hChartW = histW - hPad.l - hPad.r;
+    const hChartH = histH - hPad.t - hPad.b;
+    const bins = 40;
+    const min = r.min, max = r.max;
+    const range = max - min || 1;
+    const binSize = range / bins;
+    const counts = new Array(bins).fill(0);
+    for (const v of r.results) {
+      let idx = Math.floor((v - min) / binSize);
+      if (idx >= bins) idx = bins - 1;
+      if (idx < 0) idx = 0;
+      counts[idx]++;
+    }
+    const maxCount = Math.max(...counts);
+    const zeroBin = Math.floor((0 - min) / binSize);
+    const binW = hChartW / bins;
+
+    let svg = '<svg viewBox="0 0 ' + histW + ' ' + histH + '" style="width:100%; max-width:' + histW + 'px; height:auto;">';
+    // Zero line
+    if (zeroBin >= 0 && zeroBin < bins) {
+      const zx = hPad.l + zeroBin * binW + binW / 2;
+      svg += svgLine(zx, hPad.t, zx, hPad.t + hChartH, 'var(--text3)', 1);
+      svg += svgText(zx, hPad.t + hChartH + 12, '$0', { size: 9, fill: 'var(--text3)' });
+    }
+    // Bars
+    for (let i = 0; i < bins; i++) {
+      const h = (counts[i] / maxCount) * hChartH;
+      const x = hPad.l + i * binW;
+      const y = hPad.t + hChartH - h;
+      const binCenter = min + binSize * (i + 0.5);
+      const color = binCenter >= 0 ? 'var(--green)' : 'var(--red)';
+      svg += svgRect(x + 0.5, y, Math.max(0.5, binW - 1), h, color, 0);
+    }
+    // Axis labels
+    svg += svgText(hPad.l, hPad.t + hChartH + 12, fmtPnl(min).replace('.00', ''), { anchor: 'start', size: 9, fill: 'var(--text3)' });
+    svg += svgText(hPad.l + hChartW, hPad.t + hChartH + 12, fmtPnl(max).replace('.00', ''), { anchor: 'end', size: 9, fill: 'var(--text3)' });
+    svg += '</svg>';
+    svg += '<div style="font-size:10px; color:var(--text3); text-align:center;">P&L outcome distribution</div>';
+
+    html += '<div style="flex:1; min-width:300px;">' + svg + '</div>';
+    html += '</div>';
+    html += '<div style="margin-top:12px; text-align:center;"><button onclick="renderRiskSim()" class="btn" style="font-size:12px; padding:4px 16px;">Re-run simulation</button></div>';
+    html += '<div style="margin-top:8px; font-size:10px; color:var(--text3); text-align:center;">Simulates each market outcome once per trial; parlays with shared legs are correlated, opposite-side legs are anti-correlated. Uses live odds where available.</div>';
+
+    el.innerHTML = html;
+  }
+
+  window.renderRiskSim = renderRiskSim;
 
   function renderGameExposure(exp) {
     window._lastExposureData = exp;
