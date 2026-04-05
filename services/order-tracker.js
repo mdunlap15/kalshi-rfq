@@ -243,21 +243,23 @@ function recordSettlement(orderUuid, result, payout) {
     // Calculate P&L from SP perspective (house side)
     // PX settlement_status is from the SP's perspective:
     //   'won' = SP won (bettor's parlay lost) → we keep bettor's stake
-    //   'lost' = SP lost (bettor's parlay won) → we pay out the payout
+    //   'lost' = SP lost (bettor's parlay won) → we pay out our stake
     //
-    // confirmedStake = bettor's wager (what they risked)
-    // confirmedOdds = negative American odds (SP perspective), negate for bettor's odds
-    // Our payout = bettor's profit if they win
-    const bettorOdds = -order.confirmedOdds;
-    const ourPayout = americanOddsToProfit(bettorOdds, order.confirmedStake);
+    // confirmedStake = OUR SP stake (= our max risk = bettor's potential payout)
+    // confirmedOdds = SP-side American odds (negative for typical parlay favorites)
+    // Our profit on SP-win = bettor's original stake = stake × 100/|odds| at -X
+    //                                                = stake × |odds|/100 at +X
+    //   (equivalently: americanOddsToProfit(confirmedOdds, confirmedStake))
+    // Our loss on SP-lose = the full SP stake (our max risk)
+    const ourProfitOnWin = americanOddsToProfit(order.confirmedOdds, order.confirmedStake);
 
     if (result === 'won') {
-      // SP won — bettor's parlay lost, we keep their stake
-      order.pnl = order.confirmedStake || 0;
+      // SP won — bettor's parlay lost, we keep their stake (our profit)
+      order.pnl = ourProfitOnWin;
       stats.totalWins++;
     } else if (result === 'lost') {
-      // SP lost — bettor's parlay won, we pay out
-      order.pnl = -ourPayout;
+      // SP lost — bettor's parlay won, we pay out our stake
+      order.pnl = -(order.confirmedStake || 0);
       stats.totalLosses++;
     } else if (result === 'push' || result === 'void') {
       order.pnl = 0;
@@ -1335,14 +1337,16 @@ async function loadFromDb() {
     if (o.status === 'rejected') stats.totalRejections++;
     if (o.status?.startsWith('settled_')) {
       stats.totalSettlements++;
-      // Recalculate P&L on load to fix any prior bugs
-      // confirmedStake = bettor's wager, negate odds for bettor's perspective
+      // Recalculate P&L on load to apply correct interpretation:
+      // confirmedStake = OUR SP stake (our max payout liability).
+      // On WON: we keep bettor's stake = americanOddsToProfit(confirmedOdds, confirmedStake)
+      // On LOST: we lose our stake = -confirmedStake
       const settleResult = o.status.replace('settled_', '');
-      const ourPay = americanOddsToProfit(-o.confirmedOdds, o.confirmedStake);
+      const ourProfitOnWin = americanOddsToProfit(o.confirmedOdds, o.confirmedStake);
       if (settleResult === 'won') {
-        o.pnl = o.confirmedStake || 0; // we keep bettor's stake
+        o.pnl = ourProfitOnWin;
       } else if (settleResult === 'lost') {
-        o.pnl = -ourPay; // we pay out
+        o.pnl = -(o.confirmedStake || 0);
       } else {
         o.pnl = 0;
       }
