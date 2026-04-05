@@ -425,6 +425,7 @@ async function handleConfirm(data) {
     const confirmedStake = payload.stake || payload.confirmed_stake;
 
     log.info('Confirm', `Received: parlay=${parlayId}, order=${orderUuid}, odds=${confirmedOdds}, stake=$${confirmedStake}`);
+    log.info('Confirm', `FULL PAYLOAD: ${JSON.stringify(payload)}`);
 
     // Find our original quote
     const originalOrder = orderTracker.findByParlayId(parlayId);
