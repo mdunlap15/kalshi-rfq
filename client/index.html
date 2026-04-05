@@ -521,6 +521,151 @@
 
       <!-- ===================== SECTION: EXPOSURE ===================== -->
       <div id="section-exposure" class="section" style="display:none;">
+        <!-- Exposure reference / how-it-works -->
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon collapsed">&#9660;</span>How Exposure Works &mdash; definitions + examples</span>
+            <span style="color: var(--text3); font-weight: 400; font-size: 12px;">reference</span>
+          </div>
+          <div class="card-body collapsed" style="padding: 14px 18px; font-size: 13px; color: var(--text2); line-height: 1.55;">
+            <div style="margin-bottom:12px; padding:10px 12px; background:var(--surface2); border-left:3px solid var(--blue, #3b82f6); border-radius:4px; font-size:12px;">
+              <strong>Mental model:</strong> Team Exposure answers <em>"how concentrated am I on this team?"</em>
+              Game Exposure answers <em>"how much could I actually lose from this game?"</em>
+            </div>
+
+            <h4 style="color:var(--text); margin:12px 0 6px; font-size:13px;">The setup</h4>
+            <p style="margin:4px 0;">
+              When a bettor puts down $X on a parlay at +2000, they risk $X to win $X&times;20.
+              You&rsquo;re the counterparty &mdash; if they win you pay out, if they miss ANY leg you keep their stake.
+              Parlays must hit every leg, which is why these tables use probability-weighted math rather than raw payouts.
+            </p>
+
+            <h4 style="color:var(--text); margin:14px 0 6px; font-size:13px;">Example used below</h4>
+            <p style="margin:4px 0;">
+              3 confirmed parlays all touching the Lakers @ Celtics game.
+              Parlays A &amp; B contain Lakers. Parlay C contains Celtics (opposite side of the same game).
+              Fair probs shown in parens.
+            </p>
+            <div style="overflow-x:auto; margin:6px 0;"><table style="font-size:12px; border-collapse:collapse;">
+              <tr style="color:var(--text3);"><th style="text-align:left; padding:3px 10px;">Parlay</th><th style="text-align:left; padding:3px 10px;">Legs</th><th style="text-align:right; padding:3px 10px;">Odds</th><th style="text-align:right; padding:3px 10px;">Stake</th><th style="text-align:right; padding:3px 10px;">Payout</th></tr>
+              <tr><td style="padding:3px 10px;">A</td><td style="padding:3px 10px;">Lakers ML (60%) &middot; Yankees ML (55%) &middot; NHL Over (50%)</td><td style="padding:3px 10px; text-align:right;">+400</td><td style="padding:3px 10px; text-align:right;">$200</td><td style="padding:3px 10px; text-align:right;">$800</td></tr>
+              <tr><td style="padding:3px 10px;">B</td><td style="padding:3px 10px;">Lakers ML (60%) &middot; MLB Over (52%)</td><td style="padding:3px 10px; text-align:right;">+250</td><td style="padding:3px 10px; text-align:right;">$400</td><td style="padding:3px 10px; text-align:right;">$1,000</td></tr>
+              <tr><td style="padding:3px 10px;">C</td><td style="padding:3px 10px;">Celtics ML (40%) &middot; MLB Under (48%)</td><td style="padding:3px 10px; text-align:right;">+350</td><td style="padding:3px 10px; text-align:right;">$100</td><td style="padding:3px 10px; text-align:right;">$350</td></tr>
+            </table></div>
+
+            <h4 style="color:var(--text); margin:16px 0 6px; font-size:13px;">Team Exposure columns</h4>
+
+            <div style="margin:8px 0;">
+              <strong style="color:var(--blue, #3b82f6);">Weighted Risk</strong>
+              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: payout &times; P(all OTHER legs in the parlay hit)</div>
+              <p style="margin:4px 0;">
+                The probability-weighted payout attributed to one specific leg.
+                Answers: <em>&ldquo;given this leg won, what do I expect to owe?&rdquo;</em>
+              </p>
+              <div style="padding:6px 10px; background:var(--surface3); border-radius:4px; font-family:monospace; font-size:11px;">
+                Lakers leg in Parlay A: $800 &times; 0.55 &times; 0.50 = $220<br>
+                Lakers leg in Parlay B: $1,000 &times; 0.52 = $520<br>
+                <strong>Team &ldquo;Lakers&rdquo; Weighted Risk = $220 + $520 = $740</strong>
+              </div>
+            </div>
+
+            <div style="margin:8px 0;">
+              <strong style="color:var(--blue, #3b82f6);">Notional Payout</strong>
+              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: sum of full payouts across parlays where this team appears</div>
+              <p style="margin:4px 0;">
+                Unweighted dollar volume tied to this team.
+                Theoretical liability if every parlay containing this team fully hits.
+                Useful as a quick volume gauge, less useful as a risk gauge.
+              </p>
+              <div style="padding:6px 10px; background:var(--surface3); border-radius:4px; font-family:monospace; font-size:11px;">
+                Lakers Notional Payout = $800 + $1,000 = <strong>$1,800</strong>
+              </div>
+            </div>
+
+            <div style="margin:8px 0;">
+              <strong style="color:var(--blue, #3b82f6);">Remaining</strong>
+              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: MAX_EXPOSURE_PER_TEAM &minus; Weighted Risk</div>
+              <p style="margin:4px 0;">
+                Your capacity to take more exposure on this team-game before the risk gate blocks new quotes.
+                The progress bar visualizes utilization (green &lt; 50%, amber 50&ndash;80%, red &gt; 80%).
+              </p>
+            </div>
+
+            <h4 style="color:var(--text); margin:16px 0 6px; font-size:13px;">Game Exposure columns</h4>
+
+            <div style="margin:8px 0;">
+              <strong style="color:var(--blue, #3b82f6);">Gross Risk</strong>
+              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: sum of weighted risks for every leg touching this game</div>
+              <p style="margin:4px 0;">
+                Probability-weighted payout across ALL positions on this game, ignoring offsets.
+                Combines both sides (Lakers AND Celtics legs in the Lakers @ Celtics matchup).
+              </p>
+              <div style="padding:6px 10px; background:var(--surface3); border-radius:4px; font-family:monospace; font-size:11px;">
+                Lakers legs: $220 + $520 = $740<br>
+                Celtics leg in Parlay C: $350 &times; 0.48 = $168<br>
+                <strong>Gross Risk = $740 + $168 = $908</strong>
+              </div>
+            </div>
+
+            <div style="margin:8px 0;">
+              <strong style="color:var(--blue, #3b82f6);">Stakes Held</strong>
+              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: sum of bettor stakes on parlays touching this game</div>
+              <p style="margin:4px 0;">
+                Money already in your pocket from bettors on this game.
+                If all parlays lose, you keep this amount.
+              </p>
+              <div style="padding:6px 10px; background:var(--surface3); border-radius:4px; font-family:monospace; font-size:11px;">
+                Stakes Held = $200 + $400 + $100 = <strong>$700</strong>
+              </div>
+            </div>
+
+            <div style="margin:8px 0;">
+              <strong style="color:var(--green);">Net Exposure &#9733; most important</strong>
+              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: max(for each side: weighted payouts owed &minus; stakes kept from opposite side)</div>
+              <p style="margin:4px 0;">
+                The true worst-case loss after offsets. Key insight:
+                exactly one side wins the market, so opposite-side stakes always offset.
+              </p>
+              <div style="padding:6px 10px; background:var(--surface3); border-radius:4px; font-family:monospace; font-size:11px;">
+                If Lakers win: $740 owed &minus; $100 kept (Parlay C dies) = <strong>$640</strong><br>
+                If Celtics win: $168 owed &minus; $600 kept (A+B die) = max(0, &minus;$432) = <strong>$0</strong><br>
+                <strong>Net Exposure = max($640, $0) = $640</strong>
+              </div>
+              <p style="margin:4px 0; color:var(--text3); font-size:11px;">
+                Gross was $908 but Net is only $640 because Parlay C offsets A+B.
+                <strong style="color:var(--text2);">For risk decisions, watch Net Exposure.</strong>
+              </p>
+            </div>
+
+            <div style="margin:8px 0;">
+              <strong style="color:var(--blue, #3b82f6);">% of Limit</strong>
+              <div style="margin:2px 0; color:var(--text3); font-size:11px;">Formula: Net Exposure / (bankroll &times; MAX_EXPOSURE_PER_GAME_PCT)</div>
+              <p style="margin:4px 0;">
+                How close this game is to the per-game cap.
+                Over 80% turns the bar amber; over 95% turns it red.
+              </p>
+            </div>
+
+            <h4 style="color:var(--text); margin:16px 0 6px; font-size:13px;">Why Team and Game tables can show different numbers</h4>
+            <p style="margin:4px 0;">
+              Team Exposure is <strong>gross</strong> (no netting). Game Exposure is <strong>net</strong> (post-offset).
+              A team with high Weighted Risk may appear in a game with tiny Net Exposure because the opposite side of the game offsets it.
+              That&rsquo;s why the Nets could show $6,723 in Team Exposure while the Nets game barely appeared at the top of Game Exposure.
+            </p>
+
+            <h4 style="color:var(--text); margin:16px 0 6px; font-size:13px;">Quick reference: what to do</h4>
+            <div style="overflow-x:auto;"><table style="font-size:12px; border-collapse:collapse; width:100%;">
+              <tr style="color:var(--text3);"><th style="text-align:left; padding:4px 10px;">If you see...</th><th style="text-align:left; padding:4px 10px;">Action</th></tr>
+              <tr><td style="padding:4px 10px;">High Team Weighted Risk, low Game Net Exposure</td><td style="padding:4px 10px; color:var(--green);">Safe &mdash; offsets are working</td></tr>
+              <tr><td style="padding:4px 10px;">High Team Weighted Risk AND high Game Net Exposure</td><td style="padding:4px 10px; color:var(--amber);">Concentrated &mdash; consider pausing quotes on this team</td></tr>
+              <tr><td style="padding:4px 10px;">Remaining near zero on a Team row</td><td style="padding:4px 10px; color:var(--amber);">At per-team cap &mdash; new parlays on that team declined</td></tr>
+              <tr><td style="padding:4px 10px;">% of Limit &gt; 80% on Game Exposure</td><td style="padding:4px 10px; color:var(--amber);">Near per-game cap &mdash; new parlays on that game declined</td></tr>
+              <tr><td style="padding:4px 10px;">Negative Net Exposure on a game with many parlays</td><td style="padding:4px 10px; color:var(--green);">Guaranteed profit locked &mdash; you can&rsquo;t lose on this game</td></tr>
+              <tr><td style="padding:4px 10px;">Notional Payout &gt;&gt; Weighted Risk</td><td style="padding:4px 10px; color:var(--text3);">Long-odds parlays &mdash; unlikely hit but costly if they do</td></tr>
+            </table></div>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-header" onclick="toggleCard(this)">
             <span><span class="toggle-icon collapsed">&#9660;</span>Team Exposure</span>
