@@ -469,7 +469,7 @@ function recordDecline(reason, detail) {
       reason,
       detail: detail.declineDetail || null,
     });
-    if (declineStats.nearMisses.length > 100) declineStats.nearMisses.pop();
+    if (declineStats.nearMisses.length > 500) declineStats.nearMisses.pop();
   }
 }
 
@@ -481,7 +481,7 @@ function getMarketIntel(limit = 50) {
       reasons: { ...declineStats.reasons },
       unknownSports: { ...declineStats.unknownSports },
       nearMissCount: declineStats.nearMisses.length,
-      recentNearMisses: declineStats.nearMisses.slice(0, 10),
+      recentNearMisses: declineStats.nearMisses.slice(0, 500),
     },
     recentMatched: matchedParlays.slice(0, limit),
     quoteWinRate: marketStats.weQuoted > 0 ? (marketStats.weWon / marketStats.weQuoted * 100).toFixed(1) + '%' : '-',
@@ -1634,7 +1634,7 @@ async function loadFromDb() {
         reason: d.reason,
         detail: d.detail,
       });
-      if (declineStats.nearMisses.length > 100) declineStats.nearMisses.pop();
+      if (declineStats.nearMisses.length > 500) declineStats.nearMisses.pop();
     }
   }
   log.info('DB', `Loaded ${dbDeclines.length} declines`);
