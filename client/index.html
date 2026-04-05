@@ -205,6 +205,8 @@
     .sport-pill.nhl { background: rgba(188,140,255,0.15); color: var(--purple); }
     .sport-pill.tennis { background: rgba(210,153,34,0.15); color: #e8c547; }
     .sport-pill.soccer { background: rgba(63,185,80,0.15); color: #57cc8a; }
+    .sport-pill.multi { background: rgba(136,136,136,0.15); color: var(--text2); }
+    .sport-pill.unknown { background: rgba(136,136,136,0.1); color: var(--text3); }
 
     .market-pill {
       display: inline-block;
@@ -3216,7 +3218,11 @@
     const bySport = {};
     for (const o of settled) {
       const legs = o.legs || o.meta?.legs || [];
-      const sport = legs[0]?.sport || 'unknown';
+      const knownSports = [...new Set(legs.map(l => l.sport).filter(s => s && s !== 'unknown'))];
+      let sport;
+      if (knownSports.length === 0) sport = 'Unknown';
+      else if (knownSports.length === 1) sport = knownSports[0];
+      else sport = 'Multi-league';
       if (!bySport[sport]) bySport[sport] = { pnl: 0, wins: 0, losses: 0, staked: 0, oddsSum: 0, count: 0 };
       bySport[sport].pnl += (o.pnl || 0);
       bySport[sport].staked += (o.confirmedStake || 0);
@@ -4140,7 +4146,7 @@
       'mma_mixed_martial_arts': 'MMA',
       'boxing_boxing': 'Boxing',
     };
-    return map[sport] || sport;
+    return map[sport] || (sport === 'unknown' ? 'Unknown' : sport);
   }
 
   function sportPill(sport) {
@@ -4152,6 +4158,7 @@
       'NFL': 'nfl', 'NCAAF': 'nfl',
       'MLS': 'soccer', 'EPL': 'soccer', 'UCL': 'soccer', 'UEL': 'soccer',
       'La Liga': 'soccer', 'Serie A': 'soccer', 'Bundesliga': 'soccer', 'Ligue 1': 'soccer',
+      'Multi-league': 'multi', 'Unknown': 'unknown',
     };
     const cls = clsMap[label] || label.toLowerCase();
     return `<span class="sport-pill ${cls}">${label}</span>`;

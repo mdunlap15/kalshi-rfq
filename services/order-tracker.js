@@ -488,20 +488,16 @@ function getMarketIntel(limit = 50) {
     matchedBySport: (() => {
       const bySport = {};
       for (const m of matchedParlays) {
-        const sports = [...new Set((m.legs || []).map(l => l.sport).filter(Boolean))];
-        for (const s of sports) {
-          if (!bySport[s]) bySport[s] = { count: 0, weQuoted: 0, missed: 0, avgStake: 0, totalStake: 0 };
-          bySport[s].count++;
-          bySport[s].totalStake += (m.matchedStake || 0);
-          if (m.weQuoted) bySport[s].weQuoted++;
-          else bySport[s].missed++;
-        }
-        if (sports.length === 0) {
-          if (!bySport['unknown']) bySport['unknown'] = { count: 0, weQuoted: 0, missed: 0, avgStake: 0, totalStake: 0 };
-          bySport['unknown'].count++;
-          bySport['unknown'].totalStake += (m.matchedStake || 0);
-          bySport['unknown'].missed++;
-        }
+        const knownSports = [...new Set((m.legs || []).map(l => l.sport).filter(s => s && s !== 'unknown'))];
+        let bucket;
+        if (knownSports.length === 0) bucket = 'Unknown';
+        else if (knownSports.length === 1) bucket = knownSports[0];
+        else bucket = 'Multi-league';
+        if (!bySport[bucket]) bySport[bucket] = { count: 0, weQuoted: 0, missed: 0, avgStake: 0, totalStake: 0 };
+        bySport[bucket].count++;
+        bySport[bucket].totalStake += (m.matchedStake || 0);
+        if (m.weQuoted) bySport[bucket].weQuoted++;
+        else bySport[bucket].missed++;
       }
       for (const s of Object.keys(bySport)) {
         bySport[s].avgStake = bySport[s].count > 0 ? bySport[s].totalStake / bySport[s].count : 0;
@@ -645,7 +641,12 @@ function getPnLBySport() {
   const bySport = {};
   for (const order of Object.values(orders)) {
     if (order.pnl == null) continue;
-    const sport = order.meta?.legs?.[0]?.sport || 'unknown';
+    const legs = order.meta?.legs || order.legs || [];
+    const knownSports = [...new Set(legs.map(l => l.sport).filter(s => s && s !== 'unknown'))];
+    let sport;
+    if (knownSports.length === 0) sport = 'Unknown';
+    else if (knownSports.length === 1) sport = knownSports[0];
+    else sport = 'Multi-league';
     if (!bySport[sport]) bySport[sport] = { pnl: 0, count: 0, wins: 0, losses: 0 };
     bySport[sport].pnl += order.pnl;
     bySport[sport].count++;
