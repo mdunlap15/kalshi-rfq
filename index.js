@@ -382,6 +382,25 @@ function startStatusServer() {
     }
   });
 
+  // Debug: return raw PX response including pagination metadata
+  app.get('/px-orders-raw', async (req, res) => {
+    try {
+      const limit = Number(req.query.limit) || 100;
+      const offset = Number(req.query.offset) || 0;
+      const status = req.query.status || null;
+      const nextCursor = req.query.next_cursor || req.query.cursor || null;
+      let url = `/parlay/sp/orders/?limit=${limit}`;
+      if (status) url += `&status=${status}`;
+      if (offset) url += `&offset=${offset}`;
+      if (nextCursor) url += `&next_cursor=${encodeURIComponent(nextCursor)}`;
+      // Expose the raw response object from PX
+      const raw = await px.pxFetch ? await px.pxFetch(url) : null;
+      res.json({ ok: true, url, raw });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Pause/resume RFQ handling
   app.post('/pause', (req, res) => {
     websocket.pause();
