@@ -437,13 +437,14 @@ async function handleConfirm(data) {
     }
 
     // Check stake/risk limits before accepting.
-    // PX sends confirmedStake = OUR SP stake (= our max payout liability
-    // = bettor's potential payout if their parlay hits). So our risk on
-    // this parlay is simply confirmedStake — no multiplication needed.
-    // Verified empirically: for settled order 019d54e9 (odds=-1384,
-    // stake=$49.13, profit=$3.55), the math $49.13 × 100/1384 = $3.55
-    // only holds if $49.13 is the SP stake at -1384.
-    const ourRisk = confirmedStake || 0;
+    // confirmedStake = bettor's wager (what they risked)
+    // confirmedOdds = American odds stored as SP-side (negative for typical
+    //   parlay favorites). |odds|/100 gives the bettor-side multiplier.
+    // Our risk (= our max payout) = bettor stake × multiplier
+    const bettorOdds = Math.abs(confirmedOdds || 0);
+    const ourRisk = bettorOdds >= 100
+      ? confirmedStake * bettorOdds / 100
+      : confirmedStake;
     // Per-parlay limit: use % of bankroll or fixed amount, whichever is set
     const bankroll = getBankroll();
     const maxRiskPct = config.pricing.maxRiskPerParlayPct;
