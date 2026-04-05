@@ -438,14 +438,12 @@ async function handleConfirm(data) {
     }
 
     // Check stake/risk limits before accepting.
-    // confirmedStake = bettor's wager (what they risked)
-    // confirmedOdds = American odds stored as SP-side (negative for typical
-    //   parlay favorites). |odds|/100 gives the bettor-side multiplier.
-    // Our risk (= our max payout) = bettor stake × multiplier
-    const bettorOdds = Math.abs(confirmedOdds || 0);
-    const ourRisk = bettorOdds >= 100
-      ? confirmedStake * bettorOdds / 100
-      : confirmedStake;
+    // VERIFIED from live PX payload: PX sends stake = our SP risk = bettor's
+    // to-win amount = our max payout liability.
+    // Example: bettor wagered $100 at +1774, to-win $1774. PX sent stake=$1774
+    // and odds=-1774 (SP side). Our risk on this parlay is $1774.
+    // Our risk = confirmedStake directly, no multiplication.
+    const ourRisk = confirmedStake || 0;
     // Per-parlay limit: use % of bankroll or fixed amount, whichever is set
     const bankroll = getBankroll();
     const maxRiskPct = config.pricing.maxRiskPerParlayPct;

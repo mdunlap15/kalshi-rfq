@@ -1807,12 +1807,13 @@
       const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 60 ? teams.substring(0, 57) + '...' : teams;
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
-      // confirmedStake = bettor's wager
-      // My Risk = payout if bettor wins (calculated), To Win = confirmedStake
-      const toWin = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
-      const riskVal = order.confirmedStake && order.offeredOdds
-        ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
+      // confirmedStake = OUR SP stake (= max payout liability = My Risk)
+      // To Win = what we keep if SP wins = americanOddsToProfit from SP side
+      const riskVal = order.confirmedStake || null;
       const myRisk = riskVal != null ? fmtDollar(riskVal) : '-';
+      const profitVal = order.confirmedStake && order.offeredOdds
+        ? calcSpProfit(order.confirmedStake, order.offeredOdds) : null;
+      const toWin = profitVal != null ? fmtDollar(profitVal) : '-';
 
       // Calculate game status based on leg start times
       // Assume games last ~3.5 hours from start (covers most sports)
@@ -4062,17 +4063,28 @@
   }
 
   /**
-   * Compute our payout if bettor wins (= My Risk).
-   * @param {number} stake - confirmedStake = bettor's wager
-   * @param {number} odds - American odds (positive from bettor's view)
-   * @returns {number} Our payout = bettor's profit if they win
-   * Example: stake=$81, odds=+1347 → $81 × 1347/100 = $1,092
+   * Our max risk on a parlay. Per verified PX semantics, `stake` IS our
+   * SP risk directly (= our max payout liability = bettor's potential
+   * payout on win). No multiplication needed.
+   * @param {number} stake - confirmedStake / matchedStake = our SP stake
+   * @returns {number} Our max risk
    */
   function calcBettorWager(stake, odds) {
+    // Kept name for backwards compat; now returns stake directly.
+    return stake || 0;
+  }
+  /**
+   * SP's profit if the bet settles in our favor (= bettor's original wager).
+   * At -X SP odds: profit = stake × 100/X. At +X odds (rare): stake × X/100.
+   * @param {number} stake - our SP stake
+   * @param {number} odds - SP-side odds (or bettor-side; |odds| is symmetric)
+   * @returns {number} Our profit when we win (= bettor's stake we keep)
+   */
+  function calcSpProfit(stake, odds) {
     if (!stake || !odds) return 0;
     const absOdds = Math.abs(odds);
-    if (odds >= 100) return stake * absOdds / 100;
-    return stake * 100 / absOdds;
+    if (absOdds >= 100) return stake * 100 / absOdds;
+    return 0;
   }
 
   function decimalToAmerican(dec) {
@@ -5133,9 +5145,10 @@
       const pinAm = pinParlay != null ? (pinParlay >= 0 ? '+' : '') + pinParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
-      const toWin = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
-      const riskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
-      const myRisk = riskVal != null ? fmtDollar(riskVal) : '-';
+      const myRisk = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
+      const profitVal = order.confirmedStake && order.offeredOdds ? calcSpProfit(order.confirmedStake, order.offeredOdds) : null;
+      const toWin = profitVal != null ? fmtDollar(profitVal) : '-';
+      const riskVal = order.confirmedStake || null;
 
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
