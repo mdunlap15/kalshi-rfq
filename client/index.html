@@ -1595,7 +1595,7 @@
     el.innerHTML = html;
   }
 
-  const posState = { sortCol: 'time', sortDir: -1, search: '', pageSize: 15, showAll: false, dateFrom: '', dateTo: '', _name: 'posState' };
+  const posState = { sortCol: 'time', sortDir: -1, search: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', _name: 'posState' };
   window.posRerender = () => renderPositions(window._lastPosData || { recentOrders: [] });
   window.togglePosSort = (col) => {
     if (posState.sortCol === col) posState.sortDir *= -1;
@@ -1626,6 +1626,13 @@
         if (!teams.includes(q) && !(o.parlayId || '').toLowerCase().includes(q)) return false;
       }
       if (!passesDateFilter(o.confirmedAt, posState.dateFrom, posState.dateTo)) return false;
+      // Advanced range filters
+      const legsCount = (o.legs || o.meta?.legs || []).length;
+      if (!passesRangeFilter(legsCount, posState.legsMin, posState.legsMax)) return false;
+      if (!passesRangeFilter(o.offeredOdds, posState.oddsMin, posState.oddsMax)) return false;
+      const riskVal = (o.confirmedStake && o.offeredOdds) ? calcBettorWager(o.confirmedStake, o.offeredOdds) : (o.confirmedStake || 0);
+      if (!passesRangeFilter(riskVal, posState.riskMin, posState.riskMax)) return false;
+      if (!passesRangeFilter(o.confirmedStake, posState.towinMin, posState.towinMax)) return false;
       return true;
     });
 
@@ -1654,13 +1661,27 @@
     const pSortClick = (col, align) => `onclick="event.stopPropagation(); togglePosSort('${col}')" style="cursor:pointer;${align?'text-align:'+align+';':''}"`;
 
     const dStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+    const pFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
     let html = `<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">
       <input type="text" placeholder="Search team..." value="${posState.search}"
         oninput="posState.search=this.value; posRerender()"
         style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">
       ${dateFilterHtml(posState, 'posRerender', dStyle)}
+      <button onclick="posState.showAdvanced=!posState.showAdvanced; posRerender()" style="${pFSel} cursor:pointer;">${posState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
       <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${positions.length}</span>
     </div>`;
+    if (posState.showAdvanced) {
+      html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
+        + '<span style="color:var(--text3);">Legs:</span>'
+        + rangeFilterHtml('posState', 'legsMin', 'legsMax', posState, 'posRerender()', dStyle, { title: 'Legs', width: '55px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">Odds:</span>'
+        + rangeFilterHtml('posState', 'oddsMin', 'oddsMax', posState, 'posRerender()', dStyle, { title: 'Odds', width: '70px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">My Risk $:</span>'
+        + rangeFilterHtml('posState', 'riskMin', 'riskMax', posState, 'posRerender()', dStyle, { title: 'My Risk', width: '70px' })
+        + '<span style="color:var(--text3); margin-left:8px;">To Win $:</span>'
+        + rangeFilterHtml('posState', 'towinMin', 'towinMax', posState, 'posRerender()', dStyle, { title: 'To Win', width: '70px' })
+        + '</div>';
+    }
 
     html += `<div style="overflow-x:auto;"><table>
       <tr>
@@ -1760,6 +1781,12 @@
     sportFilter: '',
     resultFilter: '',
     legsFilter: '',
+    legsMin: '', legsMax: '',
+    oddsMin: '', oddsMax: '',
+    riskMin: '', riskMax: '',
+    pnlMin: '', pnlMax: '',
+    roiMin: '', roiMax: '',
+    showAdvanced: false,
     pageSize: 20, showAll: false,
     dateFrom: '', dateTo: '', _name: 'settledState',
   };
@@ -1818,6 +1845,19 @@
         const n = (o.legs||o.meta?.legs||[]).length;
         if (String(n) !== settledState.legsFilter) return false;
       }
+      // Advanced range filters
+      const legsCount = (o.legs||o.meta?.legs||[]).length;
+      if (!passesRangeFilter(legsCount, settledState.legsMin, settledState.legsMax)) return false;
+      if (!passesRangeFilter(o.offeredOdds, settledState.oddsMin, settledState.oddsMax)) return false;
+      const riskVal = (o.confirmedStake && o.offeredOdds) ? calcBettorWager(o.confirmedStake, o.offeredOdds) : (o.confirmedStake || 0);
+      if (!passesRangeFilter(riskVal, settledState.riskMin, settledState.riskMax)) return false;
+      if (!passesRangeFilter(o.pnl, settledState.pnlMin, settledState.pnlMax)) return false;
+      if (riskVal > 0 && o.pnl != null) {
+        const roiPct = (o.pnl / riskVal) * 100;
+        if (!passesRangeFilter(roiPct, settledState.roiMin, settledState.roiMax)) return false;
+      } else if (settledState.roiMin !== '' || settledState.roiMax !== '') {
+        return false;
+      }
       if (!passesDateFilter(o.settledAt || o.quotedAt, settledState.dateFrom, settledState.dateTo)) return false;
       return true;
     });
@@ -1856,8 +1896,25 @@
       + [2,3,4,5,6,7,8].map(n => '<option value="' + n + '"' + (settledState.legsFilter === String(n) ? ' selected' : '') + '>' + n + '-leg</option>').join('')
       + '</select>'
       + dateFilterHtml(settledState, 'function(){' + rerend + '}', sDStyle)
+      + '<button onclick="settledState.showAdvanced=!settledState.showAdvanced; ' + rerend + '" style="' + sFSel + ' cursor:pointer;">' + (settledState.showAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>'
       + '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + settled.length + '</span>'
       + '</div>';
+
+    if (settledState.showAdvanced) {
+      const advUpdate = 'renderSettled({recentOrders:[]})';
+      html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
+        + '<span style="color:var(--text3);">Legs:</span>'
+        + rangeFilterHtml('settledState', 'legsMin', 'legsMax', settledState, advUpdate, sDStyle, { title: 'Legs', width: '55px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">Odds:</span>'
+        + rangeFilterHtml('settledState', 'oddsMin', 'oddsMax', settledState, advUpdate, sDStyle, { title: 'Offered odds (American)', width: '70px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">My Risk $:</span>'
+        + rangeFilterHtml('settledState', 'riskMin', 'riskMax', settledState, advUpdate, sDStyle, { title: 'My Risk', width: '70px' })
+        + '<span style="color:var(--text3); margin-left:8px;">P&amp;L $:</span>'
+        + rangeFilterHtml('settledState', 'pnlMin', 'pnlMax', settledState, advUpdate, sDStyle, { title: 'P&L', width: '70px' })
+        + '<span style="color:var(--text3); margin-left:8px;">ROI %:</span>'
+        + rangeFilterHtml('settledState', 'roiMin', 'roiMax', settledState, advUpdate, sDStyle, { title: 'ROI %', width: '60px' })
+        + '</div>';
+    }
 
     html += '<div style="overflow-x:auto;"><table>';
     html += '<tr>';
@@ -2555,7 +2612,7 @@
   // PORTFOLIO TAB
   // -----------------------------------------------------------------------
 
-  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '', pageSize: 20, showAll: false, dateFrom: '', dateTo: '', _name: 'portfolioState' };
+  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', pnlMin: '', pnlMax: '', roiMin: '', roiMax: '', showAdvanced: false, pageSize: 20, showAll: false, dateFrom: '', dateTo: '', _name: 'portfolioState' };
   window.portfolioRerender = () => renderPortfolio(window._lastPortfolioData || { recentOrders: [], stats: {}, pnlBySport: {} });
   window.togglePortfolioSort = (col) => {
     if (portfolioState.sortCol === col) portfolioState.sortDir *= -1;
@@ -2891,7 +2948,7 @@
     el.innerHTML = html;
   }
 
-  const popenState = { sortCol: 'time', sortDir: -1, search: '', pageSize: 15, showAll: false, dateFrom: '', dateTo: '', _name: 'popenState' };
+  const popenState = { sortCol: 'time', sortDir: -1, search: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', _name: 'popenState' };
   window.popenRerender = () => renderPortfolioOpen(window._lastPopenData || []);
   window.togglePopenSort = (col) => {
     if (popenState.sortCol === col) popenState.sortDir *= -1;
@@ -2928,6 +2985,13 @@
         if (!legs.map(l => (l.team || l.teamName || '')).join(' ').toLowerCase().includes(q)) return false;
       }
       if (!passesDateFilter(o.confirmedAt, popenState.dateFrom, popenState.dateTo)) return false;
+      // Advanced range filters
+      const legsCount = (o.legs || o.meta?.legs || []).length;
+      if (!passesRangeFilter(legsCount, popenState.legsMin, popenState.legsMax)) return false;
+      if (!passesRangeFilter(o.offeredOdds, popenState.oddsMin, popenState.oddsMax)) return false;
+      const riskVal = (o.confirmedStake && o.offeredOdds) ? calcBettorWager(o.confirmedStake, o.offeredOdds) : (o.confirmedStake || 0);
+      if (!passesRangeFilter(riskVal, popenState.riskMin, popenState.riskMax)) return false;
+      if (!passesRangeFilter(o.confirmedStake, popenState.towinMin, popenState.towinMax)) return false;
       return true;
     });
 
@@ -2957,8 +3021,22 @@
     let html = '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">';
     html += '<input type="text" placeholder="Search team..." value="' + popenState.search + '" oninput="popenState.search=this.value; popenRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">';
     html += dateFilterHtml(popenState, 'popenRerender', poDStyle);
+    const poFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
+    html += '<button onclick="popenState.showAdvanced=!popenState.showAdvanced; popenRerender()" style="' + poFSel + ' cursor:pointer;">' + (popenState.showAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>';
     html += '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + active.length + '</span>';
     html += '</div>';
+    if (popenState.showAdvanced) {
+      html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
+        + '<span style="color:var(--text3);">Legs:</span>'
+        + rangeFilterHtml('popenState', 'legsMin', 'legsMax', popenState, 'popenRerender()', poDStyle, { title: 'Legs', width: '55px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">Odds:</span>'
+        + rangeFilterHtml('popenState', 'oddsMin', 'oddsMax', popenState, 'popenRerender()', poDStyle, { title: 'Odds', width: '70px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">My Risk $:</span>'
+        + rangeFilterHtml('popenState', 'riskMin', 'riskMax', popenState, 'popenRerender()', poDStyle, { title: 'My Risk', width: '70px' })
+        + '<span style="color:var(--text3); margin-left:8px;">To Win $:</span>'
+        + rangeFilterHtml('popenState', 'towinMin', 'towinMax', popenState, 'popenRerender()', poDStyle, { title: 'To Win', width: '70px' })
+        + '</div>';
+    }
 
     html += '<div style="overflow-x:auto;"><table>';
     html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th></tr>';
@@ -3052,6 +3130,22 @@
     if (portfolioState.dateFrom || portfolioState.dateTo) {
       filtered = filtered.filter(o => passesDateFilter(o.settledAt || o.quotedAt, portfolioState.dateFrom, portfolioState.dateTo));
     }
+    // Advanced range filters
+    filtered = filtered.filter(o => {
+      const legs = (o.legs || o.meta?.legs || []).length;
+      if (!passesRangeFilter(legs, portfolioState.legsMin, portfolioState.legsMax)) return false;
+      if (!passesRangeFilter(o.offeredOdds, portfolioState.oddsMin, portfolioState.oddsMax)) return false;
+      const riskVal = (o.confirmedStake && o.offeredOdds) ? calcBettorWager(o.confirmedStake, o.offeredOdds) : (o.confirmedStake || 0);
+      if (!passesRangeFilter(riskVal, portfolioState.riskMin, portfolioState.riskMax)) return false;
+      if (!passesRangeFilter(o.pnl, portfolioState.pnlMin, portfolioState.pnlMax)) return false;
+      if (riskVal > 0 && o.pnl != null) {
+        const roiPct = (o.pnl / riskVal) * 100;
+        if (!passesRangeFilter(roiPct, portfolioState.roiMin, portfolioState.roiMax)) return false;
+      } else if (portfolioState.roiMin !== '' || portfolioState.roiMax !== '') {
+        return false;
+      }
+      return true;
+    });
 
     // Sort
     filtered.sort((a, b) => {
@@ -3100,9 +3194,26 @@
     html += '<option value="lost"' + (portfolioState.resultFilter === 'lost' ? ' selected' : '') + '>Lost (parlay won)</option>';
     html += '</select>';
     const psDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
+    const psFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
     html += dateFilterHtml(portfolioState, 'portfolioRerender', psDStyle);
+    html += '<button onclick="portfolioState.showAdvanced=!portfolioState.showAdvanced; portfolioRerender()" style="' + psFSel + ' cursor:pointer;">' + (portfolioState.showAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>';
     html += '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + settled.length + '</span>';
     html += '</div>';
+
+    if (portfolioState.showAdvanced) {
+      html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
+        + '<span style="color:var(--text3);">Legs:</span>'
+        + rangeFilterHtml('portfolioState', 'legsMin', 'legsMax', portfolioState, 'portfolioRerender()', psDStyle, { title: 'Legs', width: '55px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">Odds:</span>'
+        + rangeFilterHtml('portfolioState', 'oddsMin', 'oddsMax', portfolioState, 'portfolioRerender()', psDStyle, { title: 'Offered odds', width: '70px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">My Risk $:</span>'
+        + rangeFilterHtml('portfolioState', 'riskMin', 'riskMax', portfolioState, 'portfolioRerender()', psDStyle, { title: 'My Risk', width: '70px' })
+        + '<span style="color:var(--text3); margin-left:8px;">P&amp;L $:</span>'
+        + rangeFilterHtml('portfolioState', 'pnlMin', 'pnlMax', portfolioState, 'portfolioRerender()', psDStyle, { title: 'P&L', width: '70px' })
+        + '<span style="color:var(--text3); margin-left:8px;">ROI %:</span>'
+        + rangeFilterHtml('portfolioState', 'roiMin', 'roiMax', portfolioState, 'portfolioRerender()', psDStyle, { title: 'ROI %', width: '60px' })
+        + '</div>';
+    }
 
     // Cumulative P&L
     const sortedForCumul = [...filtered].sort((a, b) => (a.settledAt || a.quotedAt || '').localeCompare(b.settledAt || b.quotedAt || ''));
@@ -4401,6 +4512,12 @@
     legsFilter: '',
     oddsMinFilter: '',
     oddsMaxFilter: '',
+    legsMin: '', legsMax: '',
+    fairMin: '', fairMax: '',
+    riskMin: '', riskMax: '',
+    towinMin: '', towinMax: '',
+    pnlMin: '', pnlMax: '',
+    showAdvanced: false,
     pageSize: 20,
     showAll: false,
     dateFrom: '', dateTo: '', _name: 'historyState',
@@ -4469,6 +4586,25 @@
         const odds = o.offeredOdds || 0;
         if (odds > Number(historyState.oddsMaxFilter)) return false;
       }
+      // Advanced range filters
+      const legsCount = (o.legs || o.meta?.legs || []).length;
+      if (!passesRangeFilter(legsCount, historyState.legsMin, historyState.legsMax)) return false;
+      const fairAm = o.fairParlayProb ? (o.fairParlayProb >= 0.5 ? -100 * o.fairParlayProb / (1 - o.fairParlayProb) : 100 * (1 - o.fairParlayProb) / o.fairParlayProb) : null;
+      if (fairAm != null) {
+        if (!passesRangeFilter(Math.round(fairAm), historyState.fairMin, historyState.fairMax)) return false;
+      } else if (historyState.fairMin !== '' || historyState.fairMax !== '') {
+        return false;
+      }
+      const riskVal = (o.confirmedStake && o.offeredOdds) ? calcBettorWager(o.confirmedStake, o.offeredOdds) : null;
+      if (historyState.riskMin !== '' || historyState.riskMax !== '') {
+        if (riskVal == null || !passesRangeFilter(riskVal, historyState.riskMin, historyState.riskMax)) return false;
+      }
+      if (historyState.towinMin !== '' || historyState.towinMax !== '') {
+        if (o.confirmedStake == null || !passesRangeFilter(o.confirmedStake, historyState.towinMin, historyState.towinMax)) return false;
+      }
+      if (historyState.pnlMin !== '' || historyState.pnlMax !== '') {
+        if (o.pnl == null || !passesRangeFilter(o.pnl, historyState.pnlMin, historyState.pnlMax)) return false;
+      }
       if (!passesDateFilter(o.quotedAt, historyState.dateFrom, historyState.dateTo)) return false;
       return true;
     });
@@ -4528,11 +4664,27 @@
       <input type="number" placeholder="Max odds" value="${historyState.oddsMaxFilter}"
         onchange="historyState.oddsMaxFilter=this.value; historyRerender()" style="${fInp}">
       ${dateFilterHtml(historyState, 'historyRerender', fSel.replace('font-size:12px', 'font-size:11px'))}
+      <button onclick="historyState.showAdvanced=!historyState.showAdvanced; historyRerender()" style="${fSel} cursor:pointer;">${historyState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
       <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${allOrders.length}</span>
     </div>`;
+    if (historyState.showAdvanced) {
+      const hDStyle = fSel.replace('font-size:12px', 'font-size:11px');
+      html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
+        + '<span style="color:var(--text3);">Legs:</span>'
+        + rangeFilterHtml('historyState', 'legsMin', 'legsMax', historyState, 'historyRerender()', hDStyle, { title: 'Legs', width: '55px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">Fair odds:</span>'
+        + rangeFilterHtml('historyState', 'fairMin', 'fairMax', historyState, 'historyRerender()', hDStyle, { title: 'Fair odds', width: '70px', step: '1' })
+        + '<span style="color:var(--text3); margin-left:8px;">My Risk $:</span>'
+        + rangeFilterHtml('historyState', 'riskMin', 'riskMax', historyState, 'historyRerender()', hDStyle, { title: 'My Risk', width: '70px' })
+        + '<span style="color:var(--text3); margin-left:8px;">To Win $:</span>'
+        + rangeFilterHtml('historyState', 'towinMin', 'towinMax', historyState, 'historyRerender()', hDStyle, { title: 'To Win', width: '70px' })
+        + '<span style="color:var(--text3); margin-left:8px;">P&amp;L $:</span>'
+        + rangeFilterHtml('historyState', 'pnlMin', 'pnlMax', historyState, 'historyRerender()', hDStyle, { title: 'P&L', width: '70px' })
+        + '</div>';
+    }
 
     // Pagination
-    const isFiltering = historyState.search || historyState.statusFilter.length > 0 || historyState.sportFilter || historyState.legsFilter || historyState.oddsMinFilter || historyState.oddsMaxFilter || historyState.dateFrom || historyState.dateTo;
+    const isFiltering = historyState.search || historyState.statusFilter.length > 0 || historyState.sportFilter || historyState.legsFilter || historyState.oddsMinFilter || historyState.oddsMaxFilter || historyState.dateFrom || historyState.dateTo || historyState.legsMin || historyState.legsMax || historyState.fairMin || historyState.fairMax || historyState.riskMin || historyState.riskMax || historyState.towinMin || historyState.towinMax || historyState.pnlMin || historyState.pnlMax;
     const displayLimit = (historyState.showAll || isFiltering) ? filtered.length : historyState.pageSize;
     const displayed = filtered.slice(0, displayLimit);
     const hasMore = filtered.length > displayLimit;
