@@ -1432,6 +1432,7 @@
         <th ${pSortClick('odds')}>Odds${pSortArrow('odds')}</th>
         <th ${pSortClick('stake', 'right')}>My Risk${pSortArrow('stake')}</th>
         <th ${pSortClick('towin', 'right')}>To Win${pSortArrow('towin')}</th>
+        <th title="Game status">Status</th>
       </tr>`;
 
     const isPosFiltering = posState.search || posState.dateFrom || posState.dateTo;
@@ -1452,6 +1453,32 @@
         ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const myRisk = riskVal != null ? fmtDollar(riskVal) : '-';
 
+      // Calculate game status based on leg start times
+      // Assume games last ~3.5 hours from start (covers most sports)
+      const GAME_DURATION_MS = 3.5 * 60 * 60 * 1000;
+      const now = Date.now();
+      let gameStatus;
+      const startTimes = legs.map(l => l.startTime ? new Date(l.startTime).getTime() : null).filter(t => t != null && !isNaN(t));
+      if (startTimes.length === 0) {
+        gameStatus = { label: '-', color: 'var(--text3)', title: 'No event times available' };
+      } else {
+        const earliest = Math.min(...startTimes);
+        const latest = Math.max(...startTimes);
+        const latestEnd = latest + GAME_DURATION_MS;
+        if (now < earliest) {
+          // All legs are upcoming
+          const hoursUntil = Math.round((earliest - now) / (1000 * 60 * 60) * 10) / 10;
+          gameStatus = { label: 'Upcoming', color: 'var(--text3)', title: `Earliest game starts in ${hoursUntil}h` };
+        } else if (now < latestEnd) {
+          // Some games in progress (or started)
+          gameStatus = { label: 'In Progress', color: 'var(--blue, #3b82f6)', title: 'One or more games currently in progress' };
+        } else {
+          // All games likely ended — waiting on PX to settle
+          const hoursAgo = Math.round((now - latestEnd) / (1000 * 60 * 60) * 10) / 10;
+          gameStatus = { label: 'Awaiting Settle', color: 'var(--amber)', title: `All legs likely finished ~${hoursAgo}h ago. Waiting for PX to mark settled.` };
+        }
+      }
+
       const rowKey = 'pos-' + (order.parlayId || '');
       const expanded = expandedRows.has(rowKey);
       html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
@@ -1461,9 +1488,10 @@
         <td style="font-weight:600;">${offeredAm}</td>
         <td style="text-align:right">${myRisk}</td>
         <td style="text-align:right; font-weight:600; color:var(--green);">${toWin}</td>
+        <td title="${gameStatus.title}"><span style="color:${gameStatus.color}; font-weight:600; font-size:11px;">${gameStatus.label}</span></td>
       </tr>
       <tr id="${rowKey}" style="display:${expanded ? 'table-row' : 'none'}; background: var(--surface3);">
-        <td colspan="7" style="padding: 12px 16px;">
+        <td colspan="8" style="padding: 12px 16px;">
           <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
           ${buildLegTable(legs, { vig: order.meta?.vig || order.vig || 0 })}
           <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
