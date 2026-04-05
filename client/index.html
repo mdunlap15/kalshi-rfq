@@ -2303,11 +2303,32 @@
     const confirmed = Object.values(orderState.allOrders || {}).filter(o => o.status === 'confirmed');
     if (confirmed.length === 0) return null;
 
+    // Merge helper: combine o.legs with o.meta.legs so sim sees both
+    // fairProb (only in meta.legs) and liveFairProb (may be in either).
+    const mergedLegs = (o) => {
+      const primary = o.legs || [];
+      const fallback = o.meta?.legs || [];
+      const source = primary.length ? primary : fallback;
+      return source.map((l, i) => {
+        const m = fallback[i] || {};
+        return {
+          ...m,
+          ...l,
+          fairProb: l.fairProb != null ? l.fairProb : m.fairProb,
+          liveFairProb: l.liveFairProb != null ? l.liveFairProb : m.liveFairProb,
+          pxEventId: l.pxEventId || m.pxEventId,
+          selection: l.selection || m.selection,
+          market: l.market || l.marketType || m.market || m.marketType,
+          line: l.line != null ? l.line : m.line,
+        };
+      });
+    };
+
     // Build market index: marketKey -> reference prob of home/over side
     // legs with matching side will hit together; opposite side is 1 - prob
     const marketIndex = {};
     for (const o of confirmed) {
-      const legs = o.legs || o.meta?.legs || [];
+      const legs = mergedLegs(o);
       for (const l of legs) {
         const market = l.market || l.marketType;
         const line = (market === 'spread' || market === 'total') && l.line != null ? Math.abs(l.line) : '';
@@ -2326,13 +2347,18 @@
     }
 
     // For each order, map legs to marketKey + expected side match
+    // Naming (post stake-interpretation fix):
+    //   spRisk  = confirmedStake  = our SP stake = bettor's potential payout
+    //   spProfit = calcBettorWager = bettor's original wager = what we keep if SP wins
+    // When bettor's parlay HITS (all legs win): SP loses spRisk
+    // When bettor's parlay MISSES: SP wins spProfit (bettor's wager)
     const orderSpecs = [];
     for (const o of confirmed) {
-      const legs = o.legs || o.meta?.legs || [];
+      const legs = mergedLegs(o);
       if (legs.length === 0) continue;
-      const stake = o.confirmedStake || 0;
-      const payout = (stake && o.offeredOdds) ? calcBettorWager(stake, o.offeredOdds) : 0;
-      if (!stake || !payout) continue;
+      const spRisk = o.confirmedStake || 0;
+      const spProfit = (spRisk && o.offeredOdds) ? calcBettorWager(spRisk, o.offeredOdds) : 0;
+      if (!spRisk || !spProfit) continue;
       const legSpecs = legs.map(l => {
         const market = l.market || l.marketType;
         const line = (market === 'spread' || market === 'total') && l.line != null ? Math.abs(l.line) : '';
@@ -2342,7 +2368,7 @@
         const wantsRef = selection === refSide;
         return { mKey, wantsRef };
       });
-      orderSpecs.push({ stake, payout, legSpecs });
+      orderSpecs.push({ spRisk, spProfit, legSpecs });
     }
 
     if (orderSpecs.length === 0) return null;
@@ -2356,7 +2382,7 @@
       for (const k of marketKeys) {
         draws[k] = Math.random() < marketIndex[k].refProb;
       }
-      // Evaluate each parlay
+      // Evaluate each parlay (from SP perspective)
       let pnl = 0;
       for (const spec of orderSpecs) {
         let allHit = true;
@@ -2365,8 +2391,8 @@
           const legHit = ls.wantsRef ? refWon : !refWon;
           if (!legHit) { allHit = false; break; }
         }
-        if (allHit) pnl -= spec.payout; // bettor wins parlay, we pay out
-        else pnl += spec.stake; // bettor loses, we keep stake
+        if (allHit) pnl -= spec.spRisk; // bettor's parlay hit → we pay out our SP risk
+        else pnl += spec.spProfit;      // bettor's parlay missed → we keep bettor's wager
       }
       results[i] = pnl;
     }
@@ -2417,43 +2443,47 @@
 
     if (sumEl) {
       const meanCls = r.mean >= 0 ? 'positive' : 'negative';
-      sumEl.innerHTML = 'Expected: <span class="' + meanCls + '">' + fmtPnl(r.mean) + '</span> &middot; P(profit): ' + (r.probWin * 100).toFixed(1) + '%';
+      sumEl.innerHTML = '<span style="font-size:13px;">Expected: <span class="' + meanCls + '" style="font-weight:600;">' + fmtPnl(r.mean) + '</span> &middot; P(profit): <span style="font-weight:600;">' + (r.probWin * 100).toFixed(1) + '%</span></span>';
     }
 
     // Percentile table
     const formatCls = (v) => v > 0 ? 'positive' : v < 0 ? 'negative' : 'neutral';
-    const row = (label, v, color) => '<tr><td style="padding:3px 12px; color:' + (color || 'var(--text3)') + '; font-size:11px;">' + label + '</td><td style="padding:3px 12px; text-align:right; font-family:monospace; font-size:12px;" class="' + formatCls(v) + '">' + fmtPnl(v) + '</td></tr>';
+    const row = (label, v, color, bold) => {
+      const lblStyle = 'padding:5px 14px; color:' + (color || 'var(--text2)') + '; font-size:13px;' + (bold ? ' font-weight:600;' : '');
+      const valStyle = 'padding:5px 14px; text-align:right; font-family:monospace; font-size:14px;' + (bold ? ' font-weight:600;' : '');
+      return '<tr><td style="' + lblStyle + '">' + label + '</td><td style="' + valStyle + '" class="' + formatCls(v) + '">' + fmtPnl(v) + '</td></tr>';
+    };
 
-    let html = '<div style="display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start;">';
+    let html = '<div style="display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start;">';
     // Key stats block
-    html += '<div style="min-width:260px;">'
-      + '<div style="font-size:11px; color:var(--text3); margin-bottom:6px; text-transform:uppercase;">Distribution (' + r.nSims.toLocaleString() + ' sims, ' + r.orderCount + ' positions)</div>'
-      + '<table>'
+    html += '<div style="min-width:320px; flex:0 0 auto;">'
+      + '<div style="font-size:12px; color:var(--text3); margin-bottom:10px; text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Distribution (' + r.nSims.toLocaleString() + ' sims &middot; ' + r.orderCount + ' positions &middot; ' + r.marketCount + ' markets)</div>'
+      + '<table style="width:100%; border-collapse:collapse;">'
       + row('Worst 1% (P01)', r.p01, 'var(--red)')
       + row('Worst 5% (P05)', r.p05, 'var(--red)')
       + row('Worst 10% (P10)', r.p10, 'var(--amber)')
       + row('Q1 (P25)', r.p25)
-      + '<tr><td style="padding:3px 12px; font-size:11px; font-weight:600;">Median (P50)</td><td style="padding:3px 12px; text-align:right; font-family:monospace; font-size:12px; font-weight:600;" class="' + formatCls(r.p50) + '">' + fmtPnl(r.p50) + '</td></tr>'
+      + row('Median (P50)', r.p50, 'var(--text1)', true)
       + row('Q3 (P75)', r.p75)
       + row('Best 10% (P90)', r.p90, 'var(--green)')
       + row('Best 5% (P95)', r.p95, 'var(--green)')
       + row('Best 1% (P99)', r.p99, 'var(--green)')
-      + '<tr><td colspan="2" style="border-top:1px solid var(--border); padding:0; font-size:1px;"></td></tr>'
+      + '<tr><td colspan="2" style="border-top:1px solid var(--border); padding:4px 0 0;"></td></tr>'
       + row('Expected (mean)', r.mean, 'var(--text2)')
       + row('Min outcome', r.min)
       + row('Max outcome', r.max)
       + '</table>'
-      + '<div style="margin-top:10px; font-size:11px; color:var(--text3);">'
-      + 'P(profit): <strong class="' + formatCls(r.probWin) + '">' + (r.probWin * 100).toFixed(1) + '%</strong> &middot; '
-      + 'P(breakeven+): ' + (r.probBreakeven * 100).toFixed(1) + '%'
+      + '<div style="margin-top:14px; padding:10px 14px; background:var(--surface2); border-radius:4px; font-size:13px; color:var(--text2);">'
+      + 'P(profit): <strong class="' + formatCls(r.probWin) + '" style="font-size:14px;">' + (r.probWin * 100).toFixed(1) + '%</strong> &middot; '
+      + 'P(breakeven+): <strong style="font-size:14px;">' + (r.probBreakeven * 100).toFixed(1) + '%</strong>'
       + '</div>'
       + '</div>';
 
-    // Histogram
-    const histW = 420, histH = 220, hPad = { l: 10, r: 10, t: 10, b: 30 };
+    // Histogram — much bigger, proper axes
+    const histW = 760, histH = 380, hPad = { l: 56, r: 18, t: 18, b: 44 };
     const hChartW = histW - hPad.l - hPad.r;
     const hChartH = histH - hPad.t - hPad.b;
-    const bins = 40;
+    const bins = 60;
     const min = r.min, max = r.max;
     const range = max - min || 1;
     const binSize = range / bins;
@@ -2465,35 +2495,90 @@
       counts[idx]++;
     }
     const maxCount = Math.max(...counts);
-    const zeroBin = Math.floor((0 - min) / binSize);
     const binW = hChartW / bins;
 
-    let svg = '<svg viewBox="0 0 ' + histW + ' ' + histH + '" style="width:100%; max-width:' + histW + 'px; height:auto;">';
-    // Zero line
-    if (zeroBin >= 0 && zeroBin < bins) {
-      const zx = hPad.l + zeroBin * binW + binW / 2;
-      svg += svgLine(zx, hPad.t, zx, hPad.t + hChartH, 'var(--text3)', 1);
-      svg += svgText(zx, hPad.t + hChartH + 12, '$0', { size: 9, fill: 'var(--text3)' });
+    // X-axis: nice tick values across range
+    const niceStep = (rng, target) => {
+      const raw = rng / target;
+      const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+      const norm = raw / mag;
+      const step = norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10;
+      return step * mag;
+    };
+    const xStep = niceStep(range, 6);
+    const xTicks = [];
+    const xStart = Math.ceil(min / xStep) * xStep;
+    for (let t = xStart; t <= max; t += xStep) xTicks.push(t);
+    // Always include zero if in range
+    if (min < 0 && max > 0 && !xTicks.some(t => Math.abs(t) < xStep * 0.01)) xTicks.push(0);
+    xTicks.sort((a, b) => a - b);
+
+    // Y-axis: count ticks
+    const yStep = niceStep(maxCount, 5);
+    const yTicks = [];
+    for (let t = 0; t <= maxCount; t += yStep) yTicks.push(t);
+
+    const xToPx = (v) => hPad.l + ((v - min) / range) * hChartW;
+    const yToPx = (c) => hPad.t + hChartH - (c / (maxCount || 1)) * hChartH;
+
+    const fmtTick = (v) => {
+      const abs = Math.abs(v);
+      if (abs >= 1000) return (v < 0 ? '-' : '') + '$' + (abs / 1000).toFixed(abs >= 10000 ? 0 : 1) + 'k';
+      return (v < 0 ? '-' : '') + '$' + abs.toFixed(0);
+    };
+
+    let svg = '<svg viewBox="0 0 ' + histW + ' ' + histH + '" style="width:100%; max-width:' + histW + 'px; height:auto; display:block;">';
+
+    // Y gridlines
+    for (const t of yTicks) {
+      const y = yToPx(t);
+      svg += svgLine(hPad.l, y, hPad.l + hChartW, y, 'var(--border)', 1);
+      svg += svgText(hPad.l - 8, y + 4, t.toLocaleString(), { anchor: 'end', size: 11, fill: 'var(--text3)' });
     }
+
     // Bars
     for (let i = 0; i < bins; i++) {
-      const h = (counts[i] / maxCount) * hChartH;
+      const h = (counts[i] / (maxCount || 1)) * hChartH;
       const x = hPad.l + i * binW;
       const y = hPad.t + hChartH - h;
       const binCenter = min + binSize * (i + 0.5);
       const color = binCenter >= 0 ? 'var(--green)' : 'var(--red)';
       svg += svgRect(x + 0.5, y, Math.max(0.5, binW - 1), h, color, 0);
     }
-    // Axis labels
-    svg += svgText(hPad.l, hPad.t + hChartH + 12, fmtPnl(min).replace('.00', ''), { anchor: 'start', size: 9, fill: 'var(--text3)' });
-    svg += svgText(hPad.l + hChartW, hPad.t + hChartH + 12, fmtPnl(max).replace('.00', ''), { anchor: 'end', size: 9, fill: 'var(--text3)' });
-    svg += '</svg>';
-    svg += '<div style="font-size:10px; color:var(--text3); text-align:center;">P&L outcome distribution</div>';
 
-    html += '<div style="flex:1; min-width:300px;">' + svg + '</div>';
+    // Zero line overlay
+    if (min < 0 && max > 0) {
+      const zx = xToPx(0);
+      svg += svgLine(zx, hPad.t, zx, hPad.t + hChartH, 'var(--text2)', 1.5);
+    }
+
+    // X-axis ticks + labels
+    svg += svgLine(hPad.l, hPad.t + hChartH, hPad.l + hChartW, hPad.t + hChartH, 'var(--text3)', 1);
+    for (const t of xTicks) {
+      const x = xToPx(t);
+      svg += svgLine(x, hPad.t + hChartH, x, hPad.t + hChartH + 4, 'var(--text3)', 1);
+      const isZero = Math.abs(t) < xStep * 0.01;
+      svg += svgText(x, hPad.t + hChartH + 18, fmtTick(t), {
+        anchor: 'middle', size: 12,
+        fill: isZero ? 'var(--text1)' : 'var(--text3)'
+      });
+    }
+
+    // Median marker
+    const medX = xToPx(r.p50);
+    svg += svgLine(medX, hPad.t, medX, hPad.t + hChartH, 'var(--amber)', 1.5);
+    svg += svgText(medX, hPad.t + 10, 'Median', { anchor: 'middle', size: 11, fill: 'var(--amber)' });
+
+    // Axis titles
+    svg += svgText(hPad.l + hChartW / 2, histH - 6, 'P&L outcome ($)', { anchor: 'middle', size: 12, fill: 'var(--text2)' });
+    svg += '<text x="14" y="' + (hPad.t + hChartH / 2) + '" text-anchor="middle" fill="var(--text2)" font-size="12" transform="rotate(-90, 14, ' + (hPad.t + hChartH / 2) + ')">Frequency</text>';
+
+    svg += '</svg>';
+
+    html += '<div style="flex:1; min-width:420px;">' + svg + '</div>';
     html += '</div>';
-    html += '<div style="margin-top:12px; text-align:center;"><button onclick="renderRiskSim()" class="btn" style="font-size:12px; padding:4px 16px;">Re-run simulation</button></div>';
-    html += '<div style="margin-top:8px; font-size:10px; color:var(--text3); text-align:center;">Simulates each market outcome once per trial; parlays with shared legs are correlated, opposite-side legs are anti-correlated. Uses live odds where available.</div>';
+    html += '<div style="margin-top:18px; text-align:center;"><button onclick="renderRiskSim()" class="btn" style="font-size:13px; padding:8px 24px;">Re-run Simulation</button></div>';
+    html += '<div style="margin-top:10px; font-size:12px; color:var(--text3); text-align:center; line-height:1.5;">Simulates each market outcome once per trial; parlays with shared legs are correlated, opposite-side legs are anti-correlated. Uses live odds where available.</div>';
 
     el.innerHTML = html;
   }
