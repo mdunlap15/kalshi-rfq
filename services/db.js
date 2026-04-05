@@ -71,10 +71,14 @@ async function loadOrders(limit = 100) {
     let offset = 0;
     while (offset < limit) {
       const pageSize = Math.min(PAGE_SIZE, limit - offset);
+      // Stable pagination: primary sort on quoted_at (may be NULL for
+      // reconstructed orders) + secondary sort on parlay_id so .range()
+      // is guaranteed deterministic across pages.
       const { data, error } = await db
         .from('parlay_orders')
         .select('*')
-        .order('quoted_at', { ascending: false })
+        .order('quoted_at', { ascending: false, nullsFirst: false })
+        .order('parlay_id', { ascending: true })
         .range(offset, offset + pageSize - 1);
       if (error) {
         log.error('DB', `Failed to load orders (page at offset ${offset}): ${error.message}`);
@@ -155,7 +159,8 @@ async function loadMatchedParlays(limit = 200) {
       const { data, error } = await db
         .from('matched_parlays')
         .select('*')
-        .order('matched_at', { ascending: false })
+        .order('matched_at', { ascending: false, nullsFirst: false })
+        .order('parlay_id', { ascending: true })
         .range(offset, offset + pageSize - 1);
       if (error) {
         log.error('DB', `Failed to load matched parlays (page at offset ${offset}): ${error.message}`);
@@ -229,7 +234,8 @@ async function loadDeclines(limit = 2000) {
       const { data, error } = await db
         .from('declines')
         .select('*')
-        .order('declined_at', { ascending: false })
+        .order('declined_at', { ascending: false, nullsFirst: false })
+        .order('id', { ascending: true })
         .range(offset, offset + pageSize - 1);
       if (error) {
         log.warn('DB', `loadDeclines failed (table may not exist yet): ${error.message}`);
@@ -256,11 +262,49 @@ async function loadDeclines(limit = 2000) {
   }
 }
 
+async function countOrders() {
+  const db = getClient();
+  if (!db) return null;
+  try {
+    // Total rows
+    const { count: total, error: e1 } = await db
+      .from('parlay_orders')
+      .select('*', { count: 'exact', head: true });
+    if (e1) { log.error('DB', `countOrders total failed: ${e1.message}`); return null; }
+    // Settled rows
+    const { count: settled, error: e2 } = await db
+      .from('parlay_orders')
+      .select('*', { count: 'exact', head: true })
+      .like('status', 'settled_%');
+    if (e2) { log.error('DB', `countOrders settled failed: ${e2.message}`); return null; }
+    // Confirmed rows
+    const { count: confirmed, error: e3 } = await db
+      .from('parlay_orders')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'confirmed');
+    if (e3) { log.error('DB', `countOrders confirmed failed: ${e3.message}`); return null; }
+    // Breakdown by settled_won/lost/push/void
+    const breakdown = {};
+    for (const s of ['settled_won', 'settled_lost', 'settled_push', 'settled_void']) {
+      const { count } = await db
+        .from('parlay_orders')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', s);
+      breakdown[s] = count || 0;
+    }
+    return { total, settled, confirmed, breakdown };
+  } catch (err) {
+    log.error('DB', `countOrders error: ${err.message}`);
+    return null;
+  }
+}
+
 module.exports = {
   getClient,
   isEnabled,
   saveOrder,
   loadOrders,
+  countOrders,
   saveMatchedParlay,
   loadMatchedParlays,
   saveDecline,

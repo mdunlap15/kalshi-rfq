@@ -313,6 +313,28 @@ function startStatusServer() {
     }
   });
 
+  // DB vs in-memory diagnostic: shows DB row counts alongside loaded counts
+  app.get('/db-diag', async (req, res) => {
+    try {
+      const db = require('./services/db');
+      const dbCounts = await db.countOrders();
+      const s = orderTracker.getStats();
+      res.json({
+        db: dbCounts,
+        inMemory: {
+          totalOrders: s.totalOrders,
+          activeOrders: s.activeOrders,
+          settlements: s.totalSettlements,
+          confirmations: s.totalConfirmations,
+          wins: s.totalWins,
+          losses: s.totalLosses,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Manual settlement poll
   app.post('/poll-settlements', async (req, res) => {
     try {
