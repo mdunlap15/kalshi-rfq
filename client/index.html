@@ -561,6 +561,17 @@
           </div>
         </div>
 
+        <!-- Cumulative ROI -->
+        <div class="card">
+          <div class="card-header">
+            <span>Cumulative ROI</span>
+            <span id="roi-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="chart-cumul-roi">
+            <div class="empty-state"><div class="icon">-</div><div>Need settled orders to chart ROI</div></div>
+          </div>
+        </div>
+
         <!-- P&L by Sport -->
         <div class="card">
           <div class="card-header"><span>P&L by Sport</span></div>
@@ -1773,6 +1784,13 @@
           vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
           case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
           case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+          case 'roi': {
+            const ra = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : (a.confirmedStake || 0);
+            const rb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0);
+            va = (ra > 0 && a.pnl != null) ? (a.pnl / ra) : 0;
+            vb = (rb > 0 && b.pnl != null) ? (b.pnl / rb) : 0;
+            break;
+          }
           default: va = 0; vb = 0;
         }
         if (va < vb) return -1 * settledState.sortDir;
@@ -1850,6 +1868,7 @@
     html += '<th ' + sSortClick('stake', 'right') + '>My Risk' + sSortArrow('stake') + '</th>';
     html += '<th title="Settlement outcome from our (SP) perspective">SP Result</th>';
     html += '<th ' + sSortClick('pnl', 'right') + '>P&L' + sSortArrow('pnl') + '</th>';
+    html += '<th ' + sSortClick('roi', 'right') + ' title="ROI = P&L / My Risk for this parlay">ROI' + sSortArrow('roi') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
 
@@ -1897,10 +1916,18 @@
       html += '<td style="text-align:right">' + stake + '</td>';
       html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
+      // ROI per parlay
+      let roiHtml = '-';
+      if (order.pnl != null && myRiskVal && myRiskVal > 0) {
+        const roiPct = (order.pnl / myRiskVal) * 100;
+        const roiCls = roiPct > 0 ? 'positive' : roiPct < 0 ? 'negative' : 'neutral';
+        roiHtml = '<span class="' + roiCls + '">' + (roiPct >= 0 ? '+' : '') + roiPct.toFixed(1) + '%</span>';
+      }
+      html += '<td style="text-align:right">' + roiHtml + '</td>';
       html += '<td style="text-align:right">' + cumulHtml + '</td>';
       html += '</tr>';
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="8" style="padding:12px 16px;">';
+      html += '<td colspan="9" style="padding:12px 16px;">';
       html += buildLegTable(legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
@@ -2580,17 +2607,31 @@
       if (o.confirmedStake && o.offeredOdds) totalRisk += calcBettorWager(o.confirmedStake, o.offeredOdds);
     }
 
+    // ROI = sum of settled P&L / sum of settled risk
+    let settledPnl = 0;
+    let settledRisk = 0;
+    for (const o of (settled || [])) {
+      settledPnl += (o.pnl || 0);
+      if (o.confirmedStake && o.offeredOdds) settledRisk += calcBettorWager(o.confirmedStake, o.offeredOdds);
+      else if (o.confirmedStake) settledRisk += o.confirmedStake;
+    }
+    const roi = settledRisk > 0 ? (settledPnl / settledRisk) * 100 : null;
+
     const pnlCls = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral';
     const pnlStr = totalSettled > 0 ? fmtPnl(pnl) : '-';
     const wrCls = winRate != null ? (winRate >= 50 ? 'positive' : 'negative') : 'neutral';
+    const roiCls = roi != null ? (roi >= 0 ? 'positive' : 'negative') : 'neutral';
+    const roiStr = roi != null ? (roi >= 0 ? '+' : '') + roi.toFixed(2) + '%' : '-';
 
-    function stat(label, value, cls) {
-      return '<span class="stat-item"><span class="stat-label">' + label + ':</span> <span class="stat-val ' + (cls || '') + '">' + value + '</span></span>';
+    function stat(label, value, cls, title) {
+      const t = title ? ' title="' + title + '"' : '';
+      return '<span class="stat-item"' + t + '><span class="stat-label">' + label + ':</span> <span class="stat-val ' + (cls || '') + '">' + value + '</span></span>';
     }
 
     el.innerHTML = '<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">' +
       '<div class="stat-bar" style="gap:6px 18px;">' +
         stat('P&L', pnlStr, pnlCls) +
+        stat('ROI', roiStr, roiCls, 'Settled P&L / settled risk') +
         stat('Settled Record', totalSettled > 0 ? wins + 'W-' + losses + 'L' : '-') +
         stat('Settled Win Rate', winRate != null ? winRate + '%' : '-', wrCls) +
         stat('Active', activeOrders.length) +
@@ -3023,6 +3064,13 @@
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
+        case 'roi': {
+          const ra = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : (a.confirmedStake || 0);
+          const rb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0);
+          va = (ra > 0 && a.pnl != null) ? (a.pnl / ra) : 0;
+          vb = (rb > 0 && b.pnl != null) ? (b.pnl / rb) : 0;
+          break;
+        }
         default: va = a.settledAt || ''; vb = b.settledAt || '';
       }
       if (typeof va === 'string') return portfolioState.sortDir * va.localeCompare(vb);
@@ -3071,6 +3119,7 @@
     html += '<th ' + pSortClick('stake', 'right') + '>My Risk' + pSortArrow('stake') + '</th>';
     html += '<th title="Settlement outcome from our (SP) perspective">SP Result</th>';
     html += '<th ' + pSortClick('pnl', 'right') + '>P&L' + pSortArrow('pnl') + '</th>';
+    html += '<th ' + pSortClick('roi', 'right') + ' title="ROI = P&L / My Risk for this parlay">ROI' + pSortArrow('roi') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
 
@@ -3109,12 +3158,20 @@
       html += '<td style="text-align:right">' + stake + '</td>';
       html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
+      // ROI per parlay
+      let roiHtml = '-';
+      if (order.pnl != null && myRiskVal && myRiskVal > 0) {
+        const roiPct = (order.pnl / myRiskVal) * 100;
+        const roiCls = roiPct > 0 ? 'positive' : roiPct < 0 ? 'negative' : 'neutral';
+        roiHtml = '<span class="' + roiCls + '">' + (roiPct >= 0 ? '+' : '') + roiPct.toFixed(1) + '%</span>';
+      }
+      html += '<td style="text-align:right">' + roiHtml + '</td>';
       html += '<td style="text-align:right">' + cumulHtml + '</td>';
       html += '</tr>';
 
       // Expandable leg detail row
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="8" style="padding:12px 16px;">';
+      html += '<td colspan="9" style="padding:12px 16px;">';
       html += buildLegTable(legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
@@ -3167,18 +3224,33 @@
     const portCls = portPct > 90 ? 'negative' : portPct > 70 ? '' : 'positive';
     const portStr = portLimit > 0 ? fmtDollar(portRisk) + ' / ' + fmtDollar(portLimit) + ' (' + portPct + '%)' : fmtDollar(portRisk);
 
+    // ROI from settled orders
+    let settledPnl = 0;
+    let settledRiskTotal = 0;
+    for (const o of (allOrders || [])) {
+      if (!o.status || !o.status.startsWith('settled_')) continue;
+      settledPnl += (o.pnl || 0);
+      if (o.confirmedStake && o.offeredOdds) settledRiskTotal += calcBettorWager(o.confirmedStake, o.offeredOdds);
+      else if (o.confirmedStake) settledRiskTotal += o.confirmedStake;
+    }
+    const roi = settledRiskTotal > 0 ? (settledPnl / settledRiskTotal) * 100 : null;
+    const roiCls = roi != null ? (roi >= 0 ? 'positive' : 'negative') : 'neutral';
+    const roiStr = roi != null ? (roi >= 0 ? '+' : '') + roi.toFixed(2) + '%' : '-';
+
     const pnlCls = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral';
     const pnlStr = settled > 0 ? fmtPnl(pnl) : '-';
     const wrCls = winRate != null ? (winRate >= 50 ? 'positive' : 'negative') : 'neutral';
     const wrStr = winRate != null ? winRate + '%' : '-';
 
-    function stat(label, value, cls) {
-      return `<span class="stat-item"><span class="stat-label">${label}:</span> <span class="stat-val ${cls || ''}">${value}</span></span>`;
+    function stat(label, value, cls, title) {
+      const t = title ? ' title="' + title + '"' : '';
+      return '<span class="stat-item"' + t + '><span class="stat-label">' + label + ':</span> <span class="stat-val ' + (cls || '') + '">' + value + '</span></span>';
     }
 
     el.innerHTML = `<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">
       <div class="stat-bar" style="gap:6px 18px;">
         ${stat('P&L', pnlStr, pnlCls)}
+        ${stat('ROI', roiStr, roiCls, 'Settled P&L / settled risk')}
         ${stat('Settled Record', settled > 0 ? wins + 'W-' + losses + 'L' : '-')}
         ${stat('Settled Win Rate', wrStr, wrCls)}
         ${stat('Active', active)}
@@ -3471,15 +3543,57 @@
   function passesDateFilter(dateStr, dateFrom, dateTo) {
     if (!dateFrom && !dateTo) return true;
     if (!dateStr) return false;
-    const d = dateStr.substring(0, 10); // YYYY-MM-DD
-    if (dateFrom && d < dateFrom) return false;
-    if (dateTo && d > dateTo) return false;
+    // Support both date-only (YYYY-MM-DD) and datetime-local (YYYY-MM-DDTHH:MM) formats
+    const t = new Date(dateStr).getTime();
+    if (isNaN(t)) return false;
+    if (dateFrom) {
+      const fromT = new Date(dateFrom.length === 10 ? dateFrom + 'T00:00' : dateFrom).getTime();
+      if (!isNaN(fromT) && t < fromT) return false;
+    }
+    if (dateTo) {
+      // Date-only means "through end of day"
+      const toT = new Date(dateTo.length === 10 ? dateTo + 'T23:59:59' : dateTo).getTime();
+      if (!isNaN(toT) && t > toT) return false;
+    }
     return true;
   }
-  /** Render date range filter inputs */
+  /** Render date range filter inputs — uses datetime-local for time precision */
   function dateFilterHtml(stateObj, rerenderFn, style) {
-    return '<input type="date" value="' + (stateObj.dateFrom || '') + '" onchange="' + stateObj._name + '.dateFrom=this.value; ' + rerenderFn + '()" style="' + style + '" title="From date">' +
-           '<input type="date" value="' + (stateObj.dateTo || '') + '" onchange="' + stateObj._name + '.dateTo=this.value; ' + rerenderFn + '()" style="' + style + '" title="To date">';
+    return '<input type="datetime-local" value="' + (stateObj.dateFrom || '') + '" onchange="' + stateObj._name + '.dateFrom=this.value; ' + rerenderFn + '()" style="' + style + '" title="From date/time">' +
+           '<input type="datetime-local" value="' + (stateObj.dateTo || '') + '" onchange="' + stateObj._name + '.dateTo=this.value; ' + rerenderFn + '()" style="' + style + '" title="To date/time">';
+  }
+
+  // -----------------------------------------------------------------------
+  // NUMERIC RANGE FILTER HELPERS
+  // -----------------------------------------------------------------------
+
+  /** Check if a value passes a min/max range filter. Empty string = no bound. */
+  function passesRangeFilter(value, minStr, maxStr) {
+    if ((!minStr && minStr !== 0) && (!maxStr && maxStr !== 0)) return true;
+    if (value == null || isNaN(Number(value))) return false;
+    const v = Number(value);
+    if (minStr !== '' && minStr != null) {
+      const min = Number(minStr);
+      if (!isNaN(min) && v < min) return false;
+    }
+    if (maxStr !== '' && maxStr != null) {
+      const max = Number(maxStr);
+      if (!isNaN(max) && v > max) return false;
+    }
+    return true;
+  }
+
+  /** Render a min/max numeric range filter (currency/odds/generic). */
+  function rangeFilterHtml(stateKey, minField, maxField, stateObj, rerenderFn, style, opts) {
+    opts = opts || {};
+    const minV = stateObj[minField] || '';
+    const maxV = stateObj[maxField] || '';
+    const minPh = opts.minPlaceholder || 'Min';
+    const maxPh = opts.maxPlaceholder || 'Max';
+    const step = opts.step || 'any';
+    const width = opts.width || '70px';
+    return '<input type="number" step="' + step + '" placeholder="' + minPh + '" value="' + minV + '" oninput="' + stateKey + '.' + minField + '=this.value; ' + rerenderFn + '" style="' + style + ' width:' + width + ';" title="' + opts.title + ' min">' +
+           '<input type="number" step="' + step + '" placeholder="' + maxPh + '" value="' + maxV + '" oninput="' + stateKey + '.' + maxField + '=this.value; ' + rerenderFn + '" style="' + style + ' width:' + width + ';" title="' + opts.title + ' max">';
   }
 
   /**
@@ -3519,6 +3633,7 @@
 
     renderChartDailyVolume(allOrders);
     renderChartCumulPnl(settled);
+    renderChartCumulRoi(settled);
     renderChartPnlSport(settled);
     renderChartPnlLegs(settled);
     renderChartCalibration(settled);
@@ -3756,6 +3871,127 @@
 
     svg += '</svg>';
     svg += `<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">${points.length} settled parlays &middot; x-axis by settlement time</div>`;
+    el.innerHTML = svg;
+  }
+
+  // 1b. Cumulative ROI line chart (ROI = cumulative P&L / cumulative risk)
+  function renderChartCumulRoi(settled) {
+    const el = document.getElementById('chart-cumul-roi');
+    const sumEl = document.getElementById('roi-summary');
+    if (!el) return;
+    if (settled.length < 2) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders to chart ROI</div></div>';
+      if (sumEl) sumEl.textContent = '';
+      return;
+    }
+
+    // Sort by settlement time; require valid timestamps
+    const sorted = [...settled]
+      .filter(o => o.settledAt)
+      .sort((a, b) => (a.settledAt || '').localeCompare(b.settledAt || ''));
+    if (sorted.length < 2) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders with timestamps</div></div>';
+      if (sumEl) sumEl.textContent = '';
+      return;
+    }
+
+    // Build cumulative series: running ROI = cumulative P&L / cumulative risk
+    const points = [];
+    let cumulPnl = 0;
+    let cumulRisk = 0;
+    for (const o of sorted) {
+      // Risk per parlay — use calcBettorWager for consistency with dashboard's "My Risk"
+      const risk = (o.confirmedStake && o.offeredOdds)
+        ? calcBettorWager(o.confirmedStake, o.offeredOdds)
+        : (o.confirmedStake || 0);
+      if (!risk || risk <= 0) continue;
+      cumulPnl += (o.pnl || 0);
+      cumulRisk += risk;
+      const t = new Date(o.settledAt).getTime();
+      if (isNaN(t)) continue;
+      const roiPct = (cumulPnl / cumulRisk) * 100;
+      points.push({ t, roi: roiPct, order: o, risk });
+    }
+    if (points.length < 2) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders with valid stakes</div></div>';
+      if (sumEl) sumEl.textContent = '';
+      return;
+    }
+
+    const finalRoi = points[points.length - 1].roi;
+    if (sumEl) {
+      const roiCls = finalRoi >= 0 ? 'positive' : 'negative';
+      sumEl.innerHTML = '<span class="' + roiCls + '">' + (finalRoi >= 0 ? '+' : '') + finalRoi.toFixed(2) + '%</span> &middot; $' + cumulPnl.toFixed(0) + ' / $' + cumulRisk.toFixed(0) + ' risked';
+    }
+
+    const W = 720, H = 220, pad = { l: 60, r: 50, t: 20, b: 40 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const minRoi = Math.min(0, ...points.map(p => p.roi));
+    const maxRoi = Math.max(0, ...points.map(p => p.roi));
+    const range = maxRoi - minRoi || 1;
+
+    const tMin = points[0].t;
+    const tMax = points[points.length - 1].t;
+    const tRange = Math.max(1, tMax - tMin);
+
+    const scaleX = (t) => pad.l + ((t - tMin) / tRange) * chartW;
+    const scaleY = (v) => pad.t + chartH - ((v - minRoi) / range) * chartH;
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; height:auto; max-height:270px;">';
+
+    // Y grid lines + labels
+    const zeroY = scaleY(0);
+    svg += svgLine(pad.l, zeroY, W - pad.r, zeroY, 'var(--border)', 1);
+    svg += svgText(pad.l - 8, zeroY + 3, '0%', { anchor: 'end', size: 9 });
+    if (maxRoi > 0) { const y = scaleY(maxRoi); svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5); svg += svgText(pad.l - 8, y + 3, '+' + maxRoi.toFixed(1) + '%', { anchor: 'end', size: 9, fill: 'var(--green)' }); }
+    if (minRoi < 0) { const y = scaleY(minRoi); svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5); svg += svgText(pad.l - 8, y + 3, minRoi.toFixed(1) + '%', { anchor: 'end', size: 9, fill: 'var(--red)' }); }
+
+    // X-axis ticks (same logic as P&L chart)
+    const spanHours = tRange / (1000 * 60 * 60);
+    const spanDays = spanHours / 24;
+    let tickMs, tickFmt;
+    if (spanHours <= 6) { tickMs = 60 * 60 * 1000; tickFmt = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+    else if (spanHours <= 36) { tickMs = 2 * 60 * 60 * 1000; tickFmt = (d) => d.toLocaleTimeString([], { hour: 'numeric' }); }
+    else if (spanDays <= 14) { tickMs = 24 * 60 * 60 * 1000; tickFmt = (d) => d.toLocaleDateString([], { month: 'numeric', day: 'numeric' }); }
+    else { tickMs = 7 * 24 * 60 * 60 * 1000; tickFmt = (d) => d.toLocaleDateString([], { month: 'numeric', day: 'numeric' }); }
+    const firstTick = Math.ceil(tMin / tickMs) * tickMs;
+    const xAxisY = pad.t + chartH;
+    for (let t = firstTick; t <= tMax; t += tickMs) {
+      const x = scaleX(t);
+      svg += svgLine(x, pad.t, x, xAxisY, 'var(--border)', 0.3);
+      svg += svgText(x, xAxisY + 14, tickFmt(new Date(t)), { size: 9, fill: 'var(--text3)' });
+    }
+    svg += svgText(pad.l, H - 6, new Date(tMin).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }), { anchor: 'start', size: 9, fill: 'var(--text3)' });
+    svg += svgText(W - pad.r, H - 6, new Date(tMax).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }), { anchor: 'end', size: 9, fill: 'var(--text3)' });
+
+    // Area fill
+    let areaPath = 'M' + scaleX(points[0].t) + ',' + zeroY;
+    for (const p of points) areaPath += ' L' + scaleX(p.t) + ',' + scaleY(p.roi);
+    areaPath += ' L' + scaleX(points[points.length - 1].t) + ',' + zeroY + ' Z';
+    const areaColor = finalRoi >= 0 ? 'rgba(63,185,80,0.15)' : 'rgba(248,81,73,0.15)';
+    svg += '<path d="' + areaPath + '" fill="' + areaColor + '" />';
+
+    // Line
+    let linePath = '';
+    for (let i = 0; i < points.length; i++) {
+      linePath += (i === 0 ? 'M' : ' L') + scaleX(points[i].t) + ',' + scaleY(points[i].roi);
+    }
+    const lineColor = finalRoi >= 0 ? 'var(--green)' : 'var(--red)';
+    svg += '<path d="' + linePath + '" fill="none" stroke="' + lineColor + '" stroke-width="2" />';
+
+    // Dots — green for wins, red for losses (per-parlay P&L)
+    for (const p of points) {
+      const color = p.order.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      svg += svgCircle(scaleX(p.t), scaleY(p.roi), 3, color);
+    }
+
+    // Final value label
+    const lastP = points[points.length - 1];
+    const finalLabel = (lastP.roi >= 0 ? '+' : '') + lastP.roi.toFixed(2) + '%';
+    svg += svgText(scaleX(lastP.t) + 4, scaleY(lastP.roi) + 3, finalLabel, { anchor: 'start', size: 11, fill: lineColor });
+
+    svg += '</svg>';
+    svg += '<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">' + points.length + ' settled parlays &middot; ROI = cumulative P&L / cumulative risk</div>';
     el.innerHTML = svg;
   }
 
