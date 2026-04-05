@@ -179,11 +179,34 @@ async function fetchBalance() {
   return data.data || data;
 }
 
+/**
+ * Fetch orders from PX. PX caps single pages at 100 orders and returns a
+ * base64 `token` for the next page. When limit > 100, we paginate using
+ * that token until we reach the limit or exhaust all orders.
+ */
 async function fetchOrders(limit = 50, status = null) {
-  let url = `/parlay/sp/orders/?limit=${limit}`;
-  if (status) url += `&status=${status}`;
-  const data = await pxFetch(url);
-  return data.data?.orders || [];
+  const PAGE_SIZE = 100;
+  const all = [];
+  let token = null;
+  while (all.length < limit) {
+    const pageSize = Math.min(PAGE_SIZE, limit - all.length);
+    let url = `/parlay/sp/orders/?limit=${pageSize}`;
+    if (status) url += `&status=${status}`;
+    if (token) url += `&token=${encodeURIComponent(token)}`;
+    let data;
+    try {
+      data = await pxFetch(url);
+    } catch (err) {
+      log.warn('PX-Orders', `Pagination stopped (offset ${all.length}): ${err.message}`);
+      break;
+    }
+    const orders = data.data?.orders || [];
+    if (orders.length === 0) break;
+    all.push(...orders);
+    token = data.data?.token || null;
+    if (!token || orders.length < pageSize) break; // no more pages
+  }
+  return all;
 }
 
 // ---------------------------------------------------------------------------
