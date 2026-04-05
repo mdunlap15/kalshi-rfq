@@ -438,8 +438,9 @@
       </div>
 
       <!-- Limit-decline alert banner -->
-      <div id="limit-alert-banner" style="display:none; margin-bottom:12px; padding:10px 14px; background:rgba(245,158,11,0.1); border:1px solid var(--amber); border-left:4px solid var(--amber); border-radius:6px; font-size:13px;">
-        <div id="limit-alert-content"></div>
+      <div id="limit-alert-banner" style="display:none; margin-bottom:12px; padding:10px 14px; background:rgba(245,158,11,0.1); border:1px solid var(--amber); border-left:4px solid var(--amber); border-radius:6px; font-size:13px; position:relative;">
+        <button id="limit-alert-close" onclick="dismissLimitAlert()" title="Dismiss (shown again if severity rises or after 15 min)" style="position:absolute; top:6px; right:8px; background:transparent; border:none; color:var(--text3); font-size:18px; cursor:pointer; padding:2px 6px; line-height:1;">&times;</button>
+        <div id="limit-alert-content" style="padding-right:22px;"></div>
       </div>
 
       <!-- ===================== SECTION: DASHBOARD ===================== -->
@@ -832,6 +833,23 @@
     renderGameExposure(data.exposure || {});
   }
 
+  // Dismissed alert fingerprint (in-memory per session). Stored as an object
+  // { totalIncidents, portfolioPct, dismissedAt }. Banner re-appears if the
+  // user sees a new incident, utilization rises by 5+ points, or 15 min pass.
+  window._dismissedAlert = null;
+  window.dismissLimitAlert = function() {
+    const banner = document.getElementById('limit-alert-banner');
+    const data = window._lastAlertData;
+    if (data) {
+      window._dismissedAlert = {
+        totalIncidents: data.totalIncidents,
+        portfolioPct: data.portfolioPct,
+        dismissedAt: Date.now(),
+      };
+    }
+    if (banner) banner.style.display = 'none';
+  };
+
   function renderLimitAlert(alerts, portfolio) {
     const banner = document.getElementById('limit-alert-banner');
     const content = document.getElementById('limit-alert-content');
@@ -847,7 +865,30 @@
     // Show banner if: any recent limit declines/rejects, OR portfolio is >80% utilized
     const highUtil = portfolioPct >= 80;
     const hasLimitHits = declineCount > 0 || rejectCount > 0;
-    if (!hasLimitHits && !highUtil) { banner.style.display = 'none'; return; }
+    if (!hasLimitHits && !highUtil) {
+      banner.style.display = 'none';
+      // Clear dismissal when all-clear, so next incident triggers fresh alert
+      window._dismissedAlert = null;
+      return;
+    }
+
+    const totalIncidents = declineCount + rejectCount;
+    window._lastAlertData = { totalIncidents, portfolioPct };
+
+    // Respect dismissal unless severity has risen
+    const dismissed = window._dismissedAlert;
+    if (dismissed) {
+      const ageMs = Date.now() - dismissed.dismissedAt;
+      const newIncidents = totalIncidents > dismissed.totalIncidents;
+      const utilRose = portfolioPct >= dismissed.portfolioPct + 5;
+      const expired = ageMs > 15 * 60 * 1000;
+      if (!newIncidents && !utilRose && !expired) {
+        banner.style.display = 'none';
+        return;
+      }
+      // Severity rose or timeout — clear dismissal and re-show
+      window._dismissedAlert = null;
+    }
 
     const parts = [];
     // Header
@@ -2710,11 +2751,75 @@
     html += miniCard('Sample Size', withProb.length + ' parlays');
     html += '</div>';
 
-    // Edge table
-    html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th>Selections</th><th>Legs</th><th style="text-align:right">Fair %</th><th style="text-align:right">Offered</th><th style="text-align:right">Edge</th><th style="text-align:right">To Win</th><th title="Settlement outcome from our (SP) perspective">SP Result</th><th style="text-align:right">P&L</th></tr>';
+    // Edge table — search, filter, sort
+    const edgeSearch = (window._edgeSearch || '').toLowerCase();
+    const edgeResult = window._edgeResult || '';
+    const edgeLegs = window._edgeLegs || '';
+    let filteredEdge = entries.filter(e => {
+      if (edgeSearch) {
+        const hay = (e.teams + ' ' + (e.parlayId || '')).toLowerCase();
+        if (!hay.includes(edgeSearch)) return false;
+      }
+      if (edgeResult && e.result.toLowerCase() !== edgeResult) return false;
+      if (edgeLegs && String(e.legs) !== edgeLegs) return false;
+      return true;
+    });
+    const edgeSortCol = window._edgeSortCol || 'absPnl';
+    const edgeSortDir = window._edgeSortDir || -1;
+    filteredEdge = [...filteredEdge].sort((a, b) => {
+      let va, vb;
+      switch (edgeSortCol) {
+        case 'legs': va = a.legs; vb = b.legs; break;
+        case 'fair': va = a.fairProb; vb = b.fairProb; break;
+        case 'offered': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'edge': va = a.edge; vb = b.edge; break;
+        case 'stake': va = a.stake || 0; vb = b.stake || 0; break;
+        case 'result': return edgeSortDir * a.result.localeCompare(b.result);
+        case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
+        case 'absPnl':
+        default: va = Math.abs(a.pnl || 0); vb = Math.abs(b.pnl || 0);
+      }
+      return edgeSortDir * (va - vb);
+    });
+    const edgeSortArrow = (col) => edgeSortCol === col ? (edgeSortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const edgeSortClick = (col, align) => 'onclick="window._edgeSortCol=window._edgeSortCol===\'' + col + '\'?window._edgeSortCol:\'' + col + '\'; if(window._edgeSortCol===\'' + col + '\'){window._edgeSortDir=(window._edgeSortDir||-1)*-1;} else {window._edgeSortCol=\'' + col + '\'; window._edgeSortDir=-1;} window._lastEdgeData&&renderPortfolioEdge(window._lastEdgeData)" style="cursor:pointer;' + (align?'text-align:'+align+';':'') + '"';
+    window._lastEdgeData = settled;
 
-    for (const e of entries.sort((a, b) => Math.abs(b.pnl || 0) - Math.abs(a.pnl || 0)).slice(0, 20)) {
+    const edgeFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
+    const edgeRerend = 'window._lastEdgeData&&renderPortfolioEdge(window._lastEdgeData)';
+    html += '<div style="padding:8px 0; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); margin-bottom:6px;">'
+      + '<input type="text" placeholder="Search team or ID..." value="' + (window._edgeSearch || '') + '" oninput="window._edgeSearch=this.value; ' + edgeRerend + '" style="' + edgeFSel + ' width:160px;">'
+      + '<select onchange="window._edgeResult=this.value; ' + edgeRerend + '" style="' + edgeFSel + '">'
+      + '<option value="">All results</option>'
+      + '<option value="won"' + (edgeResult === 'won' ? ' selected' : '') + '>Won (parlay lost)</option>'
+      + '<option value="lost"' + (edgeResult === 'lost' ? ' selected' : '') + '>Lost (parlay won)</option>'
+      + '</select>'
+      + '<select onchange="window._edgeLegs=this.value; ' + edgeRerend + '" style="' + edgeFSel + '"><option value="">All legs</option>'
+      + [2,3,4,5,6,7,8].map(n => '<option value="' + n + '"' + (edgeLegs === String(n) ? ' selected' : '') + '>' + n + '-leg</option>').join('')
+      + '</select>'
+      + '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filteredEdge.length + ' of ' + entries.length + '</span>'
+      + '</div>';
+
+    const edgePageSize = 20;
+    const edgeShowAll = window._edgeShowAll || false;
+    const isEdgeFiltering = edgeSearch || edgeResult || edgeLegs;
+    const edgeLimit = (edgeShowAll || isEdgeFiltering) ? filteredEdge.length : edgePageSize;
+    const edgeDisplayed = filteredEdge.slice(0, edgeLimit);
+    const edgeHasMore = filteredEdge.length > edgeLimit;
+
+    html += '<div style="overflow-x:auto;"><table>';
+    html += '<tr>'
+      + '<th>Selections</th>'
+      + '<th ' + edgeSortClick('legs') + '>Legs' + edgeSortArrow('legs') + '</th>'
+      + '<th ' + edgeSortClick('fair', 'right') + '>Fair %' + edgeSortArrow('fair') + '</th>'
+      + '<th ' + edgeSortClick('offered', 'right') + '>Offered' + edgeSortArrow('offered') + '</th>'
+      + '<th ' + edgeSortClick('edge', 'right') + '>Edge' + edgeSortArrow('edge') + '</th>'
+      + '<th ' + edgeSortClick('stake', 'right') + '>To Win' + edgeSortArrow('stake') + '</th>'
+      + '<th ' + edgeSortClick('result') + ' title="Settlement outcome from our (SP) perspective">SP Result' + edgeSortArrow('result') + '</th>'
+      + '<th ' + edgeSortClick('pnl', 'right') + '>P&L' + edgeSortArrow('pnl') + '</th>'
+      + '</tr>';
+
+    for (const e of edgeDisplayed) {
       const offeredStr = e.offeredOdds ? (e.offeredOdds >= 0 ? '+' : '') + e.offeredOdds : '-';
       const edgeCls = e.edge > 0 ? 'positive' : e.edge < 0 ? 'negative' : 'neutral';
       const pnlStr = e.pnl != null ? (fmtPnl(e.pnl)) : '-';
@@ -2733,6 +2838,15 @@
       '</tr>';
     }
     html += '</table></div>';
+
+    if (edgeHasMore) {
+      html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">'
+        + '<button class="btn" onclick="window._edgeShowAll=true; ' + edgeRerend + '" style="font-size:12px; padding:4px 16px;">Show All ' + filteredEdge.length + '</button></div>';
+    } else if (edgeShowAll && filteredEdge.length > edgePageSize && !isEdgeFiltering) {
+      html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">'
+        + '<button class="btn" onclick="window._edgeShowAll=false; ' + edgeRerend + '" style="font-size:12px; padding:4px 16px;">Show Top ' + edgePageSize + '</button></div>';
+    }
+
     el.innerHTML = html;
   }
 
