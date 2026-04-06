@@ -13,7 +13,7 @@ let pusherClient = null;
 let broadcastChannel = null;
 let privateChannel = null;
 let channelNames = { broadcast: null, private: null };
-let paused = false;
+let paused = process.env.START_PAUSED === 'true' || process.env.START_PAUSED === '1';
 let connectionState = 'disconnected';
 let lastHealthCheck = null;
 let healthCheckTimer = null;
