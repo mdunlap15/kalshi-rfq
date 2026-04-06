@@ -1583,32 +1583,48 @@ async function loadFromDb() {
     if (o.status?.startsWith('settled_')) {
       stats.totalSettlements++;
 
-      // MIGRATION: ALL historical orders stored bettor-perspective status
-      // (PX uses bettor-perspective on both WS and REST API).
-      // Flip to SP-perspective: settled_won (bettor won) → settled_lost (SP lost)
-      //                         settled_lost (bettor lost) → settled_won (SP won)
-      // After this migration persists, future loads will already be SP-perspective,
-      // and both WS + poll handlers now flip before calling recordSettlement.
-      const raw = o.status.replace('settled_', '');
-      const flipped = raw === 'won' ? 'lost' : raw === 'lost' ? 'won' : raw;
-      if (flipped !== raw) {
-        o.status = `settled_${flipped}`;
-        o.settlementResult = flipped;
+      // Determine correct SP result from LEG-LEVEL settlement data.
+      // Leg settlement_status is bettor-perspective:
+      //   'won' = bettor's selection hit, 'lost' = bettor's selection missed
+      // If ANY leg has 'lost' → bettor's parlay lost → SP WON
+      // If ALL legs have 'won' → bettor's parlay hit → SP LOST
+      // This is idempotent — doesn't depend on how status was previously stored.
+      const legs = o.legs || o.meta?.legs || [];
+      const legStatuses = legs.map(l => l.settlementStatus || l.settlement_status).filter(Boolean);
+
+      let spResult;
+      if (legStatuses.length > 0) {
+        // We have leg data — derive SP result definitively
+        const anyLegLost = legStatuses.some(s => s === 'lost');
+        const anyPush = legStatuses.some(s => s === 'push' || s === 'void');
+        if (anyLegLost) {
+          spResult = 'won'; // bettor's parlay missed ≥1 leg → SP won
+        } else if (anyPush && legStatuses.every(s => s === 'won' || s === 'push' || s === 'void')) {
+          spResult = 'push';
+        } else {
+          spResult = 'lost'; // all legs hit → bettor won → SP lost
+        }
+      } else {
+        // No leg data — use stored status but mark as needing verification
+        // Can't determine direction without legs, keep whatever is stored
+        spResult = o.status.replace('settled_', '');
       }
+
+      o.status = `settled_${spResult}`;
+      o.settlementResult = spResult;
 
       // Recalculate P&L on load. Status is SP-perspective:
       //   settled_won  = SP won (bettor's parlay lost) → +bettor's wager
       //   settled_lost = SP lost (bettor's parlay won) → -confirmedStake
-      const settleResult = o.status.replace('settled_', '');
       const bettorWager = americanOddsToProfit(o.confirmedOdds, o.confirmedStake);
-      if (settleResult === 'won') {
+      if (spResult === 'won') {
         o.pnl = bettorWager;              // SP won
-      } else if (settleResult === 'lost') {
+      } else if (spResult === 'lost') {
         o.pnl = -(o.confirmedStake || 0); // SP lost
       } else {
         o.pnl = 0;
       }
-      db.saveOrder(o).catch(() => {}); // persist corrected P&L + migrated status
+      db.saveOrder(o).catch(() => {}); // persist corrected status + P&L
       if (o.pnl != null) {
         stats.runningPnL += o.pnl;
         if (o.pnl > 0) stats.totalWins++;
