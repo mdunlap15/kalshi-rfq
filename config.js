@@ -5,7 +5,7 @@ const config = {
     baseUrl: process.env.PX_BASE_URL || 'https://cash.api.prophetx.co',
     accessKey: process.env.PX_ACCESS_KEY,
     secretKey: process.env.PX_SECRET_KEY,
-    tokenTtlMinutes: 8,
+    tokenTtlMinutes: 9,
   },
   oddsApi: {
     baseUrl: 'https://api.sharpapi.io/api/v1',

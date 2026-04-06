@@ -4,6 +4,9 @@ const log = require('./logger');
 
 // Token cache
 let tokenCache = { token: null, refreshToken: null, time: 0 };
+// Cooldown: after a failed login (especially session_num_exceed), don't retry
+// for this many ms. Prevents periodic timers from burning through all 20 sessions.
+let loginCooldownUntil = 0;
 
 // ---------------------------------------------------------------------------
 // AUTH
@@ -25,6 +28,12 @@ async function login() {
     }
   }
 
+  // Cooldown: if a recent login failed, don't spam PX with more attempts
+  if (Date.now() < loginCooldownUntil) {
+    const waitSec = Math.round((loginCooldownUntil - Date.now()) / 1000);
+    throw new Error(`Login on cooldown (${waitSec}s remaining) — avoiding session_num_exceed`);
+  }
+
   log.info('PX-Auth', 'Logging in to ProphetX...');
   const resp = await fetch(`${config.px.baseUrl}/partner/auth/login`, {
     method: 'POST',
@@ -37,8 +46,16 @@ async function login() {
 
   if (!resp.ok) {
     const text = await resp.text();
+    // If session limit hit, set a 10-minute cooldown (wait for sessions to expire)
+    if (text.includes('session_num_exceed')) {
+      loginCooldownUntil = Date.now() + 10 * 60 * 1000;
+      log.error('PX-Auth', 'Session limit hit — 10min cooldown before next login attempt');
+    }
     throw new Error(`ProphetX login failed (${resp.status}): ${text}`);
   }
+
+  // Success — clear any cooldown
+  loginCooldownUntil = 0;
 
   const data = await resp.json();
   const token = data.access_token || data.data?.access_token;
