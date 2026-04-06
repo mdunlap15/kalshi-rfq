@@ -1168,13 +1168,10 @@ async function pollOrderSettlements(px) {
       // If still no match: reconstruct the order from PX data so P&L is captured.
       // This handles cases where we missed the confirmation WS event entirely
       // (e.g., service was down) but PX knows about the settled order.
-      // Skip reconstruction for orders created before this service started —
-      // prevents pre-existing PX account history from polluting a clean start.
+      // Disabled when SKIP_RECONSTRUCTION=true (production clean start).
       if (!order && pxParlayId) {
-        const orderCreatedAt = pxOrder.created_at || pxOrder.updated_at;
-        const serviceStartSec = new Date(stats.startedAt).getTime() / 1000;
-        if (orderCreatedAt && orderCreatedAt < serviceStartSec) {
-          continue; // pre-existing order, skip
+        if (process.env.SKIP_RECONSTRUCTION === 'true' || process.env.SKIP_RECONSTRUCTION === '1') {
+          continue; // skip all reconstruction
         }
         const settlementStatus = pxOrder.settlement_status;
         if (settlementStatus && !['tbd','requested'].includes(settlementStatus)) {

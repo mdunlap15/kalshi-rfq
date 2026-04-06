@@ -346,11 +346,13 @@ function startStatusServer() {
       const db = require('./services/db');
       const client = db.getClient();
       if (client) {
-        await client.from('parlay_orders').delete().neq('parlay_id', '');
-        await client.from('matched_parlays').delete().neq('id', 0);
-        await client.from('declines').delete().neq('id', 0).catch(() => {});
+        const r1 = await client.from('parlay_orders').delete().neq('parlay_id', '');
+        if (r1.error) log.warn('Reset', `parlay_orders: ${r1.error.message}`);
+        const r2 = await client.from('matched_parlays').delete().neq('id', 0);
+        if (r2.error) log.warn('Reset', `matched_parlays: ${r2.error.message}`);
+        const r3 = await client.from('declines').delete().neq('id', 0);
+        if (r3.error) log.warn('Reset', `declines: ${r3.error.message}`);
       }
-      // Clear in-memory (requires restart for full effect, but zero out stats)
       const result = { dbCleared: true, note: 'Restart service for full in-memory reset' };
       res.json({ ok: true, ...result });
     } catch (err) {
