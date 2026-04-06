@@ -2340,9 +2340,10 @@
     }
 
     // For each order, map legs to marketKey + expected side match
-    // Naming (post stake-interpretation fix):
-    //   spRisk  = confirmedStake  = our SP stake = bettor's potential payout
-    //   spProfit = calcBettorWager = bettor's original wager = what we keep if SP wins
+    // Naming:
+    //   spRisk   = confirmedStake = our SP stake = bettor's potential payout
+    //   spProfit = calcSpProfit   = bettor's original wager = what we keep if SP wins
+    //     Formula: confirmedStake × 100 / |offeredOdds|
     // When bettor's parlay HITS (all legs win): SP loses spRisk
     // When bettor's parlay MISSES: SP wins spProfit (bettor's wager)
     const orderSpecs = [];
@@ -2350,7 +2351,7 @@
       const legs = mergedLegs(o);
       if (legs.length === 0) continue;
       const spRisk = o.confirmedStake || 0;
-      const spProfit = (spRisk && o.offeredOdds) ? calcBettorWager(spRisk, o.offeredOdds) : 0;
+      const spProfit = (spRisk && o.offeredOdds) ? calcSpProfit(spRisk, o.offeredOdds) : 0;
       if (!spRisk || !spProfit) continue;
       const legSpecs = legs.map(l => {
         const market = l.market || l.marketType;
@@ -2490,14 +2491,14 @@
 
     if (sumEl) {
       const meanCls = r.mean >= 0 ? 'positive' : 'negative';
-      sumEl.innerHTML = '<span style="font-size:13px;">Expected: <span class="' + meanCls + '" style="font-weight:600;">' + fmtPnl(r.mean) + '</span> &middot; P(profit): <span style="font-weight:600;">' + (r.probWin * 100).toFixed(1) + '%</span></span>';
+      sumEl.innerHTML = '<span style="font-size:14px;">Expected: <span class="' + meanCls + '" style="font-weight:600;">' + fmtPnl(r.mean) + '</span> &middot; P(profit): <span style="font-weight:600;">' + (r.probWin * 100).toFixed(1) + '%</span></span>';
     }
 
     // Percentile table
     const formatCls = (v) => v > 0 ? 'positive' : v < 0 ? 'negative' : 'neutral';
     const row = (label, v, color, bold) => {
-      const lblStyle = 'padding:5px 14px; color:' + (color || 'var(--text2)') + '; font-size:13px;' + (bold ? ' font-weight:600;' : '');
-      const valStyle = 'padding:5px 14px; text-align:right; font-family:monospace; font-size:14px;' + (bold ? ' font-weight:600;' : '');
+      const lblStyle = 'padding:6px 16px; color:' + (color || 'var(--text2)') + '; font-size:14px;' + (bold ? ' font-weight:600;' : '');
+      const valStyle = 'padding:6px 16px; text-align:right; font-family:monospace; font-size:15px;' + (bold ? ' font-weight:600;' : '');
       return '<tr><td style="' + lblStyle + '">' + label + '</td><td style="' + valStyle + '" class="' + formatCls(v) + '">' + fmtPnl(v) + '</td></tr>';
     };
 
@@ -2527,7 +2528,7 @@
       + '</div>';
 
     // Histogram — much bigger, proper axes
-    const histW = 760, histH = 400, hPad = { l: 72, r: 20, t: 22, b: 58 };
+    const histW = 900, histH = 460, hPad = { l: 78, r: 24, t: 26, b: 64 };
     const hChartW = histW - hPad.l - hPad.r;
     const hChartH = histH - hPad.t - hPad.b;
     const bins = 60;
@@ -2617,8 +2618,8 @@
     svg += svgText(medX, hPad.t + 12, 'Median', { anchor: 'middle', size: 13, fill: 'var(--amber)' });
 
     // Axis titles
-    svg += svgText(hPad.l + hChartW / 2, histH - 4, 'P&L outcome ($)', { anchor: 'middle', size: 14, fill: 'var(--text1)' });
-    svg += '<text x="14" y="' + (hPad.t + hChartH / 2) + '" text-anchor="middle" fill="var(--text1)" font-size="14" transform="rotate(-90, 14, ' + (hPad.t + hChartH / 2) + ')">Frequency</text>';
+    svg += svgText(hPad.l + hChartW / 2, histH - 4, 'P&L outcome ($)', { anchor: 'middle', size: 15, fill: '#ffffff' });
+    svg += '<text x="14" y="' + (hPad.t + hChartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="15" transform="rotate(-90, 14, ' + (hPad.t + hChartH / 2) + ')">Frequency</text>';
 
     svg += '</svg>';
 
@@ -2627,7 +2628,7 @@
 
     // Input diagnostics — shows what probabilities are driving the sim
     const pct = (v) => v != null ? (v * 100).toFixed(1) + '%' : '-';
-    const diagRow = (l, v, hint) => '<div style="display:flex; justify-content:space-between; gap:16px; padding:6px 0; border-bottom:1px solid var(--border);"><span style="color:var(--text3); font-size:12px;">' + l + (hint ? ' <span style="color:var(--text3); opacity:0.6;">(' + hint + ')</span>' : '') + '</span><span style="font-family:monospace; font-size:13px; color:var(--text1);">' + v + '</span></div>';
+    const diagRow = (l, v, hint) => '<div style="display:flex; justify-content:space-between; gap:16px; padding:7px 0; border-bottom:1px solid var(--border);"><span style="color:var(--text3); font-size:13px;">' + l + (hint ? ' <span style="color:var(--text3); opacity:0.6;">(' + hint + ')</span>' : '') + '</span><span style="font-family:monospace; font-size:14px; color:var(--text1);">' + v + '</span></div>';
 
     html += '<div style="margin-top:20px; padding:14px 18px; background:var(--surface2); border:1px solid var(--border); border-radius:6px;">';
     html += '<div style="font-size:12px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px; font-weight:600; margin-bottom:8px;">Simulation Inputs (sanity check)</div>';
