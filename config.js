@@ -19,7 +19,7 @@ const config = {
     stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 15,
     offerValidSeconds: 120,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
-    bankroll: parseFloat(process.env.BANKROLL) || 100000,
+    bankroll: parseFloat(process.env.BANKROLL) || 0,
     // Override live PX balance with a fixed amount. Set to 0 (or unset) to use live balance.
     assumedBankroll: parseFloat(process.env.ASSUMED_BANKROLL) || 0,
     maxDrawdownPct: parseFloat(process.env.MAX_DRAWDOWN_PCT) || 100,
