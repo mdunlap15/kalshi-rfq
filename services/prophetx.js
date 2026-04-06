@@ -2,8 +2,8 @@ const fetch = require('node-fetch');
 const { config } = require('../config');
 const log = require('./logger');
 
-// Token cache — replicates pattern from server/services/prophetx.js
-let tokenCache = { token: null, time: 0 };
+// Token cache
+let tokenCache = { token: null, refreshToken: null, time: 0 };
 
 // ---------------------------------------------------------------------------
 // AUTH
@@ -13,6 +13,16 @@ async function login() {
   const age = (Date.now() - tokenCache.time) / 1000 / 60;
   if (tokenCache.token && age < config.px.tokenTtlMinutes) {
     return tokenCache.token;
+  }
+
+  // Try refresh first (doesn't create a new session)
+  if (tokenCache.refreshToken) {
+    try {
+      const refreshed = await refreshSession();
+      if (refreshed) return refreshed;
+    } catch (err) {
+      log.warn('PX-Auth', `Refresh failed: ${err.message}, falling back to login`);
+    }
   }
 
   log.info('PX-Auth', 'Logging in to ProphetX...');
@@ -34,13 +44,43 @@ async function login() {
   const token = data.access_token || data.data?.access_token;
   if (!token) throw new Error('ProphetX login: no access_token in response');
 
-  tokenCache = { token, time: Date.now() };
-  log.info('PX-Auth', 'Login successful, token cached');
+  const refreshToken = data.refresh_token || data.data?.refresh_token || null;
+  tokenCache = { token, refreshToken, time: Date.now() };
+  log.info('PX-Auth', `Login successful, token cached${refreshToken ? ' (with refresh token)' : ''}`);
+  return token;
+}
+
+/**
+ * Refresh the access token using the stored refresh token.
+ * This does NOT create a new session, avoiding the session limit.
+ */
+async function refreshSession() {
+  if (!tokenCache.refreshToken) return null;
+
+  log.debug('PX-Auth', 'Refreshing session...');
+  const resp = await fetch(`${config.px.baseUrl}/partner/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({ refresh_token: tokenCache.refreshToken }),
+  });
+
+  if (!resp.ok) {
+    tokenCache.refreshToken = null; // clear stale refresh token
+    return null;
+  }
+
+  const data = await resp.json();
+  const token = data.access_token || data.data?.access_token;
+  if (!token) return null;
+
+  const refreshToken = data.refresh_token || data.data?.refresh_token || tokenCache.refreshToken;
+  tokenCache = { token, refreshToken, time: Date.now() };
+  log.info('PX-Auth', 'Session refreshed (no new session created)');
   return token;
 }
 
 function invalidateToken() {
-  tokenCache = { token: null, time: 0 };
+  tokenCache = { token: null, refreshToken: tokenCache.refreshToken, time: 0 };
 }
 
 // ---------------------------------------------------------------------------
