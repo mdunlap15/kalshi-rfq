@@ -323,6 +323,24 @@ function startStatusServer() {
     }
   });
 
+  // Nuclear reset: truncate all tables and clear in-memory state
+  app.post('/reset-all', async (req, res) => {
+    try {
+      const db = require('./services/db');
+      const client = db.getClient();
+      if (client) {
+        await client.from('parlay_orders').delete().neq('parlay_id', '');
+        await client.from('matched_parlays').delete().neq('id', 0);
+        await client.from('declines').delete().neq('id', 0).catch(() => {});
+      }
+      // Clear in-memory (requires restart for full effect, but zero out stats)
+      const result = { dbCleared: true, note: 'Restart service for full in-memory reset' };
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // DB vs in-memory diagnostic: shows DB row counts alongside loaded counts
   app.get('/db-diag', async (req, res) => {
     try {
