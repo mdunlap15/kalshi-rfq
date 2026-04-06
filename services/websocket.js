@@ -581,8 +581,13 @@ function handleParlaySettled(data) {
   const result = payload.result || payload.status;
   const payout = payload.payout || 0;
 
-  log.info('Settle', `Parlay settled: order=${orderUuid}, result=${result}, payout=${payout}`);
-  orderTracker.recordSettlement(orderUuid, result, payout);
+  // PX settlement result is BETTOR-perspective ('won' = bettor won, 'lost' = bettor lost).
+  // Flip to SP-perspective before recording.
+  const spResult = result === 'won' ? 'lost'
+                 : result === 'lost' ? 'won'
+                 : result;
+  log.info('Settle', `Parlay settled: order=${orderUuid}, pxResult=${result}, spResult=${spResult}, payout=${payout}`);
+  orderTracker.recordSettlement(orderUuid, spResult, payout);
 }
 
 /**

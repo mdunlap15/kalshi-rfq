@@ -1583,18 +1583,17 @@ async function loadFromDb() {
     if (o.status?.startsWith('settled_')) {
       stats.totalSettlements++;
 
-      // MIGRATION: poll-reconstructed orders stored bettor-perspective status
-      // (e.g., settled_lost = bettor lost) but WS orders stored SP-perspective
-      // (settled_won = SP won). Normalize everything to SP-perspective.
-      // Reconstructed orders are tagged with meta.reconstructed=true.
-      if (o.meta?.reconstructed) {
-        const raw = o.status.replace('settled_', '');
-        const flipped = raw === 'won' ? 'lost' : raw === 'lost' ? 'won' : raw;
-        if (flipped !== raw) {
-          o.status = `settled_${flipped}`;
-          o.settlementResult = flipped;
-          log.debug('DB', `Migrated reconstructed order ${o.parlayId}: settled_${raw} → settled_${flipped}`);
-        }
+      // MIGRATION: ALL historical orders stored bettor-perspective status
+      // (PX uses bettor-perspective on both WS and REST API).
+      // Flip to SP-perspective: settled_won (bettor won) → settled_lost (SP lost)
+      //                         settled_lost (bettor lost) → settled_won (SP won)
+      // After this migration persists, future loads will already be SP-perspective,
+      // and both WS + poll handlers now flip before calling recordSettlement.
+      const raw = o.status.replace('settled_', '');
+      const flipped = raw === 'won' ? 'lost' : raw === 'lost' ? 'won' : raw;
+      if (flipped !== raw) {
+        o.status = `settled_${flipped}`;
+        o.settlementResult = flipped;
       }
 
       // Recalculate P&L on load. Status is SP-perspective:
