@@ -81,7 +81,7 @@ async function priceParlay(legs) {
     }
 
     // Get fair probability — tries cache first, then on-demand alt lines fetch
-    let fairProb = await oddsFeed.getFairProbAsync(
+    const fairProb = await oddsFeed.getFairProbAsync(
       lineInfo.oddsApiSport,
       lineInfo.homeTeam,
       lineInfo.awayTeam,
@@ -90,16 +90,6 @@ async function priceParlay(legs) {
       lineInfo.line != null ? Math.abs(lineInfo.line) : null,
       lineInfo.startTime // for back-to-back/doubleheader matching
     );
-
-    // For player props without odds feed data, use a fixed fair prob
-    // based on the maxPropLegOdds cap (e.g., -500 → implied prob 83.3%).
-    // This lets us register and quote props conservatively.
-    if ((fairProb == null || fairProb <= 0 || fairProb >= 1) && lineInfo.isProp) {
-      const maxPropOdds = config.pricing.maxPropLegOdds || -500;
-      // Use the cap as the fair prob — conservative (assumes max allowed favorite)
-      fairProb = Math.abs(maxPropOdds) / (Math.abs(maxPropOdds) + 100);
-      log.debug('Pricing', `Using prop fallback fair prob ${fairProb.toFixed(4)} for ${legLabel} (max prop odds ${maxPropOdds})`);
-    }
 
     if (fairProb == null || fairProb <= 0 || fairProb >= 1) {
       log.debug('Pricing', `Declined: no fair value for ${lineInfo.teamName} ${lineInfo.marketType}`);
