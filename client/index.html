@@ -424,7 +424,6 @@
         <span class="stat-item"><span class="stat-label">Confirmed:</span> <span class="stat-val" id="stat-confirmed">0</span></span>
         <span class="stat-item"><span class="stat-label">Settled:</span> <span class="stat-val" id="stat-settled">0</span></span>
         <span class="stat-item"><span class="stat-label">P&L:</span> <span class="stat-val" id="stat-pnl">$0.00</span></span>
-        <span class="stat-item" title="Percentage of settled parlays where we won (bettor's parlay lost)"><span class="stat-label">Settled Win Rate:</span> <span class="stat-val" id="stat-winrate">-</span></span>
         <span class="stat-item">
           <span id="countdown-display" style="font-size:11px; color:var(--text3);">-</span>
           <div class="refresh-indicator" id="refresh-indicator" style="display:none;"><div class="spinner"></div></div>
@@ -875,15 +874,6 @@
     const wins = o.totalWins || 0;
     const losses = o.totalLosses || 0;
     const total = wins + losses;
-    const wrEl = document.getElementById('stat-winrate');
-    if (total > 0) {
-      wrEl.textContent = Math.round(wins / total * 100) + '%';
-      wrEl.className = 'value ' + (wins / total >= 0.5 ? 'positive' : 'negative');
-    } else {
-      wrEl.textContent = '-';
-      wrEl.className = 'value neutral';
-    }
-
     // Odds cache
     renderOddsCache(data.odds || {});
 
@@ -3198,8 +3188,6 @@
       '<div class="stat-bar" style="gap:6px 18px;">' +
         stat('P&L', pnlStr, pnlCls) +
         stat('ROI', roiStr, roiCls, 'Settled P&L / settled risk') +
-        stat('Settled Record', totalSettled > 0 ? wins + 'W-' + losses + 'L' : '-') +
-        stat('Settled Win Rate', winRate != null ? winRate + '%' : '-', wrCls) +
         stat('Active', activeOrders.length) +
         stat('Total Risk', fmtDollar(totalRisk)) +
         stat('Total To Win', fmtDollar(totalToWin), 'positive') +
@@ -3890,8 +3878,6 @@
       <div class="stat-bar" style="gap:6px 18px;">
         ${stat('P&L', pnlStr, pnlCls)}
         ${stat('ROI', roiStr, roiCls, 'Settled P&L / settled risk')}
-        ${stat('Settled Record', settled > 0 ? wins + 'W-' + losses + 'L' : '-')}
-        ${stat('Settled Win Rate', wrStr, wrCls)}
         ${stat('Active', active)}
         ${stat('Portfolio Risk', portStr, portCls)}
         ${stat('To Win', fmtDollar(totalToWin), 'positive')}
