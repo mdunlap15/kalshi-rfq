@@ -577,10 +577,10 @@
                 <th style="text-align:left; padding:6px 12px; width:320px;">Formula</th>
                 <th style="text-align:left; padding:6px 12px;">Meaning</th>
               </tr>
-              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Weighted Risk</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">payout &times; P(other legs hit)</td><td style="padding:4px 12px; color:var(--text2);">Probability-weighted payout attributed to one leg</td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Net Exposure</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">worst-case loss after offsets</td><td style="padding:4px 12px; color:var(--text2);">Accounts for offsetting positions (e.g., Over/Under can't both hit)</td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Gross Risk</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">payout &times; P(other legs hit)</td><td style="padding:4px 12px; color:var(--text2);">Sum of probability-weighted payouts, treating each parlay independently</td></tr>
               <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Notional Payout</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">sum of full payouts</td><td style="padding:4px 12px; color:var(--text2);">Unweighted liability if every parlay fully hits</td></tr>
-              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Remaining</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">max_per_team &minus; weighted risk</td><td style="padding:4px 12px; color:var(--text2);">Capacity before risk gate blocks new quotes</td></tr>
-              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Gross Risk</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">sum of weighted risks in a game</td><td style="padding:4px 12px; color:var(--text2);">Total weighted payout across all sides of a game</td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Remaining</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">max_per_team &minus; net exposure</td><td style="padding:4px 12px; color:var(--text2);">Capacity before risk gate blocks new quotes</td></tr>
               <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Stakes Held</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">sum of bettor stakes on a game</td><td style="padding:4px 12px; color:var(--text2);">Money in pocket; kept if parlays lose</td></tr>
               <tr><td style="padding:4px 12px; font-weight:600; color:var(--green);">Net Exposure &#9733;</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">max over sides of (payouts owed &minus; opposite stakes)</td><td style="padding:4px 12px; color:var(--text2);">True worst-case loss after offsets. <strong>The one to watch.</strong></td></tr>
               <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">% of Limit</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">net / (bankroll &times; max_per_game_pct)</td><td style="padding:4px 12px; color:var(--text2);">Game&rsquo;s share of the per-game cap</td></tr>
@@ -2090,7 +2090,7 @@
     el.innerHTML = html;
   }
 
-  const expState = { sortCol: 'risk', sortDir: -1, search: '', parlaysMin: '', parlaysMax: '', riskMin: '', riskMax: '', payoutMin: '', payoutMax: '', showAdvanced: false, pageSize: 15, showAll: false };
+  const expState = { sortCol: 'net', sortDir: -1, search: '', parlaysMin: '', parlaysMax: '', riskMin: '', riskMax: '', payoutMin: '', payoutMax: '', showAdvanced: false, pageSize: 15, showAll: false };
   window.expRerender = () => renderExposure(window._lastExpData || { teams: [], maxPerTeam: 0 });
   window.toggleExpSort = (col) => {
     if (expState.sortCol === col) expState.sortDir *= -1;
@@ -2122,7 +2122,7 @@
     // Advanced range filters
     teams = teams.filter(t => {
       if (!passesRangeFilter(t.parlays, expState.parlaysMin, expState.parlaysMax)) return false;
-      if (!passesRangeFilter(t.risk, expState.riskMin, expState.riskMax)) return false;
+      if (!passesRangeFilter(t.netExposure || 0, expState.riskMin, expState.riskMax)) return false;
       if (!passesRangeFilter(t.notionalPayout, expState.payoutMin, expState.payoutMax)) return false;
       return true;
     });
@@ -2133,10 +2133,11 @@
       switch (expState.sortCol) {
         case 'name': va = a.name || ''; vb = b.name || ''; return expState.sortDir * va.localeCompare(vb);
         case 'parlays': va = a.parlays || 0; vb = b.parlays || 0; break;
+        case 'net': va = a.netExposure || 0; vb = b.netExposure || 0; break;
         case 'risk': va = a.risk || 0; vb = b.risk || 0; break;
         case 'payout': va = a.notionalPayout || 0; vb = b.notionalPayout || 0; break;
-        case 'remaining': va = maxPerTeam > 0 ? maxPerTeam - (a.risk || 0) : 0; vb = maxPerTeam > 0 ? maxPerTeam - (b.risk || 0) : 0; break;
-        default: va = a.risk || 0; vb = b.risk || 0;
+        case 'remaining': va = maxPerTeam > 0 ? maxPerTeam - (a.netExposure || 0) : 0; vb = maxPerTeam > 0 ? maxPerTeam - (b.netExposure || 0) : 0; break;
+        default: va = a.netExposure || 0; vb = b.netExposure || 0;
       }
       return expState.sortDir * (va - vb);
     });
@@ -2166,14 +2167,14 @@
           oninput="expState.search=this.value; expRerender()"
           style="${eFSel} width:180px;">
         <button onclick="expState.showAdvanced=!expState.showAdvanced; expRerender()" style="${eFSel} cursor:pointer;">${expState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
-        <span style="font-size:10px; color:var(--text3); margin-left:8px;">Click row to see parlays. Weighted Risk = payout × P(other legs win).</span>
+        <span style="font-size:10px; color:var(--text3); margin-left:8px;">Click row to see parlays. Net Exposure = worst-case loss after offsetting positions.</span>
       </div>`;
     if (expState.showAdvanced) {
       html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
         + '<span style="color:var(--text3);">Parlays:</span>'
         + rangeFilterHtml('expState', 'parlaysMin', 'parlaysMax', expState, 'expRerender()', eDStyle, { title: 'Parlay count', width: '55px', step: '1' })
-        + '<span style="color:var(--text3); margin-left:8px;">Weighted Risk $:</span>'
-        + rangeFilterHtml('expState', 'riskMin', 'riskMax', expState, 'expRerender()', eDStyle, { title: 'Weighted risk', width: '80px' })
+        + '<span style="color:var(--text3); margin-left:8px;">Net Exposure $:</span>'
+        + rangeFilterHtml('expState', 'riskMin', 'riskMax', expState, 'expRerender()', eDStyle, { title: 'Net exposure', width: '80px' })
         + '<span style="color:var(--text3); margin-left:8px;">Notional Payout $:</span>'
         + rangeFilterHtml('expState', 'payoutMin', 'payoutMax', expState, 'expRerender()', eDStyle, { title: 'Notional payout', width: '80px' })
         + '</div>';
@@ -2183,7 +2184,8 @@
         <tr>
           <th ${eSortClick('name')}>Team / Selection${eSortArrow('name')}</th>
           <th ${eSortClick('parlays', 'right')}>Parlays${eSortArrow('parlays')}</th>
-          <th ${eSortClick('risk', 'right')}>Weighted Risk${eSortArrow('risk')}</th>
+          <th ${eSortClick('net', 'right')} title="Worst-case loss after offsetting positions (Over/Under, spread sides)">Net Exposure${eSortArrow('net')}</th>
+          <th ${eSortClick('risk', 'right')} title="Sum of weighted risks (independent, no offsets)">Gross Risk${eSortArrow('risk')}</th>
           <th ${eSortClick('payout', 'right')}>Notional Payout${eSortArrow('payout')}</th>
           <th ${eSortClick('remaining', 'right')}>Remaining${eSortArrow('remaining')}</th>
           <th style="width:120px;"></th>
@@ -2196,9 +2198,11 @@
     const expHasMore = teams.length > expLimit;
 
     for (const t of expDisplayed) {
-      const remaining = maxPerTeam > 0 ? maxPerTeam - t.risk : Infinity;
-      const pct = maxPerTeam > 0 ? Math.min(100, (t.risk / maxPerTeam) * 100) : 0;
+      const netExp = t.netExposure || 0;
+      const remaining = maxPerTeam > 0 ? maxPerTeam - netExp : Infinity;
+      const pct = maxPerTeam > 0 ? Math.min(100, (netExp / maxPerTeam) * 100) : 0;
       const barColor = pct > 80 ? 'var(--red)' : pct > 50 ? 'var(--amber)' : 'var(--green)';
+      const netColor = netExp <= 0 ? 'var(--green)' : pct > 80 ? 'var(--red)' : 'var(--text)';
 
       // Use the composite team|event key for uniqueness (same team in diff games = diff rows)
       const rowKey = 'exp-' + (t.key || t.teamKey || t.name).replace(/[^a-z0-9]/gi, '');
@@ -2211,8 +2215,9 @@
         <tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
           <td>${t.name}${gameStr}${timeStr}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums;">${t.parlays}</td>
-          <td style="text-align:right; font-variant-numeric: tabular-nums; font-weight:600;">${fmtDollar(t.risk)}</td>
-          <td style="text-align:right; font-variant-numeric: tabular-nums; color:var(--text2);">${fmtDollar(t.notionalPayout||0).replace(/\.00$/, '')}</td>
+          <td style="text-align:right; font-variant-numeric: tabular-nums; font-weight:600; color:${netColor};">${fmtDollar(netExp)}</td>
+          <td style="text-align:right; font-variant-numeric: tabular-nums; color:var(--text3);">${fmtDollar(t.risk)}</td>
+          <td style="text-align:right; font-variant-numeric: tabular-nums; color:var(--text3);">${fmtDollar(t.notionalPayout||0).replace(/\.00$/, '')}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums; color: ${remaining < 100 ? 'var(--red)' : 'var(--text2)'};">
             ${maxPerTeam > 0 ? fmtDollar(remaining).replace(/\.00$/, '') : '-'}
           </td>
