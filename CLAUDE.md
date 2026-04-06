@@ -33,7 +33,7 @@ client/
 |---|---|---|
 | `PX_ACCESS_KEY` | Yes | ProphetX partner API access key |
 | `PX_SECRET_KEY` | Yes | ProphetX partner API secret key |
-| `PX_BASE_URL` | No | Default: `https://api-ss-sandbox.betprophet.co` |
+| `PX_BASE_URL` | No | Default: `https://cash.api.prophetx.co` (production) |
 | `SHARP_ODDS_API_KEY` | Yes | SharpAPI key (primary odds source, DK+FD free tier) |
 | `THE_ODDS_API_KEY` | No | The Odds API key (fallback for NCAAB, alt lines from Pinnacle) |
 | `SUPABASE_URL` | No | Supabase project URL |
