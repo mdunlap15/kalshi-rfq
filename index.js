@@ -51,26 +51,26 @@ async function startup() {
   log.info('Startup', `Sports: ${config.supportedSports.join(', ')}`);
   log.info('Startup', `PX Base URL: ${config.px.baseUrl}`);
 
-  // Step 1: Auth with ProphetX (retry with backoff if session limit hit)
+  // Step 1: Auth with ProphetX
+  // If session limit is hit, wait 11 min for old sessions to expire (PX TTL = 10 min).
+  // Clear cooldown before startup attempts so we don't block ourselves.
   log.info('Startup', '1/5 Authenticating with ProphetX...');
   let authOk = false;
-  for (let attempt = 1; attempt <= 5; attempt++) {
+  px.clearCooldown(); // ensure startup isn't blocked by a previous cooldown
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      px.clearCooldown(); // clear before each attempt
       await px.login();
       log.info('Startup', '    ✓ ProphetX auth OK');
       authOk = true;
       break;
     } catch (err) {
       const isSessionLimit = err.message.includes('session_num_exceed');
-      if (isSessionLimit && attempt < 5) {
-        const waitSec = attempt * 120; // 2min, 4min, 6min, 8min
-        log.warn('Startup', `    ⚠ Session limit hit (attempt ${attempt}/5). Waiting ${waitSec}s for old sessions to expire...`);
-        await new Promise(r => setTimeout(r, waitSec * 1000));
+      if (isSessionLimit && attempt < 3) {
+        log.warn('Startup', `    ⚠ Session limit hit (attempt ${attempt}/3). Waiting 11 min for sessions to expire...`);
+        await new Promise(r => setTimeout(r, 11 * 60 * 1000));
       } else {
-        log.error('Startup', `    ✗ ProphetX auth failed (attempt ${attempt}/5): ${err.message}`);
-        if (attempt >= 5) {
-          log.error('Startup', '    Service will stay running — auth will retry on next API call');
-        }
+        log.error('Startup', `    ✗ ProphetX auth failed (attempt ${attempt}/3): ${err.message}`);
       }
     }
   }

@@ -337,9 +337,14 @@ function parseMarketSelections(market) {
   return results;
 }
 
+function clearCooldown() {
+  loginCooldownUntil = 0;
+}
+
 module.exports = {
   login,
   invalidateToken,
+  clearCooldown,
   pxFetch,
   fetchSportEvents,
   fetchMarkets,
