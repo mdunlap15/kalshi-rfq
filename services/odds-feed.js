@@ -552,11 +552,16 @@ function buildConsensusMoneyline(bookPairs) {
     fairProbs.home.push(fh);
     fairProbs.away.push(fa);
   }
-  // Extract Pinnacle's raw odds if present
+  // Extract Pinnacle's and FanDuel's raw odds if present
   const pinBook = bookPairs.find(bp => bp.book === 'pinnacle');
   const pinnacle = pinBook ? {
     home: pinBook.home.odds_american,
     away: pinBook.away.odds_american,
+  } : null;
+  const fdBook = bookPairs.find(bp => bp.book === 'fanduel');
+  const fanduel = fdBook ? {
+    home: fdBook.home.odds_american,
+    away: fdBook.away.odds_american,
   } : null;
   return {
     home: {
@@ -571,6 +576,7 @@ function buildConsensusMoneyline(bookPairs) {
     },
     books: bookPairs.length,
     pinnacle,
+    fanduel,
   };
 }
 
@@ -599,6 +605,11 @@ function buildConsensusSpread(bookPairs) {
     home: pinBook.home.odds_american,
     away: pinBook.away.odds_american,
   } : null;
+  const fdBook = matching.find(bp => bp.book === 'fanduel');
+  const fanduel = fdBook ? {
+    home: fdBook.home.odds_american,
+    away: fdBook.away.odds_american,
+  } : null;
   return {
     home: {
       rawOdds: matching[0].home.odds_american,
@@ -615,6 +626,7 @@ function buildConsensusSpread(bookPairs) {
     line: pLine,
     books: matching.length,
     pinnacle,
+    fanduel,
   };
 }
 
@@ -655,6 +667,10 @@ function buildConsensusTotals(bookPairs) {
     pinnacle: (() => {
       const pinBook = matching.find(bp => bp.book === 'pinnacle');
       return pinBook ? { over: pinBook.over.odds_american, under: pinBook.under.odds_american } : null;
+    })(),
+    fanduel: (() => {
+      const fdBook = matching.find(bp => bp.book === 'fanduel');
+      return fdBook ? { over: fdBook.over.odds_american, under: fdBook.under.odds_american } : null;
     })(),
   };
 }
@@ -853,6 +869,23 @@ function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targe
   } else if (marketType === 'totals') {
     if (selection === 'over') return market.pinnacle.over || null;
     if (selection === 'under') return market.pinnacle.under || null;
+  }
+  return null;
+}
+
+function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime) {
+  const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
+  if (!event) return null;
+
+  const market = event.markets[marketType];
+  if (!market || !market.fanduel) return null;
+
+  if (marketType === 'h2h' || marketType === 'spreads') {
+    if (selection === 'home') return market.fanduel.home || null;
+    if (selection === 'away') return market.fanduel.away || null;
+  } else if (marketType === 'totals') {
+    if (selection === 'over') return market.fanduel.over || null;
+    if (selection === 'under') return market.fanduel.under || null;
   }
   return null;
 }
@@ -1075,6 +1108,7 @@ module.exports = {
   getFairProb,
   getFairProbAsync,
   getPinnacleOdds,
+  getFanDuelOdds,
   fetchAltLines,
   getEventMarkets,
   getLiveEventMarkets,

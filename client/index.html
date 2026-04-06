@@ -4948,6 +4948,7 @@
     h += '<th style="text-align:left; padding:' + pad + ';">Event Time</th>';
     if (showOdds) {
       h += '<th style="text-align:right; padding:' + pad + '; color:var(--purple);">Pinnacle</th>';
+      h += '<th style="text-align:right; padding:' + pad + '; color:var(--blue);">FanDuel</th>';
       h += '<th style="text-align:right; padding:' + pad + ';">Fair</th>';
       h += '<th style="text-align:right; padding:' + pad + '; color:var(--accent);">My Odds</th>';
     }
@@ -4967,6 +4968,7 @@
 
       // Odds columns
       const pinOdds = l.pinnacleOdds != null ? (l.pinnacleOdds >= 0 ? '+' : '') + l.pinnacleOdds : '-';
+      const fdOdds = l.fanduelOdds != null ? (l.fanduelOdds >= 0 ? '+' : '') + l.fanduelOdds : '-';
       const fairOdds = l.fairProb ? decimalToAmerican(1 / l.fairProb) : '-';
       const myOdds = (l.fairProb && vig) ? decimalToAmerican(1 / (l.fairProb * (1 + vig))) : fairOdds;
 
@@ -4994,6 +4996,7 @@
       h += '<td style="padding:' + pad + '; white-space:nowrap; font-size:11px; color:var(--text3);">' + eventTime + '</td>';
       if (showOdds) {
         h += '<td style="padding:' + pad + '; text-align:right; color:var(--purple);">' + pinOdds + '</td>';
+        h += '<td style="padding:' + pad + '; text-align:right; color:var(--blue);">' + fdOdds + '</td>';
         h += '<td style="padding:' + pad + '; text-align:right;">' + fairOdds + '</td>';
         h += '<td style="padding:' + pad + '; text-align:right; color:var(--accent);">' + myOdds + '</td>';
       }

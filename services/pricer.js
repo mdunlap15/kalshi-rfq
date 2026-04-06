@@ -101,8 +101,12 @@ async function priceParlay(legs) {
       return null;
     }
 
-    // Look up Pinnacle's raw odds for this leg
+    // Look up sportsbook raw odds for this leg
     const pinnacleOdds = oddsFeed.getPinnacleOdds(
+      lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
+    );
+    const fanduelOdds = oddsFeed.getFanDuelOdds(
       lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
       lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
     );
@@ -112,6 +116,7 @@ async function priceParlay(legs) {
       lineInfo,
       fairProb,
       pinnacleOdds,
+      fanduelOdds,
     });
 
     fairParlayProb *= fairProb;
@@ -189,6 +194,7 @@ async function priceParlay(legs) {
           line: l.lineInfo.line,
           fairProb: Math.round(l.fairProb * 10000) / 10000,
           pinnacleOdds: l.pinnacleOdds || null,
+          fanduelOdds: l.fanduelOdds || null,
           sport: l.lineInfo.sport,
           homeTeam: l.lineInfo.homeTeam,
           awayTeam: l.lineInfo.awayTeam,
