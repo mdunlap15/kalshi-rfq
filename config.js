@@ -26,6 +26,9 @@ const config = {
     maxRiskPerParlayPct: parseFloat(process.env.MAX_RISK_PER_PARLAY_PCT) || 5,
     maxExposurePerGamePct: parseFloat(process.env.MAX_EXPOSURE_PER_GAME_PCT) || 10,
     maxOdds: parseInt(process.env.MAX_ODDS) || 1500,
+    // Most extreme favorite odds allowed per-leg for player props (e.g., -500).
+    // Legs with implied prob > this (e.g., -600) are declined.
+    maxPropLegOdds: parseInt(process.env.MAX_PROP_LEG_ODDS) || -500,
   },
   supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,baseball_mlb,icehockey_nhl,tennis,soccer,soccer_usa_mls,soccer_epl')
     .split(',').map(s => s.trim()),

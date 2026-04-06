@@ -260,12 +260,20 @@ async function seedAllLines() {
       total: ['Total', 'Total Points', 'Points', 'Total Runs', 'Total Goals', 'Total Goals (Regular Time)'],
     };
 
+    // Allowed player prop patterns — registered as moneyline-type markets.
+    // These are 2-way Yes/No props (typed as 'moneyline' by PX).
+    const allowedPropPatterns = [
+      /to record a double double/i,
+    ];
+
     const mainMarkets = markets.filter(m => {
       if (!['moneyline', 'spread', 'total'].includes(m.type)) return false;
       // Exclude anything matching half/quarter/prop patterns
       if (excludePatterns.test(m.name)) return false;
-      // Require exact name match for ALL types — excludes player props
-      // (e.g., "CJ McCollum To Record a Double Double" typed as moneyline)
+      // Check allowed player props BEFORE the exact-name filter
+      const isProp = allowedPropPatterns.some(p => p.test(m.name));
+      if (isProp) return true;
+      // Require exact name match for main game markets
       const allowed = fullGameNames[m.type];
       if (allowed && !allowed.includes(m.name)) return false;
       return true;
@@ -273,6 +281,8 @@ async function seedAllLines() {
 
     for (const market of mainMarkets) {
       const parsed = px.parseMarketSelections(market);
+      const isProp = allowedPropPatterns.some(p => p.test(market.name));
+
       for (const sel of parsed) {
         totalLines++;
 
@@ -280,7 +290,13 @@ async function seedAllLines() {
         let oddsApiSelection = null;
         let oddsApiMarket = MARKET_TYPE_MAP[sel.marketType];
 
-        if (sel.marketType === 'moneyline') {
+        if (isProp) {
+          // Player props: selections are Yes/No or player-named, not home/away.
+          // Map first selection → 'home', second → 'away' as convention.
+          // We won't have odds feed data, so these are priced differently.
+          oddsApiSelection = sel.competitorId ? 'home' : 'away';
+          oddsApiMarket = oddsApiMarket || 'h2h';
+        } else if (sel.marketType === 'moneyline') {
           // Match team to home/away
           if (matchTeamName(sel.teamName, [matchedHome])) {
             oddsApiSelection = 'home';
@@ -302,8 +318,6 @@ async function seedAllLines() {
         if (!oddsApiSelection || !oddsApiMarket) continue;
 
         // Register line — fair value check happens at RFQ pricing time
-        // For moneylines, verify fair value exists now
-        // For spreads/totals, register all alternate lines (fair value available for primary line)
         matchedLines++;
         // Get event start time from odds cache or PX event
         const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxScheduled);
@@ -314,6 +328,8 @@ async function seedAllLines() {
           pxEventId: event.event_id,
           pxEventName: event.name,
           marketType: sel.marketType,
+          marketName: market.name,
+          isProp,
           selection: oddsApiSelection,
           teamName: sel.teamName,
           line: sel.line,
