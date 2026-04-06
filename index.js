@@ -52,26 +52,35 @@ async function startup() {
   log.info('Startup', `PX Base URL: ${config.px.baseUrl}`);
 
   // Step 1: Auth with ProphetX
-  // If session limit is hit, wait 11 min for old sessions to expire (PX TTL = 10 min).
-  // Clear cooldown before startup attempts so we don't block ourselves.
   log.info('Startup', '1/5 Authenticating with ProphetX...');
   let authOk = false;
-  px.clearCooldown(); // ensure startup isn't blocked by a previous cooldown
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      px.clearCooldown(); // clear before each attempt
-      await px.login();
-      log.info('Startup', '    ✓ ProphetX auth OK');
-      authOk = true;
-      break;
-    } catch (err) {
-      const isSessionLimit = err.message.includes('session_num_exceed');
-      if (isSessionLimit && attempt < 3) {
-        log.warn('Startup', `    ⚠ Session limit hit (attempt ${attempt}/3). Waiting 11 min for sessions to expire...`);
-        await new Promise(r => setTimeout(r, 11 * 60 * 1000));
-      } else {
-        log.error('Startup', `    ✗ ProphetX auth failed (attempt ${attempt}/3): ${err.message}`);
+  px.clearCooldown();
+  try {
+    await px.login();
+    log.info('Startup', '    ✓ ProphetX auth OK');
+    authOk = true;
+  } catch (err) {
+    if (err.message.includes('session_num_exceed')) {
+      log.warn('Startup', '    ⚠ Session limit hit. Waiting for old sessions to expire (retrying every 60s)...');
+      // Retry every 60s until sessions clear — typically takes <10 min
+      for (let i = 1; i <= 12; i++) {
+        await new Promise(r => setTimeout(r, 60 * 1000));
+        try {
+          px.clearCooldown();
+          await px.login();
+          log.info('Startup', `    ✓ ProphetX auth OK (after ${i}min wait)`);
+          authOk = true;
+          break;
+        } catch (retryErr) {
+          if (!retryErr.message.includes('session_num_exceed')) {
+            log.error('Startup', `    ✗ Auth failed: ${retryErr.message}`);
+            break;
+          }
+          log.debug('Startup', `    Still waiting... (${i}/12)`);
+        }
       }
+    } else {
+      log.error('Startup', `    ✗ ProphetX auth failed: ${err.message}`);
     }
   }
   if (!authOk) {
