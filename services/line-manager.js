@@ -255,7 +255,7 @@ async function seedAllLines() {
     const excludePatterns = /first half|1st half|first quarter|1st quarter|2nd half|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|overtime|player|total hits|total strikeout|total earned|total block|total point[^s]|total rebound|total assist|total steal|total made|total rush|total recei|total passing/i;
 
     const fullGameNames = {
-      moneyline: ['Moneyline', 'Moneyline (2 Way)', 'Moneyline (Regulation)'],
+      moneyline: ['Moneyline', 'Moneyline (2 Way)', 'Moneyline (2-Way)', 'Moneyline (Regulation)', 'Draw No Bet'],
       spread: ['Spread', 'Run Line', 'Puck Line', 'Spread (Regular Time)', 'Game Spread', 'Point Spread'],
       total: ['Total', 'Total Points', 'Points', 'Total Runs', 'Total Goals', 'Total Goals (Regular Time)'],
     };
@@ -273,6 +273,9 @@ async function seedAllLines() {
 
     for (const market of mainMarkets) {
       const parsed = px.parseMarketSelections(market);
+      // Detect 2-way / Draw No Bet soccer moneylines
+      const isDNB = market.type === 'moneyline' && /2.way|draw.no.bet/i.test(market.name);
+
       for (const sel of parsed) {
         totalLines++;
 
@@ -314,6 +317,8 @@ async function seedAllLines() {
           pxEventId: event.event_id,
           pxEventName: event.name,
           marketType: sel.marketType,
+          marketName: market.name,
+          isDNB,
           selection: oddsApiSelection,
           teamName: sel.teamName,
           line: sel.line,
@@ -488,11 +493,14 @@ async function resolveUnknownLine(rfqLeg) {
           const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxTime);
           const startTime = oddsEvt?.commenceTime || event.scheduled || null;
 
+          const onDemandDNB = market.type === 'moneyline' && /2.way|draw.no.bet/i.test(market.name);
           foundInfo = {
             sport: sportKey,
             pxEventId: eventId,
             pxEventName: event.name,
             marketType: sel.marketType,
+            marketName: market.name,
+            isDNB: onDemandDNB,
             selection: oddsApiSelection,
             teamName: sel.teamName,
             line: sel.line,

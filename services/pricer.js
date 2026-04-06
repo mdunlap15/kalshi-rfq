@@ -80,16 +80,29 @@ async function priceParlay(legs) {
       return null;
     }
 
-    // Get fair probability — tries cache first, then on-demand alt lines fetch
-    const fairProb = await oddsFeed.getFairProbAsync(
-      lineInfo.oddsApiSport,
-      lineInfo.homeTeam,
-      lineInfo.awayTeam,
-      lineInfo.oddsApiMarket,
-      lineInfo.oddsApiSelection,
-      lineInfo.line != null ? Math.abs(lineInfo.line) : null,
-      lineInfo.startTime // for back-to-back/doubleheader matching
-    );
+    // Get fair probability — tries cache first, then on-demand alt lines fetch.
+    // For Draw No Bet (2-way soccer moneyline), derive from 3-way h2h by
+    // removing the draw probability and renormalizing.
+    let fairProb;
+    if (lineInfo.isDNB) {
+      fairProb = oddsFeed.getDNBFairProb(
+        lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+        lineInfo.oddsApiSelection, lineInfo.startTime
+      );
+      if (fairProb != null) {
+        log.debug('Pricing', `DNB derived fair prob ${fairProb.toFixed(4)} for ${legLabel}`);
+      }
+    } else {
+      fairProb = await oddsFeed.getFairProbAsync(
+        lineInfo.oddsApiSport,
+        lineInfo.homeTeam,
+        lineInfo.awayTeam,
+        lineInfo.oddsApiMarket,
+        lineInfo.oddsApiSelection,
+        lineInfo.line != null ? Math.abs(lineInfo.line) : null,
+        lineInfo.startTime
+      );
+    }
 
     if (fairProb == null || fairProb <= 0 || fairProb >= 1) {
       log.debug('Pricing', `Declined: no fair value for ${lineInfo.teamName} ${lineInfo.marketType}`);

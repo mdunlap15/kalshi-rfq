@@ -873,6 +873,27 @@ function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targe
   return null;
 }
 
+/**
+ * Derive Draw No Bet (2-way) fair probability from 3-way h2h odds.
+ * Removes the draw and renormalizes: DNB_home = P(home) / (P(home) + P(away))
+ */
+function getDNBFairProb(sport, homeTeam, awayTeam, selection, targetTime) {
+  const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
+  if (!event) return null;
+
+  const market = event.markets['h2h'];
+  if (!market || !market.home?.fairProb || !market.away?.fairProb) return null;
+
+  const pHome = market.home.fairProb;
+  const pAway = market.away.fairProb;
+  const total = pHome + pAway;
+  if (total <= 0) return null;
+
+  if (selection === 'home') return pHome / total;
+  if (selection === 'away') return pAway / total;
+  return null;
+}
+
 function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime) {
   const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
   if (!event) return null;
@@ -1109,6 +1130,7 @@ module.exports = {
   getFairProbAsync,
   getPinnacleOdds,
   getFanDuelOdds,
+  getDNBFairProb,
   fetchAltLines,
   getEventMarkets,
   getLiveEventMarkets,
