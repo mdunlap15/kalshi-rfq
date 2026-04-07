@@ -1211,7 +1211,7 @@
         const dFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
         html += '<div style="font-size:11px; color:var(--text3); margin:8px 0 4px;">Each row = a line we weren\'t tracking when an RFQ referenced it, so the whole parlay was declined.</div>';
         html += '<div style="padding:6px 0; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); margin-bottom:6px;">'
-          + '<input type="text" placeholder="Search event..." value="' + (window._declineSearch || '') + '" oninput="window._declineSearch=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + dFSel + ' width:160px;">'
+          + '<input type="text" placeholder="Search event..." value="' + (window._declineSearch || '') + '" id="decline-search" oninput="window._declineSearch=this.value; rerenderWithFocus(()=>renderMarketIntel(window._lastIntelData||{}))" style="' + dFSel + ' width:160px;">'
           + '<select onchange="window._declineCatFilter=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + dFSel + '">'
           + '<option value="">All categories</option>'
           + '<option value="unregistered market"' + (dCat === 'unregistered market' ? ' selected' : '') + '>Unregistered line</option>'
@@ -1345,7 +1345,7 @@
       html += subSection('intel-near-miss', 'Near Misses (all legs known, could not price)', d.nearMissCount || allNearMisses.length, false);
       html += `<div style="padding:6px 12px; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border);">All legs were registered, but a specific blocker stopped pricing. Click a row to see which leg caused the miss.</div>`;
       html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">'
-        + '<input type="text" placeholder="Search team, detail, sport..." value="' + (window._nmSearch || '') + '" oninput="window._nmSearch=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + ' width:200px;">'
+        + '<input type="text" placeholder="Search team, detail, sport..." value="' + (window._nmSearch || '') + '" id="nm-search" oninput="window._nmSearch=this.value; rerenderWithFocus(()=>renderMarketIntel(window._lastIntelData||{}))" style="' + nmFSel + ' width:200px;">'
         + '<select onchange="window._nmReasonFilter=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + '">'
         + '<option value="">All reasons</option>'
         + nmReasons.map(r => '<option value="' + r + '"' + (nmReasonFilter === r ? ' selected' : '') + '>' + capFirst(r) + '</option>').join('')
@@ -1457,7 +1457,7 @@
       html += subSection('intel-matched', 'Recent Matched Parlays', matched.length, false);
       html += `<div style="padding:8px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">
         <input type="text" placeholder="Search team..." value="${window._intelSearch || ''}"
-          oninput="window._intelSearch=this.value; renderMarketIntel(window._lastIntelData||{})"
+          id="intel-search" oninput="window._intelSearch=this.value; rerenderWithFocus(()=>renderMarketIntel(window._lastIntelData||{}))"
           style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">
         <select onchange="window._intelResultFilter=this.value; renderMarketIntel(window._lastIntelData||{})"
           style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">
@@ -1630,7 +1630,7 @@
 
     const compFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
     html += '<div style="padding:8px 0; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); margin-bottom:6px;">'
-      + '<input type="text" placeholder="Search team..." value="' + (window._compSearch || '') + '" oninput="window._compSearch=this.value; compRerender()" style="' + compFSel + ' width:160px;">'
+      + '<input type="text" placeholder="Search team..." value="' + (window._compSearch || '') + '" id="comp-search" oninput="window._compSearch=this.value; rerenderWithFocus(()=>compRerender())" style="' + compFSel + ' width:160px;">'
       + '<select onchange="window._compOutcomeFilter=this.value; compRerender()" style="' + compFSel + '">'
       + '<option value="">All outcomes</option>'
       + '<option value="matched"' + (compOutcomeFilter === 'matched' ? ' selected' : '') + '>Matched</option>'
@@ -1691,9 +1691,9 @@
       const gapAbs = Math.abs(e.gapProb);
       let why = '';
       if (e.won) { why = '<span style="color:var(--green);">Matched</span>'; }
-      else if (gapAbs <= 0.5) { why = '<span style="color:var(--text3);">Speed</span>'; }
-      else if (e.gapProb > 0) { why = '<span style="color:var(--red);">Price</span>'; }
-      else { why = '<span style="color:var(--amber);">Unknown</span>'; }
+      else if (e.gapProb > 0.5) { why = '<span style="color:var(--red);">Price</span>'; }
+      else if (gapAbs <= 0.5) { why = '<span style="color:var(--text3);">—</span>'; }
+      else { why = '<span style="color:var(--text3);">—</span>'; }
 
       // Enrich legs from order data (which has fairProb, pinnacleOdds, startTime, market, line)
       const orderData = e.parlayId ? orderState.allOrders[e.parlayId] : null;
@@ -1808,7 +1808,7 @@
     const pFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
     let html = `<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">
       <input type="text" placeholder="Search team..." value="${posState.search}"
-        oninput="posState.search=this.value; posRerender()"
+        id="pos-search" oninput="posState.search=this.value; rerenderWithFocus(()=>posRerender())"
         style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">
       ${dateFilterHtml(posState, 'posRerender', dStyle)}
       <button onclick="posState.showAdvanced=!posState.showAdvanced; posRerender()" style="${pFSel} cursor:pointer;">${posState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
@@ -2223,7 +2223,7 @@
     let html = `
       <div style="padding:8px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">
         <input type="text" placeholder="Search team..." value="${expState.search}"
-          oninput="expState.search=this.value; expRerender()"
+          id="exp-search" oninput="expState.search=this.value; rerenderWithFocus(()=>expRerender())"
           style="${eFSel} width:180px;">
         <button onclick="expState.showAdvanced=!expState.showAdvanced; expRerender()" style="${eFSel} cursor:pointer;">${expState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
         <span style="font-size:10px; color:var(--text3); margin-left:8px;">Click row to see parlays. Net Exposure = worst-case loss after offsetting positions.</span>
@@ -2783,7 +2783,7 @@
 
     const fSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
     let html = '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">'
-      + '<input type="text" placeholder="Search game..." value="' + gameExpState.search + '" oninput="gameExpState.search=this.value; gameExpRerender()" style="' + fSel + ' width:160px;">'
+      + '<input type="text" placeholder="Search game..." value="' + gameExpState.search + '" id="gameexp-search" oninput="gameExpState.search=this.value; rerenderWithFocus(()=>gameExpRerender())" style="' + fSel + ' width:160px;">'
       + '<select onchange="gameExpState.sportFilter=this.value; gameExpRerender()" style="' + fSel + '"><option value="">All sports</option>'
       + sports.map(s => '<option value="' + s + '"' + (gameExpState.sportFilter === s ? ' selected' : '') + '>' + sportLabel(s) + '</option>').join('')
       + '</select>'
@@ -2985,7 +2985,7 @@
     // Build filter bar
     let html = `<div style="padding: 8px 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--border);">
       <input type="text" id="order-search" placeholder="Search team or ID..." value="${orderState.search}"
-        oninput="orderState.search=this.value; orderRerender()"
+        id="order-search" oninput="orderState.search=this.value; rerenderWithFocus(()=>orderRerender())"
         style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">
       <select id="order-status-filter" onchange="orderState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); orderRerender()"
         style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">
@@ -3459,7 +3459,7 @@
     const edgeFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
     const edgeRerend = 'window._lastEdgeData&&renderPortfolioEdge(window._lastEdgeData)';
     html += '<div style="padding:8px 0; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); margin-bottom:6px;">'
-      + '<input type="text" placeholder="Search team or ID..." value="' + (window._edgeSearch || '') + '" oninput="window._edgeSearch=this.value; ' + edgeRerend + '" style="' + edgeFSel + ' width:160px;">'
+      + '<input type="text" placeholder="Search team or ID..." value="' + (window._edgeSearch || '') + '" id="edge-search" oninput="window._edgeSearch=this.value; ' + edgeRerend + '" style="' + edgeFSel + ' width:160px;">'
       + '<select onchange="window._edgeResult=this.value; ' + edgeRerend + '" style="' + edgeFSel + '">'
       + '<option value="">All results</option>'
       + '<option value="won"' + (edgeResult === 'won' ? ' selected' : '') + '>Won (parlay lost)</option>'
@@ -3606,7 +3606,7 @@
 
     const poDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
     let html = '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">';
-    html += '<input type="text" placeholder="Search team..." value="' + popenState.search + '" oninput="popenState.search=this.value; popenRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">';
+    html += '<input type="text" placeholder="Search team..." value="' + popenState.search + '" id="popen-search" oninput="popenState.search=this.value; rerenderWithFocus(()=>popenRerender())" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">';
     html += dateFilterHtml(popenState, 'popenRerender', poDStyle);
     const poFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
     html += '<button onclick="popenState.showAdvanced=!popenState.showAdvanced; popenRerender()" style="' + poFSel + ' cursor:pointer;">' + (popenState.showAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>';
@@ -3784,7 +3784,7 @@
     const sports = [...new Set(settled.flatMap(o => (o.legs || o.meta?.legs || []).map(l => l.sport).filter(Boolean)))];
 
     let html = '<div style="padding:8px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">';
-    html += '<input type="text" placeholder="Search team..." value="' + portfolioState.search + '" oninput="portfolioState.search=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">';
+    html += '<input type="text" placeholder="Search team..." value="' + portfolioState.search + '" id="portfolio-search" oninput="portfolioState.search=this.value; rerenderWithFocus(()=>portfolioRerender())" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">';
     html += '<select onchange="portfolioState.sportFilter=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
     html += '<option value="">All sports</option>';
     for (const s of sports) html += '<option value="' + s + '"' + (portfolioState.sportFilter === s ? ' selected' : '') + '>' + sportLabel(s) + '</option>';
@@ -5512,7 +5512,7 @@
     const fInp = fSel + ' width:70px;';
     let html = `<div style="padding: 8px 12px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--border);">
       <input type="text" id="history-search" placeholder="Search team or ID..." value="${historyState.search}"
-        oninput="historyState.search=this.value; historyRerender()"
+        id="history-search" oninput="historyState.search=this.value; rerenderWithFocus(()=>historyRerender())"
         style="${fSel} width:160px;">
       <select onchange="historyState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); historyRerender()" style="${fSel}">
         <option value="">All statuses</option>
@@ -5665,6 +5665,48 @@
     const d = document.createElement('div');
     d.textContent = text;
     return d.innerHTML;
+  }
+
+  /** Debounce helper — delays fn execution until input stops for ms */
+  function debounce(fn, ms) {
+    let timer;
+    return function(...args) {
+      clearTimeout(timer);
+      timer = setTimeout(() => fn.apply(this, args), ms);
+    };
+  }
+
+  /** Save and restore focus + cursor position across re-renders */
+  function rerenderWithFocus(renderFn) {
+    const active = document.activeElement;
+    const id = active?.id || '';
+    const tag = active?.tagName;
+    const selStart = active?.selectionStart;
+    const selEnd = active?.selectionEnd;
+    const val = active?.value;
+    // Find by matching placeholder + value as fallback
+    const placeholder = active?.placeholder || '';
+
+    renderFn();
+
+    // Restore focus
+    requestAnimationFrame(() => {
+      let target = null;
+      if (id) target = document.getElementById(id);
+      if (!target && tag === 'INPUT' && placeholder) {
+        // Find input with same placeholder
+        const inputs = document.querySelectorAll('input[placeholder]');
+        for (const inp of inputs) {
+          if (inp.placeholder === placeholder) { target = inp; break; }
+        }
+      }
+      if (target) {
+        target.focus();
+        if (selStart != null && target.setSelectionRange) {
+          try { target.setSelectionRange(selStart, selEnd); } catch(e) {}
+        }
+      }
+    });
   }
 
   /** Compound per-leg sportsbook odds into parlay American odds */
