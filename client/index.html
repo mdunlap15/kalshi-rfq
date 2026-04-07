@@ -3596,6 +3596,20 @@
           const dA = a.offeredOdds >= 100 ? 1 + a.offeredOdds / 100 : 1 + 100 / Math.abs(a.offeredOdds || 1);
           const dB = b.offeredOdds >= 100 ? 1 + b.offeredOdds / 100 : 1 + 100 / Math.abs(b.offeredOdds || 1);
           va = (a.confirmedStake || 0) * (dA - 1); vb = (b.confirmedStake || 0) * (dB - 1); break;
+        case 'winprob':
+          // Compute win prob for sorting: 1 - product of leg probs
+          const wpCalc = (o) => {
+            const legs = o.meta?.legs || o.legs || [];
+            let hitProb = 1;
+            for (const l of legs) {
+              const ls = l.settlementStatus || l.settlement_status;
+              if (ls === 'lost') return 1; // parlay dead
+              if (ls === 'won') continue;
+              hitProb *= (l.liveFairProb || l.fairProb || 0.5);
+            }
+            return 1 - hitProb;
+          };
+          va = wpCalc(a); vb = wpCalc(b); break;
         default: va = a.confirmedAt || ''; vb = b.confirmedAt || ''; return popenState.sortDir * va.localeCompare(vb);
       }
       return popenState.sortDir * (va - vb);
@@ -3626,7 +3640,7 @@
     }
 
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th>Status</th></tr>';
+    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th ' + poSortClick('winprob') + ' style="text-align:right" title="Probability you win (at least one bettor leg fails)">Win Prob' + poSortArrow('winprob') + '</th><th>Status</th></tr>';
 
     const isPopenFiltering = popenState.search || popenState.dateFrom || popenState.dateTo;
     const popenLimit = (popenState.showAll || isPopenFiltering) ? filtered.length : popenState.pageSize;
@@ -3651,11 +3665,35 @@
 
       const rowKey = 'popen-' + (o.parlayId || '');
       const expanded = expandedRows.has(rowKey);
-      // Status badge
+      // Status badge + Win Probability
       const startTimes = legs.map(l => l.startTime ? new Date(l.startTime).getTime() : Infinity);
       const earliestStart = Math.min(...startTimes);
+      const latestStart = Math.max(...startTimes.filter(t => t < Infinity));
       const now = Date.now();
-      const statusLabel = earliestStart <= now ? '<span style="color:var(--amber);">In Progress</span>' : '<span style="color:var(--green);">Upcoming</span>';
+      const anyStarted = earliestStart <= now;
+      const statusLabel = anyStarted ? '<span style="color:var(--amber);">In Progress</span>' : '<span style="color:var(--green);">Upcoming</span>';
+
+      // Win Prob: P(SP wins) = 1 - P(all bettor legs hit)
+      // Use liveFairProb for in-progress legs, fairProb for pre-game
+      let parlayHitProb = 1;
+      let hasLiveData = false;
+      let alreadyDead = false; // true if any leg already settled as bettor-loss
+      for (const l of legs) {
+        const ls = l.settlementStatus || l.settlement_status;
+        if (ls === 'lost') { alreadyDead = true; break; } // bettor leg failed → parlay dead → SP wins
+        if (ls === 'won') continue; // bettor leg hit → still alive, skip (prob=1 for this leg)
+        // Use live prob if available, otherwise pre-game
+        const prob = l.liveFairProb || l.fairProb || 0.5;
+        parlayHitProb *= prob;
+        if (l.liveFairProb) hasLiveData = true;
+      }
+      const winProb = alreadyDead ? 1.0 : (1 - parlayHitProb);
+      const winProbPct = (winProb * 100).toFixed(1);
+      const wpColor = alreadyDead ? 'var(--green)' : winProb >= 0.8 ? 'var(--green)' : winProb >= 0.5 ? 'var(--text)' : winProb >= 0.3 ? 'var(--amber)' : 'var(--red)';
+      // Only show for in-progress or if we have live data; show pre-game estimate for upcoming
+      const winProbLabel = alreadyDead ? '<span style="color:var(--green); font-weight:600;">100% ✓</span>'
+        : anyStarted ? '<span style="color:' + wpColor + '; font-weight:600;">' + winProbPct + '%</span>' + (hasLiveData ? ' <span style="font-size:9px; color:var(--green);">LIVE</span>' : '')
+        : '<span style="color:var(--text3);">' + winProbPct + '%</span>';
 
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">' +
         '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>' +
@@ -3666,12 +3704,13 @@
         '<td style="text-align:right; color:var(--blue);">' + fdFmt + '</td>' +
         '<td style="text-align:right">' + myRisk + '</td>' +
         '<td style="text-align:right; font-weight:600; color:var(--green);">' + toWin + '</td>' +
+        '<td style="text-align:right">' + winProbLabel + '</td>' +
         '<td style="font-size:11px;">' + statusLabel + '</td>' +
       '</tr>';
 
       // Expandable leg detail row
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="9" style="padding:12px 16px;">';
+      html += '<td colspan="10" style="padding:12px 16px;">';
       html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">PARLAY LEGS</div>';
       html += buildLegTable(legs, { vig: o.meta?.vig || o.vig || 0 });
       html += '<div style="margin-top:6px; font-size:10px; color:var(--text3);">Vig: ' + ((o.meta?.vig || o.vig || 0) * 100).toFixed(1) + '% · Max Risk: $' + (o.maxRisk || '-') + ' · ID: ' + (o.parlayId || '-') + '</div>';
