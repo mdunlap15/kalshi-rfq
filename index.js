@@ -163,6 +163,15 @@ async function startup() {
     }
   }, refreshMs);
 
+  // Check game results every 2 minutes for early win detection
+  setInterval(async () => {
+    try {
+      await orderTracker.checkLegResults();
+    } catch (err) {
+      log.debug('Results', `Result check failed: ${err.message}`);
+    }
+  }, 2 * 60 * 1000);
+
   // Initial balance fetch
   try {
     const bal = await px.fetchBalance();
@@ -389,6 +398,16 @@ function startStatusServer() {
   });
 
   // Manual settlement poll
+  // Check game results for early win detection
+  app.post('/check-results', async (req, res) => {
+    try {
+      const result = await orderTracker.checkLegResults();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.post('/poll-settlements', async (req, res) => {
     try {
       const result = await orderTracker.pollOrderSettlements(px);

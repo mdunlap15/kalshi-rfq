@@ -1363,6 +1363,91 @@ async function pollOrderSettlements(px) {
 }
 
 /**
+ * Check game results for all active positions and infer leg outcomes.
+ * Uses The Odds API scores endpoint to detect wins/losses before PX settles.
+ * Sets leg.inferredResult = 'won' | 'lost' on each resolved leg.
+ */
+async function checkLegResults() {
+  const oddsFeed = require('./odds-feed');
+  const confirmed = Object.values(orders).filter(o => o.status === 'confirmed');
+  if (confirmed.length === 0) return { checked: 0, resolved: 0 };
+
+  // Collect unique sports that have active legs
+  const activeSports = new Set();
+  for (const o of confirmed) {
+    const legs = o.meta?.legs || o.legs || [];
+    for (const l of legs) {
+      if (l.sport && !l.inferredResult) activeSports.add(l.sport);
+    }
+  }
+
+  // Pre-fetch scores for all active sports
+  for (const sport of activeSports) {
+    await oddsFeed.fetchScores(sport);
+  }
+
+  let checked = 0, resolved = 0;
+
+  for (const o of confirmed) {
+    const legs = o.meta?.legs || o.legs || [];
+    for (const l of legs) {
+      if (l.inferredResult) continue; // already resolved
+      if (!l.sport || !l.homeTeam || !l.awayTeam) continue;
+
+      const result = await oddsFeed.getGameResult(l.sport, l.homeTeam, l.awayTeam, l.startTime);
+      if (!result || !result.completed) continue;
+      if (result.homeScore == null || result.awayScore == null) continue;
+
+      checked++;
+      const market = l.market || l.marketType;
+      const selection = l.selection || l.oddsApiSelection;
+
+      if (market === 'moneyline') {
+        // Moneyline: did the selected team win?
+        if (selection === 'home') {
+          l.inferredResult = result.winner === 'home' ? 'won' : (result.winner === 'away' ? 'lost' : 'push');
+        } else if (selection === 'away') {
+          l.inferredResult = result.winner === 'away' ? 'won' : (result.winner === 'home' ? 'lost' : 'push');
+        }
+      } else if (market === 'spread') {
+        // Spread: did the selected team cover?
+        const line = l.line != null ? Number(l.line) : null;
+        if (line != null) {
+          const homeMargin = result.homeScore - result.awayScore;
+          if (selection === 'home') {
+            const adjusted = homeMargin + line;
+            l.inferredResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
+          } else {
+            const awayMargin = result.awayScore - result.homeScore;
+            const adjusted = awayMargin + Math.abs(line);
+            l.inferredResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
+          }
+        }
+      } else if (market === 'total') {
+        // Total: over/under the line
+        const line = l.line != null ? Number(l.line) : null;
+        if (line != null) {
+          const total = result.homeScore + result.awayScore;
+          if (selection === 'over') {
+            l.inferredResult = total > line ? 'won' : total < line ? 'lost' : 'push';
+          } else if (selection === 'under') {
+            l.inferredResult = total < line ? 'won' : total > line ? 'lost' : 'push';
+          }
+        }
+      }
+
+      if (l.inferredResult) {
+        resolved++;
+        log.info('Results', `Leg resolved: ${l.team} ${market} → ${l.inferredResult} (${result.homeScore}-${result.awayScore})`);
+      }
+    }
+  }
+
+  log.info('Results', `Checked ${checked} legs, resolved ${resolved}`);
+  return { checked, resolved };
+}
+
+/**
  * Delete settled orders whose legs are all unresolved ('?' team names).
  * Removes from in-memory store, reverses P&L stats, and deletes from DB.
  */
@@ -1413,6 +1498,7 @@ module.exports = {
   recordSettlement,
   recordLegSettlement,
   pollOrderSettlements,
+  checkLegResults,
   deleteUnknownSettledOrders,
   findByParlayId,
   findByOrderUuid,

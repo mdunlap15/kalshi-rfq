@@ -1800,7 +1800,7 @@
             const ls2 = o.meta?.legs || o.legs || [];
             let hp = 1;
             for (const l of ls2) {
-              const st = l.settlementStatus || l.settlement_status;
+              const st = getLegResult(l);
               if (st === 'lost') return 1;
               if (st === 'won') continue;
               hp *= (l.liveFairProb || l.fairProb || 0.5);
@@ -1911,7 +1911,7 @@
       let posHasLive = false;
       let posDead = false;
       for (const l of mLegs) {
-        const ls = l.settlementStatus || l.settlement_status;
+        const ls = getLegResult(l);
         if (ls === 'lost') { posDead = true; break; }
         if (ls === 'won') continue;
         const prob = l.liveFairProb || l.fairProb || 0.5;
@@ -3655,7 +3655,7 @@
             const legs = o.meta?.legs || o.legs || [];
             let hitProb = 1;
             for (const l of legs) {
-              const ls = l.settlementStatus || l.settlement_status;
+              const ls = getLegResult(l);
               if (ls === 'lost') return 1; // parlay dead
               if (ls === 'won') continue;
               hitProb *= (l.liveFairProb || l.fairProb || 0.5);
@@ -3732,7 +3732,7 @@
       let hasLiveData = false;
       let alreadyDead = false; // true if any leg already settled as bettor-loss
       for (const l of legs) {
-        const ls = l.settlementStatus || l.settlement_status;
+        const ls = getLegResult(l);
         if (ls === 'lost') { alreadyDead = true; break; } // bettor leg failed → parlay dead → SP wins
         if (ls === 'won') continue; // bettor leg hit → still alive, skip (prob=1 for this leg)
         // Use live prob if available, otherwise pre-game
@@ -5319,10 +5319,11 @@
     const highlightUnregistered = opts.highlightUnregistered || false;
     const highlightBlocker = opts.highlightBlocker || false;
     for (const l of legs) {
-      const ls = l.settlementStatus || l.settlement_status || l.status || 'pending';
+      const ls = getLegResult(l) || l.status || 'pending';
+      const isInferred = !l.settlementStatus && !l.settlement_status && l.inferredResult;
       let lIcon, lColor, lTitle;
-      if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; lTitle = 'Selection hit (bad for SP — counts toward bettor&#39;s parlay winning)'; }
-      else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; lTitle = 'Selection missed (good for SP — kills bettor&#39;s parlay)'; }
+      if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; lTitle = (isInferred ? '[From scores] ' : '') + 'Selection hit (bad for SP — counts toward bettor&#39;s parlay winning)'; }
+      else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; lTitle = (isInferred ? '[From scores] ' : '') + 'Selection missed (good for SP — kills bettor&#39;s parlay)'; }
       else if (ls === 'push' || ls === 'void') { lIcon = '&#8212;'; lColor = 'var(--amber)'; lTitle = ls.charAt(0).toUpperCase() + ls.slice(1); }
       else { lIcon = '&#9679;'; lColor = 'var(--text3)'; lTitle = 'Pending'; }
 
@@ -5807,6 +5808,11 @@
         }
       }
     });
+  }
+
+  /** Get effective leg result: PX settlement > inferred from scores > null */
+  function getLegResult(l) {
+    return l.settlementStatus || l.settlement_status || l.inferredResult || null;
   }
 
   /** Compound per-leg sportsbook odds into parlay American odds */

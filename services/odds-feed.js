@@ -1180,6 +1180,115 @@ function cleanTeamName(name) {
   return (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
 }
 
+// ---------------------------------------------------------------------------
+// SCORES — fetch game results from The Odds API for early win detection
+// ---------------------------------------------------------------------------
+
+const scoresCache = {}; // { sport: { fetchedAt, games: [{ homeTeam, awayTeam, commenceTime, completed, homeScore, awayScore }] } }
+const SCORES_TTL_MS = 2 * 60 * 1000; // 2 minute cache
+
+/**
+ * Fetch scores for a sport from The Odds API.
+ * Returns array of completed/in-progress games with scores.
+ */
+async function fetchScores(sport) {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return [];
+
+  // Check cache
+  const cached = scoresCache[sport];
+  if (cached && (Date.now() - cached.fetchedAt) < SCORES_TTL_MS) {
+    return cached.games;
+  }
+
+  // Map sport keys that differ between our config and The Odds API
+  const sportKey = sport; // our keys already match The Odds API
+
+  try {
+    const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/scores/?apiKey=${theOddsApiKey}&daysFrom=1`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      log.debug('Scores', `Failed to fetch scores for ${sport}: ${resp.status}`);
+      return cached?.games || [];
+    }
+
+    const data = await resp.json();
+    const games = (data || []).map(g => ({
+      homeTeam: g.home_team,
+      awayTeam: g.away_team,
+      commenceTime: g.commence_time,
+      completed: g.completed || false,
+      homeScore: g.scores?.find(s => s.name === g.home_team)?.score != null ? Number(g.scores.find(s => s.name === g.home_team).score) : null,
+      awayScore: g.scores?.find(s => s.name === g.away_team)?.score != null ? Number(g.scores.find(s => s.name === g.away_team).score) : null,
+    }));
+
+    scoresCache[sport] = { fetchedAt: Date.now(), games };
+    log.debug('Scores', `Cached ${games.length} scores for ${sport} (${games.filter(g => g.completed).length} completed)`);
+    return games;
+  } catch (err) {
+    log.error('Scores', `Error fetching scores for ${sport}: ${err.message}`);
+    return cached?.games || [];
+  }
+}
+
+/**
+ * Get game result for a specific matchup.
+ * Returns { completed, homeScore, awayScore, winner: 'home'|'away'|'tie'|null } or null.
+ */
+async function getGameResult(sport, homeTeam, awayTeam, startTime) {
+  const games = await fetchScores(sport);
+  if (games.length === 0) return null;
+
+  // Match by team names (normalize for comparison)
+  const normHome = normalizeTeamName(homeTeam);
+  const normAway = normalizeTeamName(awayTeam);
+  const targetTime = startTime ? new Date(startTime).getTime() : null;
+
+  let bestMatch = null;
+  let bestDiff = Infinity;
+
+  for (const g of games) {
+    const gHome = normalizeTeamName(g.homeTeam);
+    const gAway = normalizeTeamName(g.awayTeam);
+
+    // Check both orderings
+    const match = (gHome.includes(normHome) || normHome.includes(gHome)) &&
+                  (gAway.includes(normAway) || normAway.includes(gAway));
+    const matchReverse = (gHome.includes(normAway) || normAway.includes(gHome)) &&
+                         (gAway.includes(normHome) || normHome.includes(gAway));
+
+    if (!match && !matchReverse) continue;
+
+    // If multiple matches (doubleheader), pick closest by time
+    if (targetTime && g.commenceTime) {
+      const diff = Math.abs(new Date(g.commenceTime).getTime() - targetTime);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestMatch = g;
+      }
+    } else {
+      bestMatch = g;
+    }
+  }
+
+  if (!bestMatch) return null;
+  if (bestMatch.homeScore == null || bestMatch.awayScore == null) {
+    return { completed: bestMatch.completed, homeScore: null, awayScore: null, winner: null };
+  }
+
+  let winner = null;
+  if (bestMatch.homeScore > bestMatch.awayScore) winner = 'home';
+  else if (bestMatch.awayScore > bestMatch.homeScore) winner = 'away';
+  else winner = 'tie';
+
+  return {
+    completed: bestMatch.completed,
+    homeScore: bestMatch.homeScore,
+    awayScore: bestMatch.awayScore,
+    winner,
+  };
+}
+
 module.exports = {
   fetchOddsForSport,
   refreshAllSports,
@@ -1201,4 +1310,6 @@ module.exports = {
   normalizeTeamName,
   deVig2Way,
   americanToImpliedProb,
+  fetchScores,
+  getGameResult,
 };
