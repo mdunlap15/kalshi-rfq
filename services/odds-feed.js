@@ -546,14 +546,30 @@ function getBookPairsForTotals(odds) {
 }
 
 function buildConsensusMoneyline(bookPairs) {
-  const fairProbs = { home: [], away: [] };
-  for (const { home, away } of bookPairs) {
-    const [fh, fa] = deVig2Way(home.odds_probability, away.odds_probability);
-    fairProbs.home.push(fh);
-    fairProbs.away.push(fa);
-  }
-  // Extract Pinnacle's and FanDuel's raw odds if present
+  // Use Pinnacle's implied probabilities as fair value when available.
+  // Pinnacle has ~2% total margin and is the sharpest book — their raw
+  // implied probs are more accurate than proportional de-vigging, which
+  // over-corrects on heavy favorites (strips too much from the fav side).
+  // Fall back to de-vig consensus when Pinnacle isn't available.
   const pinBook = bookPairs.find(bp => bp.book === 'pinnacle');
+
+  let fairHome, fairAway;
+  if (pinBook) {
+    // Use Pinnacle's raw implied probs as fair value
+    fairHome = pinBook.home.odds_probability;
+    fairAway = pinBook.away.odds_probability;
+  } else {
+    // No Pinnacle — fall back to de-vigged average across books
+    const devigged = { home: [], away: [] };
+    for (const { home, away } of bookPairs) {
+      const [fh, fa] = deVig2Way(home.odds_probability, away.odds_probability);
+      devigged.home.push(fh);
+      devigged.away.push(fa);
+    }
+    fairHome = avg(devigged.home);
+    fairAway = avg(devigged.away);
+  }
+
   const pinnacle = pinBook ? {
     home: pinBook.home.odds_american,
     away: pinBook.away.odds_american,
@@ -567,12 +583,12 @@ function buildConsensusMoneyline(bookPairs) {
     home: {
       rawOdds: bookPairs[0].home.odds_american,
       impliedProb: bookPairs[0].home.odds_probability,
-      fairProb: avg(fairProbs.home),
+      fairProb: fairHome,
     },
     away: {
       rawOdds: bookPairs[0].away.odds_american,
       impliedProb: bookPairs[0].away.odds_probability,
-      fairProb: avg(fairProbs.away),
+      fairProb: fairAway,
     },
     books: bookPairs.length,
     pinnacle,
@@ -594,13 +610,23 @@ function buildConsensusSpread(bookPairs) {
   const matching = bookPairs.filter(bp => bp.home.line === pLine);
   if (matching.length === 0) return null;
 
-  const fairProbs = { home: [], away: [] };
-  for (const { home, away } of matching) {
-    const [fh, fa] = deVig2Way(home.odds_probability, away.odds_probability);
-    fairProbs.home.push(fh);
-    fairProbs.away.push(fa);
-  }
+  // Use Pinnacle's raw implied probs when available
   const pinBook = matching.find(bp => bp.book === 'pinnacle');
+  let fairHome, fairAway;
+  if (pinBook) {
+    fairHome = pinBook.home.odds_probability;
+    fairAway = pinBook.away.odds_probability;
+  } else {
+    const devigged = { home: [], away: [] };
+    for (const { home, away } of matching) {
+      const [fh, fa] = deVig2Way(home.odds_probability, away.odds_probability);
+      devigged.home.push(fh);
+      devigged.away.push(fa);
+    }
+    fairHome = avg(devigged.home);
+    fairAway = avg(devigged.away);
+  }
+
   const pinnacle = pinBook ? {
     home: pinBook.home.odds_american,
     away: pinBook.away.odds_american,
@@ -615,13 +641,13 @@ function buildConsensusSpread(bookPairs) {
       rawOdds: matching[0].home.odds_american,
       point: pLine,
       impliedProb: matching[0].home.odds_probability,
-      fairProb: avg(fairProbs.home),
+      fairProb: fairHome,
     },
     away: {
       rawOdds: matching[0].away.odds_american,
       point: -pLine,
       impliedProb: matching[0].away.odds_probability,
-      fairProb: avg(fairProbs.away),
+      fairProb: fairAway,
     },
     line: pLine,
     books: matching.length,
@@ -643,24 +669,34 @@ function buildConsensusTotals(bookPairs) {
   const matching = bookPairs.filter(bp => bp.over.line === pLine);
   if (matching.length === 0) return null;
 
-  const fairProbs = { over: [], under: [] };
-  for (const { over, under } of matching) {
-    const [fo, fu] = deVig2Way(over.odds_probability, under.odds_probability);
-    fairProbs.over.push(fo);
-    fairProbs.under.push(fu);
+  // Use Pinnacle's raw implied probs when available
+  const pinBook = matching.find(bp => bp.book === 'pinnacle');
+  let fairOver, fairUnder;
+  if (pinBook) {
+    fairOver = pinBook.over.odds_probability;
+    fairUnder = pinBook.under.odds_probability;
+  } else {
+    const devigged = { over: [], under: [] };
+    for (const { over, under } of matching) {
+      const [fo, fu] = deVig2Way(over.odds_probability, under.odds_probability);
+      devigged.over.push(fo);
+      devigged.under.push(fu);
+    }
+    fairOver = avg(devigged.over);
+    fairUnder = avg(devigged.under);
   }
   return {
     over: {
       rawOdds: matching[0].over.odds_american,
       point: pLine,
       impliedProb: matching[0].over.odds_probability,
-      fairProb: avg(fairProbs.over),
+      fairProb: fairOver,
     },
     under: {
       rawOdds: matching[0].under.odds_american,
       point: pLine,
       impliedProb: matching[0].under.odds_probability,
-      fairProb: avg(fairProbs.under),
+      fairProb: fairUnder,
     },
     line: pLine,
     books: matching.length,
