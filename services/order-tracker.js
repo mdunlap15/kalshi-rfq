@@ -350,11 +350,11 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     matchedAt: new Date().toISOString(),
     weQuoted,
     ourOdds: ourQuote?.offeredOdds || null,
-    ourAmericanOdds: ourQuote?.offeredOdds || null, // Already stored as American
+    ourAmericanOdds: ourQuote?.offeredOdds || null,
+    ourDecimalOdds: ourQuote?.meta?.decimalOdds || null, // precise decimal for comparison
     // PX sends matched_odds with opposite sign to our format.
-    // Evidence: when we win at +18297, PX broadcasts -18297.
-    // Negate PX value so both are in the same format for comparison.
     matchedAmericanOdds: matchedOdds != null ? -matchedOdds : null,
+    winDecimalOdds: matchedOdds != null ? (Math.abs(matchedOdds) >= 100 ? 1 + Math.abs(matchedOdds)/100 : null) : null,
     outcome,
     legCount: resolvedLegs.length,
     // If we didn't quote, include why (so the dashboard can explain "No quote")
@@ -511,6 +511,9 @@ function getMarketIntel(limit = 50) {
       const entries = quoted.map(m => {
         const ourOdds = Number(m.ourAmericanOdds);
         const winOdds = Number(m.matchedAmericanOdds);
+        // Store precise decimal odds for detailed comparison
+        const ourDecimal = m.ourDecimalOdds || (ourOdds >= 100 ? 1 + ourOdds/100 : ourOdds < -100 ? 1 + 100/Math.abs(ourOdds) : null);
+        const winDecimal = m.winDecimalOdds || (winOdds >= 100 ? 1 + winOdds/100 : winOdds < -100 ? 1 + 100/Math.abs(winOdds) : null);
         // Convert to implied probability for proper comparison
         const ourProb = americanToProb(ourOdds);
         const winProb = americanToProb(winOdds);
@@ -525,6 +528,8 @@ function getMarketIntel(limit = 50) {
           legCount: m.legCount,
           ourOdds,
           winOdds,
+          ourDecimal: ourDecimal ? Math.round(ourDecimal * 1000) / 1000 : null,
+          winDecimal: winDecimal ? Math.round(winDecimal * 1000) / 1000 : null,
           ourProb: Math.round(ourProb * 10000) / 100,
           winProb: Math.round(winProb * 10000) / 100,
           gapProb: Math.round(gapProb * 10000) / 100,

@@ -1633,8 +1633,16 @@
       const e = compDisplayed[ci];
       const time = e.time ? new Date(e.time).toLocaleTimeString() : '-';
       const teamsShort = e.teams.length > 30 ? e.teams.substring(0, 27) + '...' : e.teams;
-      const ourFmt = e.ourOdds >= 0 ? '+' + e.ourOdds : '' + e.ourOdds;
-      const winFmt = e.winOdds >= 0 ? '+' + e.winOdds : '' + e.winOdds;
+      // Show precise decimal odds if available, otherwise integer
+      const fmtOdds = (am, dec) => {
+        if (dec != null) {
+          const precise = Math.round((dec - 1) * 10000) / 100; // to hundredths
+          return (precise >= 0 ? '+' : '') + precise.toFixed(2);
+        }
+        return am >= 0 ? '+' + am : '' + am;
+      };
+      const ourFmt = fmtOdds(e.ourOdds, e.ourDecimal);
+      const winFmt = fmtOdds(e.winOdds, e.winDecimal);
       const toWinFmt = e.stake ? fmtDollar(e.stake) : '-';
       const compRiskVal = e.stake && e.winOdds ? calcBettorWager(e.stake, e.winOdds) : null;
       const myRiskFmt = compRiskVal != null ? fmtDollar(compRiskVal) : '-';
