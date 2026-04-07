@@ -18,7 +18,7 @@ async function login() {
     return tokenCache.token;
   }
 
-  // Try refresh first (doesn't create a new session)
+  // Try refresh first (doesn't create a new session — never blocked by cooldown)
   if (tokenCache.refreshToken) {
     try {
       const refreshed = await refreshSession();
@@ -26,6 +26,13 @@ async function login() {
     } catch (err) {
       log.warn('PX-Auth', `Refresh failed: ${err.message}, falling back to login`);
     }
+  }
+
+  // If we have a stale token, return it anyway — let PX reject with 401
+  // and the caller can retry. Better than throwing and blocking all offers.
+  if (tokenCache.token) {
+    log.debug('PX-Auth', 'Token expired but returning stale token to avoid blocking');
+    return tokenCache.token;
   }
 
   // Cooldown: if a recent login failed, don't spam PX with more attempts

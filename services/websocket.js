@@ -415,9 +415,10 @@ async function handleRFQ(data) {
       log.warn('RFQ', `No callback URL for parlay ${parlayId}`);
     }
   } catch (err) {
-    log.error('RFQ', `Error handling RFQ: ${err.message}`);
+    const pid = typeof parlayId !== 'undefined' ? parlayId : 'unknown';
+    log.error('RFQ', `Error handling RFQ for ${pid}: ${err.message}`);
     rfqStages.submitError++;
-    offerErrors.unshift({ error: err.message, time: new Date().toISOString(), parlayId });
+    offerErrors.unshift({ error: err.message, time: new Date().toISOString(), parlayId: pid, stack: err.stack?.split('\n')[1]?.trim() });
     if (offerErrors.length > 50) offerErrors.pop();
   }
 }
