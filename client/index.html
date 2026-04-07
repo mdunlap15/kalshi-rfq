@@ -1518,7 +1518,13 @@
                 <strong style="color:var(--amber);">No quote reason:</strong> ${escapeHtml(derivedReason)}${detailLine}${blockerLine}
               </div>`;
             })() : ''}
-            ${buildLegTable(m.legs || [], { showStatus: true, showSport: true, showFairOdds: false, pad: '2px 6px', highlightUnregistered: m.outcome === 'missed' })}
+            ${(() => {
+              // Enrich matched parlay legs with odds data from our quote if available
+              const orderData = m.parlayId ? orderState.allOrders[m.parlayId] : null;
+              const enrichedLegs = orderData ? (orderData.meta?.legs || orderData.legs || m.legs || []) : (m.legs || []);
+              const orderVig = orderData?.meta?.vig || orderData?.vig || 0;
+              return buildLegTable(enrichedLegs, { showStatus: true, showSport: true, pad: '2px 6px', vig: orderVig, highlightUnregistered: m.outcome === 'missed' });
+            })()}
             <div style="margin-top:4px; font-size:10px; color:var(--text3);">Parlay ID: ${m.parlayId || '-'}</div>
           </td>
         </tr>`;
