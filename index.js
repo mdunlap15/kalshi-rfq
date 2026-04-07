@@ -52,6 +52,9 @@ async function startup() {
   log.info('Startup', `PX Base URL: ${config.px.baseUrl}`);
 
   // Step 1: Auth with ProphetX
+  // On session_num_exceed, wait for old sessions to expire WITHOUT creating
+  // new ones. Test with a single login attempt every 2 min (not every 60s,
+  // to avoid burning through the 20-session limit).
   log.info('Startup', '1/5 Authenticating with ProphetX...');
   let authOk = false;
   px.clearCooldown();
@@ -61,30 +64,24 @@ async function startup() {
     authOk = true;
   } catch (err) {
     if (err.message.includes('session_num_exceed')) {
-      log.warn('Startup', '    ⚠ Session limit hit. Waiting for old sessions to expire (retrying every 60s)...');
-      // Retry every 60s until sessions clear — typically takes <10 min
-      for (let i = 1; i <= 12; i++) {
-        await new Promise(r => setTimeout(r, 60 * 1000));
-        try {
-          px.clearCooldown();
-          await px.login();
-          log.info('Startup', `    ✓ ProphetX auth OK (after ${i}min wait)`);
-          authOk = true;
-          break;
-        } catch (retryErr) {
-          if (!retryErr.message.includes('session_num_exceed')) {
-            log.error('Startup', `    ✗ Auth failed: ${retryErr.message}`);
-            break;
-          }
-          log.debug('Startup', `    Still waiting... (${i}/12)`);
-        }
+      // Wait 10 min (PX session TTL), then try ONCE more.
+      // Do NOT retry in a loop — each login() creates a new session.
+      log.warn('Startup', '    ⚠ Session limit hit. Waiting 10min for sessions to expire...');
+      await new Promise(r => setTimeout(r, 10 * 60 * 1000));
+      try {
+        px.clearCooldown();
+        await px.login();
+        log.info('Startup', '    ✓ ProphetX auth OK (after 10min wait)');
+        authOk = true;
+      } catch (retryErr) {
+        log.error('Startup', `    ✗ Auth retry failed: ${retryErr.message}`);
       }
     } else {
       log.error('Startup', `    ✗ ProphetX auth failed: ${err.message}`);
     }
   }
   if (!authOk) {
-    log.warn('Startup', 'Continuing startup without PX auth — will retry on demand');
+    log.warn('Startup', 'Continuing without PX auth — click Reconnect when ready');
   }
 
   // Step 1b: Load historical data from Supabase
