@@ -1311,7 +1311,11 @@
       let nmList = allNearMisses.filter(nm => {
         if (nmSearch) {
           const teams = (nm.legs || []).map(l => l.team || l.teamName || '').join(' ').toLowerCase();
-          if (!teams.includes(nmSearch) && !(nm.parlayId || '').toLowerCase().includes(nmSearch)) return false;
+          const detail = (nm.detail || '').toLowerCase();
+          const reason = (nm.reason || '').toLowerCase();
+          const sport = (nm.legs || []).map(l => l.sport || '').join(' ').toLowerCase();
+          const searchable = teams + ' ' + detail + ' ' + reason + ' ' + sport + ' ' + (nm.parlayId || '');
+          if (!searchable.includes(nmSearch)) return false;
         }
         if (nmReasonFilter && nm.reason !== nmReasonFilter) return false;
         if (!passesRangeFilter((nm.legs||[]).length, window._nmLegsMin || '', window._nmLegsMax || '')) return false;
@@ -1341,10 +1345,10 @@
       html += subSection('intel-near-miss', 'Near Misses (all legs known, could not price)', d.nearMissCount || allNearMisses.length, false);
       html += `<div style="padding:6px 12px; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border);">All legs were registered, but a specific blocker stopped pricing. Click a row to see which leg caused the miss.</div>`;
       html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">'
-        + '<input type="text" placeholder="Search team..." value="' + (window._nmSearch || '') + '" oninput="window._nmSearch=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + ' width:160px;">'
+        + '<input type="text" placeholder="Search team, detail, sport..." value="' + (window._nmSearch || '') + '" oninput="window._nmSearch=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + ' width:200px;">'
         + '<select onchange="window._nmReasonFilter=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + '">'
         + '<option value="">All reasons</option>'
-        + nmReasons.map(r => '<option value="' + r + '"' + (nmReasonFilter === r ? ' selected' : '') + '>' + r + '</option>').join('')
+        + nmReasons.map(r => '<option value="' + r + '"' + (nmReasonFilter === r ? ' selected' : '') + '>' + capFirst(r) + '</option>').join('')
         + '</select>'
         + '<input type="number" step="1" placeholder="Min legs" value="' + (window._nmLegsMin || '') + '" oninput="window._nmLegsMin=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + ' width:70px;" title="Min legs">'
         + '<input type="number" step="1" placeholder="Max legs" value="' + (window._nmLegsMax || '') + '" oninput="window._nmLegsMax=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + ' width:70px;" title="Max legs">'
@@ -1380,13 +1384,13 @@
           <td>${time}</td>
           <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(summary)}">${summary}</td>
           <td>${(nm.legs||[]).length}</td>
-          <td><span style="color:${reasonColor}; font-weight:600;">${escapeHtml(nmReason)}</span></td>
+          <td><span style="color:${reasonColor}; font-weight:600;">${escapeHtml(capFirst(nmReason))}</span></td>
           <td style="font-size:11px; color:var(--text3); max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(nmDetail)}">${escapeHtml(nmDetail)}</td>
         </tr>
         <tr id="${nmId}" style="display:${nmExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
           <td colspan="5" style="padding: 8px 12px;">
             <div style="font-size:11px; color:var(--text3); margin-bottom:6px;">
-              <strong style="color:${reasonColor};">${escapeHtml(nmReason)}</strong>${nmDetail ? ' &mdash; ' + escapeHtml(nmDetail) : ''}
+              <strong style="color:${reasonColor};">${escapeHtml(capFirst(nmReason))}</strong>${nmDetail ? ' &mdash; ' + escapeHtml(nmDetail) : ''}
             </div>
             ${buildLegTable(nm.legs || [], { showStatus: false, showSport: true, showFairOdds: false, pad: '2px 6px', highlightBlocker: true })}
           </td>
