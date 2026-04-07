@@ -1136,31 +1136,40 @@
       html += '</table></div>' + subEnd;
     }
 
-    // Missed volume analysis
+    // Combined Decline Reasons & Missed Volume
     const mv = intel.missedVolume;
-    if (mv && mv.totalMissed > 0) {
-      html += subSection('intel-missed-volume', 'Missed Volume', mv.totalMissed + ' parlays · $' + mv.totalStake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + ' matched stake', false);
+    if (d.total > 0) {
+      const mvTotal = mv ? mv.totalMissed : 0;
+      const mvStake = mv ? mv.totalStake : 0;
+      const summaryParts = [d.total + ' RFQs declined'];
+      if (mvTotal > 0) summaryParts.push(mvTotal + ' matched missed · $' + mvStake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + ' stake');
+      html += subSection('intel-declines', 'Declines & Missed Volume', summaryParts.join(' · '), false);
       html += '<div style="overflow-x:auto;"><table style="font-size:12px;">';
-      html += '<tr><th>Reason</th><th style="text-align:right">Parlays Missed</th><th style="text-align:right">Total Stake</th><th style="text-align:right">Avg Stake</th></tr>';
-      for (const [reason, data] of Object.entries(mv.byReason).sort((a,b) => b[1].totalStake - a[1].totalStake)) {
-        html += '<tr><td>' + capFirst(reason) + '</td><td style="text-align:right">' + data.count + '</td><td style="text-align:right; font-weight:600; color:var(--amber);">$' + data.totalStake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td><td style="text-align:right; color:var(--text2);">$' + (data.count > 0 ? (data.totalStake / data.count).toFixed(2) : '0.00') + '</td></tr>';
+      html += '<tr><th>Reason</th><th style="text-align:right" title="Total RFQs declined for this reason">RFQ Declines</th><th style="text-align:right">%</th>';
+      if (mvTotal > 0) html += '<th style="text-align:right" title="Matched parlays we missed">Missed Fills</th><th style="text-align:right" title="Total matched stake we missed">Missed Stake</th><th style="text-align:right">Avg Stake</th>';
+      html += '<th style="text-align:right">By Leg Count</th></tr>';
+      // Merge all reasons from both sources
+      const allReasons = new Set([...Object.keys(d.reasons || {}), ...Object.keys(mv?.byReason || {})]);
+      const merged = [...allReasons].map(reason => {
+        const declineCount = d.reasons?.[reason] || 0;
+        const missedData = mv?.byReason?.[reason];
+        const vol = d.volumeByReason?.[reason];
+        return { reason, declineCount, missedCount: missedData?.count || 0, missedStake: missedData?.totalStake || 0, vol };
+      }).sort((a, b) => b.declineCount - a.declineCount);
+      for (const r of merged) {
+        const pct = d.total > 0 ? (r.declineCount / d.total * 100).toFixed(0) : '0';
+        const legBreakdown = r.vol?.byLegCount ? Object.entries(r.vol.byLegCount).sort((a,b) => b[1]-a[1]).map(([k,v]) => k + '-leg: ' + v).join(', ') : '-';
+        html += '<tr><td>' + capFirst(r.reason) + '</td>';
+        html += '<td style="text-align:right; font-weight:600;">' + (r.declineCount || '-') + '</td>';
+        html += '<td style="text-align:right; color:var(--text3);">' + pct + '%</td>';
+        if (mvTotal > 0) {
+          html += '<td style="text-align:right; color:var(--amber);">' + (r.missedCount || '-') + '</td>';
+          html += '<td style="text-align:right; font-weight:600; color:var(--amber);">' + (r.missedStake > 0 ? '$' + r.missedStake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '-') + '</td>';
+          html += '<td style="text-align:right; color:var(--text3);">' + (r.missedCount > 0 ? '$' + (r.missedStake / r.missedCount).toFixed(2) : '-') + '</td>';
+        }
+        html += '<td style="text-align:right; color:var(--text3); font-size:11px;">' + legBreakdown + '</td></tr>';
       }
       html += '</table></div>';
-      html += subEnd;
-    }
-
-    // Decline reasons + unknown legs
-    if (d.total > 0) {
-      html += subSection('intel-declines', 'Decline Reasons', d.total + ' RFQs · ' + (d.volumeByReason ? Object.values(d.volumeByReason).reduce((s,v) => s + v.count, 0) : d.total) + ' total', false);
-      html += `<div style="overflow-x:auto;"><table style="font-size:12px;">`;
-      html += '<tr><th>Reason</th><th style="text-align:right">Count</th><th style="text-align:right">%</th><th style="text-align:right">By Leg Count</th></tr>';
-      for (const [reason, count] of Object.entries(d.reasons || {}).sort((a,b) => b[1]-a[1])) {
-        const pct = (count / d.total * 100).toFixed(0);
-        const vol = d.volumeByReason?.[reason];
-        const legBreakdown = vol?.byLegCount ? Object.entries(vol.byLegCount).sort((a,b) => b[1]-a[1]).map(([k,v]) => k + '-leg: ' + v).join(', ') : '-';
-        html += '<tr><td>' + capFirst(reason) + '</td><td style="text-align:right; font-weight:600;">' + count + '</td><td style="text-align:right; color:var(--text3);">' + pct + '%</td><td style="text-align:right; color:var(--text3); font-size:11px;">' + legBreakdown + '</td></tr>';
-      }
-      html += `</table></div>`;
 
       const unknownSports = d.unknownSports || {};
       // Build normalized entries
