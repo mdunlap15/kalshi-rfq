@@ -124,10 +124,19 @@ async function priceParlay(legs) {
       lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
     );
 
+    // Get de-vigged consensus fair prob for display (separate from pricing fairProb)
+    const displayFairProb = oddsFeed.getDisplayFairProb(
+      lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection,
+      lineInfo.line != null ? Math.abs(lineInfo.line) : null,
+      lineInfo.startTime
+    );
+
     pricedLegs.push({
       lineId,
       lineInfo,
       fairProb,
+      displayFairProb,
       pinnacleOdds,
       fanduelOdds,
     });
@@ -228,6 +237,7 @@ async function priceParlay(legs) {
           selection: l.lineInfo.oddsApiSelection,
           line: l.lineInfo.line,
           fairProb: Math.round(l.fairProb * 10000) / 10000,
+          displayFairProb: l.displayFairProb ? Math.round(l.displayFairProb * 10000) / 10000 : null,
           pinnacleOdds: l.pinnacleOdds || null,
           fanduelOdds: l.fanduelOdds || null,
           sport: l.lineInfo.sport,
