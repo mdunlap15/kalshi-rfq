@@ -519,6 +519,7 @@ function startStatusServer() {
   app.post('/reconnect', async (req, res) => {
     try {
       log.info('API', 'Manual WebSocket reconnect requested');
+      px.clearCooldown(); // allow login even if cooldown is active
       websocket.disconnect();
       await websocket.connect();
       res.json({ ok: true, state: websocket.getState().connectionState });
