@@ -525,7 +525,7 @@ function startStatusServer() {
     }
   });
 
-  // Response time stats for diagnosing auction competitiveness
+  // Response time stats + offer errors for diagnosing auction issues
   app.get('/response-times', (req, res) => {
     res.json(websocket.getResponseTimeStats());
   });

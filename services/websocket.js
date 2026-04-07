@@ -409,6 +409,8 @@ async function handleRFQ(data) {
     }
   } catch (err) {
     log.error('RFQ', `Error handling RFQ: ${err.message}`);
+    offerErrors.unshift({ error: err.message, time: new Date().toISOString(), parlayId });
+    if (offerErrors.length > 50) offerErrors.pop();
   }
 }
 
@@ -660,18 +662,22 @@ function recordResponseTime(parlayId, elapsed, offeredOdds) {
   if (responseTimes.length > MAX_RESPONSE_TIMES) responseTimes.pop();
 }
 
+const offerErrors = []; // last N offer submission failures
+
 function getResponseTimeStats() {
-  if (responseTimes.length === 0) return { count: 0 };
   const times = responseTimes.map(r => r.elapsed);
-  times.sort((a, b) => a - b);
+  if (times.length > 0) times.sort((a, b) => a - b);
   return {
     count: times.length,
-    min: times[0],
-    max: times[times.length - 1],
-    avg: Math.round(times.reduce((s, t) => s + t, 0) / times.length),
-    median: times[Math.floor(times.length / 2)],
-    p95: times[Math.floor(times.length * 0.95)],
+    min: times[0] || 0,
+    max: times[times.length - 1] || 0,
+    avg: times.length ? Math.round(times.reduce((s, t) => s + t, 0) / times.length) : 0,
+    median: times[Math.floor(times.length / 2)] || 0,
+    p95: times[Math.floor(times.length * 0.95)] || 0,
     recent: responseTimes.slice(0, 10),
+    offerErrors: offerErrors.slice(0, 20),
+    successCount: responseTimes.length,
+    errorCount: offerErrors.length,
   };
 }
 
