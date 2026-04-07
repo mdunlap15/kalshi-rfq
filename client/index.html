@@ -1795,6 +1795,19 @@
         case 'towin':
           // To Win = confirmedStake (bettor's wager)
           va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+        case 'winprob':
+          const wpCalcPos = (o) => {
+            const ls2 = o.meta?.legs || o.legs || [];
+            let hp = 1;
+            for (const l of ls2) {
+              const st = l.settlementStatus || l.settlement_status;
+              if (st === 'lost') return 1;
+              if (st === 'won') continue;
+              hp *= (l.liveFairProb || l.fairProb || 0.5);
+            }
+            return 1 - hp;
+          };
+          va = wpCalcPos(a); vb = wpCalcPos(b); break;
         default: va = a.confirmedAt || ''; vb = b.confirmedAt || '';
           return posState.sortDir * va.localeCompare(vb);
       }
@@ -1832,9 +1845,12 @@
         <th ${pSortClick('time')}>Confirmed${pSortArrow('time')}</th>
         <th>Selections</th>
         <th ${pSortClick('legs')}>Legs${pSortArrow('legs')}</th>
-        <th ${pSortClick('odds')}>Odds${pSortArrow('odds')}</th>
+        <th ${pSortClick('odds')}>My Odds${pSortArrow('odds')}</th>
+        <th style="text-align:right; color:var(--purple);">Pinnacle</th>
+        <th style="text-align:right; color:var(--blue);">FanDuel</th>
         <th ${pSortClick('stake', 'right')}>My Risk${pSortArrow('stake')}</th>
         <th ${pSortClick('towin', 'right')}>To Win${pSortArrow('towin')}</th>
+        <th ${pSortClick('winprob', 'right')} title="Probability you win (at least one bettor leg fails)">Win Prob${pSortArrow('winprob')}</th>
         <th title="Game status">Status</th>
       </tr>`;
 
@@ -1883,6 +1899,33 @@
         }
       }
 
+      // Pinnacle/FanDuel parlay odds
+      const mLegs = order.meta?.legs || legs;
+      const posPinParlay = compoundParlayOdds(mLegs, 'pinnacleOdds');
+      const posFdParlay = compoundParlayOdds(mLegs, 'fanduelOdds');
+      const posPinFmt = posPinParlay != null ? (posPinParlay >= 0 ? '+' : '') + posPinParlay : '-';
+      const posFdFmt = posFdParlay != null ? (posFdParlay >= 0 ? '+' : '') + posFdParlay : '-';
+
+      // Win Probability
+      let posHitProb = 1;
+      let posHasLive = false;
+      let posDead = false;
+      for (const l of mLegs) {
+        const ls = l.settlementStatus || l.settlement_status;
+        if (ls === 'lost') { posDead = true; break; }
+        if (ls === 'won') continue;
+        const prob = l.liveFairProb || l.fairProb || 0.5;
+        posHitProb *= prob;
+        if (l.liveFairProb) posHasLive = true;
+      }
+      const posWinProb = posDead ? 1.0 : (1 - posHitProb);
+      const posWpPct = (posWinProb * 100).toFixed(1);
+      const posWpColor = posDead ? 'var(--green)' : posWinProb >= 0.8 ? 'var(--green)' : posWinProb >= 0.5 ? 'var(--text)' : posWinProb >= 0.3 ? 'var(--amber)' : 'var(--red)';
+      const anyInProgress = gameStatus.label === 'In Progress';
+      const posWpLabel = posDead ? '<span style="color:var(--green); font-weight:600;">100% ✓</span>'
+        : anyInProgress ? '<span style="color:' + posWpColor + '; font-weight:600;">' + posWpPct + '%</span>' + (posHasLive ? ' <span style="font-size:9px; color:var(--green);">LIVE</span>' : '')
+        : '<span style="color:var(--text3);">' + posWpPct + '%</span>';
+
       const rowKey = 'pos-' + (order.parlayId || '');
       const expanded = expandedRows.has(rowKey);
       html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
@@ -1890,12 +1933,15 @@
         <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis;" title="${teams}">${teamsShort}</td>
         <td>${legs.length}</td>
         <td style="font-weight:600;">${offeredAm}</td>
+        <td style="text-align:right; color:var(--purple);">${posPinFmt}</td>
+        <td style="text-align:right; color:var(--blue);">${posFdFmt}</td>
         <td style="text-align:right">${myRisk}</td>
         <td style="text-align:right; font-weight:600; color:var(--green);">${toWin}</td>
+        <td style="text-align:right">${posWpLabel}</td>
         <td title="${gameStatus.title}"><span style="color:${gameStatus.color}; font-weight:600; font-size:11px;">${gameStatus.label}</span></td>
       </tr>
       <tr id="${rowKey}" style="display:${expanded ? 'table-row' : 'none'}; background: var(--surface3);">
-        <td colspan="8" style="padding: 12px 16px;">
+        <td colspan="10" style="padding: 12px 16px;">
           <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
           ${buildLegTable(legs, { vig: order.meta?.vig || order.vig || 0 })}
           <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
