@@ -3074,7 +3074,14 @@
       const teams = getOrderTeams(order);
       const teamStr = teams.join(', ');
 
-      const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
+      // Compute display fair from per-leg displayFairProb (de-vigged consensus)
+      const qLegs = order.meta?.legs || order.legs || [];
+      let qDisplayFairProb = null;
+      if (qLegs.length > 0 && qLegs.some(l => l.displayFairProb)) {
+        qDisplayFairProb = 1;
+        for (const l of qLegs) qDisplayFairProb *= (l.displayFairProb || l.fairProb || 0.5);
+      }
+      const fairAm = (qDisplayFairProb || order.fairParlayProb) ? decimalToAmerican(1 / (qDisplayFairProb || order.fairParlayProb)) : '-';
       const pinParlay = order.meta?.pinnacleParlay;
       const pinAm = pinParlay != null ? pinParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
@@ -5665,7 +5672,14 @@
       const legs = (order.legs || order.meta?.legs || []);
       const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
-      const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
+      // Display fair from de-vigged consensus
+      const hLegs = order.meta?.legs || order.legs || [];
+      let hDisplayFairProb = null;
+      if (hLegs.length > 0 && hLegs.some(l => l.displayFairProb)) {
+        hDisplayFairProb = 1;
+        for (const l of hLegs) hDisplayFairProb *= (l.displayFairProb || l.fairProb || 0.5);
+      }
+      const fairAm = (hDisplayFairProb || order.fairParlayProb) ? decimalToAmerican(1 / (hDisplayFairProb || order.fairParlayProb)) : '-';
       const pinParlay = order.meta?.pinnacleParlay;
       const pinAm = pinParlay != null ? pinParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
