@@ -2058,6 +2058,8 @@
     html += '<th>Selections</th>';
     html += '<th>Legs</th>';
     html += '<th ' + sSortClick('odds') + '>Odds' + sSortArrow('odds') + '</th>';
+    html += '<th style="text-align:right; color:var(--purple);">Pinnacle</th>';
+    html += '<th style="text-align:right; color:var(--blue);">FanDuel</th>';
     html += '<th ' + sSortClick('stake', 'right') + '>My Risk' + sSortArrow('stake') + '</th>';
     html += '<th title="Settlement outcome from our (SP) perspective">SP Result</th>';
     html += '<th ' + sSortClick('pnl', 'right') + '>P&L' + sSortArrow('pnl') + '</th>';
@@ -2084,6 +2086,11 @@
       const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
+      const sLegs = order.meta?.legs || order.legs || [];
+      const sPinParlay = compoundParlayOdds(sLegs, 'pinnacleOdds');
+      const sFdParlay = compoundParlayOdds(sLegs, 'fanduelOdds');
+      const sPinFmt = sPinParlay != null ? (sPinParlay >= 0 ? '+' : '') + sPinParlay : '-';
+      const sFdFmt = sFdParlay != null ? (sFdParlay >= 0 ? '+' : '') + sFdParlay : '-';
       const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
       // settlementResult is stored as SP-perspective (normalized at input)
@@ -2106,14 +2113,16 @@
       html += '<td style="max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>';
       html += '<td>' + legs.length + '</td>';
       html += '<td style="font-weight:600;">' + offeredAm + '</td>';
+      html += '<td style="text-align:right; color:var(--purple);">' + sPinFmt + '</td>';
+      html += '<td style="text-align:right; color:var(--blue);">' + sFdFmt + '</td>';
       html += '<td style="text-align:right">' + stake + '</td>';
       html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
       html += '<td style="text-align:right">' + cumulHtml + '</td>';
       html += '</tr>';
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="8" style="padding:12px 16px;">';
-      html += buildLegTable(legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
+      html += '<td colspan="10" style="padding:12px 16px;">';
+      html += buildLegTable(sLegs.length > 0 ? sLegs : legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
     }
@@ -3608,7 +3617,7 @@
     }
 
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th></tr>';
+    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th>Status</th></tr>';
 
     const isPopenFiltering = popenState.search || popenState.dateFrom || popenState.dateTo;
     const popenLimit = (popenState.showAll || isPopenFiltering) ? filtered.length : popenState.pageSize;
@@ -3617,10 +3626,15 @@
 
     for (const o of popenDisplayed) {
       const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleString() : '-';
-      const legs = o.legs || o.meta?.legs || [];
+      const legs = o.meta?.legs || o.legs || [];
       const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
       const oddsStr = o.offeredOdds ? (o.offeredOdds >= 0 ? '+' : '') + o.offeredOdds : '-';
+      // Compound Pinnacle/FanDuel per-leg odds into parlay odds
+      const pinParlay = compoundParlayOdds(legs, 'pinnacleOdds');
+      const fdParlay = compoundParlayOdds(legs, 'fanduelOdds');
+      const pinFmt = pinParlay != null ? (pinParlay >= 0 ? '+' : '') + pinParlay : '-';
+      const fdFmt = fdParlay != null ? (fdParlay >= 0 ? '+' : '') + fdParlay : '-';
       // confirmedStake = bettor's wager = To Win, My Risk = payout
       const toWin = o.confirmedStake ? fmtDollar(o.confirmedStake) : '-';
       const riskV = o.confirmedStake && o.offeredOdds ? calcBettorWager(o.confirmedStake, o.offeredOdds) : null;
@@ -3628,18 +3642,27 @@
 
       const rowKey = 'popen-' + (o.parlayId || '');
       const expanded = expandedRows.has(rowKey);
+      // Status badge
+      const startTimes = legs.map(l => l.startTime ? new Date(l.startTime).getTime() : Infinity);
+      const earliestStart = Math.min(...startTimes);
+      const now = Date.now();
+      const statusLabel = earliestStart <= now ? '<span style="color:var(--amber);">In Progress</span>' : '<span style="color:var(--green);">Upcoming</span>';
+
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">' +
         '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>' +
         '<td style="font-size:12px; max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>' +
         '<td>' + legs.length + '</td>' +
         '<td style="text-align:right; font-weight:600;">' + oddsStr + '</td>' +
+        '<td style="text-align:right; color:var(--purple);">' + pinFmt + '</td>' +
+        '<td style="text-align:right; color:var(--blue);">' + fdFmt + '</td>' +
         '<td style="text-align:right">' + myRisk + '</td>' +
         '<td style="text-align:right; font-weight:600; color:var(--green);">' + toWin + '</td>' +
+        '<td style="font-size:11px;">' + statusLabel + '</td>' +
       '</tr>';
 
       // Expandable leg detail row
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="6" style="padding:12px 16px;">';
+      html += '<td colspan="9" style="padding:12px 16px;">';
       html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">PARLAY LEGS</div>';
       html += buildLegTable(legs, { vig: o.meta?.vig || o.vig || 0 });
       html += '<div style="margin-top:6px; font-size:10px; color:var(--text3);">Vig: ' + ((o.meta?.vig || o.vig || 0) * 100).toFixed(1) + '% · Max Risk: $' + (o.maxRisk || '-') + ' · ID: ' + (o.parlayId || '-') + '</div>';
@@ -3796,6 +3819,8 @@
     html += '<th>Selections</th>';
     html += '<th ' + pSortClick('legs') + '>Legs' + pSortArrow('legs') + '</th>';
     html += '<th ' + pSortClick('odds') + '>Odds' + pSortArrow('odds') + '</th>';
+    html += '<th style="text-align:right; color:var(--purple);">Pinnacle</th>';
+    html += '<th style="text-align:right; color:var(--blue);">FanDuel</th>';
     html += '<th ' + pSortClick('stake', 'right') + '>My Risk' + pSortArrow('stake') + '</th>';
     html += '<th title="Settlement outcome from our (SP) perspective">SP Result</th>';
     html += '<th ' + pSortClick('pnl', 'right') + '>P&L' + pSortArrow('pnl') + '</th>';
@@ -3813,6 +3838,11 @@
       const teams = formatParlaySelections(legs);
       const teamsShort = teams.length > 45 ? teams.substring(0, 42) + '...' : teams;
       const oddsStr = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
+      const psLegs = order.meta?.legs || order.legs || [];
+      const psPinParlay = compoundParlayOdds(psLegs, 'pinnacleOdds');
+      const psFdParlay = compoundParlayOdds(psLegs, 'fanduelOdds');
+      const psPinFmt = psPinParlay != null ? (psPinParlay >= 0 ? '+' : '') + psPinParlay : '-';
+      const psFdFmt = psFdParlay != null ? (psFdParlay >= 0 ? '+' : '') + psFdParlay : '-';
       const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
       // settlementResult is stored as SP-perspective (normalized at input)
@@ -3835,6 +3865,8 @@
       html += '<td style="font-size:12px; max-width:220px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>';
       html += '<td>' + legs.length + '</td>';
       html += '<td style="font-weight:600;">' + oddsStr + '</td>';
+      html += '<td style="text-align:right; color:var(--purple);">' + psPinFmt + '</td>';
+      html += '<td style="text-align:right; color:var(--blue);">' + psFdFmt + '</td>';
       html += '<td style="text-align:right">' + stake + '</td>';
       html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
@@ -3843,8 +3875,8 @@
 
       // Expandable leg detail row
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="8" style="padding:12px 16px;">';
-      html += buildLegTable(legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
+      html += '<td colspan="10" style="padding:12px 16px;">';
+      html += buildLegTable(psLegs.length > 0 ? psLegs : legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
     }
@@ -5624,6 +5656,19 @@
     const d = document.createElement('div');
     d.textContent = text;
     return d.innerHTML;
+  }
+
+  /** Compound per-leg sportsbook odds into parlay American odds */
+  function compoundParlayOdds(legs, field) {
+    let prob = 1;
+    let allPresent = true;
+    for (const l of legs) {
+      const odds = l[field];
+      if (odds == null) { allPresent = false; continue; }
+      prob *= americanToProb(odds);
+    }
+    if (!allPresent || prob <= 0 || prob >= 1) return null;
+    return decimalToAmerican(1 / prob);
   }
 
   /** Apply vig to odds (multiplicative) — reduces payout by vig %, scales naturally at all odds levels */
