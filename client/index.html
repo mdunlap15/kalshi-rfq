@@ -1903,8 +1903,8 @@
       const mLegs = order.meta?.legs || legs;
       const posPinParlay = compoundParlayOdds(mLegs, 'pinnacleOdds');
       const posFdParlay = compoundParlayOdds(mLegs, 'fanduelOdds');
-      const posPinFmt = posPinParlay != null ? (posPinParlay >= 0 ? '+' : '') + posPinParlay : '-';
-      const posFdFmt = posFdParlay != null ? (posFdParlay >= 0 ? '+' : '') + posFdParlay : '-';
+      const posPinFmt = posPinParlay != null ? posPinParlay : '-';
+      const posFdFmt = posFdParlay != null ? posFdParlay : '-';
 
       // Win Probability
       let posHitProb = 1;
@@ -2144,8 +2144,8 @@
       const sLegs = order.meta?.legs || order.legs || [];
       const sPinParlay = compoundParlayOdds(sLegs, 'pinnacleOdds');
       const sFdParlay = compoundParlayOdds(sLegs, 'fanduelOdds');
-      const sPinFmt = sPinParlay != null ? (sPinParlay >= 0 ? '+' : '') + sPinParlay : '-';
-      const sFdFmt = sFdParlay != null ? (sFdParlay >= 0 ? '+' : '') + sFdParlay : '-';
+      const sPinFmt = sPinParlay != null ? sPinParlay : '-';
+      const sFdFmt = sFdParlay != null ? sFdParlay : '-';
       const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
       // settlementResult is stored as SP-perspective (normalized at input)
@@ -3076,7 +3076,7 @@
 
       const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
       const pinParlay = order.meta?.pinnacleParlay;
-      const pinAm = pinParlay != null ? (pinParlay >= 0 ? '+' : '') + pinParlay : '-';
+      const pinAm = pinParlay != null ? pinParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
       // confirmedStake = bettor's wager = To Win, My Risk = payout
@@ -3686,7 +3686,7 @@
     }
 
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">Odds' + poSortArrow('odds') + '</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th ' + poSortClick('winprob') + ' style="text-align:right" title="Probability you win (at least one bettor leg fails)">Win Prob' + poSortArrow('winprob') + '</th><th>Status</th></tr>';
+    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">My Odds' + poSortArrow('odds') + '</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th ' + poSortClick('winprob') + ' style="text-align:right" title="Probability you win (at least one bettor leg fails)">Win Prob' + poSortArrow('winprob') + '</th><th>Status</th></tr>';
 
     const isPopenFiltering = popenState.search || popenState.dateFrom || popenState.dateTo;
     const popenLimit = (popenState.showAll || isPopenFiltering) ? filtered.length : popenState.pageSize;
@@ -3702,8 +3702,8 @@
       // Compound Pinnacle/FanDuel per-leg odds into parlay odds
       const pinParlay = compoundParlayOdds(legs, 'pinnacleOdds');
       const fdParlay = compoundParlayOdds(legs, 'fanduelOdds');
-      const pinFmt = pinParlay != null ? (pinParlay >= 0 ? '+' : '') + pinParlay : '-';
-      const fdFmt = fdParlay != null ? (fdParlay >= 0 ? '+' : '') + fdParlay : '-';
+      const pinFmt = pinParlay != null ? pinParlay : '-';
+      const fdFmt = fdParlay != null ? fdParlay : '-';
       // confirmedStake = bettor's wager = To Win, My Risk = payout
       const toWin = o.confirmedStake ? fmtDollar(o.confirmedStake) : '-';
       const riskV = o.confirmedStake && o.offeredOdds ? calcBettorWager(o.confirmedStake, o.offeredOdds) : null;
@@ -3935,8 +3935,8 @@
       const psLegs = order.meta?.legs || order.legs || [];
       const psPinParlay = compoundParlayOdds(psLegs, 'pinnacleOdds');
       const psFdParlay = compoundParlayOdds(psLegs, 'fanduelOdds');
-      const psPinFmt = psPinParlay != null ? (psPinParlay >= 0 ? '+' : '') + psPinParlay : '-';
-      const psFdFmt = psFdParlay != null ? (psFdParlay >= 0 ? '+' : '') + psFdParlay : '-';
+      const psPinFmt = psPinParlay != null ? psPinParlay : '-';
+      const psFdFmt = psFdParlay != null ? psFdParlay : '-';
       const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
       // settlementResult is stored as SP-perspective (normalized at input)
@@ -5667,7 +5667,7 @@
       const teamsShort = teams.length > 50 ? teams.substring(0, 47) + '...' : teams;
       const fairAm = order.fairParlayProb ? decimalToAmerican(1 / order.fairParlayProb) : '-';
       const pinParlay = order.meta?.pinnacleParlay;
-      const pinAm = pinParlay != null ? (pinParlay >= 0 ? '+' : '') + pinParlay : '-';
+      const pinAm = pinParlay != null ? pinParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
       const myRisk = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
