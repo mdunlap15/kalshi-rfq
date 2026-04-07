@@ -267,7 +267,10 @@ function subscribeAndBind() {
 async function handleRFQ(data) {
   const startTime = Date.now();
 
+  rfqStages.received++;
+
   if (paused) {
+    rfqStages.paused++;
     log.debug('WS', 'Paused — ignoring RFQ');
     return;
   }
@@ -348,6 +351,7 @@ async function handleRFQ(data) {
         unknownSports,
         declineDetail: declineCheck.detail || null,
       });
+      rfqStages.declined++;
       return;
     }
 
@@ -384,6 +388,7 @@ async function handleRFQ(data) {
         knownLegs,
         declineDetail: failure.detail,
       });
+      rfqStages.priceFailed++;
       return;
     }
 
@@ -402,13 +407,16 @@ async function handleRFQ(data) {
       log.info('RFQ', `Submitting: parlay=${parlayId}, decimal=${result.meta.decimalOdds}, american=${result.meta.americanOdds}, offer=${JSON.stringify(result.offer)}`);
       await px.submitOffer(callbackUrl, parlayId, [result.offer]);
       const elapsed = Date.now() - startTime;
+      rfqStages.submitted++;
       recordResponseTime(parlayId, elapsed, result.meta.americanOdds);
       log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms`);
     } else {
+      rfqStages.noCallback++;
       log.warn('RFQ', `No callback URL for parlay ${parlayId}`);
     }
   } catch (err) {
     log.error('RFQ', `Error handling RFQ: ${err.message}`);
+    rfqStages.submitError++;
     offerErrors.unshift({ error: err.message, time: new Date().toISOString(), parlayId });
     if (offerErrors.length > 50) offerErrors.pop();
   }
@@ -657,6 +665,17 @@ function disconnect() {
 const responseTimes = []; // { parlayId, elapsed, offeredOdds, time }
 const MAX_RESPONSE_TIMES = 100;
 
+// RFQ flow stage counters (reset each session)
+const rfqStages = {
+  received: 0,
+  paused: 0,
+  declined: 0,
+  priceFailed: 0,
+  noCallback: 0,
+  submitted: 0,
+  submitError: 0,
+};
+
 function recordResponseTime(parlayId, elapsed, offeredOdds) {
   responseTimes.unshift({ parlayId, elapsed, offeredOdds, time: new Date().toISOString() });
   if (responseTimes.length > MAX_RESPONSE_TIMES) responseTimes.pop();
@@ -678,6 +697,7 @@ function getResponseTimeStats() {
     offerErrors: offerErrors.slice(0, 20),
     successCount: responseTimes.length,
     errorCount: offerErrors.length,
+    rfqStages,
   };
 }
 
