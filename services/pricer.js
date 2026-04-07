@@ -159,28 +159,27 @@ async function priceParlay(legs) {
   // Determine max risk
   const maxRisk = config.pricing.maxRiskPerParlay;
 
-  // PX rejects decimal odds with "invalid odds" 400 error.
-  // PX web UI and matched orders all use American format.
-  const americanOdds = decimalToAmerican(decimalOdds);
+  // PX uses negative SP-side American odds (e.g., -192 means SP risks $192 per $100).
+  // Confirmed orders come back negative. Offer odds must also be negative.
+  const americanOdds = -decimalToAmerican(decimalOdds);
 
   // Don't quote on very high odds parlays — even small stakes create huge payouts
   const maxOdds = config.pricing.maxOdds || 1000;
-  if (americanOdds > maxOdds) {
-    log.debug('Pricing', `Declined: odds +${americanOdds} exceed max +${maxOdds}`);
+  if (Math.abs(americanOdds) > maxOdds) {
+    log.debug('Pricing', `Declined: odds ${americanOdds} exceed max ${maxOdds}`);
     priceParlay._lastFailure = {
       reason: 'odds too high',
-      detail: `offered +${americanOdds} > max +${maxOdds}`,
+      detail: `offered ${americanOdds} > max ±${maxOdds}`,
       blockerLeg: null,
     };
     return null;
   }
 
-  // Build estimated_price (per-leg breakdown) — American odds per leg.
+  // Build estimated_price (per-leg breakdown) — negative SP-side odds per leg.
   // Apply vig to each leg so PX's recomputed parlay odds match our intended price.
-  // PX compounds per-leg probs from estimated_price to display the final parlay odds.
   const estimatedPrice = pricedLegs.map(leg => ({
     line_id: leg.lineId,
-    odds: decimalToAmerican(1 / (leg.fairProb * (1 + vig))),
+    odds: -decimalToAmerican(1 / (leg.fairProb * (1 + vig))),
   }));
 
   // valid_until in nanoseconds
