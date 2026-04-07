@@ -1125,15 +1125,31 @@
       html += '</table></div>' + subEnd;
     }
 
+    // Missed volume analysis
+    const mv = intel.missedVolume;
+    if (mv && mv.totalMissed > 0) {
+      html += subSection('intel-missed-volume', 'Missed Volume', mv.totalMissed + ' parlays · $' + mv.totalStake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + ' matched stake', false);
+      html += '<div style="overflow-x:auto;"><table style="font-size:12px;">';
+      html += '<tr><th>Reason</th><th style="text-align:right">Parlays Missed</th><th style="text-align:right">Total Stake</th><th style="text-align:right">Avg Stake</th></tr>';
+      for (const [reason, data] of Object.entries(mv.byReason).sort((a,b) => b[1].totalStake - a[1].totalStake)) {
+        html += '<tr><td>' + reason + '</td><td style="text-align:right">' + data.count + '</td><td style="text-align:right; font-weight:600; color:var(--amber);">$' + data.totalStake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td><td style="text-align:right; color:var(--text2);">$' + (data.count > 0 ? (data.totalStake / data.count).toFixed(2) : '0.00') + '</td></tr>';
+      }
+      html += '</table></div>';
+      html += subEnd;
+    }
+
     // Decline reasons + unknown legs
     if (d.total > 0) {
-      html += subSection('intel-declines', 'Decline Reasons', d.total + ' RFQs', false);
-      html += `<div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px; margin-bottom:8px;">`;
+      html += subSection('intel-declines', 'Decline Reasons', d.total + ' RFQs · ' + (d.volumeByReason ? Object.values(d.volumeByReason).reduce((s,v) => s + v.count, 0) : d.total) + ' total', false);
+      html += `<div style="overflow-x:auto;"><table style="font-size:12px;">`;
+      html += '<tr><th>Reason</th><th style="text-align:right">Count</th><th style="text-align:right">%</th><th style="text-align:right">By Leg Count</th></tr>';
       for (const [reason, count] of Object.entries(d.reasons || {}).sort((a,b) => b[1]-a[1])) {
         const pct = (count / d.total * 100).toFixed(0);
-        html += `<span style="color:var(--text2);">${reason}: <strong>${count}</strong> (${pct}%)</span>`;
+        const vol = d.volumeByReason?.[reason];
+        const legBreakdown = vol?.byLegCount ? Object.entries(vol.byLegCount).sort((a,b) => b[1]-a[1]).map(([k,v]) => k + '-leg: ' + v).join(', ') : '-';
+        html += '<tr><td>' + reason + '</td><td style="text-align:right; font-weight:600;">' + count + '</td><td style="text-align:right; color:var(--text3);">' + pct + '%</td><td style="text-align:right; color:var(--text3); font-size:11px;">' + legBreakdown + '</td></tr>';
       }
-      html += `</div>`;
+      html += `</table></div>`;
 
       const unknownSports = d.unknownSports || {};
       // Build normalized entries

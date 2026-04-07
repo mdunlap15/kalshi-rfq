@@ -392,6 +392,15 @@ function recordDecline(reason, detail) {
   declineStats.total++;
   const bucket = reason || 'unknown';
   declineStats.reasons[bucket] = (declineStats.reasons[bucket] || 0) + 1;
+
+  // Track potential volume by reason (leg count as proxy for parlay size)
+  if (!declineStats.volumeByReason) declineStats.volumeByReason = {};
+  if (!declineStats.volumeByReason[bucket]) declineStats.volumeByReason[bucket] = { count: 0, totalLegs: 0, byLegCount: {} };
+  const legCount = (detail?.legs || detail?.knownLegs || []).length + (detail?.unknownLegs || []).length;
+  declineStats.volumeByReason[bucket].count++;
+  declineStats.volumeByReason[bucket].totalLegs += legCount;
+  const lcKey = legCount || 'unknown';
+  declineStats.volumeByReason[bucket].byLegCount[lcKey] = (declineStats.volumeByReason[bucket].byLegCount[lcKey] || 0) + 1;
   const declinedAt = new Date().toISOString();
   const isLimit = LIMIT_REASONS.has(bucket);
 
@@ -476,10 +485,28 @@ function getMarketIntel(limit = 50) {
     declines: {
       total: declineStats.total,
       reasons: { ...declineStats.reasons },
+      volumeByReason: declineStats.volumeByReason || {},
       unknownSports: { ...declineStats.unknownSports },
       nearMissCount: declineStats.nearMisses.length,
       recentNearMisses: declineStats.nearMisses.slice(0, 500),
     },
+    // Volume analysis: matched parlays we missed, with real stake data
+    missedVolume: (() => {
+      const missed = matchedParlays.filter(m => !m.weQuoted);
+      const byReason = {};
+      let totalStake = 0;
+      for (const m of missed) {
+        const reason = m.declineReason || 'not seen';
+        if (!byReason[reason]) byReason[reason] = { count: 0, totalStake: 0, avgStake: 0 };
+        byReason[reason].count++;
+        byReason[reason].totalStake += (m.matchedStake || 0);
+        totalStake += (m.matchedStake || 0);
+      }
+      for (const r of Object.keys(byReason)) {
+        byReason[r].avgStake = byReason[r].count > 0 ? Math.round(byReason[r].totalStake * 100) / 100 : 0;
+      }
+      return { totalMissed: missed.length, totalStake: Math.round(totalStake * 100) / 100, byReason };
+    })(),
     recentMatched: matchedParlays.slice(0, limit),
     quoteWinRate: marketStats.weQuoted > 0 ? (marketStats.weWon / marketStats.weQuoted * 100).toFixed(1) + '%' : '-',
     coverageRate: marketStats.totalMatched > 0 ? (marketStats.weQuoted / marketStats.totalMatched * 100).toFixed(1) + '%' : '-',
