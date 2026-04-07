@@ -402,7 +402,8 @@ async function handleRFQ(data) {
       log.info('RFQ', `Submitting: parlay=${parlayId}, decimal=${result.meta.decimalOdds}, american=${result.meta.americanOdds}, offer=${JSON.stringify(result.offer)}`);
       await px.submitOffer(callbackUrl, parlayId, [result.offer]);
       const elapsed = Date.now() - startTime;
-      log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.decimalOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms`);
+      recordResponseTime(parlayId, elapsed, result.meta.americanOdds);
+      log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms`);
     } else {
       log.warn('RFQ', `No callback URL for parlay ${parlayId}`);
     }
@@ -650,6 +651,30 @@ function disconnect() {
   connectionState = 'disconnected';
 }
 
+// Response time tracking
+const responseTimes = []; // { parlayId, elapsed, offeredOdds, time }
+const MAX_RESPONSE_TIMES = 100;
+
+function recordResponseTime(parlayId, elapsed, offeredOdds) {
+  responseTimes.unshift({ parlayId, elapsed, offeredOdds, time: new Date().toISOString() });
+  if (responseTimes.length > MAX_RESPONSE_TIMES) responseTimes.pop();
+}
+
+function getResponseTimeStats() {
+  if (responseTimes.length === 0) return { count: 0 };
+  const times = responseTimes.map(r => r.elapsed);
+  times.sort((a, b) => a - b);
+  return {
+    count: times.length,
+    min: times[0],
+    max: times[times.length - 1],
+    avg: Math.round(times.reduce((s, t) => s + t, 0) / times.length),
+    median: times[Math.floor(times.length / 2)],
+    p95: times[Math.floor(times.length * 0.95)],
+    recent: responseTimes.slice(0, 10),
+  };
+}
+
 function getState() {
   return {
     connectionState,
@@ -657,6 +682,7 @@ function getState() {
     lastHealthCheck: lastHealthCheck ? new Date(lastHealthCheck).toISOString() : null,
     reconnectAttempts,
     channels: channelNames,
+    responseTimeStats: getResponseTimeStats(),
   };
 }
 
@@ -666,4 +692,5 @@ module.exports = {
   pause,
   resume,
   getState,
+  getResponseTimeStats,
 };

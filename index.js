@@ -525,6 +525,11 @@ function startStatusServer() {
     }
   });
 
+  // Response time stats for diagnosing auction competitiveness
+  app.get('/response-times', (req, res) => {
+    res.json(websocket.getResponseTimeStats());
+  });
+
   // List cached odds events (debugging)
   app.get('/odds-events', (req, res) => {
     res.json({ events: oddsFeed.getAllCachedEvents() });
