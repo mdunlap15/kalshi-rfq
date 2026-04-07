@@ -262,6 +262,22 @@ async function loadDeclines(limit = 2000) {
   }
 }
 
+async function lookupDecline(parlayId) {
+  const db = getClient();
+  if (!db) return null;
+  try {
+    const { data, error } = await db
+      .from('declines')
+      .select('reason, detail')
+      .eq('parlay_id', parlayId)
+      .limit(1);
+    if (error || !data || data.length === 0) return null;
+    return { reason: data[0].reason, detail: data[0].detail };
+  } catch (err) {
+    return null;
+  }
+}
+
 async function countOrders() {
   const db = getClient();
   if (!db) return null;
@@ -309,4 +325,5 @@ module.exports = {
   loadMatchedParlays,
   saveDecline,
   loadDeclines,
+  lookupDecline,
 };

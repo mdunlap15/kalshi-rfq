@@ -46,7 +46,7 @@ const rejectStats = {
 };
 // Per-parlay decline lookup — lets us explain "No quote" outcomes in matched parlays
 const declinesByParlayId = {}; // { parlayId: { reason, unknownLineIds, unknownDetails, declinedAt } }
-const MAX_DECLINE_ENTRIES = 2000;
+const MAX_DECLINE_ENTRIES = 50000;
 const declineIdOrder = []; // FIFO to cap memory
 
 // ---------------------------------------------------------------------------
@@ -358,7 +358,7 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     outcome,
     legCount: resolvedLegs.length,
     // If we didn't quote, include why (so the dashboard can explain "No quote")
-    declineReason: outcome === 'missed' ? (declineInfo?.reason || 'not seen (service down or pre-startup)') : null,
+    declineReason: outcome === 'missed' ? (declineInfo?.reason || 'not seen') : null,
     declineDetail: declineInfo?.declineDetail || null,
     unknownLegDetails: declineInfo?.unknownDetails || [],
   };
@@ -366,6 +366,16 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
   matchedParlays.unshift(entry); // newest first
   db.saveMatchedParlay(entry).catch(() => {});
   if (matchedParlays.length > 5000) matchedParlays.pop(); // cap memory
+
+  // If decline reason is "not seen", try DB lookup to backfill the real reason
+  if (entry.declineReason === 'not seen') {
+    db.lookupDecline(parlayId).then(dbDecline => {
+      if (dbDecline) {
+        entry.declineReason = dbDecline.reason;
+        entry.declineDetail = dbDecline.detail;
+      }
+    }).catch(() => {});
+  }
 
   if (weQuoted && outcome === 'lost') {
     log.info('Market', `Lost quote: parlay=${parlayId.substring(0,8)}, our=${entry.ourAmericanOdds}, winning=${matchedOdds}, stake=$${matchedStake}`);
