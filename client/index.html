@@ -672,6 +672,17 @@
             <div class="empty-state"><div class="icon">-</div><div>Need active positions</div></div>
           </div>
         </div>
+
+        <!-- Pricing Edge vs Sportsbooks -->
+        <div class="card">
+          <div class="card-header">
+            <span>Pricing Edge vs Sportsbooks</span>
+            <span id="pricing-edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="chart-pricing-edge">
+            <div class="empty-state"><div class="icon">-</div><div>Need quoted parlays with Pinnacle/FanDuel odds</div></div>
+          </div>
+        </div>
       </div>
 
       <!-- ===================== SECTION: MARKET INTEL ===================== -->
@@ -4313,6 +4324,7 @@
     renderChartCompGap(data);
     renderChartFillVig(allQuoted, settled);
     renderChartExposure(confirmed);
+    renderChartPricingEdge(allQuoted);
   }
 
   // --- SVG helpers ---
@@ -4954,6 +4966,193 @@
     }
     svg += '</svg>';
     el.innerHTML = svg;
+  }
+
+  // ===================== PRICING EDGE VS SPORTSBOOKS =====================
+  function renderChartPricingEdge(allQuoted) {
+    const el = document.getElementById('chart-pricing-edge');
+    const sumEl = document.getElementById('pricing-edge-summary');
+    if (!el) return;
+
+    // Collect per-leg data from all quoted parlays
+    const legData = [];
+    for (const o of allQuoted) {
+      const legs = o.meta?.legs || o.legs || [];
+      const vig = o.meta?.vig || o.vig || 0;
+      for (const l of legs) {
+        if (!l.fairProb || l.fairProb <= 0 || l.fairProb >= 1) continue;
+        const myProb = l.fairProb * (1 + vig);
+        const myOddsAm = decimalToAmerican(1 / myProb);
+        const pinProb = l.pinnacleOdds != null ? americanToProb(l.pinnacleOdds) : null;
+        const fdProb = l.fanduelOdds != null ? americanToProb(l.fanduelOdds) : null;
+        legData.push({
+          team: l.team || l.teamName || '?',
+          market: l.market || l.marketType || '-',
+          sport: l.sport || 'unknown',
+          myProb, myOddsAm,
+          pinProb, pinOdds: l.pinnacleOdds,
+          fdProb, fdOdds: l.fanduelOdds,
+          fairProb: l.fairProb,
+          // Spread in pp: positive = we charge MORE than book (good)
+          pinSpread: pinProb != null ? Math.round((myProb - pinProb) * 10000) / 100 : null,
+          fdSpread: fdProb != null ? Math.round((myProb - fdProb) * 10000) / 100 : null,
+        });
+      }
+    }
+
+    const withPin = legData.filter(l => l.pinSpread != null);
+    const withFd = legData.filter(l => l.fdSpread != null);
+
+    if (withPin.length < 3) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need more quoted parlays with Pinnacle odds</div></div>';
+      return;
+    }
+
+    // Summary stats
+    const avgPinSpread = withPin.reduce((s, l) => s + l.pinSpread, 0) / withPin.length;
+    const avgFdSpread = withFd.length > 0 ? withFd.reduce((s, l) => s + l.fdSpread, 0) / withFd.length : null;
+    const pctMoreGenerous = Math.round(withPin.filter(l => l.pinSpread < 0).length / withPin.length * 100);
+    const pctMoreGenerousFd = withFd.length > 0 ? Math.round(withFd.filter(l => l.fdSpread < 0).length / withFd.length * 100) : null;
+
+    if (sumEl) {
+      const pinCls = avgPinSpread >= 0 ? 'positive' : 'negative';
+      sumEl.innerHTML = '<span class="' + pinCls + '">vs PIN: ' + (avgPinSpread >= 0 ? '+' : '') + avgPinSpread.toFixed(2) + 'pp</span>' +
+        (avgFdSpread != null ? ' · <span class="' + (avgFdSpread >= 0 ? 'positive' : 'negative') + '">vs FD: ' + (avgFdSpread >= 0 ? '+' : '') + avgFdSpread.toFixed(2) + 'pp</span>' : '') +
+        ' · <span style="color:var(--text3);">' + withPin.length + ' legs</span>';
+    }
+
+    let html = '';
+
+    // --- Summary Stats Bar ---
+    html += '<div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px; padding:10px 14px; background:var(--surface2); border-radius:6px;">';
+    const statBox = (label, value, cls, hint) => '<div style="min-width:120px;"><div style="font-size:11px; color:var(--text3); text-transform:uppercase;">' + label + '</div><div style="font-size:18px; font-weight:700;" class="' + (cls || '') + '">' + value + '</div>' + (hint ? '<div style="font-size:10px; color:var(--text3);">' + hint + '</div>' : '') + '</div>';
+    html += statBox('Avg Edge vs Pinnacle', (avgPinSpread >= 0 ? '+' : '') + avgPinSpread.toFixed(2) + 'pp', avgPinSpread >= 0 ? 'positive' : 'negative', 'Positive = you charge more');
+    if (avgFdSpread != null) html += statBox('Avg Edge vs FanDuel', (avgFdSpread >= 0 ? '+' : '') + avgFdSpread.toFixed(2) + 'pp', avgFdSpread >= 0 ? 'positive' : 'negative');
+    html += statBox('More Generous Than PIN', pctMoreGenerous + '%', pctMoreGenerous > 30 ? 'negative' : pctMoreGenerous > 15 ? '' : 'positive', 'Should be low');
+    if (pctMoreGenerousFd != null) html += statBox('More Generous Than FD', pctMoreGenerousFd + '%', pctMoreGenerousFd > 30 ? 'negative' : pctMoreGenerousFd > 15 ? '' : 'positive');
+    html += statBox('Legs Analyzed', withPin.length.toString(), '', allQuoted.length + ' parlays');
+    html += '</div>';
+
+    // --- Scatter Chart: My implied prob - Pinnacle implied prob ---
+    const W = 900, H = 380, pad = { l: 60, r: 20, t: 25, b: 50 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+
+    // X-axis: Pinnacle implied prob (0-1), Y-axis: spread in pp
+    const spreads = withPin.map(l => l.pinSpread);
+    const minSpread = Math.min(...spreads, -5);
+    const maxSpread = Math.max(...spreads, 5);
+    const spreadRange = maxSpread - minSpread || 10;
+
+    const scaleX = (prob) => pad.l + (prob * chartW);
+    const scaleY = (sp) => pad.t + chartH - ((sp - minSpread) / spreadRange * chartH);
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; height:auto; display:block;">';
+
+    // Y gridlines
+    const yStep = spreadRange > 20 ? 5 : spreadRange > 10 ? 2 : 1;
+    for (let t = Math.ceil(minSpread / yStep) * yStep; t <= maxSpread; t += yStep) {
+      const y = scaleY(t);
+      svg += svgLine(pad.l, y, pad.l + chartW, y, 'var(--border)', 1);
+      svg += svgText(pad.l - 8, y + 4, (t >= 0 ? '+' : '') + t.toFixed(0) + 'pp', { anchor: 'end', size: 11, fill: 'var(--text3)' });
+    }
+
+    // Zero line (parity with Pinnacle)
+    const zeroY = scaleY(0);
+    svg += svgLine(pad.l, zeroY, pad.l + chartW, zeroY, '#ffffff', 1.5);
+    svg += svgText(pad.l + chartW + 8, zeroY + 4, 'Pinnacle', { anchor: 'start', size: 10, fill: '#ffffff' });
+
+    // X-axis labels
+    for (let p = 0.1; p <= 0.9; p += 0.1) {
+      const x = scaleX(p);
+      svg += svgLine(x, pad.t + chartH, x, pad.t + chartH + 4, 'var(--text3)', 1);
+      svg += svgText(x, pad.t + chartH + 16, (p * 100).toFixed(0) + '%', { size: 11, fill: 'var(--text3)' });
+    }
+
+    // Dots
+    for (const l of withPin) {
+      const x = scaleX(l.pinProb);
+      const y = scaleY(l.pinSpread);
+      const color = l.pinSpread >= 0 ? 'var(--green)' : 'var(--red)';
+      svg += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + color + '" opacity="0.6"><title>' + l.team + ' ' + l.market + ': ' + (l.pinSpread >= 0 ? '+' : '') + l.pinSpread.toFixed(2) + 'pp (PIN ' + l.pinOdds + ', MY ' + l.myOddsAm + ')</title></circle>';
+    }
+
+    // Shaded regions
+    svg += '<text x="' + (pad.l + 10) + '" y="' + (pad.t + 14) + '" fill="var(--green)" font-size="11" opacity="0.7">You charge more (good)</text>';
+    svg += '<text x="' + (pad.l + 10) + '" y="' + (pad.t + chartH - 6) + '" fill="var(--red)" font-size="11" opacity="0.7">You offer better than Pinnacle (value leak)</text>';
+
+    // Axis titles
+    svg += svgText(pad.l + chartW / 2, H - 6, 'Pinnacle Implied Probability', { size: 13, fill: '#ffffff' });
+    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">My Prob − Pinnacle Prob (pp)</text>';
+
+    svg += '</svg>';
+
+    html += '<div style="margin-bottom:8px; font-size:13px; font-weight:600; color:var(--text2);">Per-Leg Edge vs Pinnacle</div>';
+    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Each dot = one leg. Green (above zero) = you charge more than Pinnacle. Red (below zero) = you\'re more generous. Hover for details.</div>';
+    html += svg;
+
+    // --- Histogram: edge distribution ---
+    html += '<div style="margin-top:24px; margin-bottom:8px; font-size:13px; font-weight:600; color:var(--text2);">Edge Distribution vs Pinnacle</div>';
+    const histW = 900, histH = 200, histPad = { l: 60, r: 20, t: 15, b: 40 };
+    const hChartW = histW - histPad.l - histPad.r, hChartH = histH - histPad.t - histPad.b;
+    const bins = 30;
+    const binSize = spreadRange / bins;
+    const counts = new Array(bins).fill(0);
+    for (const sp of spreads) {
+      let idx = Math.floor((sp - minSpread) / binSize);
+      if (idx >= bins) idx = bins - 1;
+      if (idx < 0) idx = 0;
+      counts[idx]++;
+    }
+    const maxCount = Math.max(...counts, 1);
+    const binW = hChartW / bins;
+
+    let histSvg = '<svg viewBox="0 0 ' + histW + ' ' + histH + '" style="width:100%; max-width:' + histW + 'px; height:auto; display:block;">';
+    for (let i = 0; i < bins; i++) {
+      const h = (counts[i] / maxCount) * hChartH;
+      const x = histPad.l + i * binW;
+      const y = histPad.t + hChartH - h;
+      const binCenter = minSpread + binSize * (i + 0.5);
+      const color = binCenter >= 0 ? 'var(--green)' : 'var(--red)';
+      histSvg += svgRect(x + 0.5, y, Math.max(0.5, binW - 1), h, color, 0);
+    }
+    // Zero line on histogram
+    const histZeroX = histPad.l + ((0 - minSpread) / spreadRange) * hChartW;
+    if (histZeroX >= histPad.l && histZeroX <= histPad.l + hChartW) {
+      histSvg += svgLine(histZeroX, histPad.t, histZeroX, histPad.t + hChartH, '#ffffff', 1.5);
+      histSvg += svgText(histZeroX, histPad.t + hChartH + 14, '0pp', { size: 12, fill: '#ffffff' });
+    }
+    // X-axis ticks
+    for (let t = Math.ceil(minSpread / yStep) * yStep; t <= maxSpread; t += yStep) {
+      const x = histPad.l + ((t - minSpread) / spreadRange) * hChartW;
+      histSvg += svgText(x, histPad.t + hChartH + 14, (t >= 0 ? '+' : '') + t, { size: 10, fill: 'var(--text3)' });
+    }
+    histSvg += svgText(histPad.l + hChartW / 2, histH - 4, 'Edge vs Pinnacle (pp)', { size: 12, fill: '#ffffff' });
+    histSvg += '</svg>';
+    html += histSvg;
+
+    // --- Sortable Per-Leg Table ---
+    html += '<div style="margin-top:24px; margin-bottom:8px; font-size:13px; font-weight:600; color:var(--text2);">Per-Leg Breakdown</div>';
+    // Sort by worst (most generous) first
+    const sorted = [...withPin].sort((a, b) => a.pinSpread - b.pinSpread);
+    html += '<div style="max-height:400px; overflow-y:auto;"><table style="font-size:12px; width:100%;">';
+    html += '<tr><th style="text-align:left">Selection</th><th style="text-align:left">Market</th><th style="text-align:right">My Odds</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th style="text-align:right">vs PIN</th><th style="text-align:right">vs FD</th></tr>';
+    for (const l of sorted.slice(0, 100)) {
+      const pinCls = l.pinSpread >= 0 ? 'positive' : 'negative';
+      const fdCls = l.fdSpread != null ? (l.fdSpread >= 0 ? 'positive' : 'negative') : '';
+      const myFmt = l.myOddsAm >= 0 ? '+' + l.myOddsAm : '' + l.myOddsAm;
+      const pinFmt = l.pinOdds >= 0 ? '+' + l.pinOdds : '' + l.pinOdds;
+      const fdFmt = l.fdOdds != null ? (l.fdOdds >= 0 ? '+' + l.fdOdds : '' + l.fdOdds) : '-';
+      html += '<tr><td>' + l.team + '</td><td><span class="market-pill">' + l.market + '</span></td>';
+      html += '<td style="text-align:right; font-family:monospace;">' + myFmt + '</td>';
+      html += '<td style="text-align:right; font-family:monospace; color:var(--purple);">' + pinFmt + '</td>';
+      html += '<td style="text-align:right; font-family:monospace; color:var(--blue);">' + fdFmt + '</td>';
+      html += '<td style="text-align:right; font-weight:600;" class="' + pinCls + '">' + (l.pinSpread >= 0 ? '+' : '') + l.pinSpread.toFixed(2) + '</td>';
+      html += '<td style="text-align:right;" class="' + fdCls + '">' + (l.fdSpread != null ? (l.fdSpread >= 0 ? '+' : '') + l.fdSpread.toFixed(2) : '-') + '</td></tr>';
+    }
+    if (sorted.length > 100) html += '<tr><td colspan="7" style="text-align:center; color:var(--text3);">... ' + (sorted.length - 100) + ' more legs</td></tr>';
+    html += '</table></div>';
+
+    el.innerHTML = html;
   }
 
   /**
