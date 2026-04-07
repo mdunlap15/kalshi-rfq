@@ -130,11 +130,25 @@ async function pxFetch(endpoint, method = 'GET', body = null, useBaseUrl = true)
   const resp = await fetch(url, options);
 
   if (resp.status === 401) {
-    // Token expired — clear it, bypass cooldown, re-auth, and retry ONCE
+    // Token expired — try to get a fresh one and retry ONCE.
+    // Use refresh token directly (no new session). If refresh fails,
+    // try a fresh login but suppress cooldown on failure.
+    log.warn('PX-Auth', `401 on ${method} ${endpoint} — re-authenticating`);
     invalidateToken();
     clearCooldown();
-    log.warn('PX-Auth', `401 on ${method} ${endpoint} — re-authenticating and retrying`);
-    const newToken = await login();
+    let newToken = null;
+    // Try refresh first (no session cost)
+    if (tokenCache.refreshToken) {
+      try { newToken = await refreshSession(); } catch (e) {}
+    }
+    // Fall back to login, but suppress cooldown if it fails
+    if (!newToken) {
+      const savedCooldown = loginCooldownUntil;
+      try { newToken = await login(); } catch (e) {
+        loginCooldownUntil = savedCooldown; // restore, don't set new cooldown
+        throw new Error(`ProphetX API 401 on ${method} ${endpoint} — re-auth failed: ${e.message}`);
+      }
+    }
     options.headers['Authorization'] = `Bearer ${newToken}`;
     const retryResp = await fetch(url, options);
     if (!retryResp.ok) {
