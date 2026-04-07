@@ -1488,8 +1488,7 @@
           <th>Summary</th>
           <th ${mpSortClick('legs')}>Legs${mpSortArrow('legs')}</th>
           <th ${mpSortClick('winPrice')}>Winning Price${mpSortArrow('winPrice')}</th>
-          <th ${mpSortClick('toWin', 'right')}>My Risk${mpSortArrow('toWin')}</th>
-          <th ${mpSortClick('toWin', 'right')}>To Win${mpSortArrow('toWin')}</th>
+          <th ${mpSortClick('toWin', 'right')}>Stake${mpSortArrow('toWin')}</th>
           <th ${mpSortClick('ourPrice')}>Our Price${mpSortArrow('ourPrice')}</th>
           <th ${mpSortClick('outcome')} title="Quote auction outcome">Quote Outcome${mpSortArrow('outcome')}</th>
         </tr>`;
@@ -1502,10 +1501,8 @@
         const summary = formatParlaySelections(knownLegs.slice(0, 2)) + (knownLegs.length > 2 ? ` +${knownLegs.length - 2}` : '') || '-';
         const winOdds = m.matchedAmericanOdds != null ? m.matchedAmericanOdds : null;
         const winPrice = winOdds != null ? (winOdds >= 0 ? '+' : '') + winOdds : '-';
-        const toWin = m.matchedStake != null ? fmtDollar(m.matchedStake) : '-';
-        const myRiskVal = m.matchedStake != null && winOdds != null ? calcBettorWager(m.matchedStake, winOdds) : null;
-        const myRisk = myRiskVal != null ? fmtDollar(myRiskVal) : '-';
-        const ourPrice = m.ourAmericanOdds || '-';
+        const stakeFmt = m.matchedStake != null ? fmtDollar(m.matchedStake) : '-';
+        const ourPrice = m.ourAmericanOdds != null ? (m.ourAmericanOdds >= 0 ? '+' : '') + m.ourAmericanOdds : '-';
 
         let resultClass, resultText;
         if (m.outcome === 'won') { resultClass = 'positive'; resultText = 'Matched'; }
@@ -1519,13 +1516,12 @@
           <td style="font-size:12px; max-width:220px; overflow:hidden; text-overflow:ellipsis;" title="${knownLegs.map(l=>l.team).join(', ')}">${summary}</td>
           <td>${m.legCount || '-'}</td>
           <td style="font-weight:600;">${winPrice}</td>
-          <td style="text-align:right">${myRisk}</td>
-          <td style="text-align:right; color:var(--green);">${toWin}</td>
+          <td style="text-align:right">${stakeFmt}</td>
           <td>${ourPrice}</td>
           <td><span class="${resultClass}">${resultText}</span></td>
         </tr>
         <tr id="${mId}" style="display:${mpExpanded ? 'table-row' : 'none'}; background: var(--surface3);">
-          <td colspan="8" style="padding: 8px 12px;">
+          <td colspan="7" style="padding: 8px 12px;">
             ${m.outcome === 'missed' ? (() => {
               const blockers = (m.legs || []).filter(l => l.wasUnregistered);
               const derivedReason = m.declineReason || (blockers.length > 0 ? 'unknown legs' : 'not seen (service down or pre-fix)');
