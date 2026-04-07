@@ -1438,6 +1438,11 @@ async function checkLegResults() {
 
       if (l.inferredResult) {
         resolved++;
+        // Sync inferredResult to o.legs as well (frontend may read either source)
+        if (o.legs) {
+          const matchingLeg = o.legs.find(ol => ol.lineId === l.lineId || ((ol.team || ol.teamName) === (l.team || l.teamName) && (ol.market || ol.marketType) === market));
+          if (matchingLeg) matchingLeg.inferredResult = l.inferredResult;
+        }
         log.info('Results', `Leg resolved: ${l.team} ${market} → ${l.inferredResult} (${result.homeScore}-${result.awayScore})`);
       }
     }
