@@ -550,9 +550,10 @@ function handleOrderMatched(data) {
   const legs = payload.market_lines || [];
 
   const lineManager = require('./line-manager');
+  const hadQuote = orderTracker.findByParlayId(parlayId);
   const entry = orderTracker.recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineManager);
 
-  log.info('Market', `Matched: parlay=${(parlayId||'').substring(0,8)}, odds=${matchedOdds}, stake=$${matchedStake}, legs=${legs.length}, outcome=${entry.outcome}`);
+  log.info('Market', `Matched: parlay=${(parlayId||'').substring(0,8)}, odds=${matchedOdds}, stake=$${matchedStake}, legs=${legs.length}, outcome=${entry.outcome}, hadQuote=${!!hadQuote}, totalOrders=${orderTracker.getStats().totalOrders}`);
 }
 
 /**
