@@ -146,9 +146,15 @@ async function priceParlay(legs) {
     return null;
   }
 
-  // Apply vig — this makes the price worse for the bettor (higher implied prob)
+  // Apply vig PER-LEG then compound — matches how sportsbooks price parlays.
+  // Applying vig once to the combined prob gives only X% vig on a N-leg parlay,
+  // but sportsbooks compound X% per leg → (1+X)^N effective vig.
+  // E.g., 6% vig on a 4-leg: single = 6%, per-leg compound = 26.2%.
   const vig = config.pricing.defaultVig;
-  const offeredImpliedProb = fairParlayProb * (1 + vig);
+  let offeredImpliedProb = 1;
+  for (const leg of pricedLegs) {
+    offeredImpliedProb *= leg.fairProb * (1 + vig);
+  }
 
   // Cap at 0.99 (can't offer 100%+ implied)
   const cappedProb = Math.min(offeredImpliedProb, 0.99);
