@@ -700,23 +700,23 @@
       <div id="section-config" class="section" style="display:none;">
         <div class="grid-2">
           <div class="card">
-            <div class="card-header"><span>Odds Cache</span><button class="btn" onclick="refreshOdds(this)">Refresh</button></div>
-            <div class="card-body" id="odds-cache"><div class="empty-state"><div class="icon">...</div>Loading</div></div>
+            <div class="card-header" onclick="toggleCard(this)"><span><span class="toggle-icon collapsed">&#9660;</span>Odds Cache</span><button class="btn" onclick="event.stopPropagation(); refreshOdds(this)">Refresh</button></div>
+            <div class="card-body collapsed" id="odds-cache"><div class="empty-state"><div class="icon">...</div>Loading</div></div>
           </div>
           <div class="card">
-            <div class="card-header"><span>Registered Lines</span><button class="btn" onclick="refreshLines(this)">Refresh</button></div>
-            <div class="card-body" id="lines-breakdown"><div class="empty-state"><div class="icon">...</div>Loading</div></div>
+            <div class="card-header" onclick="toggleCard(this)"><span><span class="toggle-icon collapsed">&#9660;</span>Registered Lines</span><button class="btn" onclick="event.stopPropagation(); refreshLines(this)">Refresh</button></div>
+            <div class="card-body collapsed" id="lines-breakdown"><div class="empty-state"><div class="icon">...</div>Loading</div></div>
           </div>
         </div>
 
         <div class="card">
-          <div class="card-header"><span>Settlement Polling</span><button class="btn" onclick="pollSettlements(this)">Poll Settlements</button></div>
-          <div class="card-body" style="padding:12px; font-size:12px; color:var(--text3);">Polls PX orders API for settlement results. Runs automatically every 10 minutes, or click to poll now.</div>
+          <div class="card-header" onclick="toggleCard(this)"><span><span class="toggle-icon collapsed">&#9660;</span>Settlement Polling</span><button class="btn" onclick="event.stopPropagation(); pollSettlements(this)">Poll Settlements</button></div>
+          <div class="card-body collapsed" style="padding:12px; font-size:12px; color:var(--text3);">Polls PX orders API for settlement results. Runs automatically every 10 minutes, or click to poll now.</div>
         </div>
 
         <div class="card">
-          <div class="card-header"><span>Configuration</span></div>
-          <div class="card-body" id="config-display"><div class="empty-state"><div class="icon">...</div>Loading</div></div>
+          <div class="card-header" onclick="toggleCard(this)"><span><span class="toggle-icon collapsed">&#9660;</span>Configuration</span></div>
+          <div class="card-body collapsed" id="config-display"><div class="empty-state"><div class="icon">...</div>Loading</div></div>
         </div>
 
         <div class="card" id="definitions-card">
@@ -740,8 +740,8 @@
         </div>
 
         <div class="card">
-          <div class="card-header"><span>Activity Log</span><button class="btn" onclick="clearLog()">Clear</button></div>
-          <div class="card-body" style="padding: 0;">
+          <div class="card-header" onclick="toggleCard(this)"><span><span class="toggle-icon collapsed">&#9660;</span>Activity Log</span><button class="btn" onclick="event.stopPropagation(); clearLog()">Clear</button></div>
+          <div class="card-body collapsed" style="padding: 0;">
             <div class="log-feed" id="log-feed">
               <div class="log-entry">
                 <span class="log-time">--:--:--</span>
