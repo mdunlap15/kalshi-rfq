@@ -146,14 +146,29 @@ async function priceParlay(legs) {
     return null;
   }
 
-  // Apply vig PER-LEG then compound — matches how sportsbooks price parlays.
-  // Applying vig once to the combined prob gives only X% vig on a N-leg parlay,
-  // but sportsbooks compound X% per leg → (1+X)^N effective vig.
-  // E.g., 6% vig on a 4-leg: single = 6%, per-leg compound = 26.2%.
+  // Apply vig to ODDS (multiplicative) rather than probability (additive).
+  // This scales naturally: a 3% vig on -700 reduces the payout by 3%,
+  // not by a fixed probability shift that distorts at extreme odds.
+  //
+  // Method: for each leg, compute fair decimal odds (1/fairProb), then
+  // reduce the payout portion by (1 - vig). Compound across legs.
+  //
+  // Example at 3% vig:
+  //   Fair -700 (decimal 1.143): payout = 0.143, vigged = 0.143 × 0.97 = 0.139 → decimal 1.139 → -718
+  //   Fair +150 (decimal 2.50):  payout = 1.50,  vigged = 1.50  × 0.97 = 1.455 → decimal 2.455 → +146
+  //   Consistent % reduction in payout regardless of odds level.
   const vig = config.pricing.defaultVig;
+
+  function applyOddsVig(fairProb) {
+    const fairDecimal = 1 / fairProb;
+    const payout = fairDecimal - 1; // the profit portion
+    const viggedPayout = payout * (1 - vig); // reduce payout by vig %
+    return 1 / (1 + viggedPayout); // convert back to implied prob
+  }
+
   let offeredImpliedProb = 1;
   for (const leg of pricedLegs) {
-    offeredImpliedProb *= leg.fairProb * (1 + vig);
+    offeredImpliedProb *= applyOddsVig(leg.fairProb);
   }
 
   // Cap at 0.99 (can't offer 100%+ implied)
@@ -182,10 +197,10 @@ async function priceParlay(legs) {
   }
 
   // Build estimated_price (per-leg breakdown) — bettor-side American odds per leg.
-  // Apply vig to each leg so PX's recomputed parlay odds match our intended price.
+  // Apply same odds-based vig so PX's recomputed parlay matches our intended price.
   const estimatedPrice = pricedLegs.map(leg => ({
     line_id: leg.lineId,
-    odds: decimalToAmerican(1 / (leg.fairProb * (1 + vig))),
+    odds: decimalToAmerican(1 / applyOddsVig(leg.fairProb)),
   }));
 
   // valid_until in nanoseconds

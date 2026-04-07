@@ -4981,7 +4981,7 @@
       const vig = o.meta?.vig || o.vig || 0;
       for (const l of legs) {
         if (!l.fairProb || l.fairProb <= 0 || l.fairProb >= 1) continue;
-        const myProb = l.fairProb * (1 + vig);
+        const myProb = applyOddsVig(l.fairProb, vig);
         const myOddsAm = decimalToAmerican(1 / myProb);
         const pinProb = l.pinnacleOdds != null ? americanToProb(l.pinnacleOdds) : null;
         const fdProb = l.fanduelOdds != null ? americanToProb(l.fanduelOdds) : null;
@@ -5199,7 +5199,7 @@
       const pinOdds = l.pinnacleOdds != null ? (l.pinnacleOdds >= 0 ? '+' : '') + l.pinnacleOdds : '-';
       const fdOdds = l.fanduelOdds != null ? (l.fanduelOdds >= 0 ? '+' : '') + l.fanduelOdds : '-';
       const fairOdds = l.fairProb ? decimalToAmerican(1 / l.fairProb) : '-';
-      const myOdds = (l.fairProb && vig) ? decimalToAmerican(1 / (l.fairProb * (1 + vig))) : fairOdds;
+      const myOdds = (l.fairProb && vig) ? decimalToAmerican(1 / applyOddsVig(l.fairProb, vig)) : fairOdds;
 
       // Highlight legs that blocked us from quoting
       const isUnregBlocker = highlightUnregistered && l.wasUnregistered;
@@ -5624,6 +5624,15 @@
     const d = document.createElement('div');
     d.textContent = text;
     return d.innerHTML;
+  }
+
+  /** Apply vig to odds (multiplicative) — reduces payout by vig %, scales naturally at all odds levels */
+  function applyOddsVig(fairProb, vig) {
+    if (!fairProb || fairProb <= 0 || fairProb >= 1 || !vig) return fairProb;
+    const fairDecimal = 1 / fairProb;
+    const payout = fairDecimal - 1;
+    const viggedPayout = payout * (1 - vig);
+    return 1 / (1 + viggedPayout);
   }
 
   /** Capitalize first letter of a string */
