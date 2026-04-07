@@ -287,11 +287,23 @@ function recordSettlement(orderUuid, result, payout) {
  * Record a matched parlay from the broadcast channel (any SP won it).
  * Compare against our quotes to build competitive intel.
  */
-function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineManager) {
-  marketStats.totalMatched++;
+// Track which parlay_ids we've already recorded as "won" to avoid double-counting
+// when PX broadcasts multiple fills for the same parlay (split across SPs).
+const matchedWonIds = new Set();
 
+function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineManager) {
   const ourQuote = orders[parlayId] || null;
   const weQuoted = !!ourQuote;
+
+  // If we already recorded a "won" for this parlay, this is another SP's fill
+  // on the same parlay (PX splits across SPs). Record as market intel only.
+  if (matchedWonIds.has(parlayId)) {
+    // Don't double-count stats, just log for intel
+    log.debug('Market', `Duplicate matched broadcast for won parlay ${parlayId} — other SP fill at odds=${matchedOdds}, stake=$${matchedStake}`);
+    return { outcome: 'duplicate', parlayId };
+  }
+
+  marketStats.totalMatched++;
 
   // Lookup decline info for this parlay so we can flag the problematic leg(s)
   const declineInfo = declinesByParlayId[parlayId] || null;
@@ -320,23 +332,38 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
   let outcome;
   if (weQuoted && ourQuote.status === 'confirmed') {
     outcome = 'won';
+    matchedWonIds.add(parlayId);
     marketStats.weWon++;
     marketStats.weQuoted++;
   } else if (weQuoted) {
-    outcome = 'lost'; // we quoted but didn't win
-    marketStats.weLost++;
+    // Check if this broadcast is actually another SP's fill on a parlay we also quoted.
+    // If the matched odds/stake don't match what we offered, it's another SP — not us losing.
+    const ourOdds = Math.abs(ourQuote.offeredOdds || 0);
+    const broadcastOdds = Math.abs(matchedOdds || 0);
+    const isOurFill = Math.abs(ourOdds - broadcastOdds) < 2; // within rounding
+    if (!isOurFill) {
+      // Another SP's fill — we might still win our portion
+      log.debug('Market', `Other SP fill on parlay we quoted: our=${ourQuote.offeredOdds}, matched=${matchedOdds}`);
+      outcome = 'other_sp';
+      marketStats.totalMatched--; // don't count as a separate match for us
+      // Don't change our order status — we might still get confirmed
+    } else {
+      outcome = 'lost'; // we quoted at similar odds but didn't win
+      marketStats.weLost++;
+    }
     marketStats.weQuoted++;
-    // Update order status to 'lost' so dashboard reflects it
-    ourQuote.status = 'lost';
-    ourQuote.lostAt = new Date().toISOString();
-    ourQuote.winningOdds = matchedOdds != null ? -matchedOdds : null; // negated to match our format
-    ourQuote.winningStake = matchedStake;
-    // Persist inside meta so we don't lose these on restart (no DB schema change needed)
-    ourQuote.meta = ourQuote.meta || {};
-    ourQuote.meta.winningOdds = ourQuote.winningOdds;
-    ourQuote.meta.winningStake = ourQuote.winningStake;
-    ourQuote.meta.lostAt = ourQuote.lostAt;
-    db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(outbid) failed: ${err.message}`));
+    if (outcome === 'lost') {
+      // Update order status to 'lost' so dashboard reflects it
+      ourQuote.status = 'lost';
+      ourQuote.lostAt = new Date().toISOString();
+      ourQuote.winningOdds = matchedOdds != null ? -matchedOdds : null;
+      ourQuote.winningStake = matchedStake;
+      ourQuote.meta = ourQuote.meta || {};
+      ourQuote.meta.winningOdds = ourQuote.winningOdds;
+      ourQuote.meta.winningStake = ourQuote.winningStake;
+      ourQuote.meta.lostAt = ourQuote.lostAt;
+      db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(outbid) failed: ${err.message}`));
+    }
   } else {
     outcome = 'missed';
     marketStats.missedNoQuote++;
@@ -362,6 +389,9 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     declineDetail: declineInfo?.declineDetail || null,
     unknownLegDetails: declineInfo?.unknownDetails || [],
   };
+
+  // Don't store other_sp fills as separate matched entries
+  if (outcome === 'other_sp') return entry;
 
   matchedParlays.unshift(entry); // newest first
   db.saveMatchedParlay(entry).catch(() => {});
