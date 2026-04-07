@@ -556,12 +556,14 @@ function buildConsensusMoneyline(bookPairs) {
   const dvHome = avg(devigged.home);
   const dvAway = avg(devigged.away);
 
-  // For PRICING: use Pinnacle's raw implied probs when available.
-  // Pinnacle has ~2% margin — their raw probs are more accurate than
-  // de-vigging, which over-corrects on heavy favorites.
+  // For PRICING: use de-vigged consensus (same as display).
+  // Combined with odds-based vig (which scales properly on heavy favorites),
+  // this produces prices slightly sweeter than Pinnacle — competitive for bids.
+  // Previously used Pinnacle raw probs here, but that double-vigged
+  // (Pinnacle's ~2% margin + our vig = too tight).
   const pinBook = bookPairs.find(bp => bp.book === 'pinnacle');
-  const pricingHome = pinBook ? pinBook.home.odds_probability : dvHome;
-  const pricingAway = pinBook ? pinBook.away.odds_probability : dvAway;
+  const pricingHome = dvHome;
+  const pricingAway = dvAway;
 
   const pinnacle = pinBook ? {
     home: pinBook.home.odds_american,
@@ -615,10 +617,10 @@ function buildConsensusSpread(bookPairs) {
   const dvHome = avg(devigged.home);
   const dvAway = avg(devigged.away);
 
-  // Pinnacle raw for pricing
+  // De-vigged consensus for pricing (same as display)
   const pinBook = matching.find(bp => bp.book === 'pinnacle');
-  const pricingHome = pinBook ? pinBook.home.odds_probability : dvHome;
-  const pricingAway = pinBook ? pinBook.away.odds_probability : dvAway;
+  const pricingHome = dvHome;
+  const pricingAway = dvAway;
 
   const pinnacle = pinBook ? {
     home: pinBook.home.odds_american,
@@ -674,10 +676,10 @@ function buildConsensusTotals(bookPairs) {
   const dvOver = avg(devigged.over);
   const dvUnder = avg(devigged.under);
 
-  // Pinnacle raw for pricing
+  // De-vigged consensus for pricing (same as display)
   const pinBook = matching.find(bp => bp.book === 'pinnacle');
-  const pricingOver = pinBook ? pinBook.over.odds_probability : dvOver;
-  const pricingUnder = pinBook ? pinBook.under.odds_probability : dvUnder;
+  const pricingOver = dvOver;
+  const pricingUnder = dvUnder;
 
   return {
     over: {
