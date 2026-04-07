@@ -175,10 +175,12 @@ async function priceParlay(legs) {
     return null;
   }
 
-  // Build estimated_price (per-leg breakdown) — American odds per leg
+  // Build estimated_price (per-leg breakdown) — American odds per leg.
+  // Apply vig to each leg so PX's recomputed parlay odds match our intended price.
+  // PX compounds per-leg probs from estimated_price to display the final parlay odds.
   const estimatedPrice = pricedLegs.map(leg => ({
     line_id: leg.lineId,
-    odds: decimalToAmerican(1 / leg.fairProb),
+    odds: decimalToAmerican(1 / (leg.fairProb * (1 + vig))),
   }));
 
   // valid_until in nanoseconds
