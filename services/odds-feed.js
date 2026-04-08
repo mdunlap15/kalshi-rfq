@@ -20,6 +20,9 @@ const LEAGUE_MAP = {
 // NOTE: tennis removed from LEAGUE_MAP — SharpAPI returns events but zero bookmaker
 // odds for tennis. Routed through The Odds API fallback instead (dynamic tournament discovery).
 
+// Expanded bookmaker list for The Odds API — more books = better de-vig consensus
+const ODDS_API_BOOKMAKERS = 'pinnacle,draftkings,fanduel,betmgm,caesars,bet365,betrivers,bovada,mybookieag,pointsbetus,williamhill_us,espnbet,fliff';
+
 // Sports that use The Odds API as fallback (SharpAPI free tier doesn't cover them)
 const ODDS_API_FALLBACK = {
   'tennis': {
@@ -27,88 +30,88 @@ const ODDS_API_FALLBACK = {
     dynamic: true,
     sportPrefix: 'tennis_',
     markets: 'h2h',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'basketball_ncaab': {
     oddsApiSport: 'basketball_ncaab',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'americanfootball_nfl': {
     oddsApiSport: 'americanfootball_nfl',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'americanfootball_ncaaf': {
     oddsApiSport: 'americanfootball_ncaaf',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'basketball_wnba': {
     oddsApiSport: 'basketball_wnba',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_usa_mls': {
     oddsApiSport: 'soccer_usa_mls',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_epl': {
     oddsApiSport: 'soccer_epl',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_uefa_champs_league': {
     oddsApiSport: 'soccer_uefa_champs_league',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_uefa_europa_league': {
     oddsApiSport: 'soccer_uefa_europa_league',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_spain_la_liga': {
     oddsApiSport: 'soccer_spain_la_liga',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_italy_serie_a': {
     oddsApiSport: 'soccer_italy_serie_a',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_germany_bundesliga': {
     oddsApiSport: 'soccer_germany_bundesliga',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_france_ligue_one': {
     oddsApiSport: 'soccer_france_ligue_one',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_usa_nwsl': {
     oddsApiSport: 'soccer_usa_nwsl',
     markets: 'h2h,spreads,totals',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   // Golf and combat sports — h2h only (no spreads/totals on these markets)
   'golf_pga_championship': {
     oddsApiSport: 'golf_pga_championship',
     markets: 'h2h,outrights',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'mma_mixed_martial_arts': {
     oddsApiSport: 'mma_mixed_martial_arts',
     markets: 'h2h',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
   'boxing_boxing': {
     oddsApiSport: 'boxing_boxing',
     markets: 'h2h',
-    bookmakers: 'pinnacle,draftkings,fanduel',
+    bookmakers: ODDS_API_BOOKMAKERS,
   },
 };
 
@@ -296,7 +299,8 @@ function oddsApiToSharpMarket(marketKey, sport) {
 }
 
 /**
- * Fetch Pinnacle odds from The Odds API and convert to SharpAPI-format rows.
+ * Fetch additional sportsbook odds from The Odds API and convert to SharpAPI-format rows.
+ * Pulls Pinnacle + BetMGM, Caesars, Bet365, etc. to supplement SharpAPI's DK+FD data.
  * Returns array of rows compatible with SharpAPI's format, or empty array on failure.
  */
 async function fetchPinnacleRows(sport) {
@@ -306,9 +310,9 @@ async function fetchPinnacleRows(sport) {
 
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
     + `?apiKey=${theOddsApiKey}`
-    + `&regions=us,eu`
+    + `&regions=us,us2,eu`
     + `&markets=h2h,spreads,totals`
-    + `&bookmakers=pinnacle`
+    + `&bookmakers=${ODDS_API_BOOKMAKERS}`
     + `&oddsFormat=american`;
 
   try {
@@ -400,7 +404,7 @@ async function fetchDynamicSports(sport, fallback, apiKey) {
   for (const tournament of activeTournaments) {
     const url = `https://api.the-odds-api.com/v4/sports/${tournament.key}/odds`
       + `?apiKey=${apiKey}`
-      + `&regions=us,eu`
+      + `&regions=us,us2,eu`
       + `&markets=${fallback.markets}`
       + `&bookmakers=${fallback.bookmakers}`
       + `&oddsFormat=american`;
@@ -484,7 +488,7 @@ async function fetchFromTheOddsApi(sport) {
 
   const url = `https://api.the-odds-api.com/v4/sports/${fallback.oddsApiSport}/odds`
     + `?apiKey=${theOddsApiKey}`
-    + `&regions=us,eu`
+    + `&regions=us,us2,eu`
     + `&markets=${fallback.markets}`
     + `&bookmakers=${fallback.bookmakers}`
     + `&oddsFormat=american`;
@@ -874,7 +878,8 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
   // Need to find the Odds API event ID — look it up from the main cache
   const sportCache = oddsCache[sport];
   if (!sportCache) return null;
-  const event = sportCache.events[key];
+  const entry = sportCache.events[key];
+  const event = Array.isArray(entry) ? entry[0] : entry;
   if (!event?.eventId) return null;
 
   // Map our sport key to The Odds API sport key
@@ -891,9 +896,9 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
 
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events/${event.eventId}/odds`
     + `?apiKey=${theOddsApiKey}`
-    + `&regions=us,eu`
+    + `&regions=us,us2,eu`
     + `&markets=alternate_spreads,alternate_totals`
-    + `&bookmakers=pinnacle,draftkings,fanduel`
+    + `&bookmakers=${ODDS_API_BOOKMAKERS}`
     + `&oddsFormat=american`;
 
   log.info('OddsFeed', `Fetching alt lines for ${homeTeam} vs ${awayTeam}...`);
@@ -1198,8 +1203,12 @@ function getEventMarkets(sport, homeTeam, awayTeam, targetTime) {
   const sportCache = oddsCache[sport];
   if (!sportCache) return null;
   const key = normalizeEventKey(homeTeam, awayTeam);
-  const events = sportCache.events[key];
-  if (!events || events.length === 0) return null;
+  const entry = sportCache.events[key];
+  if (!entry) return null;
+
+  // Normalize: SharpAPI stores arrays, Odds API stores single objects
+  const events = Array.isArray(entry) ? entry : [entry];
+  if (events.length === 0) return null;
 
   // If only one event or no target time, return first
   if (events.length === 1 || !targetTime) return events[0];
@@ -1251,7 +1260,7 @@ function getCacheStatus() {
   const status = {};
   for (const sport of config.supportedSports) {
     const cache = oddsCache[sport];
-    const totalEvents = cache ? Object.values(cache.events).reduce((s, arr) => s + arr.length, 0) : 0;
+    const totalEvents = cache ? Object.values(cache.events).reduce((s, entry) => s + (Array.isArray(entry) ? entry.length : 1), 0) : 0;
     status[sport] = cache ? {
       eventCount: totalEvents,
       ageMinutes: Math.round(getCacheAge(sport) * 10) / 10,
@@ -1264,13 +1273,18 @@ function getCacheStatus() {
 function getAllCachedEvents() {
   const all = [];
   for (const sport of Object.keys(oddsCache)) {
-    for (const [key, events] of Object.entries(oddsCache[sport].events)) {
+    const cache = oddsCache[sport];
+    if (!cache || !cache.events) continue;
+    for (const [key, entry] of Object.entries(cache.events)) {
+      // SharpAPI stores arrays (for doubleheaders), Odds API stores single objects
+      const events = Array.isArray(entry) ? entry : [entry];
       for (const event of events) {
+        if (!event || !event.homeTeam) continue;
         all.push({
           sport,
           homeTeam: event.homeTeam,
           awayTeam: event.awayTeam,
-          markets: Object.keys(event.markets),
+          markets: event.markets ? Object.keys(event.markets) : [],
           commenceTime: event.commenceTime,
         });
       }

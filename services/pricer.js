@@ -177,9 +177,19 @@ async function priceParlay(legs) {
   //   Fair -700 (decimal 1.143): payout = 0.143, vigged = 0.143 × 0.97 = 0.139 → decimal 1.139 → -718
   //   Fair +150 (decimal 2.50):  payout = 1.50,  vigged = 1.50  × 0.97 = 1.455 → decimal 2.455 → +146
   //   Consistent % reduction in payout regardless of odds level.
-  const vig = config.pricing.defaultVig;
+  const baseVig = config.pricing.defaultVig;
+
+  // Tiered vig: heavy favorites get higher vig to prevent compounding leaks.
+  // De-vig over-correction is worst on heavy favorites and compounds across legs.
+  function getEffectiveVig(fairProb) {
+    if (fairProb >= 0.80) return Math.max(baseVig, 0.07);  // extreme favorites (-400+)
+    if (fairProb >= 0.70) return Math.max(baseVig, 0.05);  // heavy favorites (-230+)
+    if (fairProb >= 0.55) return Math.max(baseVig, 0.035); // moderate favorites
+    return baseVig;                                         // underdogs keep base vig
+  }
 
   function applyOddsVig(fairProb) {
+    const vig = getEffectiveVig(fairProb);
     const fairDecimal = 1 / fairProb;
     const payout = fairDecimal - 1; // the profit portion
     const viggedPayout = payout * (1 - vig); // reduce payout by vig %
@@ -250,6 +260,7 @@ async function priceParlay(legs) {
           selection: l.lineInfo.oddsApiSelection,
           line: l.lineInfo.line,
           fairProb: Math.round(l.fairProb * 10000) / 10000,
+          legVig: Math.round(getEffectiveVig(l.fairProb) * 10000) / 10000,
           displayFairProb: l.displayFairProb ? Math.round(l.displayFairProb * 10000) / 10000 : null,
           pinnacleOdds: l.pinnacleOdds || null,
           fanduelOdds: l.fanduelOdds || null,
@@ -260,6 +271,7 @@ async function priceParlay(legs) {
           pxEventId: l.lineInfo.pxEventId || null,
         };
       }),
+      vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb), 0) / pricedLegs.length * 10000) / 10000,
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
       offeredImpliedProb: Math.round(cappedProb * 100000) / 100000,
       decimalOdds: Math.round(decimalOdds * 100) / 100,
