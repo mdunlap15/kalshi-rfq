@@ -410,6 +410,40 @@ function startStatusServer() {
   });
 
   // Manual settlement poll
+  // Diagnostic: show raw sportsbook names from SharpAPI
+  app.get('/debug/sportsbooks', async (req, res) => {
+    try {
+      const fetch = require('node-fetch');
+      const league = req.query.league || 'nba';
+      const market = req.query.market || 'moneyline';
+      const url = `${config.config.oddsApi.baseUrl}/odds?league=${league}&market=${market}&limit=50`;
+      const resp = await fetch(url, {
+        headers: { 'X-API-Key': config.config.oddsApi.apiKey },
+      });
+      const body = await resp.json();
+      const rows = body.data || [];
+      const books = {};
+      for (const r of rows) {
+        if (!books[r.sportsbook]) books[r.sportsbook] = 0;
+        books[r.sportsbook]++;
+      }
+      const events = {};
+      for (const r of rows) {
+        const key = (r.home_team || '') + ' vs ' + (r.away_team || '');
+        if (!events[key]) events[key] = new Set();
+        events[key].add(r.sportsbook);
+      }
+      res.json({
+        league, market,
+        totalRows: rows.length,
+        sportsbooks: Object.entries(books).sort((a, b) => b[1] - a[1]).map(([book, count]) => ({ book, count })),
+        sampleEvents: Object.entries(events).slice(0, 5).map(([event, booksSet]) => ({ event, books: [...booksSet] })),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Check game results for early win detection
   app.post('/check-results', async (req, res) => {
     try {
