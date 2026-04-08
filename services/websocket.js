@@ -594,14 +594,11 @@ function handleParlaySettled(data) {
   const result = payload.result || payload.status;
   const payout = payload.payout || 0;
 
-  // PX WebSocket parlay.settled uses BETTOR-perspective ('won' = bettor won = SP lost).
-  // Confirmed by cross-referencing 30+ settlements with actual game scores:
-  // parlays with losing legs were marked 'won' by PX (bettor won), but SP should have won.
-  const spResult = result === 'won' ? 'lost'
-                 : result === 'lost' ? 'won'
-                 : result;
-  log.info('Settle', `Parlay settled: order=${orderUuid}, pxResult=${result}, spResult=${spResult}, payout=${payout}`);
-  orderTracker.recordSettlement(orderUuid, spResult, payout);
+  // PX WebSocket parlay.settled uses SP-perspective ('won' = SP won = bettor's parlay lost).
+  // Evidence: 64/64 settlements inverted when flipping, all showing as SP losses despite
+  // score data confirming legs failed. Removing flip — PX result is used directly.
+  log.info('Settle', `Parlay settled: order=${orderUuid}, pxResult=${result}, payout=${payout}`);
+  orderTracker.recordSettlement(orderUuid, result, payout);
 }
 
 /**

@@ -1306,11 +1306,8 @@ async function pollOrderSettlements(px) {
 
       if (!order) continue;
       // Skip if already settled with matching status
-      // Skip if already settled — compare against SP-perspective status
-      const pxSpResult = pxOrder.settlement_status === 'won' ? 'lost'
-                       : pxOrder.settlement_status === 'lost' ? 'won'
-                       : pxOrder.settlement_status;
-      if (order.status === `settled_${pxSpResult}`) continue;
+      // PX settlement_status is SP-perspective — use directly
+      if (order.status === `settled_${pxOrder.settlement_status}`) continue;
 
       const settlementStatus = pxOrder.settlement_status;
       if (!settlementStatus || settlementStatus === 'tbd' || settlementStatus === 'requested') continue;
@@ -1334,14 +1331,8 @@ async function pollOrderSettlements(px) {
       if (!order.confirmedStake && pxOrder.confirmed_stake != null) order.confirmedStake = Number(pxOrder.confirmed_stake);
       if (!order.confirmedOdds && pxOrder.confirmed_odds != null) order.confirmedOdds = Number(pxOrder.confirmed_odds);
 
-      // PX REST API settlement_status is BETTOR-perspective:
-      //   'won'  = bettor's parlay won  = SP LOST
-      //   'lost' = bettor's parlay lost = SP WON
-      // Flip to SP-perspective before calling recordSettlement.
-      const spResult = settlementStatus === 'won' ? 'lost'
-                     : settlementStatus === 'lost' ? 'won'
-                     : settlementStatus; // push/void stay as-is
-      recordSettlement(uuid, spResult, pxOrder.profit || 0);
+      // PX REST API settlement_status is SP-perspective — use directly.
+      recordSettlement(uuid, settlementStatus, pxOrder.profit || 0);
       settled++;
 
       // Update per-leg settlement from PX response
