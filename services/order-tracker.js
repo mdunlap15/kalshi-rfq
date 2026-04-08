@@ -821,26 +821,27 @@ function addExposure(order) {
     }
 
     // Game-level tracking (for net exposure calc)
-    if (eventId) {
-      if (!gameExposure[eventId]) {
-        gameExposure[eventId] = {
-          name: (leg.awayTeam || '?') + ' @ ' + (leg.homeTeam || '?'),
-          sport: leg.sport,
-          startTime: leg.startTime,
-          parlays: [],
-        };
-      }
-      gameExposure[eventId].parlays.push({
-        parlayId: order.parlayId,
-        payout,
-        stake,
-        legCount: legs.length,
-        weightedRisk: payout * otherProb,
-        selection: leg.selection,
-        market: leg.market || leg.marketType,
-        teamKey: key,
-      });
+    // Use eventId if available, otherwise fall back to eventSuffix so parlays
+    // without pxEventId still participate in net exposure calculation.
+    const gameKey = eventId || ('syn_' + eventSuffix);
+    if (!gameExposure[gameKey]) {
+      gameExposure[gameKey] = {
+        name: (leg.awayTeam || '?') + ' @ ' + (leg.homeTeam || '?'),
+        sport: leg.sport,
+        startTime: leg.startTime,
+        parlays: [],
+      };
     }
+    gameExposure[gameKey].parlays.push({
+      parlayId: order.parlayId,
+      payout,
+      stake,
+      legCount: legs.length,
+      weightedRisk: payout * otherProb,
+      selection: leg.selection,
+      market: leg.market || leg.marketType,
+      teamKey: key,
+    });
 
     // Team-level tracking (for dashboard display) — keyed by team+event
     if (teamKey) {
@@ -889,12 +890,13 @@ function removeExposure(order) {
     const key = teamKey + '|' + eventSuffix;
 
     // Remove from game exposure
-    if (eventId && gameExposure[eventId]) {
-      gameExposure[eventId].parlays = gameExposure[eventId].parlays.filter(
+    const gameKey = eventId || ('syn_' + eventSuffix);
+    if (gameExposure[gameKey]) {
+      gameExposure[gameKey].parlays = gameExposure[gameKey].parlays.filter(
         p => p.parlayId !== order.parlayId
       );
-      if (gameExposure[eventId].parlays.length === 0) {
-        delete gameExposure[eventId];
+      if (gameExposure[gameKey].parlays.length === 0) {
+        delete gameExposure[gameKey];
       }
     }
 
@@ -1027,8 +1029,15 @@ function checkGameExposure(legs, estPayout, maxPerGame) {
 
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
-    const eventId = leg.lineInfo?.pxEventId || leg.pxEventId;
-    if (!eventId) continue;
+    const li = leg.lineInfo || leg;
+    const eventId = li.pxEventId || leg.pxEventId;
+    // Build game key matching addExposure logic
+    let gameKey = eventId;
+    if (!gameKey) {
+      const opp = normalizeExposureKey((li.homeTeam || '') + (li.awayTeam || ''));
+      const day = li.startTime ? li.startTime.substring(0, 10) : '';
+      gameKey = 'syn_' + (opp || '') + '|' + (day || 'noevent');
+    }
 
     let otherProb = 1;
     for (let j = 0; j < legs.length; j++) {
@@ -1038,11 +1047,11 @@ function checkGameExposure(legs, estPayout, maxPerGame) {
     const newWeightedRisk = estPayout * otherProb;
 
     // Current net exposure for this game
-    const currentNet = gameExposure[eventId]?.netExposure || 0;
+    const currentNet = gameExposure[gameKey]?.netExposure || 0;
 
     // Conservative: add full weighted risk (worst case is no offsetting)
     if (currentNet + newWeightedRisk > maxPerGame) {
-      const gameName = gameExposure[eventId]?.name || eventId;
+      const gameName = gameExposure[gameKey]?.name || gameKey;
       return {
         allowed: false,
         reason: `Game "${gameName}" net exposure $${Math.round(currentNet)} + $${Math.round(newWeightedRisk)} > max $${Math.round(maxPerGame)}`,
