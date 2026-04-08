@@ -416,9 +416,10 @@ function startStatusServer() {
       const fetch = require('node-fetch');
       const league = req.query.league || 'nba';
       const market = req.query.market || 'moneyline';
-      const url = `${config.config.oddsApi.baseUrl}/odds?league=${league}&market=${market}&limit=50`;
+      const cfg = config.config || config;
+      const url = `${cfg.oddsApi.baseUrl}/odds?league=${league}&market=${market}&limit=50`;
       const resp = await fetch(url, {
-        headers: { 'X-API-Key': config.config.oddsApi.apiKey },
+        headers: { 'X-API-Key': cfg.oddsApi.apiKey },
       });
       const body = await resp.json();
       const rows = body.data || [];
