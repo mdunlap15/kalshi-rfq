@@ -124,16 +124,11 @@ async function priceParlay(legs) {
       lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
     );
 
-    // Require at least one sportsbook benchmark — don't price blind
-    if (pinnacleOdds == null && fanduelOdds == null) {
-      log.debug('Pricing', `Declined: no sportsbook benchmark for ${legLabel}`);
-      priceParlay._lastFailure = {
-        reason: 'no sportsbook odds',
-        detail: `no Pinnacle or FanDuel odds for ${legLabel} — cannot price without benchmark`,
-        blockerLeg: legDescriptor,
-      };
-      return null;
-    }
+    // Require a valid fair probability — if we have one, sportsbook data exists
+    // (fair prob is built from de-vigged consensus of all available books).
+    // Previously required specifically Pinnacle or FanDuel, but with 25 books
+    // from SharpAPI, any book's data in the consensus is sufficient.
+    // The fairProb null check above (line 107) already catches truly blind legs.
 
     // Spread/total line verification: when the requested line matches our cached
     // primary, spot-check Pinnacle to confirm the line hasn't moved. Prevents

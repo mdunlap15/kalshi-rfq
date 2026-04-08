@@ -1591,7 +1591,25 @@ async function checkLegResults() {
   for (const o of confirmed) {
     const legs = o.meta?.legs || o.legs || [];
     for (const l of legs) {
-      if (l.inferredResult) continue; // already resolved
+      // Skip legs that are already resolved — BUT clear stale inferredResult
+      // for games that started recently (< 4h ago) since it may be from a
+      // previous day's game for the same teams
+      if (l.inferredResult) {
+        const st = l.startTime || l.start_time;
+        if (st) {
+          const startMs = new Date(st).getTime();
+          const now = Date.now();
+          if (startMs > 0 && (now - startMs) < 4 * 3600 * 1000) {
+            // Game started < 4h ago — inferredResult may be stale from yesterday
+            log.debug('Results', `Clearing stale inferredResult for ${l.team} (game started ${Math.round((now-startMs)/60000)}min ago)`);
+            l.inferredResult = null;
+          } else {
+            continue; // truly resolved — old completed game
+          }
+        } else {
+          continue;
+        }
+      }
       if (!l.sport || !l.homeTeam || !l.awayTeam) continue;
 
       const result = await oddsFeed.getGameResult(l.sport, l.homeTeam, l.awayTeam, l.startTime);
