@@ -287,7 +287,6 @@ async function priceParlay(legs) {
         if (pinProb <= 0 || pinProb >= 1) return null;
         return decimalToAmerican(1 / pinProb);
       })(),
-      vig,
       maxRisk,
     },
   };
