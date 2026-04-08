@@ -1469,8 +1469,20 @@ function reconcileSettlements() {
   for (const o of Object.values(orders)) {
     if (!o.status || !o.status.startsWith('settled_')) continue;
 
-    const legs = o.legs || o.meta?.legs || [];
-    const legStatuses = legs.map(l => l.settlementStatus || l.settlement_status || l.inferredResult).filter(Boolean);
+    // Check BOTH legs sources — status may be on meta.legs but not o.legs (or vice versa)
+    const legsA = o.legs || [];
+    const legsB = o.meta?.legs || [];
+    // Merge statuses from both sources: for each leg index, take whichever has a status
+    const maxLen = Math.max(legsA.length, legsB.length);
+    const legStatuses = [];
+    for (let li = 0; li < maxLen; li++) {
+      const a = legsA[li];
+      const b = legsB[li];
+      const statusA = a && (a.settlementStatus || a.settlement_status || a.inferredResult);
+      const statusB = b && (b.settlementStatus || b.settlement_status || b.inferredResult);
+      const st = statusA || statusB;
+      if (st) legStatuses.push(st);
+    }
     if (legStatuses.length === 0) continue; // no leg data to reconcile against
 
     // Derive correct SP result from legs (bettor-perspective leg data)
@@ -1914,8 +1926,20 @@ async function loadFromDb() {
       // If ANY leg has 'lost' → bettor's parlay lost → SP WON
       // If ALL legs have 'won' → bettor's parlay hit → SP LOST
       // This is idempotent — doesn't depend on how status was previously stored.
-      const legs = o.legs || o.meta?.legs || [];
-      const legStatuses = legs.map(l => l.settlementStatus || l.settlement_status || l.inferredResult).filter(Boolean);
+      // Check BOTH leg sources — status may be on meta.legs but not o.legs
+      const legsA = o.legs || [];
+      const legsB = o.meta?.legs || [];
+      const legs = legsA.length >= legsB.length ? legsA : legsB;
+      const maxLen = Math.max(legsA.length, legsB.length);
+      const legStatuses = [];
+      for (let li = 0; li < maxLen; li++) {
+        const a = legsA[li];
+        const b = legsB[li];
+        const stA = a && (a.settlementStatus || a.settlement_status || a.inferredResult);
+        const stB = b && (b.settlementStatus || b.settlement_status || b.inferredResult);
+        const st = stA || stB;
+        if (st) legStatuses.push(st);
+      }
 
       let spResult;
       if (legStatuses.length > 0) {
