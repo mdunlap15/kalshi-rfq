@@ -236,6 +236,20 @@ function recordSettlement(orderUuid, result, payout) {
       return order;
     }
 
+    // Reject bogus settlements where all legs are still in the future
+    if (result !== 'void' && result !== 'push') {
+      const legs = order.legs || order.meta?.legs || [];
+      const now = Date.now();
+      const allFuture = legs.length > 0 && legs.every(l => {
+        if (!l.startTime) return false;
+        return new Date(l.startTime).getTime() > now;
+      });
+      if (allFuture) {
+        log.warn('Settle', `Rejecting bogus settlement for ${order.parlayId}: all legs start in the future (result=${result})`);
+        return order;
+      }
+    }
+
     stats.totalSettlements++;
     order.settledAt = new Date().toISOString();
     order.settlementResult = result; // 'won', 'lost', 'push', 'void'
@@ -1798,8 +1812,25 @@ async function loadFromDb() {
           spResult = 'lost'; // all legs hit → bettor won → SP lost
         }
       } else {
-        // No leg data — use stored status but mark as needing verification
-        // Can't determine direction without legs, keep whatever is stored
+        // No leg data — check if games have actually started.
+        // If ALL legs have future start times, this settlement is bogus — revert to confirmed.
+        const now = Date.now();
+        const allFuture = legs.length > 0 && legs.every(l => {
+          if (!l.startTime) return false;
+          return new Date(l.startTime).getTime() > now;
+        });
+        if (allFuture) {
+          log.warn('DB', `Reverting bogus settlement for ${o.parlayId}: all legs start in the future`);
+          o.status = 'confirmed';
+          o.settlementResult = null;
+          o.pnl = null;
+          o.settledAt = null;
+          stats.totalSettlements--;
+          stats.totalConfirmations++;
+          db.saveOrder(o).catch(() => {});
+          continue; // skip settlement processing, handle as confirmed below
+        }
+        // Games have started but no leg resolution data — keep stored status
         spResult = o.status.replace('settled_', '');
       }
 
