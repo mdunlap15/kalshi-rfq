@@ -1480,7 +1480,7 @@ function reconcileSettlements() {
       for (const src of legSources) {
         const l = src[li];
         if (l) {
-          st = l.settlementStatus || l.settlement_status || l.inferredResult;
+          st = l.inferredResult || l.settlementStatus || l.settlement_status;
           if (st) break;
         }
       }
@@ -1492,7 +1492,7 @@ function reconcileSettlements() {
           for (const src of legSources) {
             for (const l of src) {
               if ((l.team || l.teamName) === pTeam) {
-                st = l.settlementStatus || l.settlement_status || l.inferredResult;
+                st = l.inferredResult || l.settlementStatus || l.settlement_status;
                 if (st) break;
               }
             }
@@ -1960,8 +1960,8 @@ async function loadFromDb() {
       for (let li = 0; li < maxLen; li++) {
         const a = legsA[li];
         const b = legsB[li];
-        const stA = a && (a.settlementStatus || a.settlement_status || a.inferredResult);
-        const stB = b && (b.settlementStatus || b.settlement_status || b.inferredResult);
+        const stA = a && (a.inferredResult || a.settlementStatus || a.settlement_status);
+        const stB = b && (b.inferredResult || b.settlementStatus || b.settlement_status);
         const st = stA || stB;
         if (st) legStatuses.push(st);
       }

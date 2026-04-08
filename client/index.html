@@ -6480,7 +6480,10 @@
 
   /** Get effective leg result: PX settlement > inferred from scores > null */
   function getLegResult(l) {
-    return l.settlementStatus || l.settlement_status || l.inferredResult || null;
+    // inferredResult (from actual game scores) takes priority over PX per-leg
+    // settlementStatus, which can be wrong (e.g., PX says 'won' for a spread
+    // that game scores show as lost)
+    return l.inferredResult || l.settlementStatus || l.settlement_status || null;
   }
 
   /** Compound per-leg sportsbook odds into parlay American odds */
