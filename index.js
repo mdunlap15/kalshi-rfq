@@ -163,9 +163,10 @@ async function startup() {
     }
   }, refreshMs);
 
-  // Check game results every 2 minutes for early win detection
+  // Check game results every 2 minutes for early win detection + fix bogus settlements
   setInterval(async () => {
     try {
+      orderTracker.revertBogusSettlements();
       await orderTracker.checkLegResults();
     } catch (err) {
       log.debug('Results', `Result check failed: ${err.message}`);
@@ -402,6 +403,15 @@ function startStatusServer() {
   app.post('/check-results', async (req, res) => {
     try {
       const result = await orderTracker.checkLegResults();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  app.post('/fix-settlements', async (req, res) => {
+    try {
+      const result = orderTracker.revertBogusSettlements();
       res.json({ ok: true, ...result });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });

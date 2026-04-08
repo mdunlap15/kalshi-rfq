@@ -1378,6 +1378,21 @@ async function pollOrderSettlements(px) {
       if (!order.confirmedStake && pxOrder.confirmed_stake != null) order.confirmedStake = Number(pxOrder.confirmed_stake);
       if (!order.confirmedOdds && pxOrder.confirmed_odds != null) order.confirmedOdds = Number(pxOrder.confirmed_odds);
 
+      // Reject bogus settlements where all legs are still in the future
+      if (settlementStatus !== 'void' && settlementStatus !== 'push') {
+        const orderLegs = order.legs || order.meta?.legs || [];
+        const now = Date.now();
+        const allFuture = orderLegs.length > 0 && orderLegs.every(l => {
+          const st = l.startTime || l.start_time;
+          if (!st) return false; // can't verify — don't block
+          return new Date(st).getTime() > now;
+        });
+        if (allFuture) {
+          log.warn('Poll', `Skipping bogus settlement for ${order.parlayId}: all legs start in the future (PX says ${settlementStatus})`);
+          continue;
+        }
+      }
+
       // PX REST API settlement_status is SP-perspective — use directly.
       recordSettlement(uuid, settlementStatus, pxOrder.profit || 0);
       settled++;
@@ -1405,6 +1420,45 @@ async function pollOrderSettlements(px) {
  * Uses The Odds API scores endpoint to detect wins/losses before PX settles.
  * Sets leg.inferredResult = 'won' | 'lost' on each resolved leg.
  */
+
+/**
+ * Find and revert any settled orders where ALL legs have future start times.
+ * These are bogus settlements — games haven't started so outcome is unknown.
+ */
+function revertBogusSettlements() {
+  const now = Date.now();
+  let reverted = 0;
+  for (const o of Object.values(orders)) {
+    if (!o.status || !o.status.startsWith('settled_')) continue;
+    const legs = o.legs || o.meta?.legs || [];
+    if (legs.length === 0) continue;
+    const allFuture = legs.every(l => {
+      const st = l.startTime || l.start_time;
+      if (!st) return false;
+      return new Date(st).getTime() > now;
+    });
+    if (allFuture) {
+      log.warn('Orders', `Reverting bogus settlement: ${o.parlayId} (was ${o.status}, pnl=${o.pnl})`);
+      // Reverse stats
+      if (o.pnl != null) stats.runningPnL -= o.pnl;
+      if (o.pnl > 0) stats.totalWins--;
+      else if (o.pnl < 0) stats.totalLosses--;
+      stats.totalSettlements--;
+      // Revert to confirmed
+      o.status = 'confirmed';
+      o.settlementResult = null;
+      o.pnl = null;
+      o.settledAt = null;
+      stats.totalConfirmations++;
+      addExposure(o);
+      db.saveOrder(o).catch(() => {});
+      reverted++;
+    }
+  }
+  if (reverted > 0) log.info('Orders', `Reverted ${reverted} bogus settlements`);
+  return { reverted };
+}
+
 async function checkLegResults() {
   const oddsFeed = require('./odds-feed');
   // Check both confirmed and settled orders — settled may have legs without inferredResult
@@ -1544,6 +1598,7 @@ module.exports = {
   recordLegSettlement,
   pollOrderSettlements,
   checkLegResults,
+  revertBogusSettlements,
   deleteUnknownSettledOrders,
   findByParlayId,
   findByOrderUuid,
