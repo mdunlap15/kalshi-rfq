@@ -1469,18 +1469,37 @@ function reconcileSettlements() {
   for (const o of Object.values(orders)) {
     if (!o.status || !o.status.startsWith('settled_')) continue;
 
-    // Check BOTH legs sources — status may be on meta.legs but not o.legs (or vice versa)
-    const legsA = o.legs || [];
-    const legsB = o.meta?.legs || [];
-    // Merge statuses from both sources: for each leg index, take whichever has a status
-    const maxLen = Math.max(legsA.length, legsB.length);
+    // Collect leg statuses from ALL available sources (same logic as frontend's getLegResult)
+    const legSources = [o.meta?.legs, o.legs].filter(Boolean);
     const legStatuses = [];
-    for (let li = 0; li < maxLen; li++) {
-      const a = legsA[li];
-      const b = legsB[li];
-      const statusA = a && (a.settlementStatus || a.settlement_status || a.inferredResult);
-      const statusB = b && (b.settlementStatus || b.settlement_status || b.inferredResult);
-      const st = statusA || statusB;
+    // Use the longest legs array as the base
+    const primaryLegs = legSources.reduce((a, b) => (a || []).length >= (b || []).length ? a : b, []) || [];
+    for (let li = 0; li < primaryLegs.length; li++) {
+      let st = null;
+      // Check this index in all sources
+      for (const src of legSources) {
+        const l = src[li];
+        if (l) {
+          st = l.settlementStatus || l.settlement_status || l.inferredResult;
+          if (st) break;
+        }
+      }
+      // Also try matching by team name across sources if index didn't work
+      if (!st) {
+        const pLeg = primaryLegs[li];
+        const pTeam = pLeg?.team || pLeg?.teamName;
+        if (pTeam) {
+          for (const src of legSources) {
+            for (const l of src) {
+              if ((l.team || l.teamName) === pTeam) {
+                st = l.settlementStatus || l.settlement_status || l.inferredResult;
+                if (st) break;
+              }
+            }
+            if (st) break;
+          }
+        }
+      }
       if (st) legStatuses.push(st);
     }
     if (legStatuses.length === 0) continue; // no leg data to reconcile against
@@ -1617,6 +1636,12 @@ async function checkLegResults() {
   }
 
   log.info('Results', `Checked ${checked} legs, resolved ${resolved}`);
+
+  // Immediately reconcile any settled orders whose leg data now disagrees with stored result
+  if (resolved > 0) {
+    reconcileSettlements();
+  }
+
   return { checked, resolved };
 }
 
