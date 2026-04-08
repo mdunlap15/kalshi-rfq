@@ -803,8 +803,15 @@ function addExposure(order) {
     const name = leg.team || leg.teamName || 'unknown';
     const teamKey = normalizeExposureKey(name);
     // Composite key: team + event so the same team on different games (e.g. back-to-back)
-    // is tracked as separate rows in the Team Exposure table
-    const key = teamKey + '|' + (eventId || 'noevent');
+    // is tracked as separate rows in the Team Exposure table.
+    // Falls back to opponent+date when pxEventId is missing so different games don't merge.
+    let eventSuffix = eventId;
+    if (!eventSuffix) {
+      const opp = normalizeExposureKey((leg.homeTeam || '') + (leg.awayTeam || ''));
+      const day = leg.startTime ? leg.startTime.substring(0, 10) : '';
+      eventSuffix = (opp || '') + '|' + (day || 'noevent');
+    }
+    const key = teamKey + '|' + eventSuffix;
 
     // Product of all OTHER legs' effective probs (live if available, else pre-game)
     let otherProb = 1;
@@ -872,7 +879,14 @@ function removeExposure(order) {
     const leg = legs[i];
     const eventId = leg.pxEventId;
     const teamKey = normalizeExposureKey(leg.team || leg.teamName || '');
-    const key = teamKey + '|' + (eventId || 'noevent');
+    // Must match the key logic in addExposure
+    let eventSuffix = eventId;
+    if (!eventSuffix) {
+      const opp = normalizeExposureKey((leg.homeTeam || '') + (leg.awayTeam || ''));
+      const day = leg.startTime ? leg.startTime.substring(0, 10) : '';
+      eventSuffix = (opp || '') + '|' + (day || 'noevent');
+    }
+    const key = teamKey + '|' + eventSuffix;
 
     // Remove from game exposure
     if (eventId && gameExposure[eventId]) {
@@ -1053,7 +1067,15 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
     const teamKey = normalizeExposureKey(name);
     if (!teamKey) continue;
     const eventId = leg.lineInfo?.pxEventId || leg.pxEventId;
-    const key = teamKey + '|' + (eventId || 'noevent');
+    // Must match the key logic in addExposure
+    let eventSuffix = eventId;
+    if (!eventSuffix) {
+      const li = leg.lineInfo || leg;
+      const opp = normalizeExposureKey((li.homeTeam || '') + (li.awayTeam || ''));
+      const day = li.startTime ? li.startTime.substring(0, 10) : '';
+      eventSuffix = (opp || '') + '|' + (day || 'noevent');
+    }
+    const key = teamKey + '|' + eventSuffix;
 
     let otherProb = 1;
     for (let j = 0; j < legs.length; j++) {
