@@ -1757,7 +1757,7 @@ async function loadFromDb() {
       // If ALL legs have 'won' → bettor's parlay hit → SP LOST
       // This is idempotent — doesn't depend on how status was previously stored.
       const legs = o.legs || o.meta?.legs || [];
-      const legStatuses = legs.map(l => l.settlementStatus || l.settlement_status).filter(Boolean);
+      const legStatuses = legs.map(l => l.settlementStatus || l.settlement_status || l.inferredResult).filter(Boolean);
 
       let spResult;
       if (legStatuses.length > 0) {
