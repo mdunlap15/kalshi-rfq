@@ -136,6 +136,16 @@ async function startup() {
     }
   }, refreshMs);
 
+  // Fast delta updates for SharpAPI sports (every 30s)
+  // Catches line movements quickly without full re-fetch
+  setInterval(async () => {
+    try {
+      await oddsFeed.refreshAllSportsDelta();
+    } catch (err) {
+      log.debug('Refresh', `Delta refresh failed: ${err.message}`);
+    }
+  }, 30 * 1000);
+
   lineRefreshTimer = setInterval(async () => {
     try {
       await lineManager.refreshLines();

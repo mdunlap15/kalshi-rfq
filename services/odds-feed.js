@@ -9,6 +9,9 @@ const log = require('./logger');
 const oddsCache = {};
 // Live (in-play) odds cache — only populated when in-progress games need refreshing
 const liveOddsCache = {};
+// Delta tracking — last fetch timestamp per sport for /odds/delta calls
+const lastDeltaTimestamp = {};
+
 // SharpAPI events index — for improved PX-to-odds team name matching
 // { [sport]: { fetchedAt, events: [{ eventId, homeTeam, awayTeam, startTime }] } }
 const sharpEventsIndex = {};
@@ -269,6 +272,7 @@ async function fetchOddsForSport(sport, opts) {
         commenceTime: event.commenceTime,
         eventId,
         markets,
+        _rawOdds: event.odds, // preserved for delta merging
       });
     }
   }
@@ -278,6 +282,11 @@ async function fetchOddsForSport(sport, opts) {
     fetchedAt: Date.now(),
     events: parsed,
   };
+
+  // Set delta timestamp for incremental updates
+  if (!liveMode && LEAGUE_MAP[sport]) {
+    lastDeltaTimestamp[sport] = new Date().toISOString();
+  }
 
   log.info('OddsFeed', `Cached ${Object.keys(parsed).length} ${liveMode ? 'LIVE ' : ''}events for ${mapping.value}`);
   return parsed;
@@ -1443,6 +1452,166 @@ function isStale(sport) {
   return getCacheAge(sport) > config.pricing.stalePriceMinutes;
 }
 
+// ---------------------------------------------------------------------------
+// DELTA UPDATES — incremental odds changes from SharpAPI /odds/delta
+// ---------------------------------------------------------------------------
+
+/**
+ * Rebuild consensus markets from raw odds rows for a single event.
+ * Used by mergeDeltas to update only affected events.
+ */
+function rebuildEventConsensus(rawOdds) {
+  const markets = {};
+
+  const mlBooks = getBookPairs(rawOdds, 'moneyline');
+  if (mlBooks.length > 0) markets.h2h = buildConsensusMoneyline(mlBooks);
+
+  const spreadTypes = ['point_spread', 'run_line', 'puck_line'];
+  const spreadOdds = rawOdds.filter(r => spreadTypes.includes(r.market_type));
+  const spreadBooks = getBookPairs(spreadOdds, null);
+  if (spreadBooks.length > 0) markets.spreads = buildConsensusSpread(spreadBooks);
+
+  const totalTypes = ['total_points', 'total_runs', 'total_goals'];
+  const totalOdds = rawOdds.filter(r => totalTypes.includes(r.market_type));
+  const totalBooks = getBookPairsForTotals(totalOdds);
+  if (totalBooks.length > 0) markets.totals = buildConsensusTotals(totalBooks);
+
+  const teamTotalOdds = rawOdds.filter(r => r.market_type === 'team_total');
+  if (teamTotalOdds.length > 0) {
+    const teamTotalBooks = getBookPairsForTeamTotals(teamTotalOdds);
+    if (teamTotalBooks.length > 0) {
+      const tt = buildConsensusTeamTotals(teamTotalBooks);
+      if (tt) markets.team_totals = tt;
+    }
+  }
+
+  return markets;
+}
+
+/**
+ * Merge delta rows into existing cache for a sport.
+ * Finds affected events, updates their raw odds, and rebuilds consensus.
+ */
+function mergeDeltas(sport, deltaRows) {
+  const sportCache = oddsCache[sport];
+  if (!sportCache) return 0;
+
+  // Group deltas by event_id
+  const deltaByEvent = {};
+  for (const row of deltaRows) {
+    const eid = row.event_id;
+    if (!deltaByEvent[eid]) deltaByEvent[eid] = [];
+    deltaByEvent[eid].push(row);
+  }
+
+  let updated = 0;
+  for (const [eventId, rows] of Object.entries(deltaByEvent)) {
+    const homeTeam = cleanTeamName(rows[0].home_team || '');
+    const awayTeam = cleanTeamName(rows[0].away_team || '');
+    const key = normalizeEventKey(homeTeam, awayTeam);
+
+    // Find existing event in cache
+    const entry = sportCache.events[key];
+    if (!entry) continue; // new event — skip, next full refresh picks it up
+
+    const events = Array.isArray(entry) ? entry : [entry];
+    const existing = events.find(e => e.eventId === eventId) || events[0];
+    if (!existing || !existing._rawOdds) continue;
+
+    // Merge: replace/add rows matching by sportsbook + market_type + selection_type
+    for (const deltaRow of rows) {
+      const idx = existing._rawOdds.findIndex(r =>
+        r.sportsbook === deltaRow.sportsbook &&
+        r.market_type === deltaRow.market_type &&
+        r.selection_type === deltaRow.selection_type
+      );
+      if (idx >= 0) {
+        existing._rawOdds[idx] = deltaRow;
+      } else {
+        existing._rawOdds.push(deltaRow);
+      }
+    }
+
+    // Rebuild consensus from updated raw odds
+    existing.markets = rebuildEventConsensus(existing._rawOdds);
+    updated++;
+  }
+
+  if (updated > 0) {
+    sportCache.fetchedAt = Date.now();
+    log.info('OddsFeed', `Delta merged: ${updated} events updated for ${sport}`);
+  }
+  return updated;
+}
+
+/**
+ * Fetch odds changes since last timestamp for a sport.
+ * Falls back to full fetch if no previous timestamp or on error.
+ */
+async function fetchOddsDelta(sport) {
+  const mapping = LEAGUE_MAP[sport];
+  if (!mapping) return null;
+
+  const since = lastDeltaTimestamp[sport];
+  if (!since) {
+    // No previous fetch — do a full fetch to establish baseline
+    log.debug('OddsFeed', `No delta baseline for ${sport}, doing full fetch`);
+    return fetchOddsForSport(sport);
+  }
+
+  const marketTypes = {
+    'baseball_mlb': 'moneyline,run_line,total_runs,team_total',
+    'icehockey_nhl': 'moneyline,puck_line,total_goals,team_total',
+    'basketball_nba': 'moneyline,point_spread,total_points,team_total',
+    'soccer': 'moneyline,point_spread,total_goals,team_total',
+  }[sport] || 'moneyline,point_spread,total_points,team_total';
+
+  const url = `${config.oddsApi.baseUrl}/odds/delta`
+    + `?${mapping.param}=${mapping.value}`
+    + `&market=${marketTypes}`
+    + `&since=${encodeURIComponent(since)}`
+    + `&limit=200`;
+
+  try {
+    const resp = await fetch(url, {
+      headers: { 'X-API-Key': config.oddsApi.apiKey },
+    });
+    if (!resp.ok) {
+      log.warn('OddsFeed', `Delta fetch failed (${resp.status}) for ${sport}, falling back to full`);
+      return fetchOddsForSport(sport);
+    }
+
+    const body = await resp.json();
+    const rows = body.data || [];
+    lastDeltaTimestamp[sport] = new Date().toISOString();
+
+    if (rows.length === 0) {
+      log.debug('OddsFeed', `No delta changes for ${sport}`);
+      return null;
+    }
+
+    log.info('OddsFeed', `Delta: ${rows.length} changed rows for ${mapping.value}`);
+    mergeDeltas(sport, rows);
+    return oddsCache[sport]?.events;
+  } catch (err) {
+    log.warn('OddsFeed', `Delta fetch error for ${sport}: ${err.message}, falling back to full`);
+    return fetchOddsForSport(sport);
+  }
+}
+
+/**
+ * Run delta updates for all SharpAPI sports (not Odds API fallback sports).
+ */
+async function refreshAllSportsDelta() {
+  for (const sport of Object.keys(LEAGUE_MAP)) {
+    try {
+      await fetchOddsDelta(sport);
+    } catch (err) {
+      log.warn('OddsFeed', `Delta refresh failed for ${sport}: ${err.message}`);
+    }
+  }
+}
+
 async function refreshEventsIndex() {
   for (const sport of Object.keys(LEAGUE_MAP)) {
     try {
@@ -1679,6 +1848,7 @@ module.exports = {
   getCacheStatus,
   getAllCachedEvents,
   getSharpEvents,
+  refreshAllSportsDelta,
   normalizeTeamName,
   deVig2Way,
   americanToImpliedProb,
