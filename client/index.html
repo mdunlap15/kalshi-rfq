@@ -5777,9 +5777,15 @@
 
     // Collect per-leg data from all quoted parlays
     const legData = [];
+    let earliestQuote = null, latestQuote = null;
     for (const o of allQuoted) {
       const legs = o.meta?.legs || o.legs || [];
       const vig = o.meta?.vig || o.vig || 0;
+      const qDate = o.quotedAt || o.confirmedAt;
+      if (qDate) {
+        if (!earliestQuote || qDate < earliestQuote) earliestQuote = qDate;
+        if (!latestQuote || qDate > latestQuote) latestQuote = qDate;
+      }
       for (const l of legs) {
         if (!l.fairProb || l.fairProb <= 0 || l.fairProb >= 1) continue;
         const myProb = applyOddsVig(l.fairProb, vig);
@@ -5878,7 +5884,9 @@
       const x = scaleX(l.pinProb);
       const y = scaleY(l.pinSpread);
       const color = l.pinSpread >= 0 ? 'var(--green)' : 'var(--red)';
-      svg += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + color + '" opacity="0.6"><title>' + l.team + ' ' + l.market + ': ' + (l.pinSpread >= 0 ? '+' : '') + l.pinSpread.toFixed(2) + 'pp (PIN ' + l.pinOdds + ', MY ' + l.myOddsAm + ')</title></circle>';
+      const dotGame = l.matchup ? ' | ' + l.matchup : '';
+      const dotDate = l.gameDate ? ' ' + l.gameDate : '';
+      svg += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + color + '" opacity="0.6"><title>' + l.team + ' ' + l.market + dotGame + dotDate + '\nEdge: ' + (l.pinSpread >= 0 ? '+' : '') + l.pinSpread.toFixed(2) + 'pp | PIN ' + l.pinOdds + ' | MY ' + l.myOddsAm + '</title></circle>';
     }
 
     // Shaded regions
@@ -5891,7 +5899,13 @@
 
     svg += '</svg>';
 
-    html += '<div style="margin-bottom:8px; font-size:13px; font-weight:600; color:var(--text2);">Per-Leg Edge vs Pinnacle</div>';
+    const dateRangeStr = earliestQuote && latestQuote
+      ? new Date(earliestQuote).toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' – ' + new Date(latestQuote).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
+      : '';
+    html += '<div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:4px;">';
+    html += '<div style="font-size:13px; font-weight:600; color:var(--text2);">Per-Leg Edge vs Pinnacle</div>';
+    if (dateRangeStr) html += '<div style="font-size:11px; color:var(--text3);">' + dateRangeStr + '</div>';
+    html += '</div>';
     html += '<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Each dot = one leg. Green (above zero) = you charge more than Pinnacle. Red (below zero) = you\'re more generous. Hover for details.</div>';
     html += svg;
 
