@@ -570,10 +570,20 @@
       <div id="section-portfolio" class="section" style="display:none;">
         <div id="portfolio-perf-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
 
-        <!-- Positions: Open / Settled tabs -->
+        <!-- Edge Analysis (expanded by default) -->
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon">&#9660;</span>Pricing Edge vs. Sportsbooks</span>
+            <span id="edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="portfolio-edge"><div class="empty-state"><div class="icon">-</div><div>Need settled orders to analyze edge</div></div></div>
+        </div>
+
+        <!-- Positions: Open / Settled tabs (collapsed by default) -->
         <div class="card">
           <div class="card-header" style="padding-bottom:0; border-bottom:none;">
-            <div style="display:flex; gap:0;">
+            <div style="display:flex; gap:0; align-items:center;">
+              <span class="toggle-icon collapsed" onclick="event.stopPropagation(); const b=this.closest('.card').querySelector('.card-body'); b.classList.toggle('collapsed'); this.classList.toggle('collapsed');" style="cursor:pointer; font-size:12px; margin-right:6px;">&#9660;</span>
               <button class="btn" id="pos-tab-open" onclick="switchPositionsTab('open')" style="border-radius:4px 4px 0 0; border-bottom:2px solid var(--accent); font-size:12px; padding:6px 16px;">Open Positions</button>
               <button class="btn" id="pos-tab-settled" onclick="switchPositionsTab('settled')" style="border-radius:4px 4px 0 0; border-bottom:2px solid transparent; font-size:12px; padding:6px 16px; color:var(--text3);">Settled Positions</button>
             </div>
@@ -582,19 +592,19 @@
               <button class="btn" onclick="openExportModal()" style="font-size:11px; padding:4px 10px;">&#x2913; Export CSV</button>
             </div>
           </div>
-          <div class="card-body" style="padding: 0;">
+          <div class="card-body collapsed" style="padding: 0;">
             <div id="positions-table"><div class="empty-state"><div class="icon">-</div><div>No open positions</div></div></div>
             <div id="portfolio-settled" style="display:none;"><div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div></div>
           </div>
         </div>
 
-        <!-- Live P&L Outlook -->
+        <!-- Live P&L Outlook (collapsed by default) -->
         <div class="card">
           <div class="card-header" onclick="toggleCard(this)">
-            <span><span class="toggle-icon">&#9660;</span>Live P&L Outlook</span>
+            <span><span class="toggle-icon collapsed">&#9660;</span>Live P&L Outlook</span>
             <span id="pnl-outlook-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
-          <div class="card-body" id="pnl-outlook-body" style="padding: 14px;">
+          <div class="card-body collapsed" id="pnl-outlook-body" style="padding: 14px;">
             <div class="empty-state"><div class="icon">-</div><div>Need active positions</div></div>
           </div>
         </div>
@@ -612,14 +622,6 @@
             </div>
             <div class="card-body collapsed" id="portfolio-by-legs"><div class="empty-state"><div class="icon">-</div><div>No settled orders yet</div></div></div>
           </div>
-        </div>
-
-        <div class="card">
-          <div class="card-header" onclick="toggleCard(this)">
-            <span><span class="toggle-icon collapsed">&#9660;</span>Edge Analysis</span>
-            <span id="edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-          </div>
-          <div class="card-body collapsed" id="portfolio-edge"><div class="empty-state"><div class="icon">-</div><div>Need settled orders to analyze edge</div></div></div>
         </div>
 
         <div class="card">
@@ -3419,29 +3421,33 @@
     // --- Section 1: Performance Summary Cards ---
     renderPortfolioPerfSummary(stats, settled, allOrders);
 
-    // --- Section 2: P&L by Sport (enhanced) ---
-    renderPortfolioBySport(settled);
-
-    // --- Section 3: P&L by Leg Count ---
-    renderPortfolioByLegs(settled);
-
-    // --- Section 4: Edge Analysis ---
+    // --- Section 2: Pricing Edge vs. Sportsbooks ---
     renderPortfolioEdge(settled);
+
+    // --- Section 3: Open Exposure ---
+    renderPortfolioOpen(active);
+
+    // --- Section 4: Settled Positions Log ---
+    renderPortfolioSettled(settled);
 
     // --- Section 5: Live P&L Outlook ---
     renderPnlOutlook(active, settled);
 
-    // --- Section 6: Open Exposure ---
-    renderPortfolioOpen(active);
+    // --- Section 6: P&L by Sport ---
+    renderPortfolioBySport(settled);
 
-    // --- Section 7: Settled Positions Log ---
-    renderPortfolioSettled(settled);
+    // --- Section 7: P&L by Leg Count ---
+    renderPortfolioByLegs(settled);
   }
 
   function renderPnlOutlook(active, settled) {
     const el = document.getElementById('pnl-outlook-body');
     const sumEl = document.getElementById('pnl-outlook-summary');
     if (!el) return;
+
+    // Store for re-render access (sort/filter triggers)
+    window._lastPopenData = active;
+    window._lastSettledData = settled;
 
     if (active.length === 0 && settled.length === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need active positions</div></div>';
@@ -3485,7 +3491,7 @@
         bestCase += spProfit;
         worstCase -= spLoss;
         pendingCount++;
-        pendingPositions.push({ exp, winProb, spProfit, spLoss, odds: o.offeredOdds, teams: legs.map(l => (l.team || '?').substring(0, 18)).join(', '), legs, parlayId: o.parlayId });
+        pendingPositions.push({ exp, winProb, spProfit, spLoss, odds: o.offeredOdds, teams: legs.map(l => (l.team || '?').substring(0, 18)).join(', '), legs, parlayId: o.parlayId, vig: o.meta?.vig || o.vig || 0 });
       }
     }
 
@@ -3524,7 +3530,7 @@
     html += '<div><span style="color:var(--text2); font-size:18px; font-weight:700;">' + pendingCount + '</span><div style="font-size:10px; color:var(--text3);">Pending</div><div style="font-size:13px; color:var(--text3);">expected ' + fmtPnl(expectedPnl - wonPnl - lostPnl) + '</div></div>';
     html += '</div></div>';
 
-    // Outcome range bar
+    // Outcome range bar with percentile markers via Monte Carlo
     html += '<div style="flex:1; min-width:250px; padding:10px 14px; background:var(--surface); border:1px solid var(--border); border-radius:6px;">';
     html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">Outcome Range (pending positions)</div>';
     const rangeMin = worstCase + lostPnl;
@@ -3532,54 +3538,127 @@
     const rangeSpan = rangeMax - rangeMin || 1;
     const expPct = Math.max(0, Math.min(100, ((expectedPnl - wonPnl - lostPnl - rangeMin) / rangeSpan * 100)));
     const zeroPct = Math.max(0, Math.min(100, ((0 - rangeMin) / rangeSpan * 100)));
+
+    // Monte Carlo: simulate 10k outcomes to find percentiles
+    const SIM_COUNT = 10000;
+    const simResults = [];
+    const basePnl = wonPnl + lostPnl; // resolved portion
+    for (let s = 0; s < SIM_COUNT; s++) {
+      let simPnl = basePnl;
+      for (const p of pendingPositions) {
+        simPnl += (Math.random() < p.winProb) ? p.spProfit : -p.spLoss;
+      }
+      simResults.push(simPnl);
+    }
+    simResults.sort((a, b) => a - b);
+    const pctile = (p) => simResults[Math.floor(p / 100 * SIM_COUNT)] || 0;
+    const p1 = pctile(1), p10 = pctile(10), p50 = pctile(50), p90 = pctile(90), p99 = pctile(99);
+    const toPct = (v) => Math.max(0, Math.min(100, ((v - rangeMin) / rangeSpan * 100)));
+
     html += '<div style="position:relative; height:30px; background:linear-gradient(90deg, var(--red) 0%, var(--surface3) 50%, var(--green) 100%); border-radius:4px; margin:8px 0;">';
-    html += '<div style="position:absolute; left:' + zeroPct + '%; top:0; bottom:0; width:2px; background:#ffffff;" title="$0 (breakeven)"></div>';
+    // Percentile lines
+    html += '<div style="position:absolute; left:' + toPct(p1) + '%; top:0; bottom:0; width:1px; border-left:2px dashed var(--red);" title="Worst 1%: ' + fmtPnl(p1) + '"></div>';
+    html += '<div style="position:absolute; left:' + toPct(p10) + '%; top:0; bottom:0; width:2px; background:var(--red);" title="Worst 10%: ' + fmtPnl(p10) + '"></div>';
+    html += '<div style="position:absolute; left:' + toPct(p50) + '%; top:0; bottom:0; width:2px; background:#ffffff;" title="Median: ' + fmtPnl(p50) + '"></div>';
+    html += '<div style="position:absolute; left:' + toPct(p90) + '%; top:0; bottom:0; width:2px; background:var(--green);" title="Best 10%: ' + fmtPnl(p90) + '"></div>';
+    html += '<div style="position:absolute; left:' + toPct(p99) + '%; top:0; bottom:0; width:1px; border-left:2px dashed var(--green);" title="Best 1%: ' + fmtPnl(p99) + '"></div>';
+    // Breakeven and expected lines
+    html += '<div style="position:absolute; left:' + zeroPct + '%; top:0; bottom:0; width:2px; background:rgba(255,255,255,0.3);" title="$0 (breakeven)"></div>';
     html += '<div style="position:absolute; left:' + expPct + '%; top:-2px; bottom:-2px; width:4px; background:var(--amber); border-radius:2px;" title="Expected: ' + fmtPnl(expectedPnl - wonPnl - lostPnl) + '"></div>';
+    html += '</div>';
+    // Labels row
+    html += '<div style="position:relative; height:14px; font-size:9px; margin-bottom:2px;">';
+    html += '<span style="position:absolute; left:' + toPct(p1) + '%; transform:translateX(-50%); color:var(--red);">1%</span>';
+    html += '<span style="position:absolute; left:' + toPct(p10) + '%; transform:translateX(-50%); color:var(--red);">10%</span>';
+    html += '<span style="position:absolute; left:' + toPct(p50) + '%; transform:translateX(-50%); color:var(--text);">50%</span>';
+    html += '<span style="position:absolute; left:' + toPct(p90) + '%; transform:translateX(-50%); color:var(--green);">90%</span>';
+    html += '<span style="position:absolute; left:' + toPct(p99) + '%; transform:translateX(-50%); color:var(--green);">99%</span>';
     html += '</div>';
     html += '<div style="display:flex; justify-content:space-between; font-size:11px;"><span class="negative">' + fmtPnl(rangeMin) + '</span><span style="color:var(--text3);">$0</span><span class="positive">' + fmtPnl(rangeMax) + '</span></div>';
     html += '</div></div>';
 
-    // Riskiest positions table with expandable leg detail
+    // Riskiest positions table — sortable, filterable, with expandable leg detail
     if (pendingPositions.length > 0) {
-      pendingPositions.sort((a, b) => a.exp - b.exp);
-      html += '<div style="margin-top:12px;"><div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">Riskiest Pending Positions</div>';
-      html += '<div style="font-size:10px; color:var(--text3); margin-bottom:6px;">Your Win Prob = probability the parlay loses (any leg fails). Click row to see per-leg breakdown.</div>';
-      html += '<table style="font-size:12px; width:100%;"><tr><th style="text-align:left">Parlay</th><th style="text-align:right" title="Your probability of winning (parlay fails)">Your Win Prob</th><th style="text-align:right">If You Win</th><th style="text-align:right">If You Lose</th><th style="text-align:right">Expected</th></tr>';
-      for (let ri = 0; ri < Math.min(pendingPositions.length, 12); ri++) {
-        const p = pendingPositions[ri];
+      // Store for re-render access
+      window._outlookPositions = pendingPositions;
+
+      // Sort
+      const oSortCol = window._outlookSortCol || 'exp';
+      const oSortDir = window._outlookSortDir || 1;
+      const sorted = [...pendingPositions];
+      sorted.sort((a, b) => {
+        let va, vb;
+        switch (oSortCol) {
+          case 'teams': va = a.teams || ''; vb = b.teams || ''; return oSortDir * va.localeCompare(vb);
+          case 'legs': va = (a.legs||[]).length; vb = (b.legs||[]).length; break;
+          case 'odds': va = Math.abs(a.odds||0); vb = Math.abs(b.odds||0); break;
+          case 'winProb': va = a.winProb; vb = b.winProb; break;
+          case 'win': va = a.spProfit; vb = b.spProfit; break;
+          case 'lose': va = a.spLoss; vb = b.spLoss; break;
+          case 'exp': default: va = a.exp; vb = b.exp; break;
+        }
+        return oSortDir * (va - vb);
+      });
+
+      // Filter
+      const oSearch = (window._outlookSearch || '').toLowerCase();
+      const filtered = oSearch ? sorted.filter(p => p.teams.toLowerCase().includes(oSearch)) : sorted;
+
+      const oSortArrow = (col) => oSortCol === col ? (oSortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+      const oSortClick = (col, align) => 'onclick="event.stopPropagation(); if(window._outlookSortCol===\'' + col + '\') window._outlookSortDir=(window._outlookSortDir||1)*-1; else { window._outlookSortCol=\'' + col + '\'; window._outlookSortDir=' + (col === 'teams' ? '1' : '-1') + '; } renderPnlOutlook(window._lastPopenData||[],window._lastSettledData||[])" style="cursor:pointer;' + (align ? 'text-align:'+align+';' : '') + '"';
+
+      html += '<div style="margin-top:12px;">';
+      html += '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">';
+      html += '<div style="font-size:12px; font-weight:600; color:var(--text2);">Pending Positions</div>';
+      html += '<div style="display:flex; align-items:center; gap:8px;">';
+      html += '<input type="text" placeholder="Search team..." value="' + escapeHtml(window._outlookSearch || '') + '" oninput="window._outlookSearch=this.value; rerenderWithFocus(()=>renderPnlOutlook(window._lastPopenData||[],window._lastSettledData||[]))" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:11px; width:140px;">';
+      html += '<span style="font-size:11px; color:var(--text3);">' + filtered.length + ' of ' + pendingPositions.length + '</span>';
+      html += '</div></div>';
+      html += '<div style="font-size:10px; color:var(--text3); margin-bottom:6px;">Your Win Prob = probability the parlay loses (any leg fails). Click row for details.</div>';
+      html += '<table style="font-size:12px; width:100%;">';
+      html += '<tr>';
+      html += '<th ' + oSortClick('teams') + '>Parlay' + oSortArrow('teams') + '</th>';
+      html += '<th ' + oSortClick('legs', 'right') + '>Legs' + oSortArrow('legs') + '</th>';
+      html += '<th ' + oSortClick('odds', 'right') + '>Odds' + oSortArrow('odds') + '</th>';
+      html += '<th ' + oSortClick('winProb', 'right') + ' title="Your probability of winning (parlay fails)">Win Prob' + oSortArrow('winProb') + '</th>';
+      html += '<th ' + oSortClick('win', 'right') + '>If You Win' + oSortArrow('win') + '</th>';
+      html += '<th ' + oSortClick('lose', 'right') + '>If You Lose' + oSortArrow('lose') + '</th>';
+      html += '<th ' + oSortClick('exp', 'right') + '>Expected' + oSortArrow('exp') + '</th>';
+      html += '</tr>';
+      const oLimit = window._outlookShowAll ? filtered.length : Math.min(filtered.length, 15);
+      for (let ri = 0; ri < oLimit; ri++) {
+        const p = filtered[ri];
         const expCls = p.exp >= 0 ? 'positive' : 'negative';
-        const rowId = 'outlook-' + ri;
+        const rowId = 'outlook-' + (p.parlayId || ri);
         const expanded = expandedRows.has(rowId);
+        const oddsStr = p.odds ? (p.odds >= 0 ? '+' : '') + p.odds : '-';
+        const wpColor = p.winProb >= 0.8 ? 'var(--green)' : p.winProb >= 0.5 ? 'var(--text)' : p.winProb >= 0.3 ? 'var(--amber)' : 'var(--red)';
         html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowId + '\')">';
-        html += '<td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' + p.teams + '">' + p.teams + '</td>';
-        html += '<td style="text-align:right">' + (p.winProb * 100).toFixed(0) + '%</td>';
+        html += '<td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' + escapeHtml(p.teams) + '">' + escapeHtml(p.teams) + '</td>';
+        html += '<td style="text-align:right">' + (p.legs||[]).length + '</td>';
+        html += '<td style="text-align:right; font-weight:600;">' + oddsStr + '</td>';
+        html += '<td style="text-align:right; color:' + wpColor + '; font-weight:600;">' + (p.winProb * 100).toFixed(0) + '%</td>';
         html += '<td style="text-align:right; color:var(--green);">+' + fmtDollar(p.spProfit) + '</td>';
         html += '<td style="text-align:right; color:var(--red);">-' + fmtDollar(p.spLoss) + '</td>';
         html += '<td style="text-align:right; font-weight:600;" class="' + expCls + '">' + fmtPnl(p.exp) + '</td></tr>';
-        // Expandable leg detail
+        // Expandable detail row — uses buildLegTable for consistency
         html += '<tr id="' + rowId + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-        html += '<td colspan="5" style="padding:8px 12px;">';
-        html += '<table style="font-size:11px; width:100%;"><tr><th style="text-align:left">Leg</th><th style="text-align:left">Market</th><th style="text-align:right" title="Probability the selection wins (bad for you)">Their Win %</th><th style="text-align:right" title="Probability the selection loses (good for you)">Your Win %</th><th style="text-align:center">Status</th></tr>';
-        for (const l of (p.legs || [])) {
-          const lr = getLegResult(l);
-          const selProb = l.liveFairProb || l.fairProb || 0.5;
-          let statusIcon, statusColor;
-          if (lr === 'lost') { statusIcon = '✗'; statusColor = 'var(--green)'; } // they lost = you won
-          else if (lr === 'won') { statusIcon = '✓'; statusColor = 'var(--red)'; } // they won = you lost
-          else { statusIcon = '●'; statusColor = 'var(--text3)'; }
-          const yourWinPct = lr === 'lost' ? '100%' : lr === 'won' ? '0%' : ((1 - selProb) * 100).toFixed(0) + '%';
-          const theirWinPct = lr === 'lost' ? '0%' : lr === 'won' ? '100%' : (selProb * 100).toFixed(0) + '%';
-          html += '<tr>';
-          html += '<td>' + (l.team || '?') + '</td>';
-          html += '<td><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>';
-          html += '<td style="text-align:right; color:var(--red);">' + theirWinPct + '</td>';
-          html += '<td style="text-align:right; color:var(--green);">' + yourWinPct + '</td>';
-          html += '<td style="text-align:center; color:' + statusColor + '; font-size:14px;" title="' + (lr === 'lost' ? 'Selection lost — you won this leg' : lr === 'won' ? 'Selection won — counts toward parlay hitting' : 'Pending') + '">' + statusIcon + '</td>';
-          html += '</tr>';
-        }
-        html += '</table></td></tr>';
+        html += '<td colspan="7" style="padding:12px 16px;">';
+        html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">PARLAY LEGS</div>';
+        html += buildLegTable(p.legs || [], { vig: p.vig || 0 });
+        html += '<div style="margin-top:8px; font-size:11px; color:var(--text3);">';
+        html += 'Win Prob: <span style="color:var(--green); font-weight:600;">' + (p.winProb * 100).toFixed(1) + '%</span>';
+        html += ' · Expected: <span class="' + expCls + '">' + fmtPnl(p.exp) + '</span>';
+        html += ' · ID: ' + (p.parlayId || '-');
+        html += '</div></td></tr>';
       }
-      html += '</table></div>';
+      html += '</table>';
+      if (filtered.length > 15 && !window._outlookShowAll) {
+        html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);"><button class="btn" onclick="window._outlookShowAll=true; renderPnlOutlook(window._lastPopenData||[],window._lastSettledData||[])" style="font-size:12px; padding:4px 16px;">Show All ' + filtered.length + '</button></div>';
+      } else if (window._outlookShowAll && filtered.length > 15) {
+        html += '<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);"><button class="btn" onclick="window._outlookShowAll=false; renderPnlOutlook(window._lastPopenData||[],window._lastSettledData||[])" style="font-size:12px; padding:4px 16px;">Show Top 15</button></div>';
+      }
+      html += '</div>';
     }
 
     el.innerHTML = html;
