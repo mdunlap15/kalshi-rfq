@@ -1369,8 +1369,10 @@ async function pollOrderSettlements(px) {
  */
 async function checkLegResults() {
   const oddsFeed = require('./odds-feed');
-  const confirmed = Object.values(orders).filter(o => o.status === 'confirmed');
-  if (confirmed.length === 0) return { checked: 0, resolved: 0 };
+  // Check both confirmed and settled orders — settled may have legs without inferredResult
+  const toCheck = Object.values(orders).filter(o => o.status === 'confirmed' || o.status?.startsWith('settled_'));
+  if (toCheck.length === 0) return { checked: 0, resolved: 0 };
+  const confirmed = toCheck;
 
   // Collect unique sports that have active legs
   const activeSports = new Set();
