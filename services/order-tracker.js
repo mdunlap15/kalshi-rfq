@@ -944,11 +944,13 @@ function recalcNetExposure() {
       const netExp = Math.max(0, weightedPayouts - oppositeStakes);
 
       // Attribute net exposure back to teams involved
+      // netExp is the TOTAL net exposure for this selection — each team key
+      // gets the full amount (not divided by parlay count)
       for (const p of winningParlays) {
         if (p.teamKey && exposure[p.teamKey]) {
           exposure[p.teamKey].netExposure = Math.max(
             exposure[p.teamKey].netExposure || 0,
-            netExp / winningParlays.length // distribute among teams on this side
+            netExp
           );
         }
       }
