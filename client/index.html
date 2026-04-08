@@ -2041,6 +2041,12 @@
           vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
           case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
           case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+          case 'result': {
+            const rMap = { won: 0, lost: 1, push: 2, void: 3 };
+            va = rMap[a.settlementResult || a.status?.replace('settled_', '') || ''] ?? 4;
+            vb = rMap[b.settlementResult || b.status?.replace('settled_', '') || ''] ?? 4;
+            break;
+          }
           case 'roi': {
             const ra = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : (a.confirmedStake || 0);
             const rb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0);
@@ -2155,7 +2161,7 @@
     html += '<th style="text-align:right; color:var(--purple);">Pinnacle</th>';
     html += '<th style="text-align:right; color:var(--blue);">FanDuel</th>';
     html += '<th ' + sSortClick('stake', 'right') + '>My Risk' + sSortArrow('stake') + '</th>';
-    html += '<th title="Settlement outcome from our (SP) perspective">SP Result</th>';
+    html += '<th ' + sSortClick('result') + ' title="Settlement outcome from our (SP) perspective">SP Result' + sSortArrow('result') + '</th>';
     html += '<th ' + sSortClick('pnl', 'right') + '>P&L' + sSortArrow('pnl') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
@@ -3890,6 +3896,12 @@
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
+        case 'result': {
+          const rMap2 = { won: 0, lost: 1, push: 2, void: 3 };
+          va = rMap2[a.settlementResult || a.status?.replace('settled_', '') || ''] ?? 4;
+          vb = rMap2[b.settlementResult || b.status?.replace('settled_', '') || ''] ?? 4;
+          break;
+        }
         case 'roi': {
           const ra = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : (a.confirmedStake || 0);
           const rb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0);
@@ -3962,7 +3974,7 @@
     html += '<th style="text-align:right; color:var(--purple);">Pinnacle</th>';
     html += '<th style="text-align:right; color:var(--blue);">FanDuel</th>';
     html += '<th ' + pSortClick('stake', 'right') + '>My Risk' + pSortArrow('stake') + '</th>';
-    html += '<th title="Settlement outcome from our (SP) perspective">SP Result</th>';
+    html += '<th ' + pSortClick('result') + ' title="Settlement outcome from our (SP) perspective">SP Result' + pSortArrow('result') + '</th>';
     html += '<th ' + pSortClick('pnl', 'right') + '>P&L' + pSortArrow('pnl') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
     html += '</tr>';
