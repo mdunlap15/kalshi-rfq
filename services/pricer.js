@@ -179,13 +179,12 @@ async function priceParlay(legs) {
   //   Consistent % reduction in payout regardless of odds level.
   const baseVig = config.pricing.defaultVig;
 
-  // Tiered vig: heavy favorites get higher vig to prevent compounding leaks.
-  // De-vig over-correction is worst on heavy favorites and compounds across legs.
+  // Tiered vig: slight bump on heavy favorites to prevent compounding leaks.
+  // Kept gentle so we stay competitive (slightly above Pinnacle).
   function getEffectiveVig(fairProb) {
-    if (fairProb >= 0.80) return Math.max(baseVig, 0.07);  // extreme favorites (-400+)
-    if (fairProb >= 0.70) return Math.max(baseVig, 0.05);  // heavy favorites (-230+)
-    if (fairProb >= 0.55) return Math.max(baseVig, 0.035); // moderate favorites
-    return baseVig;                                         // underdogs keep base vig
+    if (fairProb >= 0.80) return Math.max(baseVig, 0.04);  // extreme favorites (-400+)
+    if (fairProb >= 0.70) return Math.max(baseVig, 0.035); // heavy favorites (-230+)
+    return baseVig;                                         // everything else keeps base vig
   }
 
   function applyOddsVig(fairProb) {
