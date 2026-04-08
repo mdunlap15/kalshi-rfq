@@ -321,7 +321,8 @@ function oddsApiToSharpMarket(marketKey, sport) {
 }
 
 /**
- * Fetch Pinnacle odds from The Odds API and convert to SharpAPI-format rows.
+ * Fetch Pinnacle + FanDuel odds from The Odds API and convert to SharpAPI-format rows.
+ * Supplements SharpAPI data to ensure Pinnacle and FanDuel coverage for display.
  * Returns array of rows compatible with SharpAPI's format, or empty array on failure.
  */
 async function fetchPinnacleRows(sport) {
@@ -333,7 +334,7 @@ async function fetchPinnacleRows(sport) {
     + `?apiKey=${theOddsApiKey}`
     + `&regions=us,eu`
     + `&markets=h2h,spreads,totals`
-    + `&bookmakers=pinnacle`
+    + `&bookmakers=pinnacle,fanduel`
     + `&oddsFormat=american`;
 
   try {
