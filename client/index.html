@@ -3518,14 +3518,9 @@
     html += '<div><span style="color:var(--text2); font-size:18px; font-weight:700;">' + pendingCount + '</span><div style="font-size:10px; color:var(--text3);">Pending</div><div style="font-size:13px; color:var(--text3);">expected ' + fmtPnl(expectedPnl - wonPnl - lostPnl) + '</div></div>';
     html += '</div></div>';
 
-    // Outcome range bar with percentile markers via Monte Carlo
-    html += '<div style="flex:1; min-width:250px; padding:10px 14px; background:var(--surface); border:1px solid var(--border); border-radius:6px;">';
-    html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">Outcome Range (pending positions)</div>';
-    const rangeMin = worstCase + lostPnl;
-    const rangeMax = bestCase + wonPnl;
-    const rangeSpan = rangeMax - rangeMin || 1;
-    const expPct = Math.max(0, Math.min(100, ((expectedPnl - wonPnl - lostPnl - rangeMin) / rangeSpan * 100)));
-    const zeroPct = Math.max(0, Math.min(100, ((0 - rangeMin) / rangeSpan * 100)));
+    // Outcome distribution via Monte Carlo
+    html += '<div style="flex:1; min-width:280px; padding:10px 14px; background:var(--surface); border:1px solid var(--border); border-radius:6px;">';
+    html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:10px;">Outcome Distribution (10k simulations)</div>';
 
     // Monte Carlo: simulate 10k outcomes to find percentiles
     const SIM_COUNT = 10000;
@@ -3541,28 +3536,42 @@
     simResults.sort((a, b) => a - b);
     const pctile = (p) => simResults[Math.floor(p / 100 * SIM_COUNT)] || 0;
     const p1 = pctile(1), p10 = pctile(10), p50 = pctile(50), p90 = pctile(90), p99 = pctile(99);
-    const toPct = (v) => Math.max(0, Math.min(100, ((v - rangeMin) / rangeSpan * 100)));
+    const pExp = expectedPnl - wonPnl - lostPnl; // pending expected only
 
-    html += '<div style="position:relative; height:30px; background:linear-gradient(90deg, var(--red) 0%, var(--surface3) 50%, var(--green) 100%); border-radius:4px; margin:8px 0;">';
-    // Percentile lines
-    html += '<div style="position:absolute; left:' + toPct(p1) + '%; top:0; bottom:0; width:1px; border-left:2px dashed var(--red);" title="Worst 1%: ' + fmtPnl(p1) + '"></div>';
-    html += '<div style="position:absolute; left:' + toPct(p10) + '%; top:0; bottom:0; width:2px; background:var(--red);" title="Worst 10%: ' + fmtPnl(p10) + '"></div>';
-    html += '<div style="position:absolute; left:' + toPct(p50) + '%; top:0; bottom:0; width:2px; background:#ffffff;" title="Median: ' + fmtPnl(p50) + '"></div>';
-    html += '<div style="position:absolute; left:' + toPct(p90) + '%; top:0; bottom:0; width:2px; background:var(--green);" title="Best 10%: ' + fmtPnl(p90) + '"></div>';
-    html += '<div style="position:absolute; left:' + toPct(p99) + '%; top:0; bottom:0; width:1px; border-left:2px dashed var(--green);" title="Best 1%: ' + fmtPnl(p99) + '"></div>';
-    // Breakeven and expected lines
-    html += '<div style="position:absolute; left:' + zeroPct + '%; top:0; bottom:0; width:2px; background:rgba(255,255,255,0.3);" title="$0 (breakeven)"></div>';
-    html += '<div style="position:absolute; left:' + expPct + '%; top:-2px; bottom:-2px; width:4px; background:var(--amber); border-radius:2px;" title="Expected: ' + fmtPnl(expectedPnl - wonPnl - lostPnl) + '"></div>';
+    // Use p1..p99 as visible range so markers spread clearly
+    const visMin = p1;
+    const visMax = p99;
+    const visSpan = visMax - visMin || 1;
+    const toPct = (v) => Math.max(0, Math.min(100, ((v - visMin) / visSpan * 100)));
+
+    // Gradient bar — red on left, green on right, zero line as divider
+    html += '<div style="position:relative; height:24px; background:linear-gradient(90deg, rgba(248,81,73,0.4) 0%, var(--surface3) 50%, rgba(63,185,80,0.4) 100%); border-radius:4px; margin:6px 0 4px;">';
+    // $0 breakeven line
+    const zeroPct = toPct(0);
+    if (zeroPct > 2 && zeroPct < 98) {
+      html += '<div style="position:absolute; left:' + zeroPct + '%; top:0; bottom:0; width:1px; background:rgba(255,255,255,0.4);" title="Breakeven ($0)"></div>';
+    }
+    // Expected value marker
+    html += '<div style="position:absolute; left:' + toPct(pExp) + '%; top:-1px; bottom:-1px; width:3px; background:var(--amber); border-radius:2px;" title="Expected: ' + fmtPnl(pExp) + '"></div>';
+    // Median marker
+    html += '<div style="position:absolute; left:' + toPct(p50) + '%; top:0; bottom:0; width:2px; background:#fff;" title="Median: ' + fmtPnl(p50) + '"></div>';
     html += '</div>';
-    // Labels row
-    html += '<div style="position:relative; height:14px; font-size:9px; margin-bottom:2px;">';
-    html += '<span style="position:absolute; left:' + toPct(p1) + '%; transform:translateX(-50%); color:var(--red);">1%</span>';
-    html += '<span style="position:absolute; left:' + toPct(p10) + '%; transform:translateX(-50%); color:var(--red);">10%</span>';
-    html += '<span style="position:absolute; left:' + toPct(p50) + '%; transform:translateX(-50%); color:var(--text);">50%</span>';
-    html += '<span style="position:absolute; left:' + toPct(p90) + '%; transform:translateX(-50%); color:var(--green);">90%</span>';
-    html += '<span style="position:absolute; left:' + toPct(p99) + '%; transform:translateX(-50%); color:var(--green);">99%</span>';
-    html += '</div>';
-    html += '<div style="display:flex; justify-content:space-between; font-size:11px;"><span class="negative">' + fmtPnl(rangeMin) + '</span><span style="color:var(--text3);">$0</span><span class="positive">' + fmtPnl(rangeMax) + '</span></div>';
+
+    // Labeled percentile table — clear dollar amounts
+    html += '<table style="width:100%; font-size:11px; margin-top:6px;">';
+    html += '<tr style="color:var(--text3);"><td>Scenario</td><td style="text-align:right;">P&L</td></tr>';
+    const pRow = (label, val, color, bold) => {
+      const cls = val >= 0 ? 'positive' : 'negative';
+      const fw = bold ? 'font-weight:600;' : '';
+      return '<tr><td style="color:' + color + ';">' + label + '</td><td style="text-align:right;' + fw + '" class="' + cls + '">' + fmtPnl(val) + '</td></tr>';
+    };
+    html += pRow('Worst 1%', p1, 'var(--red)');
+    html += pRow('Worst 10%', p10, 'var(--red)');
+    html += pRow('Expected', pExp, 'var(--amber)', true);
+    html += pRow('Median (50%)', p50, 'var(--text)', true);
+    html += pRow('Best 10%', p90, 'var(--green)');
+    html += pRow('Best 1%', p99, 'var(--green)');
+    html += '</table>';
     html += '</div></div>';
 
     // Riskiest positions table — sortable, filterable, with expandable leg detail
