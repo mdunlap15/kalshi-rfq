@@ -268,6 +268,12 @@ async function seedAllLines() {
       // (e.g., "CJ McCollum To Record a Double Double" typed as moneyline)
       const allowed = fullGameNames[m.type];
       if (allowed && !allowed.includes(m.name)) return false;
+      // Exclude sub-game totals (first-inning runs, etc.) — lines ≤ 2.5 are never full-game
+      if (m.type === 'total') {
+        const parsed = px.parseMarketSelections(m);
+        const line = parsed[0]?.line;
+        if (line != null && Math.abs(line) <= 2.5) return false;
+      }
       return true;
     });
 

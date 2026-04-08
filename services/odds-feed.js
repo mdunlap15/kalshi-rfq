@@ -15,12 +15,20 @@ const LEAGUE_MAP = {
   'basketball_nba': { param: 'league', value: 'nba' },
   'baseball_mlb': { param: 'league', value: 'mlb' },
   'icehockey_nhl': { param: 'league', value: 'nhl' },
-  'tennis': { param: 'sport', value: 'tennis' },
   'soccer': { param: 'sport', value: 'soccer' },
 };
+// NOTE: tennis removed from LEAGUE_MAP — SharpAPI returns events but zero bookmaker
+// odds for tennis. Routed through The Odds API fallback instead (dynamic tournament discovery).
 
 // Sports that use The Odds API as fallback (SharpAPI free tier doesn't cover them)
 const ODDS_API_FALLBACK = {
+  'tennis': {
+    // Tennis tournaments rotate — discover active ones dynamically
+    dynamic: true,
+    sportPrefix: 'tennis_',
+    markets: 'h2h',
+    bookmakers: 'pinnacle,draftkings,fanduel',
+  },
   'basketball_ncaab': {
     oddsApiSport: 'basketball_ncaab',
     markets: 'h2h,spreads,totals',
@@ -369,11 +377,109 @@ async function fetchPinnacleRows(sport) {
 // THE ODDS API FALLBACK (for sports SharpAPI free tier doesn't cover)
 // ---------------------------------------------------------------------------
 
+/**
+ * Fetch odds for dynamic sports (e.g., tennis) where tournament keys change.
+ * Discovers active tournaments from The Odds API, fetches odds for each,
+ * and merges all events into the cache under the generic sport key.
+ */
+async function fetchDynamicSports(sport, fallback, apiKey) {
+  // Step 1: discover active tournaments matching the prefix
+  const sportsResp = await fetch(`https://api.the-odds-api.com/v4/sports/?apiKey=${apiKey}`);
+  if (!sportsResp.ok) throw new Error(`The Odds API sports list: ${sportsResp.status}`);
+  const allSports = await sportsResp.json();
+  const activeTournaments = allSports.filter(s => s.key.startsWith(fallback.sportPrefix) && s.active);
+
+  if (activeTournaments.length === 0) {
+    log.warn('OddsFeed', `No active ${sport} tournaments found on The Odds API`);
+    return {};
+  }
+  log.info('OddsFeed', `Found ${activeTournaments.length} active ${sport} tournaments: ${activeTournaments.map(t => t.key).join(', ')}`);
+
+  // Step 2: fetch odds for each active tournament
+  const allEvents = [];
+  for (const tournament of activeTournaments) {
+    const url = `https://api.the-odds-api.com/v4/sports/${tournament.key}/odds`
+      + `?apiKey=${apiKey}`
+      + `&regions=us,eu`
+      + `&markets=${fallback.markets}`
+      + `&bookmakers=${fallback.bookmakers}`
+      + `&oddsFormat=american`;
+
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        log.warn('OddsFeed', `The Odds API ${resp.status} for ${tournament.key}`);
+        continue;
+      }
+      const remaining = resp.headers.get('x-requests-remaining');
+      if (remaining != null) log.debug('OddsFeed', `The Odds API: ${remaining} requests remaining`);
+      const events = await resp.json();
+      allEvents.push(...events);
+      log.info('OddsFeed', `Got ${events.length} events from ${tournament.key}`);
+    } catch (err) {
+      log.warn('OddsFeed', `Failed to fetch ${tournament.key}: ${err.message}`);
+    }
+  }
+
+  log.info('OddsFeed', `Total ${sport} events across all tournaments: ${allEvents.length}`);
+
+  // Step 3: parse into cache format (same as regular fetchFromTheOddsApi)
+  const parsed = {};
+  for (const event of allEvents) {
+    const key = normalizeEventKey(event.home_team, event.away_team);
+    const allBooks = event.bookmakers || [];
+    if (allBooks.length === 0) continue;
+
+    const markets = {};
+
+    // Moneyline (h2h)
+    const mlPairs = [];
+    for (const book of allBooks) {
+      const mlMarket = book.markets?.find(m => m.key === 'h2h');
+      if (!mlMarket) continue;
+      const home = mlMarket.outcomes?.find(o => o.name === event.home_team);
+      const away = mlMarket.outcomes?.find(o => o.name === event.away_team);
+      if (home && away) {
+        mlPairs.push({
+          book: book.key,
+          home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price },
+          away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price },
+        });
+      }
+    }
+    if (mlPairs.length > 0) {
+      markets.h2h = buildConsensusMoneyline(mlPairs);
+    }
+
+    if (Object.keys(markets).length > 0) {
+      parsed[key] = {
+        homeTeam: event.home_team,
+        awayTeam: event.away_team,
+        commenceTime: event.commence_time,
+        markets,
+      };
+    }
+  }
+
+  // Store in cache under the generic sport key
+  oddsCache[sport] = {
+    events: parsed,
+    fetchedAt: Date.now(),
+  };
+
+  return parsed;
+}
+
 async function fetchFromTheOddsApi(sport) {
   const fallback = ODDS_API_FALLBACK[sport];
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   if (!theOddsApiKey) {
     throw new Error(`No THE_ODDS_API_KEY set for fallback sport ${sport}`);
+  }
+
+  // Dynamic sports (e.g., tennis) — discover active tournaments first
+  if (fallback.dynamic) {
+    return fetchDynamicSports(sport, fallback, theOddsApiKey);
   }
 
   const url = `https://api.the-odds-api.com/v4/sports/${fallback.oddsApiSport}/odds`

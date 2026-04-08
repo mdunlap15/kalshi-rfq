@@ -124,6 +124,17 @@ async function priceParlay(legs) {
       lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
     );
 
+    // Require at least one sportsbook benchmark — don't price blind
+    if (pinnacleOdds == null && fanduelOdds == null) {
+      log.debug('Pricing', `Declined: no sportsbook benchmark for ${legLabel}`);
+      priceParlay._lastFailure = {
+        reason: 'no sportsbook odds',
+        detail: `no Pinnacle or FanDuel odds for ${legLabel} — cannot price without benchmark`,
+        blockerLeg: legDescriptor,
+      };
+      return null;
+    }
+
     // Get de-vigged consensus fair prob for display (separate from pricing fairProb)
     const displayFairProb = oddsFeed.getDisplayFairProb(
       lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
