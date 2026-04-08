@@ -3367,7 +3367,7 @@
         bestCase += spProfit;
         worstCase -= spLoss;
         pendingCount++;
-        pendingPositions.push({ exp, winProb, spProfit, spLoss, odds: o.offeredOdds, teams: legs.map(l => (l.team || '?').substring(0, 18)).join(', ') });
+        pendingPositions.push({ exp, winProb, spProfit, spLoss, odds: o.offeredOdds, teams: legs.map(l => (l.team || '?').substring(0, 18)).join(', '), legs, parlayId: o.parlayId });
       }
     }
 
@@ -3421,18 +3421,45 @@
     html += '<div style="display:flex; justify-content:space-between; font-size:11px;"><span class="negative">' + fmtPnl(rangeMin) + '</span><span style="color:var(--text3);">$0</span><span class="positive">' + fmtPnl(rangeMax) + '</span></div>';
     html += '</div></div>';
 
-    // Riskiest positions table
+    // Riskiest positions table with expandable leg detail
     if (pendingPositions.length > 0) {
       pendingPositions.sort((a, b) => a.exp - b.exp);
       html += '<div style="margin-top:12px;"><div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">Riskiest Pending Positions</div>';
-      html += '<table style="font-size:12px; width:100%;"><tr><th style="text-align:left">Parlay</th><th style="text-align:right">Win Prob</th><th style="text-align:right">If You Win</th><th style="text-align:right">If You Lose</th><th style="text-align:right">Expected</th></tr>';
-      for (const p of pendingPositions.slice(0, 8)) {
+      html += '<div style="font-size:10px; color:var(--text3); margin-bottom:6px;">Your Win Prob = probability the parlay loses (any leg fails). Click row to see per-leg breakdown.</div>';
+      html += '<table style="font-size:12px; width:100%;"><tr><th style="text-align:left">Parlay</th><th style="text-align:right" title="Your probability of winning (parlay fails)">Your Win Prob</th><th style="text-align:right">If You Win</th><th style="text-align:right">If You Lose</th><th style="text-align:right">Expected</th></tr>';
+      for (let ri = 0; ri < Math.min(pendingPositions.length, 12); ri++) {
+        const p = pendingPositions[ri];
         const expCls = p.exp >= 0 ? 'positive' : 'negative';
-        html += '<tr><td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;">' + p.teams + '</td>';
+        const rowId = 'outlook-' + ri;
+        const expanded = expandedRows.has(rowId);
+        html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowId + '\')">';
+        html += '<td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="' + p.teams + '">' + p.teams + '</td>';
         html += '<td style="text-align:right">' + (p.winProb * 100).toFixed(0) + '%</td>';
         html += '<td style="text-align:right; color:var(--green);">+' + fmtDollar(p.spProfit) + '</td>';
         html += '<td style="text-align:right; color:var(--red);">-' + fmtDollar(p.spLoss) + '</td>';
         html += '<td style="text-align:right; font-weight:600;" class="' + expCls + '">' + fmtPnl(p.exp) + '</td></tr>';
+        // Expandable leg detail
+        html += '<tr id="' + rowId + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
+        html += '<td colspan="5" style="padding:8px 12px;">';
+        html += '<table style="font-size:11px; width:100%;"><tr><th style="text-align:left">Leg</th><th style="text-align:left">Market</th><th style="text-align:right" title="Probability the selection wins (bad for you)">Their Win %</th><th style="text-align:right" title="Probability the selection loses (good for you)">Your Win %</th><th style="text-align:center">Status</th></tr>';
+        for (const l of (p.legs || [])) {
+          const lr = getLegResult(l);
+          const selProb = l.liveFairProb || l.fairProb || 0.5;
+          let statusIcon, statusColor;
+          if (lr === 'lost') { statusIcon = '✗'; statusColor = 'var(--green)'; } // they lost = you won
+          else if (lr === 'won') { statusIcon = '✓'; statusColor = 'var(--red)'; } // they won = you lost
+          else { statusIcon = '●'; statusColor = 'var(--text3)'; }
+          const yourWinPct = lr === 'lost' ? '100%' : lr === 'won' ? '0%' : ((1 - selProb) * 100).toFixed(0) + '%';
+          const theirWinPct = lr === 'lost' ? '0%' : lr === 'won' ? '100%' : (selProb * 100).toFixed(0) + '%';
+          html += '<tr>';
+          html += '<td>' + (l.team || '?') + '</td>';
+          html += '<td><span class="market-pill">' + (l.market || l.marketType || '-') + '</span></td>';
+          html += '<td style="text-align:right; color:var(--red);">' + theirWinPct + '</td>';
+          html += '<td style="text-align:right; color:var(--green);">' + yourWinPct + '</td>';
+          html += '<td style="text-align:center; color:' + statusColor + '; font-size:14px;" title="' + (lr === 'lost' ? 'Selection lost — you won this leg' : lr === 'won' ? 'Selection won — counts toward parlay hitting' : 'Pending') + '">' + statusIcon + '</td>';
+          html += '</tr>';
+        }
+        html += '</table></td></tr>';
       }
       html += '</table></div>';
     }
