@@ -557,10 +557,10 @@
 
         <div class="card">
           <div class="card-header" onclick="toggleCard(this)">
-            <span><span class="toggle-icon collapsed">&#9660;</span>Settled Positions (Wager Log)</span>
+            <span><span class="toggle-icon">&#9660;</span>Settled Positions (Wager Log)</span>
             <span id="settled-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
-          <div class="card-body collapsed" style="padding: 0;">
+          <div class="card-body" style="padding: 0;">
             <div id="settled-table"><div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div></div>
           </div>
         </div>
@@ -574,7 +574,7 @@
         <div class="card">
           <div class="card-header" style="padding-bottom:0; border-bottom:none;">
             <div style="display:flex; gap:0; align-items:center;">
-              <span class="toggle-icon collapsed" onclick="event.stopPropagation(); const b=this.closest('.card').querySelector('.card-body'); b.classList.toggle('collapsed'); this.classList.toggle('collapsed');" style="cursor:pointer; font-size:12px; margin-right:6px;">&#9660;</span>
+              <span class="toggle-icon" onclick="event.stopPropagation(); const b=this.closest('.card').querySelector('.card-body'); b.classList.toggle('collapsed'); this.classList.toggle('collapsed');" style="cursor:pointer; font-size:12px; margin-right:6px;">&#9660;</span>
               <button class="btn" id="pos-tab-open" onclick="switchPositionsTab('open')" style="border-radius:4px 4px 0 0; border-bottom:2px solid var(--accent); font-size:12px; padding:6px 16px;">Open Positions</button>
               <button class="btn" id="pos-tab-settled" onclick="switchPositionsTab('settled')" style="border-radius:4px 4px 0 0; border-bottom:2px solid transparent; font-size:12px; padding:6px 16px; color:var(--text3);">Settled Positions</button>
             </div>
@@ -583,7 +583,7 @@
               <button class="btn" onclick="openExportModal()" style="font-size:11px; padding:4px 10px;">&#x2913; Export CSV</button>
             </div>
           </div>
-          <div class="card-body collapsed" style="padding: 0;">
+          <div class="card-body" style="padding: 0;">
             <div id="positions-table"><div class="empty-state"><div class="icon">-</div><div>No open positions</div></div></div>
             <div id="portfolio-settled" style="display:none;"><div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div></div>
           </div>
