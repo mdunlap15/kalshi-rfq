@@ -1458,6 +1458,69 @@ function revertBogusSettlements() {
   return { reverted };
 }
 
+/**
+ * Reconcile settled orders: if leg-level data (inferredResult / settlementStatus)
+ * derives a DIFFERENT SP result than what's stored, correct it.
+ * This catches cases where PX settlement was wrong or score detection updated legs
+ * after the initial settlement was recorded.
+ */
+function reconcileSettlements() {
+  let corrected = 0;
+  for (const o of Object.values(orders)) {
+    if (!o.status || !o.status.startsWith('settled_')) continue;
+
+    const legs = o.legs || o.meta?.legs || [];
+    const legStatuses = legs.map(l => l.settlementStatus || l.settlement_status || l.inferredResult).filter(Boolean);
+    if (legStatuses.length === 0) continue; // no leg data to reconcile against
+
+    // Derive correct SP result from legs (bettor-perspective leg data)
+    const anyLegLost = legStatuses.some(s => s === 'lost');
+    const anyPush = legStatuses.some(s => s === 'push' || s === 'void');
+    let derivedResult;
+    if (anyLegLost) {
+      derivedResult = 'won'; // bettor's parlay missed ≥1 leg → SP won
+    } else if (anyPush && legStatuses.every(s => s === 'won' || s === 'push' || s === 'void')) {
+      derivedResult = 'push';
+    } else if (legStatuses.every(s => s === 'won')) {
+      derivedResult = 'lost'; // all legs hit → bettor won → SP lost
+    } else {
+      continue; // mixed/incomplete — can't determine yet
+    }
+
+    const storedResult = o.settlementResult || o.status.replace('settled_', '');
+    if (derivedResult === storedResult) continue; // already correct
+
+    log.warn('Reconcile', `Correcting settlement for ${o.parlayId}: was ${storedResult}, derived ${derivedResult} from ${legStatuses.length} legs`);
+
+    // Reverse old stats
+    if (o.pnl != null) stats.runningPnL -= o.pnl;
+    if (o.pnl > 0) stats.totalWins--;
+    else if (o.pnl < 0) stats.totalLosses--;
+
+    // Apply corrected result
+    o.status = `settled_${derivedResult}`;
+    o.settlementResult = derivedResult;
+    const bettorWager = americanOddsToProfit(o.confirmedOdds, o.confirmedStake);
+    if (derivedResult === 'won') {
+      o.pnl = bettorWager;
+    } else if (derivedResult === 'lost') {
+      o.pnl = -(o.confirmedStake || 0);
+    } else {
+      o.pnl = 0;
+    }
+
+    // Update stats
+    stats.runningPnL += o.pnl;
+    if (o.pnl > 0) stats.totalWins++;
+    else if (o.pnl < 0) stats.totalLosses++;
+
+    db.saveOrder(o).catch(() => {});
+    corrected++;
+  }
+  if (corrected > 0) log.info('Reconcile', `Corrected ${corrected} settlements from leg data`);
+  return { corrected };
+}
+
 async function checkLegResults() {
   const oddsFeed = require('./odds-feed');
   // Check both confirmed and settled orders — settled may have legs without inferredResult
@@ -1598,6 +1661,7 @@ module.exports = {
   pollOrderSettlements,
   checkLegResults,
   revertBogusSettlements,
+  reconcileSettlements,
   deleteUnknownSettledOrders,
   findByParlayId,
   findByOrderUuid,

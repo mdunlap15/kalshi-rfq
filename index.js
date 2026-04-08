@@ -168,6 +168,7 @@ async function startup() {
     try {
       orderTracker.revertBogusSettlements();
       await orderTracker.checkLegResults();
+      orderTracker.reconcileSettlements();
     } catch (err) {
       log.debug('Results', `Result check failed: ${err.message}`);
     }
