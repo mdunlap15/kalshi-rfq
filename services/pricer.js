@@ -99,7 +99,7 @@ async function priceParlay(legs) {
         lineInfo.awayTeam,
         lineInfo.oddsApiMarket,
         lineInfo.oddsApiSelection,
-        lineInfo.line != null ? Math.abs(lineInfo.line) : null,
+        lineInfo.line,
         lineInfo.startTime
       );
     }
@@ -133,6 +133,32 @@ async function priceParlay(legs) {
         blockerLeg: legDescriptor,
       };
       return null;
+    }
+
+    // Spread/total line verification: when the requested line matches our cached
+    // primary, spot-check Pinnacle to confirm the line hasn't moved. Prevents
+    // pricing stale alt-spreads at primary-spread odds.
+    if ((lineInfo.oddsApiMarket === 'spreads' || lineInfo.oddsApiMarket === 'totals') && lineInfo.line != null) {
+      const event = oddsFeed.getEventMarkets(
+        lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam, lineInfo.startTime
+      );
+      const cachedLine = event?.markets?.[lineInfo.oddsApiMarket]?.line;
+      if (cachedLine != null && Math.abs(Math.abs(cachedLine) - Math.abs(lineInfo.line)) < 0.01) {
+        // Requested line matches our cached primary — verify it hasn't moved
+        const verify = await oddsFeed.verifyLineWithPinnacle(
+          lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+          lineInfo.oddsApiMarket, cachedLine
+        );
+        if (!verify.ok) {
+          log.info('Pricing', `Declined: spread line moved for ${legLabel} (cached ${cachedLine}, Pinnacle now ${verify.currentLine})`);
+          priceParlay._lastFailure = {
+            reason: 'spread line moved',
+            detail: `${legLabel}: cached line ${cachedLine} but Pinnacle now ${verify.currentLine} (moved ${verify.diff.toFixed(1)}pts)`,
+            blockerLeg: legDescriptor,
+          };
+          return null;
+        }
+      }
     }
 
     // Get de-vigged consensus fair prob for display (separate from pricing fairProb)

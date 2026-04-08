@@ -986,13 +986,31 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
   if (!market) return null;
 
   if ((marketType === 'spreads' || marketType === 'totals') && market.line != null && line != null) {
-    const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
+    const absLine = Math.abs(line);
+    const lineDiff = Math.abs(Math.abs(market.line) - absLine);
     if (lineDiff > 0.01) {
-      // Check alt lines cache
+      // Line magnitude doesn't match primary — check alt lines
       const key = normalizeEventKey(homeTeam, awayTeam);
-      const altProb = getAltLineFairProb(key, marketType, selection, line);
+      const altProb = getAltLineFairProb(key, marketType, selection, absLine);
       if (altProb != null) return altProb;
       return null;
+    }
+
+    // Magnitude matches — verify spread DIRECTION is correct.
+    // For spreads: if selection is 'home', the cached home point should have the
+    // same sign as the requested line. E.g., if home is -1.5 (favorite) but
+    // request is +1.5, the bettor wants the alt side, not the primary.
+    if (marketType === 'spreads' && line !== 0) {
+      const cachedPoint = selection === 'home' ? market.home?.point : market.away?.point;
+      if (cachedPoint != null && Math.sign(cachedPoint) !== Math.sign(line)) {
+        // Direction mismatch — requested +1.5 but team is -1.5 (or vice versa)
+        // Treat as alt line, not primary
+        log.info('OddsFeed', `Spread direction mismatch: ${selection} cached ${cachedPoint} vs requested ${line} for ${homeTeam} vs ${awayTeam}`);
+        const key = normalizeEventKey(homeTeam, awayTeam);
+        const altProb = getAltLineFairProb(key, marketType, selection, absLine);
+        if (altProb != null) return altProb;
+        return null; // no alt line data — decline
+      }
     }
   }
 
@@ -1093,6 +1111,58 @@ function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, target
 }
 
 /**
+ * Verify a spread/total line hasn't moved by spot-checking Pinnacle's current line.
+ * Only called when the requested line matches our cached primary (the dangerous case).
+ * Returns { ok: true } if line is confirmed, or { ok: false, currentLine } if moved.
+ */
+async function verifyLineWithPinnacle(sport, homeTeam, awayTeam, marketType, cachedLine) {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  const oddsApiSport = PINNACLE_SPORT_MAP[sport] || ODDS_API_FALLBACK[sport]?.oddsApiSport;
+  if (!theOddsApiKey || !oddsApiSport) return { ok: true }; // can't verify, allow
+
+  try {
+    const market = marketType === 'spreads' ? 'spreads' : 'totals';
+    const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
+      + `?apiKey=${theOddsApiKey}`
+      + `&regions=eu`
+      + `&markets=${market}`
+      + `&bookmakers=pinnacle`
+      + `&oddsFormat=american`;
+
+    const resp = await fetch(url);
+    if (!resp.ok) return { ok: true }; // API error, allow
+
+    const events = await resp.json();
+    // Find matching event
+    const key = normalizeEventKey(homeTeam, awayTeam);
+    for (const event of events) {
+      const eventKey = normalizeEventKey(event.home_team, event.away_team);
+      if (eventKey !== key) continue;
+
+      const pinnacle = event.bookmakers?.find(b => b.key === 'pinnacle');
+      if (!pinnacle) return { ok: true }; // no Pinnacle data, allow
+
+      const mkt = pinnacle.markets?.find(m => m.key === market);
+      if (!mkt || !mkt.outcomes || mkt.outcomes.length < 2) return { ok: true };
+
+      const pinLine = mkt.outcomes[0]?.point;
+      if (pinLine == null) return { ok: true };
+
+      const lineDiff = Math.abs(Math.abs(pinLine) - Math.abs(cachedLine));
+      if (lineDiff > 1.0) {
+        log.warn('OddsFeed', `Spread line moved! Cached: ${cachedLine}, Pinnacle now: ${pinLine} (diff: ${lineDiff}) for ${homeTeam} vs ${awayTeam}`);
+        return { ok: false, currentLine: pinLine, cachedLine, diff: lineDiff };
+      }
+      return { ok: true, currentLine: pinLine };
+    }
+    return { ok: true }; // event not found on Pinnacle, allow
+  } catch (err) {
+    log.debug('OddsFeed', `Pinnacle line verify failed: ${err.message}`);
+    return { ok: true }; // error, allow
+  }
+}
+
+/**
  * Get fair probability — async version. Falls back to on-demand alt line fetch.
  */
 async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection, line, targetTime) {
@@ -1106,7 +1176,7 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
     if (event) {
       await fetchAltLines(sport, homeTeam, awayTeam);
       const key = normalizeEventKey(homeTeam, awayTeam);
-      return getAltLineFairProb(key, marketType, selection, line);
+      return getAltLineFairProb(key, marketType, selection, Math.abs(line));
     }
   }
 
@@ -1427,6 +1497,7 @@ module.exports = {
   refreshAllSports,
   getFairProb,
   getFairProbAsync,
+  verifyLineWithPinnacle,
   getPinnacleOdds,
   getDisplayFairProb,
   getFanDuelOdds,
