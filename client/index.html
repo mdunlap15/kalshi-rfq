@@ -6008,12 +6008,30 @@
     const highlightUnregistered = opts.highlightUnregistered || false;
     const highlightBlocker = opts.highlightBlocker || false;
     for (const l of legs) {
-      const ls = getLegResult(l) || l.status || 'pending';
-      const isInferred = !l.settlementStatus && !l.settlement_status && l.inferredResult;
+      // Determine game timing: upcoming, in-progress, or completed
+      const now = Date.now();
+      const startMs = l.startTime ? new Date(l.startTime).getTime() : null;
+      const isUpcoming = startMs && startMs > now;
+      // Games typically last: MLB ~3.5h, NBA ~2.5h, NHL ~2.5h, soccer ~2h, tennis ~3h
+      const isLikelyInProgress = startMs && !isUpcoming && (now - startMs) < 4 * 3600 * 1000;
+      const hasPxSettlement = l.settlementStatus || l.settlement_status;
+
+      let ls = getLegResult(l) || l.status || 'pending';
+      const isInferred = !hasPxSettlement && l.inferredResult;
+
+      // Override inferred results for games that haven't started or are still in progress
+      if (isUpcoming && !hasPxSettlement) {
+        ls = 'upcoming';
+      } else if (isLikelyInProgress && isInferred && !hasPxSettlement) {
+        ls = 'live';
+      }
+
       let lIcon, lColor, lTitle;
       if (ls === 'won') { lIcon = '&#10003;'; lColor = 'var(--green)'; lTitle = (isInferred ? '[From scores] ' : '') + 'Selection hit (bad for SP — counts toward bettor&#39;s parlay winning)'; }
       else if (ls === 'lost') { lIcon = '&#10007;'; lColor = 'var(--red)'; lTitle = (isInferred ? '[From scores] ' : '') + 'Selection missed (good for SP — kills bettor&#39;s parlay)'; }
       else if (ls === 'push' || ls === 'void') { lIcon = '&#8212;'; lColor = 'var(--amber)'; lTitle = ls.charAt(0).toUpperCase() + ls.slice(1); }
+      else if (ls === 'live') { lIcon = '&#9679;'; lColor = 'var(--blue)'; lTitle = 'In Progress'; }
+      else if (ls === 'upcoming') { lIcon = '&#9679;'; lColor = 'var(--text3)'; lTitle = 'Upcoming'; }
       else { lIcon = '&#9679;'; lColor = 'var(--text3)'; lTitle = 'Pending'; }
 
       const eventTime = l.startTime ? new Date(l.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '-';
