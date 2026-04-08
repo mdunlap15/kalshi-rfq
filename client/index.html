@@ -371,6 +371,103 @@
       justify-content: space-between;
       font-weight: 500;
     }
+
+    /* Export modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      width: 540px;
+      max-width: 95vw;
+      max-height: 85vh;
+      overflow-y: auto;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 15px;
+    }
+    .modal-header .close-btn {
+      background: none; border: none; color: var(--text3);
+      font-size: 20px; cursor: pointer; padding: 2px 6px;
+    }
+    .modal-header .close-btn:hover { color: var(--text); }
+    .modal-body { padding: 16px 18px; }
+    .modal-footer {
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .export-field { margin-bottom: 12px; }
+    .export-field > label {
+      display: block;
+      font-size: 11px;
+      color: var(--text3);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .export-field .range-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .export-field input[type="number"],
+    .export-field input[type="datetime-local"],
+    .export-field select {
+      background: var(--surface3);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .export-field input[type="number"] { width: 100px; }
+    .export-field input[type="datetime-local"] { width: 190px; }
+    .export-field .checkbox-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .export-field .checkbox-group label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--text);
+      text-transform: none;
+      letter-spacing: normal;
+      cursor: pointer;
+    }
+    .export-field .radio-group {
+      display: flex;
+      gap: 14px;
+    }
+    .export-field .radio-group label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -480,7 +577,10 @@
               <button class="btn" id="pos-tab-open" onclick="switchPositionsTab('open')" style="border-radius:4px 4px 0 0; border-bottom:2px solid var(--accent); font-size:12px; padding:6px 16px;">Open Positions</button>
               <button class="btn" id="pos-tab-settled" onclick="switchPositionsTab('settled')" style="border-radius:4px 4px 0 0; border-bottom:2px solid transparent; font-size:12px; padding:6px 16px; color:var(--text3);">Settled Positions</button>
             </div>
-            <span id="positions-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span id="positions-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+              <button class="btn" onclick="openExportModal()" style="font-size:11px; padding:4px 10px;">&#x2913; Export CSV</button>
+            </div>
           </div>
           <div class="card-body" style="padding: 0;">
             <div id="positions-table"><div class="empty-state"><div class="icon">-</div><div>No open positions</div></div></div>
@@ -767,6 +867,24 @@
     </div><!-- /content-body -->
   </main>
 </div><!-- /layout -->
+
+<!-- Export CSV Modal -->
+<div id="export-modal" class="modal-overlay" onclick="if(event.target===this)closeExportModal()">
+  <div class="modal-card">
+    <div class="modal-header">
+      <span>Export Positions</span>
+      <button class="close-btn" onclick="closeExportModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="export-modal-body"></div>
+    <div class="modal-footer">
+      <span id="export-match-count" style="font-size:12px; color:var(--text2);"></span>
+      <div style="display:flex; gap:8px;">
+        <button class="btn" onclick="closeExportModal()">Cancel</button>
+        <button class="btn primary" id="export-download-btn" onclick="downloadExportCSV()">Download CSV</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script>
   const BASE = window.location.origin;
@@ -4613,6 +4731,268 @@
     return '<input type="number" step="' + step + '" placeholder="' + minPh + '" value="' + minV + '" oninput="' + stateKey + '.' + minField + '=this.value; ' + rerenderFn + '" style="' + style + ' width:' + width + ';" title="' + opts.title + ' min">' +
            '<input type="number" step="' + step + '" placeholder="' + maxPh + '" value="' + maxV + '" oninput="' + stateKey + '.' + maxField + '=this.value; ' + rerenderFn + '" style="' + style + ' width:' + width + ';" title="' + opts.title + ' max">';
   }
+
+  // -----------------------------------------------------------------------
+  // CSV EXPORT MODAL
+  // -----------------------------------------------------------------------
+
+  const exportState = {
+    positionType: 'both',
+    dateFrom: '', dateTo: '',
+    oddsMin: '', oddsMax: '',
+    riskMin: '', riskMax: '',
+    towinMin: '', towinMax: '',
+    legsMin: '', legsMax: '',
+    sports: [],
+    results: [],
+    pnlMin: '', pnlMax: '',
+  };
+
+  function openExportModal() {
+    Object.assign(exportState, {
+      positionType: 'both', dateFrom: '', dateTo: '',
+      oddsMin: '', oddsMax: '', riskMin: '', riskMax: '',
+      towinMin: '', towinMax: '', legsMin: '', legsMax: '',
+      sports: [], results: [], pnlMin: '', pnlMax: '',
+    });
+    renderExportModal();
+    document.getElementById('export-modal').classList.add('open');
+  }
+
+  function closeExportModal() {
+    document.getElementById('export-modal').classList.remove('open');
+  }
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeExportModal();
+  });
+
+  function renderExportModal() {
+    // Collect available sports from all orders
+    const allSports = new Set();
+    const allOrders = Object.values(orderState.allOrders || {});
+    allOrders.forEach(o => {
+      (o.legs || o.meta?.legs || []).forEach(l => { if (l.sport) allSports.add(l.sport); });
+    });
+    Object.values(settledState.orders || {}).forEach(o => {
+      (o.legs || o.meta?.legs || []).forEach(l => { if (l.sport) allSports.add(l.sport); });
+    });
+    const sports = [...allSports].sort();
+
+    const s = exportState;
+    const showSettled = s.positionType === 'settled' || s.positionType === 'both';
+    const inp = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:5px 8px; border-radius:4px; font-size:12px;';
+
+    let h = '';
+
+    // Position type
+    h += '<div class="export-field"><label>Position Type</label><div class="radio-group">';
+    ['both', 'open', 'settled'].forEach(v => {
+      const lbl = v === 'both' ? 'Both' : v === 'open' ? 'Open Only' : 'Settled Only';
+      h += '<label><input type="radio" name="exp-type" value="' + v + '"' + (s.positionType === v ? ' checked' : '') + ' onchange="exportState.positionType=this.value; renderExportModal();"> ' + lbl + '</label>';
+    });
+    h += '</div></div>';
+
+    // Date range
+    h += '<div class="export-field"><label>Date Range</label><div class="range-row">';
+    h += '<input type="datetime-local" value="' + s.dateFrom + '" oninput="exportState.dateFrom=this.value; updateExportPreview()" title="From">';
+    h += '<span style="color:var(--text3);">to</span>';
+    h += '<input type="datetime-local" value="' + s.dateTo + '" oninput="exportState.dateTo=this.value; updateExportPreview()" title="To">';
+    h += '</div></div>';
+
+    // Odds range
+    h += '<div class="export-field"><label>Odds Range (American)</label><div class="range-row">';
+    h += '<input type="number" placeholder="Min" value="' + s.oddsMin + '" oninput="exportState.oddsMin=this.value; updateExportPreview()">';
+    h += '<span style="color:var(--text3);">to</span>';
+    h += '<input type="number" placeholder="Max" value="' + s.oddsMax + '" oninput="exportState.oddsMax=this.value; updateExportPreview()">';
+    h += '</div></div>';
+
+    // Risk range
+    h += '<div class="export-field"><label>My Risk Amount ($)</label><div class="range-row">';
+    h += '<input type="number" step="0.01" placeholder="Min" value="' + s.riskMin + '" oninput="exportState.riskMin=this.value; updateExportPreview()">';
+    h += '<span style="color:var(--text3);">to</span>';
+    h += '<input type="number" step="0.01" placeholder="Max" value="' + s.riskMax + '" oninput="exportState.riskMax=this.value; updateExportPreview()">';
+    h += '</div></div>';
+
+    // To Win range
+    h += '<div class="export-field"><label>To Win Amount ($)</label><div class="range-row">';
+    h += '<input type="number" step="0.01" placeholder="Min" value="' + s.towinMin + '" oninput="exportState.towinMin=this.value; updateExportPreview()">';
+    h += '<span style="color:var(--text3);">to</span>';
+    h += '<input type="number" step="0.01" placeholder="Max" value="' + s.towinMax + '" oninput="exportState.towinMax=this.value; updateExportPreview()">';
+    h += '</div></div>';
+
+    // Legs range
+    h += '<div class="export-field"><label>Number of Legs</label><div class="range-row">';
+    h += '<input type="number" step="1" min="1" placeholder="Min" value="' + s.legsMin + '" oninput="exportState.legsMin=this.value; updateExportPreview()" style="width:70px;">';
+    h += '<span style="color:var(--text3);">to</span>';
+    h += '<input type="number" step="1" min="1" placeholder="Max" value="' + s.legsMax + '" oninput="exportState.legsMax=this.value; updateExportPreview()" style="width:70px;">';
+    h += '</div></div>';
+
+    // Sports
+    if (sports.length > 0) {
+      h += '<div class="export-field"><label>Sports</label><div class="checkbox-group">';
+      for (const sp of sports) {
+        const checked = s.sports.includes(sp) ? ' checked' : '';
+        h += '<label><input type="checkbox" value="' + sp + '"' + checked + ' onchange="toggleExportSport(this.value, this.checked)"> ' + sportLabel(sp) + '</label>';
+      }
+      h += '</div></div>';
+    }
+
+    // Settlement result (only when settled included)
+    if (showSettled) {
+      h += '<div class="export-field"><label>Settlement Result</label><div class="checkbox-group">';
+      ['won', 'lost', 'push', 'void'].forEach(r => {
+        const checked = s.results.includes(r) ? ' checked' : '';
+        const lbl = r.charAt(0).toUpperCase() + r.slice(1);
+        h += '<label><input type="checkbox" value="' + r + '"' + checked + ' onchange="toggleExportResult(this.value, this.checked)"> ' + lbl + '</label>';
+      });
+      h += '</div></div>';
+
+      // P&L range
+      h += '<div class="export-field"><label>P&L Range ($)</label><div class="range-row">';
+      h += '<input type="number" step="0.01" placeholder="Min" value="' + s.pnlMin + '" oninput="exportState.pnlMin=this.value; updateExportPreview()">';
+      h += '<span style="color:var(--text3);">to</span>';
+      h += '<input type="number" step="0.01" placeholder="Max" value="' + s.pnlMax + '" oninput="exportState.pnlMax=this.value; updateExportPreview()">';
+      h += '</div></div>';
+    }
+
+    document.getElementById('export-modal-body').innerHTML = h;
+    updateExportPreview();
+  }
+
+  function toggleExportSport(sport, checked) {
+    if (checked) { if (!exportState.sports.includes(sport)) exportState.sports.push(sport); }
+    else { exportState.sports = exportState.sports.filter(s => s !== sport); }
+    updateExportPreview();
+  }
+
+  function toggleExportResult(result, checked) {
+    if (checked) { if (!exportState.results.includes(result)) exportState.results.push(result); }
+    else { exportState.results = exportState.results.filter(r => r !== result); }
+    updateExportPreview();
+  }
+
+  function getFilteredExportRows() {
+    const s = exportState;
+    let rows = [];
+    const seenIds = new Set();
+
+    // Settled first so they take priority in dedup
+    if (s.positionType === 'settled' || s.positionType === 'both') {
+      for (const o of Object.values(settledState.orders || {})) {
+        rows.push(o);
+        if (o.parlayId) seenIds.add(o.parlayId);
+      }
+    }
+    if (s.positionType === 'open' || s.positionType === 'both') {
+      for (const o of Object.values(orderState.allOrders || {})) {
+        if (o.status === 'confirmed' && !seenIds.has(o.parlayId)) {
+          rows.push(o);
+        }
+      }
+    }
+
+    return rows.filter(o => {
+      const dateRef = o.settledAt || o.confirmedAt || o.quotedAt;
+      if (!passesDateFilter(dateRef, s.dateFrom, s.dateTo)) return false;
+      if (!passesRangeFilter(o.offeredOdds, s.oddsMin, s.oddsMax)) return false;
+      const risk = o.confirmedStake || 0;
+      if (!passesRangeFilter(risk, s.riskMin, s.riskMax)) return false;
+      const toWin = calcSpProfit(o.confirmedStake, o.offeredOdds);
+      if (!passesRangeFilter(toWin, s.towinMin, s.towinMax)) return false;
+      const legs = o.legs || o.meta?.legs || [];
+      if (!passesRangeFilter(legs.length, s.legsMin, s.legsMax)) return false;
+      // Sport filter
+      if (s.sports.length > 0) {
+        const legSports = legs.map(l => l.sport).filter(Boolean);
+        if (!legSports.some(sp => s.sports.includes(sp))) return false;
+      }
+      // Result filter (settled only)
+      if (s.results.length > 0 && o.status && o.status.startsWith('settled_')) {
+        const result = o.settlementResult || o.status.replace('settled_', '');
+        if (!s.results.includes(result)) return false;
+      }
+      // P&L filter
+      if ((s.pnlMin !== '' || s.pnlMax !== '') && o.pnl != null) {
+        if (!passesRangeFilter(o.pnl, s.pnlMin, s.pnlMax)) return false;
+      }
+      return true;
+    });
+  }
+
+  function updateExportPreview() {
+    const rows = getFilteredExportRows();
+    const ct = document.getElementById('export-match-count');
+    const btn = document.getElementById('export-download-btn');
+    if (ct) ct.textContent = rows.length + ' row' + (rows.length !== 1 ? 's' : '') + ' match';
+    if (btn) btn.disabled = rows.length === 0;
+  }
+
+  function csvEscape(val) {
+    if (val == null) return '';
+    const s = String(val);
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }
+
+  function downloadExportCSV() {
+    const rows = getFilteredExportRows();
+    if (rows.length === 0) return;
+
+    const headers = ['Type','Parlay ID','Date','Legs','Selections','Sports',
+      'Offered Odds','Pinnacle Odds','FanDuel Odds','My Risk','To Win',
+      'Status','P&L','ROI %'];
+
+    const csvRows = [headers.join(',')];
+    for (const o of rows) {
+      const legs = o.legs || o.meta?.legs || [];
+      const isSettled = o.status && o.status.startsWith('settled_');
+      const type = isSettled ? 'Settled' : 'Open';
+      const date = (isSettled ? o.settledAt : o.confirmedAt) || o.quotedAt || '';
+      const selections = formatParlaySelections(legs);
+      const sports = [...new Set(legs.map(l => sportLabel(l.sport)).filter(Boolean))].join(' / ');
+      const pinOdds = compoundParlayOdds(legs, 'pinnacleOdds') || '';
+      const fdOdds = compoundParlayOdds(legs, 'fanduelOdds') || '';
+      const risk = o.confirmedStake || '';
+      const toWin = (o.confirmedStake && o.offeredOdds) ? calcSpProfit(o.confirmedStake, o.offeredOdds).toFixed(2) : '';
+      let status = '';
+      if (isSettled) {
+        status = o.settlementResult || o.status.replace('settled_', '');
+        status = status.charAt(0).toUpperCase() + status.slice(1);
+      } else {
+        const sd = orderStatusDisplay(o);
+        status = sd ? sd.text : 'Open';
+      }
+      const pnl = (isSettled && o.pnl != null) ? o.pnl.toFixed(2) : '';
+      const roi = (isSettled && o.pnl != null && o.confirmedStake)
+        ? (o.pnl / o.confirmedStake * 100).toFixed(2) : '';
+
+      csvRows.push([
+        type, o.parlayId || '', csvEscape(date), legs.length,
+        csvEscape(selections), csvEscape(sports),
+        o.offeredOdds || '', pinOdds, fdOdds,
+        risk ? Number(risk).toFixed(2) : '', toWin,
+        status, pnl, roi
+      ].join(','));
+    }
+
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'parlay-export-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    closeExportModal();
+  }
+
+  // -----------------------------------------------------------------------
+  // END CSV EXPORT
+  // -----------------------------------------------------------------------
 
   /**
    * Our max risk on a parlay. Per verified PX semantics, `stake` IS our
