@@ -5786,10 +5786,14 @@
         const myOddsAm = decimalToAmerican(1 / myProb);
         const pinProb = l.pinnacleOdds != null ? americanToProb(l.pinnacleOdds) : null;
         const fdProb = l.fanduelOdds != null ? americanToProb(l.fanduelOdds) : null;
+        const gameDate = l.startTime ? new Date(l.startTime).toLocaleDateString([], { month: 'numeric', day: 'numeric' }) : '';
+        const matchup = l.homeTeam && l.awayTeam ? (l.awayTeam + ' @ ' + l.homeTeam) : '';
         legData.push({
           team: l.team || l.teamName || '?',
           market: l.market || l.marketType || '-',
           sport: l.sport || 'unknown',
+          gameDate,
+          matchup,
           myProb, myOddsAm,
           pinProb, pinOdds: l.pinnacleOdds,
           fdProb, fdOdds: l.fanduelOdds,
@@ -5936,21 +5940,24 @@
     // Sort by worst (most generous) first
     const sorted = [...withPin].sort((a, b) => a.pinSpread - b.pinSpread);
     html += '<div style="max-height:400px; overflow-y:auto;"><table style="font-size:12px; width:100%;">';
-    html += '<tr><th style="text-align:left">Selection</th><th style="text-align:left">Market</th><th style="text-align:right">My Odds</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th style="text-align:right">vs PIN</th><th style="text-align:right">vs FD</th></tr>';
+    html += '<tr><th style="text-align:left">Selection</th><th style="text-align:left">Game</th><th style="text-align:left">Market</th><th style="text-align:right">My Odds</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th style="text-align:right">vs PIN</th><th style="text-align:right">vs FD</th></tr>';
     for (const l of sorted.slice(0, 100)) {
       const pinCls = l.pinSpread >= 0 ? 'positive' : 'negative';
       const fdCls = l.fdSpread != null ? (l.fdSpread >= 0 ? 'positive' : 'negative') : '';
       const myFmt = l.myOddsAm >= 0 ? '+' + l.myOddsAm : '' + l.myOddsAm;
       const pinFmt = l.pinOdds >= 0 ? '+' + l.pinOdds : '' + l.pinOdds;
       const fdFmt = l.fdOdds != null ? (l.fdOdds >= 0 ? '+' + l.fdOdds : '' + l.fdOdds) : '-';
-      html += '<tr><td>' + l.team + '</td><td><span class="market-pill">' + l.market + '</span></td>';
+      const gameLabel = l.matchup ? l.matchup + (l.gameDate ? ' · ' + l.gameDate : '') : l.gameDate || '-';
+      html += '<tr><td>' + l.team + '</td>';
+      html += '<td style="font-size:11px; color:var(--text3); white-space:nowrap;">' + escapeHtml(gameLabel) + '</td>';
+      html += '<td><span class="market-pill">' + l.market + '</span></td>';
       html += '<td style="text-align:right; font-family:monospace;">' + myFmt + '</td>';
       html += '<td style="text-align:right; font-family:monospace; color:var(--purple);">' + pinFmt + '</td>';
       html += '<td style="text-align:right; font-family:monospace; color:var(--blue);">' + fdFmt + '</td>';
       html += '<td style="text-align:right; font-weight:600;" class="' + pinCls + '">' + (l.pinSpread >= 0 ? '+' : '') + l.pinSpread.toFixed(2) + '</td>';
       html += '<td style="text-align:right;" class="' + fdCls + '">' + (l.fdSpread != null ? (l.fdSpread >= 0 ? '+' : '') + l.fdSpread.toFixed(2) : '-') + '</td></tr>';
     }
-    if (sorted.length > 100) html += '<tr><td colspan="7" style="text-align:center; color:var(--text3);">... ' + (sorted.length - 100) + ' more legs</td></tr>';
+    if (sorted.length > 100) html += '<tr><td colspan="8" style="text-align:center; color:var(--text3);">... ' + (sorted.length - 100) + ' more legs</td></tr>';
     html += '</table></div>';
 
     el.innerHTML = html;
