@@ -236,16 +236,17 @@ function recordSettlement(orderUuid, result, payout) {
       return order;
     }
 
-    // Reject bogus settlements where all legs are still in the future
+    // Reject bogus settlements where any leg hasn't started yet.
+    // A parlay can't be legitimately won/lost if a game is still in the future.
     if (result !== 'void' && result !== 'push') {
       const legs = order.legs || order.meta?.legs || [];
       const now = Date.now();
-      const allFuture = legs.length > 0 && legs.every(l => {
-        if (!l.startTime) return false;
-        return new Date(l.startTime).getTime() > now;
+      const anyFuture = legs.some(l => {
+        const st = l.startTime || l.start_time;
+        return st && new Date(st).getTime() > now;
       });
-      if (allFuture) {
-        log.warn('Settle', `Rejecting bogus settlement for ${order.parlayId}: all legs start in the future (result=${result})`);
+      if (anyFuture) {
+        log.warn('Settle', `Rejecting bogus settlement for ${order.parlayId}: leg(s) start in the future (result=${result})`);
         return order;
       }
     }
@@ -1378,17 +1379,16 @@ async function pollOrderSettlements(px) {
       if (!order.confirmedStake && pxOrder.confirmed_stake != null) order.confirmedStake = Number(pxOrder.confirmed_stake);
       if (!order.confirmedOdds && pxOrder.confirmed_odds != null) order.confirmedOdds = Number(pxOrder.confirmed_odds);
 
-      // Reject bogus settlements where all legs are still in the future
+      // Reject bogus settlements where any leg hasn't started yet
       if (settlementStatus !== 'void' && settlementStatus !== 'push') {
         const orderLegs = order.legs || order.meta?.legs || [];
         const now = Date.now();
-        const allFuture = orderLegs.length > 0 && orderLegs.every(l => {
+        const anyFuture = orderLegs.some(l => {
           const st = l.startTime || l.start_time;
-          if (!st) return false; // can't verify — don't block
-          return new Date(st).getTime() > now;
+          return st && new Date(st).getTime() > now;
         });
-        if (allFuture) {
-          log.warn('Poll', `Skipping bogus settlement for ${order.parlayId}: all legs start in the future (PX says ${settlementStatus})`);
+        if (anyFuture) {
+          log.warn('Poll', `Skipping bogus settlement for ${order.parlayId}: leg(s) start in the future (PX says ${settlementStatus})`);
           continue;
         }
       }
@@ -1432,12 +1432,11 @@ function revertBogusSettlements() {
     if (!o.status || !o.status.startsWith('settled_')) continue;
     const legs = o.legs || o.meta?.legs || [];
     if (legs.length === 0) continue;
-    const allFuture = legs.every(l => {
+    const anyFuture = legs.some(l => {
       const st = l.startTime || l.start_time;
-      if (!st) return false;
-      return new Date(st).getTime() > now;
+      return st && new Date(st).getTime() > now;
     });
-    if (allFuture) {
+    if (anyFuture) {
       log.warn('Orders', `Reverting bogus settlement: ${o.parlayId} (was ${o.status}, pnl=${o.pnl})`);
       // Reverse stats
       if (o.pnl != null) stats.runningPnL -= o.pnl;
@@ -1870,20 +1869,21 @@ async function loadFromDb() {
         // No leg data — check if games have actually started.
         // If ALL legs have future start times, this settlement is bogus — revert to confirmed.
         const now = Date.now();
-        const allFuture = legs.length > 0 && legs.every(l => {
-          if (!l.startTime) return false;
-          return new Date(l.startTime).getTime() > now;
+        const anyFuture = legs.some(l => {
+          const st = l.startTime || l.start_time;
+          return st && new Date(st).getTime() > now;
         });
-        if (allFuture) {
-          log.warn('DB', `Reverting bogus settlement for ${o.parlayId}: all legs start in the future`);
+        if (anyFuture) {
+          log.warn('DB', `Reverting bogus settlement for ${o.parlayId}: leg(s) start in the future`);
           o.status = 'confirmed';
           o.settlementResult = null;
           o.pnl = null;
           o.settledAt = null;
           stats.totalSettlements--;
           stats.totalConfirmations++;
+          addExposure(o);
           db.saveOrder(o).catch(() => {});
-          continue; // skip settlement processing, handle as confirmed below
+          continue; // skip settlement processing
         }
         // Games have started but no leg resolution data — keep stored status
         spResult = o.status.replace('settled_', '');
