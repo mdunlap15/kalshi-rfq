@@ -238,6 +238,17 @@ async function priceParlay(legs) {
 
   // PX expects positive bettor-side American odds in offers (e.g., +215).
   // PX converts to negative SP-side for storage (confirmed_odds = -215).
+  // PX cannot handle negative bettor-side odds — it flips the sign and overpays.
+  if (decimalOdds < 2.0) {
+    log.debug('Pricing', `Declined: negative bettor odds (decimal ${decimalOdds.toFixed(3)}, prob ${(cappedProb*100).toFixed(1)}%) — PX cannot process`);
+    priceParlay._lastFailure = {
+      reason: 'negative odds',
+      detail: `parlay prob ${(cappedProb*100).toFixed(1)}% > 50% → negative bettor odds not supported by PX`,
+      blockerLeg: null,
+    };
+    return null;
+  }
+
   const americanOdds = decimalToAmerican(decimalOdds);
 
   // Don't quote on very high odds parlays — even small stakes create huge payouts

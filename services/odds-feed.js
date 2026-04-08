@@ -9,6 +9,9 @@ const log = require('./logger');
 const oddsCache = {};
 // Live (in-play) odds cache — only populated when in-progress games need refreshing
 const liveOddsCache = {};
+// SharpAPI events index — for improved PX-to-odds team name matching
+// { [sport]: { fetchedAt, events: [{ eventId, homeTeam, awayTeam, startTime }] } }
+const sharpEventsIndex = {};
 
 // SharpAPI league/sport keys mapping
 const LEAGUE_MAP = {
@@ -141,12 +144,12 @@ async function fetchOddsForSport(sport, opts) {
 
   // Market types vary by sport
   const marketTypes = {
-    'baseball_mlb': 'moneyline,run_line,total_runs',
-    'icehockey_nhl': 'moneyline,puck_line,total_goals',
-    'basketball_nba': 'moneyline,point_spread,total_points',
+    'baseball_mlb': 'moneyline,run_line,total_runs,team_total',
+    'icehockey_nhl': 'moneyline,puck_line,total_goals,team_total',
+    'basketball_nba': 'moneyline,point_spread,total_points,team_total',
     'tennis': 'moneyline,point_spread,total_points',
-    'soccer': 'moneyline,point_spread,total_goals',
-  }[sport] || 'moneyline,point_spread,total_points';
+    'soccer': 'moneyline,point_spread,total_goals,team_total',
+  }[sport] || 'moneyline,point_spread,total_points,team_total';
 
   const url = `${config.oddsApi.baseUrl}/odds`
     + `?${mapping.param}=${mapping.value}`
@@ -246,6 +249,16 @@ async function fetchOddsForSport(sport, opts) {
     const totalBooks = getBookPairsForTotals(totalOdds);
     if (totalBooks.length > 0) {
       markets.totals = buildConsensusTotals(totalBooks);
+    }
+
+    // Process team totals
+    const teamTotalOdds = event.odds.filter(r => r.market_type === 'team_total');
+    if (teamTotalOdds.length > 0) {
+      const teamTotalBooks = getBookPairsForTeamTotals(teamTotalOdds);
+      if (teamTotalBooks.length > 0) {
+        const tt = buildConsensusTeamTotals(teamTotalBooks);
+        if (tt) markets.team_totals = tt;
+      }
     }
 
     if (Object.keys(markets).length > 0) {
@@ -665,6 +678,93 @@ function getBookPairsForTotals(odds) {
     .map(([book, sides]) => ({ book, over: sides.over, under: sides.under }));
 }
 
+/**
+ * Group team_total odds by sportsbook and team side (home/away).
+ * SharpAPI team_total selection_type: "home_over", "home_under", "away_over", "away_under"
+ */
+function getBookPairsForTeamTotals(odds) {
+  const byBookSide = {};
+  for (const row of odds) {
+    // Determine team side and direction from selection_type
+    const st = row.selection_type || '';
+    let side, dir;
+    if (st.includes('home') && st.includes('over')) { side = 'home'; dir = 'over'; }
+    else if (st.includes('home') && st.includes('under')) { side = 'home'; dir = 'under'; }
+    else if (st.includes('away') && st.includes('over')) { side = 'away'; dir = 'over'; }
+    else if (st.includes('away') && st.includes('under')) { side = 'away'; dir = 'under'; }
+    else {
+      // Fallback: try selection field
+      const sel = (row.selection || '').toLowerCase();
+      if (sel.includes('over')) dir = 'over';
+      else if (sel.includes('under')) dir = 'under';
+      else continue;
+      // Determine side from home/away team name match
+      side = row.selection_type === 'home' ? 'home' : row.selection_type === 'away' ? 'away' : null;
+      if (!side) continue;
+    }
+    const key = `${row.sportsbook}|${side}`;
+    if (!byBookSide[key]) byBookSide[key] = {};
+    byBookSide[key][dir] = row;
+  }
+  return Object.entries(byBookSide)
+    .filter(([_, sides]) => sides.over && sides.under)
+    .map(([key, sides]) => {
+      const [book, teamSide] = key.split('|');
+      return { book, teamSide, over: sides.over, under: sides.under };
+    });
+}
+
+/**
+ * Build consensus for team totals — one over/under pair per team side.
+ */
+function buildConsensusTeamTotals(bookPairs) {
+  const result = {};
+  for (const side of ['home', 'away']) {
+    const sidePairs = bookPairs.filter(bp => bp.teamSide === side);
+    if (sidePairs.length === 0) continue;
+
+    // Find primary line
+    const lineCounts = {};
+    for (const bp of sidePairs) {
+      const line = bp.over.line;
+      if (line != null) lineCounts[line] = (lineCounts[line] || 0) + 1;
+    }
+    const primaryLine = parseFloat(Object.entries(lineCounts).sort((a, b) => b[1] - a[1])[0]?.[0]);
+    if (isNaN(primaryLine)) continue;
+    const matching = sidePairs.filter(bp => bp.over.line === primaryLine);
+    if (matching.length === 0) continue;
+
+    const devigged = { over: [], under: [] };
+    for (const { over, under } of matching) {
+      const [fo, fu] = deVig2Way(over.odds_probability, under.odds_probability);
+      devigged.over.push(fo);
+      devigged.under.push(fu);
+    }
+    const dvOver = avg(devigged.over);
+    const dvUnder = avg(devigged.under);
+    const pinBook = matching.find(bp => bp.book === 'pinnacle');
+
+    result[side] = {
+      over: {
+        rawOdds: matching[0].over.odds_american,
+        impliedProb: matching[0].over.odds_probability,
+        fairProb: Math.max(dvOver, pinBook ? pinBook.over.odds_probability : 0),
+        displayFairProb: dvOver,
+      },
+      under: {
+        rawOdds: matching[0].under.odds_american,
+        impliedProb: matching[0].under.odds_probability,
+        fairProb: Math.max(dvUnder, pinBook ? pinBook.under.odds_probability : 0),
+        displayFairProb: dvUnder,
+      },
+      line: primaryLine,
+      books: matching.length,
+      pinnacle: pinBook ? { over: pinBook.over.odds_american, under: pinBook.under.odds_american } : null,
+    };
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
 function buildConsensusMoneyline(bookPairs) {
   // Compute de-vigged consensus across ALL books (for display as "Fair")
   const devigged = { home: [], away: [] };
@@ -1023,6 +1123,15 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
   } else if (marketType === 'totals') {
     if (selection === 'over') return market.over?.fairProb || null;
     if (selection === 'under') return market.under?.fairProb || null;
+  } else if (marketType === 'team_totals') {
+    // Selection is compound: "home_over", "home_under", "away_over", "away_under"
+    const parts = selection.split('_');
+    const side = parts[0]; // "home" or "away"
+    const dir = parts[1];  // "over" or "under"
+    const teamData = market[side];
+    if (!teamData) return null;
+    if (dir === 'over') return teamData.over?.fairProb || null;
+    if (dir === 'under') return teamData.under?.fairProb || null;
   }
 
   return null;
@@ -1047,6 +1156,12 @@ function getDisplayFairProb(sport, homeTeam, awayTeam, marketType, selection, li
   } else if (marketType === 'totals') {
     if (selection === 'over') return market.over?.displayFairProb || market.over?.fairProb || null;
     if (selection === 'under') return market.under?.displayFairProb || market.under?.fairProb || null;
+  } else if (marketType === 'team_totals') {
+    const parts = selection.split('_');
+    const teamData = market[parts[0]];
+    if (!teamData) return null;
+    if (parts[1] === 'over') return teamData.over?.displayFairProb || teamData.over?.fairProb || null;
+    if (parts[1] === 'under') return teamData.under?.displayFairProb || teamData.under?.fairProb || null;
   }
   return null;
 }
@@ -1060,8 +1175,18 @@ function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targe
   if (!event) return null;
 
   const market = event.markets[marketType];
-  if (!market || !market.pinnacle) return null;
+  if (!market) return null;
 
+  if (marketType === 'team_totals') {
+    const parts = selection.split('_');
+    const teamData = market[parts[0]];
+    if (!teamData || !teamData.pinnacle) return null;
+    if (parts[1] === 'over') return teamData.pinnacle.over || null;
+    if (parts[1] === 'under') return teamData.pinnacle.under || null;
+    return null;
+  }
+
+  if (!market.pinnacle) return null;
   if (marketType === 'h2h' || marketType === 'spreads') {
     if (selection === 'home') return market.pinnacle.home || null;
     if (selection === 'away') return market.pinnacle.away || null;
@@ -1098,8 +1223,14 @@ function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, target
   if (!event) return null;
 
   const market = event.markets[marketType];
-  if (!market || !market.fanduel) return null;
+  if (!market) return null;
 
+  if (marketType === 'team_totals') {
+    // Team totals don't store FanDuel separately in current implementation
+    return null;
+  }
+
+  if (!market.fanduel) return null;
   if (marketType === 'h2h' || marketType === 'spreads') {
     if (selection === 'home') return market.fanduel.home || null;
     if (selection === 'away') return market.fanduel.away || null;
@@ -1312,7 +1443,43 @@ function isStale(sport) {
   return getCacheAge(sport) > config.pricing.stalePriceMinutes;
 }
 
+async function refreshEventsIndex() {
+  for (const sport of Object.keys(LEAGUE_MAP)) {
+    try {
+      const mapping = LEAGUE_MAP[sport];
+      const url = `${config.oddsApi.baseUrl}/events`
+        + `?${mapping.param}=${mapping.value}`
+        + `&live=false&limit=200`;
+      const resp = await fetch(url, {
+        headers: { 'X-API-Key': config.oddsApi.apiKey },
+      });
+      if (!resp.ok) continue;
+      const body = await resp.json();
+      const events = body.data || [];
+      sharpEventsIndex[sport] = {
+        fetchedAt: Date.now(),
+        events: events.map(e => ({
+          eventId: e.event_id || e.id,
+          homeTeam: cleanTeamName(e.home_team || ''),
+          awayTeam: cleanTeamName(e.away_team || ''),
+          startTime: e.event_start_time || e.start_time,
+        })).filter(e => e.homeTeam && e.awayTeam),
+      };
+      log.info('OddsFeed', `Events index: ${sharpEventsIndex[sport].events.length} events for ${sport}`);
+    } catch (err) {
+      log.warn('OddsFeed', `Events index failed for ${sport}: ${err.message}`);
+    }
+  }
+}
+
+function getSharpEvents(sport) {
+  return sharpEventsIndex[sport]?.events || [];
+}
+
 async function refreshAllSports() {
+  // Refresh events index first — line-manager uses it for matching
+  await refreshEventsIndex();
+
   const results = {};
   for (const sport of config.supportedSports) {
     try {
@@ -1511,6 +1678,7 @@ module.exports = {
   isStale,
   getCacheStatus,
   getAllCachedEvents,
+  getSharpEvents,
   normalizeTeamName,
   deVig2Way,
   americanToImpliedProb,

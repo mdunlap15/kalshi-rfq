@@ -334,7 +334,7 @@ function parseMarketSelections(market) {
         });
       }
     }
-  } else if ((marketType === 'spread' || marketType === 'total') && market.market_lines) {
+  } else if ((marketType === 'spread' || marketType === 'total' || marketType === 'team_total') && market.market_lines) {
     // Spread/Total: market_lines array, each with selections
     // Include ALL alternate lines so we can respond to any RFQ
     for (const marketLine of market.market_lines) {
@@ -345,7 +345,7 @@ function parseMarketSelections(market) {
           let selection = 'unknown';
           if (marketType === 'spread') {
             selection = sel.line < 0 ? 'favorite' : 'underdog';
-          } else if (marketType === 'total') {
+          } else if (marketType === 'total' || marketType === 'team_total') {
             const nameLC = (sel.name || sel.display_name || '').toLowerCase();
             selection = nameLC.includes('over') ? 'over' : nameLC.includes('under') ? 'under' : 'unknown';
           }

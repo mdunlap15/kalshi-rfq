@@ -91,6 +91,7 @@ const MARKET_TYPE_MAP = {
   'moneyline': 'h2h',
   'spread': 'spreads',
   'total': 'totals',
+  'team_total': 'team_totals',
 };
 
 // ---------------------------------------------------------------------------
@@ -213,6 +214,31 @@ async function seedAllLines() {
       }
     }
 
+    // Second pass: try SharpAPI /events index (broader team name coverage)
+    if (!matchedHome || !matchedAway) {
+      for (const tryKey of possibleSportKeys) {
+        const sharpEvents = oddsFeed.getSharpEvents(tryKey);
+        if (!sharpEvents || sharpEvents.length === 0) continue;
+        const sharpTeams = [...new Set(sharpEvents.flatMap(e => [e.homeTeam, e.awayTeam]))];
+        const tryHome = matchTeamName(homeComp.name, sharpTeams);
+        const tryAway = matchTeamName(awayComp.name, sharpTeams);
+        if (tryHome && tryAway) {
+          // Look up odds using SharpAPI's canonical team names
+          const pxTime = event.scheduled || null;
+          const oddsEvt = oddsFeed.getEventMarkets(tryKey, tryHome, tryAway, pxTime)
+            || oddsFeed.getEventMarkets(tryKey, tryAway, tryHome, pxTime);
+          if (oddsEvt) {
+            matchedHome = tryHome;
+            matchedAway = tryAway;
+            matchedOddsEvent = oddsEvt;
+            sportKey = tryKey;
+            log.debug('Lines', `Matched via events index: ${homeComp.name} → ${tryHome}, ${awayComp.name} → ${tryAway}`);
+            break;
+          }
+        }
+      }
+    }
+
     if (!matchedHome || !matchedAway) {
       unmatchedEvents.push({
         pxEvent: event.name,
@@ -258,10 +284,11 @@ async function seedAllLines() {
       moneyline: ['Moneyline', 'Moneyline (2 Way)', 'Moneyline (2-Way)', 'Moneyline (Regulation)', 'Draw No Bet'],
       spread: ['Spread', 'Run Line', 'Puck Line', 'Spread (Regular Time)', 'Game Spread', 'Point Spread'],
       total: ['Total', 'Total Points', 'Points', 'Total Runs', 'Total Goals', 'Total Goals (Regular Time)'],
+      team_total: ['Team Total', 'Team Total Points', 'Team Total Runs', 'Team Total Goals', 'Home Total', 'Away Total'],
     };
 
     const mainMarkets = markets.filter(m => {
-      if (!['moneyline', 'spread', 'total'].includes(m.type)) return false;
+      if (!['moneyline', 'spread', 'total', 'team_total'].includes(m.type)) return false;
       // Exclude anything matching half/quarter/prop patterns
       if (excludePatterns.test(m.name)) return false;
       // Require exact name match for ALL types — excludes player props
@@ -306,6 +333,11 @@ async function seedAllLines() {
           }
         } else if (sel.marketType === 'total') {
           oddsApiSelection = sel.selection; // 'over' or 'under'
+        } else if (sel.marketType === 'team_total') {
+          // Determine home/away from team name, combine with over/under
+          const isHome = matchTeamName(sel.teamName, [matchedHome]);
+          const teamSide = isHome ? 'home' : 'away';
+          oddsApiSelection = teamSide + '_' + (sel.selection || 'over'); // "home_over", "away_under", etc.
         }
 
         if (!oddsApiSelection || !oddsApiMarket) continue;
@@ -473,7 +505,7 @@ async function resolveUnknownLine(rfqLeg) {
       // Find the line in the markets
       let foundInfo = null;
       for (const market of markets || []) {
-        if (!['moneyline', 'spread', 'total'].includes(market.type)) continue;
+        if (!['moneyline', 'spread', 'total', 'team_total'].includes(market.type)) continue;
         const parsed = px.parseMarketSelections(market);
         for (const sel of parsed) {
           if (sel.lineId !== lineId) continue;
@@ -492,6 +524,10 @@ async function resolveUnknownLine(rfqLeg) {
             }
           } else if (sel.marketType === 'total') {
             oddsApiSelection = sel.selection;
+          } else if (sel.marketType === 'team_total') {
+            const isHome = matchTeamName(sel.teamName, [matchedHome]);
+            const teamSide = isHome ? 'home' : 'away';
+            oddsApiSelection = teamSide + '_' + (sel.selection || 'over');
           }
           if (!oddsApiSelection || !oddsApiMarket) continue;
 
