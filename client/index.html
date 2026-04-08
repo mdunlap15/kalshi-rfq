@@ -3608,7 +3608,7 @@
       html += '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">';
       html += '<div style="font-size:12px; font-weight:600; color:var(--text2);">Pending Positions</div>';
       html += '<div style="display:flex; align-items:center; gap:8px;">';
-      html += '<input type="text" placeholder="Search team..." value="' + escapeHtml(window._outlookSearch || '') + '" oninput="window._outlookSearch=this.value; rerenderWithFocus(()=>renderPnlOutlook(window._lastPopenData||[],window._lastSettledData||[]))" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:11px; width:140px;">';
+      html += '<input type="text" id="outlook-search" placeholder="Search team..." value="' + escapeHtml(window._outlookSearch || '') + '" oninput="window._outlookSearch=this.value; rerenderWithFocus(()=>renderPnlOutlook(window._lastPopenData||[],window._lastSettledData||[]))" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:11px; width:140px;">';
       html += '<span style="font-size:11px; color:var(--text3);">' + filtered.length + ' of ' + pendingPositions.length + '</span>';
       html += '</div></div>';
       html += '<div style="font-size:10px; color:var(--text3); margin-bottom:6px;">Your Win Prob = probability the parlay loses (any leg fails). Click row for details.</div>';
