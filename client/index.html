@@ -570,15 +570,6 @@
       <div id="section-portfolio" class="section" style="display:none;">
         <div id="portfolio-perf-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
 
-        <!-- Edge Analysis (expanded by default) -->
-        <div class="card">
-          <div class="card-header" onclick="toggleCard(this)">
-            <span><span class="toggle-icon">&#9660;</span>Pricing Edge vs. Sportsbooks</span>
-            <span id="edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-          </div>
-          <div class="card-body" id="portfolio-edge"><div class="empty-state"><div class="icon">-</div><div>Need settled orders to analyze edge</div></div></div>
-        </div>
-
         <!-- Positions: Open / Settled tabs (collapsed by default) -->
         <div class="card">
           <div class="card-header" style="padding-bottom:0; border-bottom:none;">
@@ -717,6 +708,17 @@
           </div>
         </div>
 
+        <!-- Pricing Edge vs Sportsbooks -->
+        <div class="card">
+          <div class="card-header">
+            <span>Pricing Edge vs Sportsbooks</span>
+            <span id="pricing-edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="chart-pricing-edge">
+            <div class="empty-state"><div class="icon">-</div><div>Need quoted parlays with Pinnacle/FanDuel odds</div></div>
+          </div>
+        </div>
+
         <!-- Cumulative P&L -->
         <div class="card">
           <div class="card-header"><span>Cumulative P&L</span></div>
@@ -783,17 +785,6 @@
           <div class="card-header"><span>Exposure Concentration</span></div>
           <div class="card-body" id="chart-exposure">
             <div class="empty-state"><div class="icon">-</div><div>Need active positions</div></div>
-          </div>
-        </div>
-
-        <!-- Pricing Edge vs Sportsbooks -->
-        <div class="card">
-          <div class="card-header">
-            <span>Pricing Edge vs Sportsbooks</span>
-            <span id="pricing-edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-          </div>
-          <div class="card-body" id="chart-pricing-edge">
-            <div class="empty-state"><div class="icon">-</div><div>Need quoted parlays with Pinnacle/FanDuel odds</div></div>
           </div>
         </div>
       </div>
@@ -3421,10 +3412,7 @@
     // --- Section 1: Performance Summary Cards ---
     renderPortfolioPerfSummary(stats, settled, allOrders);
 
-    // --- Section 2: Pricing Edge vs. Sportsbooks ---
-    renderPortfolioEdge(settled);
-
-    // --- Section 3: Open Exposure ---
+    // --- Section 2: Open Exposure ---
     renderPortfolioOpen(active);
 
     // --- Section 4: Settled Positions Log ---
