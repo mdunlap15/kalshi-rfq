@@ -488,6 +488,17 @@
           </div>
         </div>
 
+        <!-- Live P&L Outlook -->
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon">&#9660;</span>Live P&L Outlook</span>
+            <span id="pnl-outlook-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="pnl-outlook-body" style="padding: 14px;">
+            <div class="empty-state"><div class="icon">-</div><div>Need active positions</div></div>
+          </div>
+        </div>
+
         <div class="grid-2">
           <div class="card">
             <div class="card-header" onclick="toggleCard(this)">
@@ -3299,11 +3310,134 @@
     // --- Section 4: Edge Analysis ---
     renderPortfolioEdge(settled);
 
-    // --- Section 5: Open Exposure ---
+    // --- Section 5: Live P&L Outlook ---
+    renderPnlOutlook(active, settled);
+
+    // --- Section 6: Open Exposure ---
     renderPortfolioOpen(active);
 
-    // --- Section 6: Settled Positions Log ---
+    // --- Section 7: Settled Positions Log ---
     renderPortfolioSettled(settled);
+  }
+
+  function renderPnlOutlook(active, settled) {
+    const el = document.getElementById('pnl-outlook-body');
+    const sumEl = document.getElementById('pnl-outlook-summary');
+    if (!el) return;
+
+    if (active.length === 0 && settled.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need active positions</div></div>';
+      return;
+    }
+
+    // Categorize active positions
+    let wonCount = 0, lostCount = 0, pendingCount = 0;
+    let wonPnl = 0, lostPnl = 0;
+    let bestCase = 0, worstCase = 0, expectedPnl = 0;
+    const pendingPositions = [];
+
+    for (const o of active) {
+      const legs = o.meta?.legs || o.legs || [];
+      const stake = o.confirmedStake || 0;
+      const odds = Math.abs(o.offeredOdds || 0);
+      const spProfit = odds >= 100 ? stake * 100 / odds : 0;
+      const spLoss = stake;
+
+      const anyDead = legs.some(l => getLegResult(l) === 'lost');
+      const allWon = legs.length > 0 && legs.every(l => getLegResult(l) === 'won');
+
+      if (anyDead) {
+        wonCount++;
+        wonPnl += spProfit;
+        expectedPnl += spProfit;
+      } else if (allWon) {
+        lostCount++;
+        lostPnl -= spLoss;
+        expectedPnl -= spLoss;
+      } else {
+        let hitProb = 1;
+        for (const l of legs) {
+          const lr = getLegResult(l);
+          if (lr === 'won') continue;
+          hitProb *= (l.liveFairProb || l.fairProb || 0.5);
+        }
+        const winProb = 1 - hitProb;
+        const exp = (winProb * spProfit) - (hitProb * spLoss);
+        expectedPnl += exp;
+        bestCase += spProfit;
+        worstCase -= spLoss;
+        pendingCount++;
+        pendingPositions.push({ exp, winProb, spProfit, spLoss, odds: o.offeredOdds, teams: legs.map(l => (l.team || '?').substring(0, 18)).join(', ') });
+      }
+    }
+
+    // Add settled P&L
+    let settledPnl = 0;
+    for (const o of settled) settledPnl += (o.pnl || 0);
+
+    const totalExpected = settledPnl + expectedPnl;
+    const totalBest = settledPnl + wonPnl + bestCase;
+    const totalWorst = settledPnl + lostPnl + worstCase;
+
+    // Summary header
+    if (sumEl) {
+      const cls = totalExpected >= 0 ? 'positive' : 'negative';
+      sumEl.innerHTML = '<span class="' + cls + '">Expected: ' + fmtPnl(totalExpected) + '</span>';
+    }
+
+    let html = '';
+
+    // Stats bar
+    html += '<div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px; padding:12px 16px; background:var(--surface2); border-radius:6px;">';
+    const statBox = (label, value, cls, hint) => '<div style="min-width:130px;"><div style="font-size:11px; color:var(--text3); text-transform:uppercase;">' + label + '</div><div style="font-size:20px; font-weight:700;" class="' + (cls || '') + '">' + value + '</div>' + (hint ? '<div style="font-size:10px; color:var(--text3);">' + hint + '</div>' : '') + '</div>';
+    html += statBox('Expected P&L', fmtPnl(totalExpected), totalExpected >= 0 ? 'positive' : 'negative', 'Probability-weighted');
+    html += statBox('Best Case', fmtPnl(totalBest), 'positive', 'All pending parlays lose');
+    html += statBox('Worst Case', fmtPnl(totalWorst), 'negative', 'All pending parlays hit');
+    html += statBox('Settled P&L', fmtPnl(settledPnl), settledPnl >= 0 ? 'positive' : 'negative', settled.length + ' settled');
+    html += '</div>';
+
+    // Resolved vs pending breakdown
+    html += '<div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:16px;">';
+    html += '<div style="flex:1; min-width:250px; padding:10px 14px; background:var(--surface); border:1px solid var(--border); border-radius:6px;">';
+    html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">Active Positions Resolved from Scores</div>';
+    html += '<div style="display:flex; gap:16px;">';
+    html += '<div><span style="color:var(--green); font-size:18px; font-weight:700;">' + wonCount + '</span><div style="font-size:10px; color:var(--text3);">Won (parlay dead)</div><div style="font-size:13px; color:var(--green);">+' + fmtDollar(wonPnl) + '</div></div>';
+    html += '<div><span style="color:var(--red); font-size:18px; font-weight:700;">' + lostCount + '</span><div style="font-size:10px; color:var(--text3);">Lost (all legs hit)</div><div style="font-size:13px; color:var(--red);">' + fmtPnl(lostPnl) + '</div></div>';
+    html += '<div><span style="color:var(--text2); font-size:18px; font-weight:700;">' + pendingCount + '</span><div style="font-size:10px; color:var(--text3);">Pending</div><div style="font-size:13px; color:var(--text3);">expected ' + fmtPnl(expectedPnl - wonPnl - lostPnl) + '</div></div>';
+    html += '</div></div>';
+
+    // Outcome range bar
+    html += '<div style="flex:1; min-width:250px; padding:10px 14px; background:var(--surface); border:1px solid var(--border); border-radius:6px;">';
+    html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:8px;">Outcome Range (pending positions)</div>';
+    const rangeMin = worstCase + lostPnl;
+    const rangeMax = bestCase + wonPnl;
+    const rangeSpan = rangeMax - rangeMin || 1;
+    const expPct = Math.max(0, Math.min(100, ((expectedPnl - wonPnl - lostPnl - rangeMin) / rangeSpan * 100)));
+    const zeroPct = Math.max(0, Math.min(100, ((0 - rangeMin) / rangeSpan * 100)));
+    html += '<div style="position:relative; height:30px; background:linear-gradient(90deg, var(--red) 0%, var(--surface3) 50%, var(--green) 100%); border-radius:4px; margin:8px 0;">';
+    html += '<div style="position:absolute; left:' + zeroPct + '%; top:0; bottom:0; width:2px; background:#ffffff;" title="$0 (breakeven)"></div>';
+    html += '<div style="position:absolute; left:' + expPct + '%; top:-2px; bottom:-2px; width:4px; background:var(--amber); border-radius:2px;" title="Expected: ' + fmtPnl(expectedPnl - wonPnl - lostPnl) + '"></div>';
+    html += '</div>';
+    html += '<div style="display:flex; justify-content:space-between; font-size:11px;"><span class="negative">' + fmtPnl(rangeMin) + '</span><span style="color:var(--text3);">$0</span><span class="positive">' + fmtPnl(rangeMax) + '</span></div>';
+    html += '</div></div>';
+
+    // Riskiest positions table
+    if (pendingPositions.length > 0) {
+      pendingPositions.sort((a, b) => a.exp - b.exp);
+      html += '<div style="margin-top:12px;"><div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">Riskiest Pending Positions</div>';
+      html += '<table style="font-size:12px; width:100%;"><tr><th style="text-align:left">Parlay</th><th style="text-align:right">Win Prob</th><th style="text-align:right">If You Win</th><th style="text-align:right">If You Lose</th><th style="text-align:right">Expected</th></tr>';
+      for (const p of pendingPositions.slice(0, 8)) {
+        const expCls = p.exp >= 0 ? 'positive' : 'negative';
+        html += '<tr><td style="max-width:200px; overflow:hidden; text-overflow:ellipsis;">' + p.teams + '</td>';
+        html += '<td style="text-align:right">' + (p.winProb * 100).toFixed(0) + '%</td>';
+        html += '<td style="text-align:right; color:var(--green);">+' + fmtDollar(p.spProfit) + '</td>';
+        html += '<td style="text-align:right; color:var(--red);">-' + fmtDollar(p.spLoss) + '</td>';
+        html += '<td style="text-align:right; font-weight:600;" class="' + expCls + '">' + fmtPnl(p.exp) + '</td></tr>';
+      }
+      html += '</table></div>';
+    }
+
+    el.innerHTML = html;
   }
 
   function renderPortfolioPerfSummary(stats, settled, allOrders) {
