@@ -562,11 +562,11 @@ async function fetchFromTheOddsApi(sport) {
         fairHome.push(fh);
         fairAway.push(fa);
       }
-      // MAX(deVigged, pinnacleImplied) to prevent de-vig over-correction
-      // Only Pinnacle as floor — FD/DK vig would inflate fair value
+      // Pinnacle floor only on heavy favorites (>65%) where de-vig over-corrects
       const pinPair = mlPairs.find(p => p.book === 'pinnacle');
-      const maxHome = Math.max(avg(fairHome), pinPair ? pinPair.home.odds_probability : 0);
-      const maxAway = Math.max(avg(fairAway), pinPair ? pinPair.away.odds_probability : 0);
+      const dvH = avg(fairHome), dvA = avg(fairAway);
+      const maxHome = dvH >= 0.65 ? Math.max(dvH, pinPair ? pinPair.home.odds_probability : 0) : dvH;
+      const maxAway = dvA >= 0.65 ? Math.max(dvA, pinPair ? pinPair.away.odds_probability : 0) : dvA;
       markets.h2h = {
         home: { rawOdds: mlPairs[0].home.odds_american, impliedProb: mlPairs[0].home.odds_probability, fairProb: maxHome, displayFairProb: avg(fairHome) },
         away: { rawOdds: mlPairs[0].away.odds_american, impliedProb: mlPairs[0].away.odds_probability, fairProb: maxAway, displayFairProb: avg(fairAway) },
@@ -596,8 +596,9 @@ async function fetchFromTheOddsApi(sport) {
         fairAway.push(fa);
       }
       const pinSpread = spreadPairs.find(p => p.book === 'pinnacle');
-      const maxSHome = Math.max(avg(fairHome), pinSpread ? pinSpread.home.odds_probability : 0);
-      const maxSAway = Math.max(avg(fairAway), pinSpread ? pinSpread.away.odds_probability : 0);
+      const dvSHome = avg(fairHome), dvSAway = avg(fairAway);
+      const maxSHome = dvSHome >= 0.65 ? Math.max(dvSHome, pinSpread ? pinSpread.home.odds_probability : 0) : dvSHome;
+      const maxSAway = dvSAway >= 0.65 ? Math.max(dvSAway, pinSpread ? pinSpread.away.odds_probability : 0) : dvSAway;
       markets.spreads = {
         home: { rawOdds: spreadPairs[0].home.odds_american, point: spreadPairs[0].home.point, impliedProb: spreadPairs[0].home.odds_probability, fairProb: maxSHome, displayFairProb: avg(fairHome) },
         away: { rawOdds: spreadPairs[0].away.odds_american, point: spreadPairs[0].away.point, impliedProb: spreadPairs[0].away.odds_probability, fairProb: maxSAway, displayFairProb: avg(fairAway) },
@@ -628,8 +629,9 @@ async function fetchFromTheOddsApi(sport) {
         fairUnder.push(fu);
       }
       const pinTotal = totalPairs.find(p => p.book === 'pinnacle');
-      const maxTOver = Math.max(avg(fairOver), pinTotal ? pinTotal.over.odds_probability : 0);
-      const maxTUnder = Math.max(avg(fairUnder), pinTotal ? pinTotal.under.odds_probability : 0);
+      const dvTOver = avg(fairOver), dvTUnder = avg(fairUnder);
+      const maxTOver = dvTOver >= 0.65 ? Math.max(dvTOver, pinTotal ? pinTotal.over.odds_probability : 0) : dvTOver;
+      const maxTUnder = dvTUnder >= 0.65 ? Math.max(dvTUnder, pinTotal ? pinTotal.under.odds_probability : 0) : dvTUnder;
       markets.totals = {
         over: { rawOdds: totalPairs[0].over.odds_american, point: totalPairs[0].over.point, impliedProb: totalPairs[0].over.odds_probability, fairProb: maxTOver, displayFairProb: avg(fairOver) },
         under: { rawOdds: totalPairs[0].under.odds_american, point: totalPairs[0].under.point, impliedProb: totalPairs[0].under.odds_probability, fairProb: maxTUnder, displayFairProb: avg(fairUnder) },
@@ -757,13 +759,13 @@ function buildConsensusTeamTotals(bookPairs) {
       over: {
         rawOdds: matching[0].over.odds_american,
         impliedProb: matching[0].over.odds_probability,
-        fairProb: Math.max(dvOver, pinBook ? pinBook.over.odds_probability : 0),
+        fairProb: dvOver >= 0.65 ? Math.max(dvOver, pinBook ? pinBook.over.odds_probability : 0) : dvOver,
         displayFairProb: dvOver,
       },
       under: {
         rawOdds: matching[0].under.odds_american,
         impliedProb: matching[0].under.odds_probability,
-        fairProb: Math.max(dvUnder, pinBook ? pinBook.under.odds_probability : 0),
+        fairProb: dvUnder >= 0.65 ? Math.max(dvUnder, pinBook ? pinBook.under.odds_probability : 0) : dvUnder,
         displayFairProb: dvUnder,
       },
       line: primaryLine,
@@ -785,17 +787,17 @@ function buildConsensusMoneyline(bookPairs) {
   const dvHome = avg(devigged.home);
   const dvAway = avg(devigged.away);
 
-  // For PRICING: use MAX(deVigged, pinnacleImplied).
-  // Pinnacle is the sharpest book (lowest vig) — its raw implied prob is the
-  // right floor to catch de-vig over-correction on heavy favorites.
-  // FanDuel excluded: its higher vig inflates implied probs, making us price
-  // below Pinnacle and uncompetitive.
+  // For PRICING: use de-vigged consensus as fair value for normal legs.
+  // Only apply Pinnacle raw as a floor on heavy favorites (>65% implied)
+  // where de-vig proportional removal genuinely over-corrects.
+  // For normal legs, de-vigged consensus (which includes Pinnacle in the
+  // average) gives prices slightly above Pinnacle — competitive.
   const pinBook = bookPairs.find(bp => bp.book === 'pinnacle');
   const fdBook = bookPairs.find(bp => bp.book === 'fanduel');
   const pinHome = pinBook ? pinBook.home.odds_probability : 0;
   const pinAway = pinBook ? pinBook.away.odds_probability : 0;
-  const pricingHome = Math.max(dvHome, pinHome);
-  const pricingAway = Math.max(dvAway, pinAway);
+  const pricingHome = dvHome >= 0.65 ? Math.max(dvHome, pinHome) : dvHome;
+  const pricingAway = dvAway >= 0.65 ? Math.max(dvAway, pinAway) : dvAway;
 
   const pinnacle = pinBook ? {
     home: pinBook.home.odds_american,
@@ -848,11 +850,11 @@ function buildConsensusSpread(bookPairs) {
   const dvHome = avg(devigged.home);
   const dvAway = avg(devigged.away);
 
-  // MAX(deVigged, pinnacle, fanduel) for pricing
   const pinBook = matching.find(bp => bp.book === 'pinnacle');
   const fdBook = matching.find(bp => bp.book === 'fanduel');
-  const pricingHome = Math.max(dvHome, pinBook ? pinBook.home.odds_probability : 0);
-  const pricingAway = Math.max(dvAway, pinBook ? pinBook.away.odds_probability : 0);
+  // Pinnacle floor only on heavy favorites (>65%) where de-vig over-corrects
+  const pricingHome = dvHome >= 0.65 ? Math.max(dvHome, pinBook ? pinBook.home.odds_probability : 0) : dvHome;
+  const pricingAway = dvAway >= 0.65 ? Math.max(dvAway, pinBook ? pinBook.away.odds_probability : 0) : dvAway;
 
   const pinnacle = pinBook ? {
     home: pinBook.home.odds_american,
@@ -907,11 +909,11 @@ function buildConsensusTotals(bookPairs) {
   const dvOver = avg(devigged.over);
   const dvUnder = avg(devigged.under);
 
-  // MAX(deVigged, pinnacle, fanduel) for pricing
   const pinBook = matching.find(bp => bp.book === 'pinnacle');
   const fdBook2 = matching.find(bp => bp.book === 'fanduel');
-  const pricingOver = Math.max(dvOver, pinBook ? pinBook.over.odds_probability : 0);
-  const pricingUnder = Math.max(dvUnder, pinBook ? pinBook.under.odds_probability : 0);
+  // Pinnacle floor only on heavy favorites (>65%)
+  const pricingOver = dvOver >= 0.65 ? Math.max(dvOver, pinBook ? pinBook.over.odds_probability : 0) : dvOver;
+  const pricingUnder = dvUnder >= 0.65 ? Math.max(dvUnder, pinBook ? pinBook.under.odds_probability : 0) : dvUnder;
 
   return {
     over: {

@@ -236,17 +236,21 @@ function recordSettlement(orderUuid, result, payout) {
       return order;
     }
 
-    // Reject bogus settlements where any leg hasn't started yet.
-    // A parlay can't be legitimately won/lost if a game is still in the future.
+    // Reject bogus settlements where any leg hasn't finished.
+    // A parlay can't be legitimately won/lost if a game is future or in-progress.
     if (result !== 'void' && result !== 'push') {
       const legs = order.legs || order.meta?.legs || [];
       const now = Date.now();
-      const anyFuture = legs.some(l => {
+      const anyUnfinished = legs.some(l => {
         const st = l.startTime || l.start_time;
-        return st && new Date(st).getTime() > now;
+        if (!st) return false;
+        const startMs = new Date(st).getTime();
+        if (startMs > now) return true; // future
+        if ((now - startMs) < 4 * 3600 * 1000) return true; // in-progress (< 4h)
+        return false;
       });
-      if (anyFuture) {
-        log.warn('Settle', `Rejecting bogus settlement for ${order.parlayId}: leg(s) start in the future (result=${result})`);
+      if (anyUnfinished) {
+        log.warn('Settle', `Rejecting bogus settlement for ${order.parlayId}: leg(s) not yet finished (result=${result})`);
         return order;
       }
     }
@@ -1379,16 +1383,20 @@ async function pollOrderSettlements(px) {
       if (!order.confirmedStake && pxOrder.confirmed_stake != null) order.confirmedStake = Number(pxOrder.confirmed_stake);
       if (!order.confirmedOdds && pxOrder.confirmed_odds != null) order.confirmedOdds = Number(pxOrder.confirmed_odds);
 
-      // Reject bogus settlements where any leg hasn't started yet
+      // Reject bogus settlements where any leg hasn't finished (future or in-progress)
       if (settlementStatus !== 'void' && settlementStatus !== 'push') {
         const orderLegs = order.legs || order.meta?.legs || [];
         const now = Date.now();
-        const anyFuture = orderLegs.some(l => {
+        const anyUnfinished = orderLegs.some(l => {
           const st = l.startTime || l.start_time;
-          return st && new Date(st).getTime() > now;
+          if (!st) return false;
+          const startMs = new Date(st).getTime();
+          if (startMs > now) return true;
+          if ((now - startMs) < 4 * 3600 * 1000) return true;
+          return false;
         });
-        if (anyFuture) {
-          log.warn('Poll', `Skipping bogus settlement for ${order.parlayId}: leg(s) start in the future (PX says ${settlementStatus})`);
+        if (anyUnfinished) {
+          log.warn('Poll', `Skipping bogus settlement for ${order.parlayId}: leg(s) not yet finished (PX says ${settlementStatus})`);
           continue;
         }
       }
@@ -1432,11 +1440,16 @@ function revertBogusSettlements() {
     if (!o.status || !o.status.startsWith('settled_')) continue;
     const legs = o.legs || o.meta?.legs || [];
     if (legs.length === 0) continue;
-    const anyFuture = legs.some(l => {
+    // Check for any leg that hasn't finished: future OR in-progress (started < 4h ago)
+    const anyUnfinished = legs.some(l => {
       const st = l.startTime || l.start_time;
-      return st && new Date(st).getTime() > now;
+      if (!st) return false;
+      const startMs = new Date(st).getTime();
+      if (startMs > now) return true; // future — hasn't started
+      if ((now - startMs) < 4 * 3600 * 1000) return true; // started < 4h ago — likely in progress
+      return false;
     });
-    if (anyFuture) {
+    if (anyUnfinished) {
       log.warn('Orders', `Reverting bogus settlement: ${o.parlayId} (was ${o.status}, pnl=${o.pnl})`);
       // Reverse stats
       if (o.pnl != null) stats.runningPnL -= o.pnl;
@@ -1982,12 +1995,16 @@ async function loadFromDb() {
         // No leg data — check if games have actually started.
         // If ALL legs have future start times, this settlement is bogus — revert to confirmed.
         const now = Date.now();
-        const anyFuture = legs.some(l => {
+        const anyUnfinished = legs.some(l => {
           const st = l.startTime || l.start_time;
-          return st && new Date(st).getTime() > now;
+          if (!st) return false;
+          const startMs = new Date(st).getTime();
+          if (startMs > now) return true;
+          if ((now - startMs) < 4 * 3600 * 1000) return true;
+          return false;
         });
-        if (anyFuture) {
-          log.warn('DB', `Reverting bogus settlement for ${o.parlayId}: leg(s) start in the future`);
+        if (anyUnfinished) {
+          log.warn('DB', `Reverting bogus settlement for ${o.parlayId}: leg(s) not yet finished`);
           o.status = 'confirmed';
           o.settlementResult = null;
           o.pnl = null;
