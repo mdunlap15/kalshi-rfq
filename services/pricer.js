@@ -226,6 +226,8 @@ async function priceParlay(legs) {
       legs: pricedLegs.map(l => {
         // For totals/spreads, build a descriptive label: "Over 6.5 (NYM vs CHC)"
         let team = l.lineInfo.teamName;
+        // Capitalize first letter (PX sends "over"/"under" lowercase for totals)
+        if (team) team = team.charAt(0).toUpperCase() + team.slice(1);
         const event = l.lineInfo.pxEventName || '';
         if (l.lineInfo.marketType === 'total' && l.lineInfo.homeTeam && l.lineInfo.awayTeam) {
           team = `${team} (${l.lineInfo.awayTeam} @ ${l.lineInfo.homeTeam})`;

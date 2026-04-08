@@ -1739,7 +1739,7 @@
     el.innerHTML = html;
   }
 
-  const posState = { sortCol: 'time', sortDir: -1, search: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', _name: 'posState' };
+  const posState = { sortCol: 'time', sortDir: -1, search: '', statusFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', _name: 'posState' };
   window.posRerender = () => renderPositions(window._lastPosData || { recentOrders: [] });
   window.togglePosSort = (col) => {
     if (posState.sortCol === col) posState.sortDir *= -1;
@@ -1777,6 +1777,21 @@
       const riskVal = (o.confirmedStake && o.offeredOdds) ? calcBettorWager(o.confirmedStake, o.offeredOdds) : (o.confirmedStake || 0);
       if (!passesRangeFilter(riskVal, posState.riskMin, posState.riskMax)) return false;
       if (!passesRangeFilter(o.confirmedStake, posState.towinMin, posState.towinMax)) return false;
+      // Status filter
+      if (posState.statusFilter) {
+        const ls4 = o.meta?.legs || o.legs || [];
+        const anyDead = ls4.some(l => getLegResult(l) === 'lost');
+        const starts = ls4.map(l => l.startTime ? new Date(l.startTime).getTime() : Infinity).filter(t => !isNaN(t));
+        const earliest = starts.length > 0 ? Math.min(...starts) : Infinity;
+        const latest = starts.length > 0 ? Math.max(...starts) : 0;
+        const GAME_DUR = 3.5*60*60*1000;
+        const now = Date.now();
+        let st = 'upcoming';
+        if (anyDead) st = 'won';
+        else if (now >= earliest && now < latest + GAME_DUR) st = 'inprogress';
+        else if (now >= latest + GAME_DUR && starts.length > 0) st = 'awaiting';
+        if (st !== posState.statusFilter) return false;
+      }
       return true;
     });
 
@@ -1808,6 +1823,23 @@
             return 1 - hp;
           };
           va = wpCalcPos(a); vb = wpCalcPos(b); break;
+        case 'status':
+          // Sort order: Won=0, In Progress=1, Upcoming=2, Awaiting Settle=3
+          const statusRank = (o) => {
+            const ls3 = o.meta?.legs || o.legs || [];
+            const anyDead = ls3.some(l => getLegResult(l) === 'lost');
+            if (anyDead) return 0;
+            const starts = ls3.map(l => l.startTime ? new Date(l.startTime).getTime() : Infinity).filter(t => !isNaN(t));
+            if (starts.length === 0) return 2;
+            const earliest = Math.min(...starts);
+            const latest = Math.max(...starts);
+            const GAME_DUR = 3.5*60*60*1000;
+            const now = Date.now();
+            if (now < earliest) return 2;
+            if (now < latest + GAME_DUR) return 1;
+            return 3;
+          };
+          va = statusRank(a); vb = statusRank(b); break;
         default: va = a.confirmedAt || ''; vb = b.confirmedAt || '';
           return posState.sortDir * va.localeCompare(vb);
       }
@@ -1823,6 +1855,13 @@
       <input type="text" placeholder="Search team..." value="${posState.search}"
         id="pos-search" oninput="posState.search=this.value; rerenderWithFocus(()=>posRerender())"
         style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">
+      <select onchange="posState.statusFilter=this.value; posRerender()" style="${pFSel}">
+        <option value="">All statuses</option>
+        <option value="won"${posState.statusFilter==='won'?' selected':''}>Won ✓</option>
+        <option value="inprogress"${posState.statusFilter==='inprogress'?' selected':''}>In Progress</option>
+        <option value="upcoming"${posState.statusFilter==='upcoming'?' selected':''}>Upcoming</option>
+        <option value="awaiting"${posState.statusFilter==='awaiting'?' selected':''}>Awaiting Settle</option>
+      </select>
       ${dateFilterHtml(posState, 'posRerender', dStyle)}
       <button onclick="posState.showAdvanced=!posState.showAdvanced; posRerender()" style="${pFSel} cursor:pointer;">${posState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
       <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${positions.length}</span>
@@ -1851,7 +1890,7 @@
         <th ${pSortClick('stake', 'right')}>My Risk${pSortArrow('stake')}</th>
         <th ${pSortClick('towin', 'right')}>To Win${pSortArrow('towin')}</th>
         <th ${pSortClick('winprob', 'right')} title="Probability you win (at least one bettor leg fails)">Win Prob${pSortArrow('winprob')}</th>
-        <th title="Game status">Status</th>
+        <th ${pSortClick('status')} title="Game status">Status${pSortArrow('status')}</th>
       </tr>`;
 
     const isPosFiltering = posState.search || posState.dateFrom || posState.dateTo;
