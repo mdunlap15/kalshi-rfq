@@ -20,8 +20,8 @@ const LEAGUE_MAP = {
 // NOTE: tennis removed from LEAGUE_MAP — SharpAPI returns events but zero bookmaker
 // odds for tennis. Routed through The Odds API fallback instead (dynamic tournament discovery).
 
-// Expanded bookmaker list for The Odds API — more books = better de-vig consensus
-const ODDS_API_BOOKMAKERS = 'pinnacle,draftkings,fanduel,betmgm,caesars,bet365,betrivers,bovada,mybookieag,pointsbetus,williamhill_us,espnbet,fliff';
+// Bookmakers for The Odds API — Pinnacle (sharpest), DraftKings, FanDuel
+const ODDS_API_BOOKMAKERS = 'pinnacle,draftkings,fanduel';
 
 // Sports that use The Odds API as fallback (SharpAPI free tier doesn't cover them)
 const ODDS_API_FALLBACK = {
@@ -299,8 +299,7 @@ function oddsApiToSharpMarket(marketKey, sport) {
 }
 
 /**
- * Fetch additional sportsbook odds from The Odds API and convert to SharpAPI-format rows.
- * Pulls Pinnacle + BetMGM, Caesars, Bet365, etc. to supplement SharpAPI's DK+FD data.
+ * Fetch Pinnacle odds from The Odds API and convert to SharpAPI-format rows.
  * Returns array of rows compatible with SharpAPI's format, or empty array on failure.
  */
 async function fetchPinnacleRows(sport) {
@@ -310,9 +309,9 @@ async function fetchPinnacleRows(sport) {
 
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
     + `?apiKey=${theOddsApiKey}`
-    + `&regions=us,us2,eu`
+    + `&regions=us,eu`
     + `&markets=h2h,spreads,totals`
-    + `&bookmakers=${ODDS_API_BOOKMAKERS}`
+    + `&bookmakers=pinnacle`
     + `&oddsFormat=american`;
 
   try {
@@ -404,7 +403,7 @@ async function fetchDynamicSports(sport, fallback, apiKey) {
   for (const tournament of activeTournaments) {
     const url = `https://api.the-odds-api.com/v4/sports/${tournament.key}/odds`
       + `?apiKey=${apiKey}`
-      + `&regions=us,us2,eu`
+      + `&regions=us,eu`
       + `&markets=${fallback.markets}`
       + `&bookmakers=${fallback.bookmakers}`
       + `&oddsFormat=american`;
@@ -488,7 +487,7 @@ async function fetchFromTheOddsApi(sport) {
 
   const url = `https://api.the-odds-api.com/v4/sports/${fallback.oddsApiSport}/odds`
     + `?apiKey=${theOddsApiKey}`
-    + `&regions=us,us2,eu`
+    + `&regions=us,eu`
     + `&markets=${fallback.markets}`
     + `&bookmakers=${fallback.bookmakers}`
     + `&oddsFormat=american`;
@@ -896,7 +895,7 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
 
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events/${event.eventId}/odds`
     + `?apiKey=${theOddsApiKey}`
-    + `&regions=us,us2,eu`
+    + `&regions=us,eu`
     + `&markets=alternate_spreads,alternate_totals`
     + `&bookmakers=${ODDS_API_BOOKMAKERS}`
     + `&oddsFormat=american`;
