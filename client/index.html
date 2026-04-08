@@ -1122,7 +1122,7 @@
     if (maxDrawdown > 0) {
       const pctClamp = Math.min(100, portfolioPct);
       const barColor = portfolioPct >= 95 ? 'var(--red)' : portfolioPct >= 80 ? 'var(--amber)' : 'var(--green)';
-      parts.push(`<div style="font-size:11px; color:var(--text3); margin-bottom:4px;">Portfolio Risk: <strong style="color:var(--text);">$${portfolioRisk.toFixed(0)}</strong> / $${maxDrawdown.toFixed(0)} (${portfolioPct.toFixed(0)}%)</div>
+      parts.push(`<div style="font-size:11px; color:var(--text3); margin-bottom:4px;">Deployed: <strong style="color:var(--text);">$${portfolioRisk.toFixed(0)}</strong></div>
         <div style="background:var(--surface); border-radius:4px; height:6px; overflow:hidden; max-width:300px;">
           <div style="background:${barColor}; width:${pctClamp}%; height:100%;"></div>
         </div>`);
@@ -4438,7 +4438,7 @@
     const portLimit = portfolio?.maxDrawdown || 0;
     const portPct = portLimit > 0 ? Math.round(portRisk / portLimit * 100) : 0;
     const portCls = portPct > 90 ? 'negative' : portPct > 70 ? '' : 'positive';
-    const portStr = portLimit > 0 ? fmtDollar(portRisk) + ' / ' + fmtDollar(portLimit) + ' (' + portPct + '%)' : fmtDollar(portRisk);
+    const portStr = fmtDollar(portRisk);
 
     // ROI from settled orders
     let settledPnl = 0;
@@ -4468,7 +4468,7 @@
         ${stat('P&L', pnlStr, pnlCls)}
         ${stat('ROI', roiStr, roiCls, 'Settled P&L / settled risk')}
         ${stat('Active', active)}
-        ${stat('Portfolio Risk', portStr, portCls)}
+        ${stat('Deployed', portStr, portCls)}
         ${stat('To Win', fmtDollar(totalToWin), 'positive')}
         ${window._pxBalance != null ? stat('Balance', fmtDollar(window._pxBalance.balance || window._pxBalance.available || window._pxBalance)) : ''}
         ${stat('Filled', confirmed)}
