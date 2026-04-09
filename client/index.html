@@ -485,8 +485,9 @@
       <div id="paused-badge" style="display:none; color:var(--red); font-size:11px; font-weight:600;">Quoting OFF</div>
     </div>
     <nav class="sidebar-nav">
-      <a class="nav-item active" onclick="switchSection('orders', this)">
+      <a class="nav-item active" onclick="switchSection('orders', this)" id="nav-orders">
         <span class="nav-icon">&#9998;</span> Orders
+        <span id="orders-badge" style="display:none; background:var(--red); color:#fff; font-size:10px; font-weight:700; border-radius:10px; padding:1px 6px; margin-left:6px;"></span>
       </a>
       <a class="nav-item" onclick="switchSection('portfolio', this)">
         <span class="nav-icon">&#9733;</span> Portfolio
@@ -886,6 +887,10 @@
   let autoRefreshCountdown = 10;
   let countdownTimer = null;
 
+  // Track new confirmations for Orders tab notification badge
+  let lastSeenConfirmations = 0;
+  let unseenConfirmations = 0;
+
   // Track expanded/collapsed state across refreshes (sub-sections + individual rows)
   const toggleState = {}; // { elementId: true/false }
   const expandedRows = new Set(); // track all expanded detail rows (nm-X, mp-X, ord-X)
@@ -996,6 +1001,29 @@
     document.getElementById('stat-quotes').textContent = (o.totalQuotes || 0).toLocaleString();
     document.getElementById('stat-confirmed').textContent = (o.totalConfirmations || 0).toLocaleString();
     document.getElementById('stat-settled').textContent = (o.totalSettlements || 0).toLocaleString();
+
+    // Update Orders tab notification badge for new confirmations
+    const currentConfirmations = o.totalConfirmations || 0;
+    if (lastSeenConfirmations === 0) {
+      lastSeenConfirmations = currentConfirmations; // initialize on first load
+    } else if (currentConfirmations > lastSeenConfirmations) {
+      if (activeSection === 'orders') {
+        lastSeenConfirmations = currentConfirmations; // viewing Orders, stay current
+      } else {
+        unseenConfirmations += (currentConfirmations - lastSeenConfirmations);
+        lastSeenConfirmations = currentConfirmations;
+      }
+    }
+    const ordersBadge = document.getElementById('orders-badge');
+    if (ordersBadge) {
+      if (unseenConfirmations > 0 && activeSection !== 'orders') {
+        ordersBadge.textContent = unseenConfirmations;
+        ordersBadge.style.display = 'inline';
+      } else {
+        ordersBadge.style.display = 'none';
+        unseenConfirmations = 0;
+      }
+    }
 
     const pnl = o.runningPnL || 0;
     const pnlEl = document.getElementById('stat-pnl');
@@ -6175,6 +6203,12 @@
     if (navEl) navEl.classList.add('active');
     const titleEl = document.getElementById('section-title');
     if (titleEl) titleEl.textContent = sectionNames[section] || section;
+    // Clear Orders notification badge when switching to Orders
+    if (section === 'orders') {
+      unseenConfirmations = 0;
+      const badge = document.getElementById('orders-badge');
+      if (badge) badge.style.display = 'none';
+    }
     // Start/stop live odds refresh based on which tab is active
     if (section === 'exposure') startLiveOddsRefresh();
     else stopLiveOddsRefresh();
