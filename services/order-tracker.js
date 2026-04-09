@@ -821,14 +821,14 @@ function addExposure(order) {
     const eventId = leg.pxEventId;
     const name = leg.team || leg.teamName || 'unknown';
     const teamKey = normalizeExposureKey(name);
-    // Composite key: team + event so the same team on different games (e.g. back-to-back)
-    // is tracked as separate rows in the Team Exposure table.
-    // Falls back to opponent+date when pxEventId is missing so different games don't merge.
-    let eventSuffix = eventId;
+    // Composite key: team + event + date so the same team on different games
+    // is tracked as separate rows. Appends game date even when pxEventId exists,
+    // because PX can reuse event IDs across different days.
+    const gameDate = leg.startTime ? new Date(leg.startTime).toISOString().substring(0, 10) : '';
+    let eventSuffix = eventId ? (eventId + '|' + gameDate) : null;
     if (!eventSuffix) {
       const opp = normalizeExposureKey((leg.homeTeam || '') + (leg.awayTeam || ''));
-      const day = leg.startTime ? leg.startTime.substring(0, 10) : '';
-      eventSuffix = (opp || '') + '|' + (day || 'noevent');
+      eventSuffix = (opp || '') + '|' + (gameDate || 'noevent');
     }
     const key = teamKey + '|' + eventSuffix;
 
@@ -840,9 +840,8 @@ function addExposure(order) {
     }
 
     // Game-level tracking (for net exposure calc)
-    // Use eventId if available, otherwise fall back to eventSuffix so parlays
-    // without pxEventId still participate in net exposure calculation.
-    const gameKey = eventId || ('syn_' + eventSuffix);
+    // Include date in gameKey to separate same-eventId across different days.
+    const gameKey = eventId ? (eventId + '|' + gameDate) : ('syn_' + eventSuffix);
     if (!gameExposure[gameKey]) {
       gameExposure[gameKey] = {
         name: (leg.awayTeam || '?') + ' @ ' + (leg.homeTeam || '?'),
@@ -900,16 +899,16 @@ function removeExposure(order) {
     const eventId = leg.pxEventId;
     const teamKey = normalizeExposureKey(leg.team || leg.teamName || '');
     // Must match the key logic in addExposure
-    let eventSuffix = eventId;
+    const gameDate = leg.startTime ? new Date(leg.startTime).toISOString().substring(0, 10) : '';
+    let eventSuffix = eventId ? (eventId + '|' + gameDate) : null;
     if (!eventSuffix) {
       const opp = normalizeExposureKey((leg.homeTeam || '') + (leg.awayTeam || ''));
-      const day = leg.startTime ? leg.startTime.substring(0, 10) : '';
-      eventSuffix = (opp || '') + '|' + (day || 'noevent');
+      eventSuffix = (opp || '') + '|' + (gameDate || 'noevent');
     }
     const key = teamKey + '|' + eventSuffix;
 
     // Remove from game exposure
-    const gameKey = eventId || ('syn_' + eventSuffix);
+    const gameKey = eventId ? (eventId + '|' + gameDate) : ('syn_' + eventSuffix);
     if (gameExposure[gameKey]) {
       gameExposure[gameKey].parlays = gameExposure[gameKey].parlays.filter(
         p => p.parlayId !== order.parlayId
@@ -1050,12 +1049,12 @@ function checkGameExposure(legs, estPayout, maxPerGame) {
     const leg = legs[i];
     const li = leg.lineInfo || leg;
     const eventId = li.pxEventId || leg.pxEventId;
-    // Build game key matching addExposure logic
-    let gameKey = eventId;
+    const gameDate = li.startTime ? new Date(li.startTime).toISOString().substring(0, 10) : '';
+    // Build game key matching addExposure logic — include date to separate same eventId across days
+    let gameKey = eventId ? (eventId + '|' + gameDate) : null;
     if (!gameKey) {
       const opp = normalizeExposureKey((li.homeTeam || '') + (li.awayTeam || ''));
-      const day = li.startTime ? li.startTime.substring(0, 10) : '';
-      gameKey = 'syn_' + (opp || '') + '|' + (day || 'noevent');
+      gameKey = 'syn_' + (opp || '') + '|' + (gameDate || 'noevent');
     }
 
     let otherProb = 1;
@@ -1095,13 +1094,13 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
     const teamKey = normalizeExposureKey(name);
     if (!teamKey) continue;
     const eventId = leg.lineInfo?.pxEventId || leg.pxEventId;
+    const li = leg.lineInfo || leg;
+    const gameDate = li.startTime ? new Date(li.startTime).toISOString().substring(0, 10) : '';
     // Must match the key logic in addExposure
-    let eventSuffix = eventId;
+    let eventSuffix = eventId ? (eventId + '|' + gameDate) : null;
     if (!eventSuffix) {
-      const li = leg.lineInfo || leg;
       const opp = normalizeExposureKey((li.homeTeam || '') + (li.awayTeam || ''));
-      const day = li.startTime ? li.startTime.substring(0, 10) : '';
-      eventSuffix = (opp || '') + '|' + (day || 'noevent');
+      eventSuffix = (opp || '') + '|' + (gameDate || 'noevent');
     }
     const key = teamKey + '|' + eventSuffix;
 
