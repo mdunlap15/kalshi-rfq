@@ -2422,7 +2422,16 @@
       for (const l of legs) {
         const name = (l.team || l.teamName || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
         if (!name) continue;
-        const compositeKey = name + '|' + (l.pxEventId || 'noevent');
+        // Must match backend exposure key format: team|eventId|date or team|opponent|date
+        const gameDate = l.startTime ? new Date(l.startTime).toISOString().substring(0, 10) : '';
+        const eventId = l.pxEventId;
+        let compositeKey;
+        if (eventId) {
+          compositeKey = name + '|' + eventId + '|' + gameDate;
+        } else {
+          const opp = ((l.homeTeam || '') + (l.awayTeam || '')).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+          compositeKey = name + '|' + (opp || '') + '|' + (gameDate || 'noevent');
+        }
         if (!teamParlayMap[compositeKey]) teamParlayMap[compositeKey] = [];
         teamParlayMap[compositeKey].push(o);
       }

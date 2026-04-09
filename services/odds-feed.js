@@ -196,22 +196,28 @@ async function fetchOddsForSport(sport, opts) {
   if (PINNACLE_SPORT_MAP[sport]) {
     const pinnacleRows = await fetchPinnacleRows(sport);
     if (pinnacleRows.length > 0) {
-      // Build team-name lookup to match Pinnacle events to SharpAPI events
-      const teamKeyToEventId = {};
+      // Build team-name + date lookup to match Pinnacle events to SharpAPI events.
+      // Include date to prevent merging today's Pinnacle odds into tomorrow's event
+      // when the same teams play on consecutive days (PX reuses event IDs).
+      const teamDateToEventId = {};
       for (const [eid, ev] of Object.entries(eventMap)) {
         const key = normalizeEventKey(ev.homeTeam, ev.awayTeam);
-        teamKeyToEventId[key] = eid;
+        const date = ev.commenceTime ? new Date(ev.commenceTime).toISOString().substring(0, 10) : '';
+        teamDateToEventId[key + '|' + date] = eid;
+        // Also store without date as fallback for events without commence time
+        if (!teamDateToEventId[key + '|']) teamDateToEventId[key + '|'] = eid;
       }
 
       let merged = 0;
       for (const row of pinnacleRows) {
         const key = normalizeEventKey(cleanTeamName(row.home_team), cleanTeamName(row.away_team));
-        const matchedId = teamKeyToEventId[key];
+        const rowDate = row.event_start_time ? new Date(row.event_start_time).toISOString().substring(0, 10) : '';
+        // Try date-specific match first, then fallback to any match
+        const matchedId = teamDateToEventId[key + '|' + rowDate] || teamDateToEventId[key + '|'];
         if (matchedId && eventMap[matchedId]) {
           eventMap[matchedId].odds.push(row);
           merged++;
         }
-        // If no match, Pinnacle has an event SharpAPI doesn't — skip it
       }
       log.info('OddsFeed', `Pinnacle: merged ${merged} of ${pinnacleRows.length} rows into ${mapping.value} events`);
     }
@@ -1518,7 +1524,14 @@ function mergeDeltas(sport, deltaRows) {
     if (!entry) continue; // new event — skip, next full refresh picks it up
 
     const events = Array.isArray(entry) ? entry : [entry];
-    const existing = events.find(e => e.eventId === eventId) || events[0];
+    // Match by eventId AND verify commence time is on the same day
+    const deltaDate = rows[0].event_start_time ? new Date(rows[0].event_start_time).toISOString().substring(0, 10) : null;
+    const existing = events.find(e => {
+      if (e.eventId !== eventId) return false;
+      if (!deltaDate) return true; // no date to verify, accept
+      const cacheDate = e.commenceTime ? new Date(e.commenceTime).toISOString().substring(0, 10) : null;
+      return !cacheDate || cacheDate === deltaDate;
+    });
     if (!existing || !existing._rawOdds) continue;
 
     // Merge: replace/add rows matching by sportsbook + market_type + selection_type
