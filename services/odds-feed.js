@@ -1920,27 +1920,49 @@ async function fetchScores(sport) {
     return cached.games;
   }
 
-  // Map sport keys that differ between our config and The Odds API
-  const sportKey = sport; // our keys already match The Odds API
+  const parseGames = (data) => (data || []).map(g => ({
+    homeTeam: g.home_team,
+    awayTeam: g.away_team,
+    commenceTime: g.commence_time,
+    completed: g.completed || false,
+    homeScore: g.scores?.find(s => s.name === g.home_team)?.score != null ? Number(g.scores.find(s => s.name === g.home_team).score) : null,
+    awayScore: g.scores?.find(s => s.name === g.away_team)?.score != null ? Number(g.scores.find(s => s.name === g.away_team).score) : null,
+  }));
 
   try {
-    const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/scores/?apiKey=${theOddsApiKey}&daysFrom=1`;
+    // Dynamic sports (tennis) need tournament discovery — The Odds API
+    // doesn't have a generic 'tennis' scores endpoint.
+    const fallback = ODDS_API_FALLBACK[sport];
+    if (fallback && fallback.dynamic && fallback.sportPrefix) {
+      const sportsResp = await fetch(`https://api.the-odds-api.com/v4/sports/?apiKey=${theOddsApiKey}`);
+      if (!sportsResp.ok) return cached?.games || [];
+      const allSports = await sportsResp.json();
+      const active = allSports.filter(s => s.key.startsWith(fallback.sportPrefix) && s.active);
+      if (active.length === 0) return cached?.games || [];
+
+      let allGames = [];
+      for (const tournament of active) {
+        const url = `https://api.the-odds-api.com/v4/sports/${tournament.key}/scores/?apiKey=${theOddsApiKey}&daysFrom=1`;
+        const resp = await fetch(url);
+        if (resp.ok) {
+          const data = await resp.json();
+          allGames = allGames.concat(parseGames(data));
+        }
+      }
+      scoresCache[sport] = { fetchedAt: Date.now(), games: allGames };
+      log.debug('Scores', `Cached ${allGames.length} scores for ${sport} from ${active.length} tournaments (${allGames.filter(g => g.completed).length} completed)`);
+      return allGames;
+    }
+
+    // Standard sports — direct fetch
+    const url = `https://api.the-odds-api.com/v4/sports/${sport}/scores/?apiKey=${theOddsApiKey}&daysFrom=1`;
     const resp = await fetch(url);
     if (!resp.ok) {
       log.debug('Scores', `Failed to fetch scores for ${sport}: ${resp.status}`);
       return cached?.games || [];
     }
 
-    const data = await resp.json();
-    const games = (data || []).map(g => ({
-      homeTeam: g.home_team,
-      awayTeam: g.away_team,
-      commenceTime: g.commence_time,
-      completed: g.completed || false,
-      homeScore: g.scores?.find(s => s.name === g.home_team)?.score != null ? Number(g.scores.find(s => s.name === g.home_team).score) : null,
-      awayScore: g.scores?.find(s => s.name === g.away_team)?.score != null ? Number(g.scores.find(s => s.name === g.away_team).score) : null,
-    }));
-
+    const games = parseGames(await resp.json());
     scoresCache[sport] = { fetchedAt: Date.now(), games };
     log.debug('Scores', `Cached ${games.length} scores for ${sport} (${games.filter(g => g.completed).length} completed)`);
     return games;
