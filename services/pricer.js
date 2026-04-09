@@ -123,6 +123,10 @@ async function priceParlay(legs) {
       lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
       lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
     );
+    const kalshiOdds = oddsFeed.getKalshiOdds(
+      lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
+    );
 
     // Require a valid fair probability — if we have one, sportsbook data exists
     // (fair prob is built from de-vigged consensus of all available books).
@@ -171,6 +175,7 @@ async function priceParlay(legs) {
       displayFairProb,
       pinnacleOdds,
       fanduelOdds,
+      kalshiOdds,
     });
 
     fairParlayProb *= fairProb;
@@ -296,6 +301,7 @@ async function priceParlay(legs) {
           displayFairProb: l.displayFairProb ? Math.round(l.displayFairProb * 10000) / 10000 : null,
           pinnacleOdds: l.pinnacleOdds || null,
           fanduelOdds: l.fanduelOdds || null,
+          kalshiOdds: l.kalshiOdds || null,
           sport: l.lineInfo.sport,
           homeTeam: l.lineInfo.homeTeam,
           awayTeam: l.lineInfo.awayTeam,

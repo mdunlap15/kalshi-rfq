@@ -814,6 +814,11 @@ function buildConsensusMoneyline(bookPairs) {
     home: fdBook.home.odds_american,
     away: fdBook.away.odds_american,
   } : null;
+  const klBook = bookPairs.find(bp => bp.book === 'kalshi');
+  const kalshi = klBook ? {
+    home: klBook.home.odds_american,
+    away: klBook.away.odds_american,
+  } : null;
   return {
     home: {
       rawOdds: bookPairs[0].home.odds_american,
@@ -830,6 +835,7 @@ function buildConsensusMoneyline(bookPairs) {
     books: bookPairs.length,
     pinnacle,
     fanduel,
+    kalshi,
   };
 }
 
@@ -871,6 +877,11 @@ function buildConsensusSpread(bookPairs) {
     home: fdBook.home.odds_american,
     away: fdBook.away.odds_american,
   } : null;
+  const klBook = matching.find(bp => bp.book === 'kalshi');
+  const kalshi = klBook ? {
+    home: klBook.home.odds_american,
+    away: klBook.away.odds_american,
+  } : null;
   return {
     home: {
       rawOdds: matching[0].home.odds_american,
@@ -890,6 +901,7 @@ function buildConsensusSpread(bookPairs) {
     books: matching.length,
     pinnacle,
     fanduel,
+    kalshi,
   };
 }
 
@@ -946,6 +958,10 @@ function buildConsensusTotals(bookPairs) {
     fanduel: (() => {
       const fdBook = matching.find(bp => bp.book === 'fanduel');
       return fdBook ? { over: fdBook.over.odds_american, under: fdBook.under.odds_american } : null;
+    })(),
+    kalshi: (() => {
+      const klBook = matching.find(bp => bp.book === 'kalshi');
+      return klBook ? { over: klBook.over.odds_american, under: klBook.under.odds_american } : null;
     })(),
   };
 }
@@ -1255,6 +1271,26 @@ function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, target
   } else if (marketType === 'totals') {
     if (selection === 'over') return market.fanduel.over || null;
     if (selection === 'under') return market.fanduel.under || null;
+  }
+  return null;
+}
+
+function getKalshiOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime) {
+  const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
+  if (!event) return null;
+
+  const market = event.markets[marketType];
+  if (!market) return null;
+
+  if (marketType === 'team_totals') return null;
+
+  if (!market.kalshi) return null;
+  if (marketType === 'h2h' || marketType === 'spreads') {
+    if (selection === 'home') return market.kalshi.home || null;
+    if (selection === 'away') return market.kalshi.away || null;
+  } else if (marketType === 'totals') {
+    if (selection === 'over') return market.kalshi.over || null;
+    if (selection === 'under') return market.kalshi.under || null;
   }
   return null;
 }
@@ -1853,6 +1889,7 @@ module.exports = {
   getPinnacleOdds,
   getDisplayFairProb,
   getFanDuelOdds,
+  getKalshiOdds,
   getDNBFairProb,
   fetchAltLines,
   getEventMarkets,
