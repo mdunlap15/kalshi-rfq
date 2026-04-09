@@ -195,6 +195,99 @@ async function fetchOddsForSport(sport, opts) {
     eventMap[eventId].odds.push(row);
   }
 
+  // Merge single-book events (e.g. Kalshi) into matching multi-book events.
+  // SharpAPI sometimes groups Kalshi under a separate event_id because Kalshi uses
+  // abbreviated team names (e.g. "Chicago WS" instead of "Chicago White Sox").
+  // This step merges those orphan events by fuzzy team name + date matching.
+  {
+    const eventIds = Object.keys(eventMap);
+    // Identify "main" events (2+ books) and "orphan" events (1 book)
+    const mainEvents = [];
+    const orphanEvents = [];
+    for (const eid of eventIds) {
+      const ev = eventMap[eid];
+      const books = new Set(ev.odds.map(r => r.sportsbook));
+      if (books.size >= 2) mainEvents.push(eid);
+      else orphanEvents.push(eid);
+    }
+
+    if (orphanEvents.length > 0 && mainEvents.length > 0) {
+      // Build lookup of main event team names (normalized last-word matching)
+      const getLastWords = (name) => {
+        const words = normalizeTeamName(name).split(/\s+/);
+        return words.slice(-2).join(' '); // last 2 words e.g. "white sox", "blue jays"
+      };
+      const getLastWord = (name) => {
+        const words = normalizeTeamName(name).split(/\s+/);
+        return words[words.length - 1]; // last word e.g. "sox", "jays"
+      };
+
+      let mergedOrphans = 0;
+      for (const orphanId of orphanEvents) {
+        const orphan = eventMap[orphanId];
+        const orphanDate = orphan.commenceTime ? new Date(orphan.commenceTime).toISOString().substring(0, 10) : '';
+        const oHomeLast = getLastWords(orphan.homeTeam);
+        const oAwayLast = getLastWords(orphan.awayTeam);
+        const oHomeSingle = getLastWord(orphan.homeTeam);
+        const oAwaySingle = getLastWord(orphan.awayTeam);
+
+        let bestMatch = null;
+        for (const mainId of mainEvents) {
+          const main = eventMap[mainId];
+          const mainDate = main.commenceTime ? new Date(main.commenceTime).toISOString().substring(0, 10) : '';
+          // Date must match (or one is missing)
+          if (orphanDate && mainDate && orphanDate !== mainDate) continue;
+
+          const mHomeLast = getLastWords(main.homeTeam);
+          const mAwayLast = getLastWords(main.awayTeam);
+          const mHomeSingle = getLastWord(main.homeTeam);
+          const mAwaySingle = getLastWord(main.awayTeam);
+
+          // Try exact normalized match first
+          const exactMatch = normalizeEventKey(orphan.homeTeam, orphan.awayTeam) ===
+                             normalizeEventKey(main.homeTeam, main.awayTeam);
+          // Try last-2-words match (handles "Chicago White Sox" vs "Chicago WS" where WS doesn't match)
+          // Try last-word match (handles "Athletics" vs "A's" — both have last word issues)
+          // Try containment (handles "san francisco giants" contains "giants")
+          const homeMatch = exactMatch ||
+            mHomeLast === oHomeLast ||
+            mHomeSingle === oHomeSingle ||
+            normalizeTeamName(main.homeTeam).includes(normalizeTeamName(orphan.homeTeam)) ||
+            normalizeTeamName(orphan.homeTeam).includes(normalizeTeamName(main.homeTeam));
+          const awayMatch = exactMatch ||
+            mAwayLast === oAwayLast ||
+            mAwaySingle === oAwaySingle ||
+            normalizeTeamName(main.awayTeam).includes(normalizeTeamName(orphan.awayTeam)) ||
+            normalizeTeamName(orphan.awayTeam).includes(normalizeTeamName(main.awayTeam));
+          // Also try swapped home/away (Kalshi sometimes flips them)
+          const homeMatchSwap = mHomeLast === oAwayLast || mHomeSingle === oAwaySingle ||
+            normalizeTeamName(main.homeTeam).includes(normalizeTeamName(orphan.awayTeam)) ||
+            normalizeTeamName(orphan.awayTeam).includes(normalizeTeamName(main.homeTeam));
+          const awayMatchSwap = mAwayLast === oHomeLast || mAwaySingle === oHomeSingle ||
+            normalizeTeamName(main.awayTeam).includes(normalizeTeamName(orphan.homeTeam)) ||
+            normalizeTeamName(orphan.homeTeam).includes(normalizeTeamName(main.awayTeam));
+
+          if ((homeMatch && awayMatch) || (homeMatchSwap && awayMatchSwap)) {
+            bestMatch = mainId;
+            break;
+          }
+        }
+
+        if (bestMatch) {
+          // Merge orphan odds into main event
+          for (const row of orphan.odds) {
+            eventMap[bestMatch].odds.push(row);
+          }
+          delete eventMap[orphanId];
+          mergedOrphans++;
+        }
+      }
+      if (mergedOrphans > 0) {
+        log.info('OddsFeed', `Merged ${mergedOrphans} single-book events into main events for ${mapping.value}`);
+      }
+    }
+  }
+
   // Supplement with Pinnacle odds from The Odds API
   // Pinnacle events have different IDs, so match by team names and merge
   if (PINNACLE_SPORT_MAP[sport]) {
