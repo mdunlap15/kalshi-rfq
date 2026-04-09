@@ -251,17 +251,27 @@ async function priceParlay(legs) {
 
   const americanOdds = decimalToAmerican(decimalOdds);
 
-  // Decline any parlay containing an NBA leg where the selection is a heavy favorite (> -150).
-  // NBA heavy favorites have been the biggest loss category.
+  // Decline heavy favorite moneyline legs — PX sign-flip bug causes overpayment.
+  // NBA: no moneyline favorites beyond -180 (fairProb > 0.6429)
+  // Tennis: no moneyline favorites beyond -200 (fairProb > 0.6667)
   for (const leg of pricedLegs) {
-    if (leg.lineInfo.sport === 'basketball_nba' && leg.fairProb > 0.60) {
-      // fairProb 0.60 ≈ -150 implied
-      const impliedOdds = leg.fairProb >= 0.5 ? Math.round(-100 * leg.fairProb / (1 - leg.fairProb)) : Math.round(100 * (1 - leg.fairProb) / leg.fairProb);
-      log.debug('Pricing', `Declined: NBA leg ${leg.lineInfo.teamName} is heavy favorite (${impliedOdds})`);
+    if (leg.lineInfo.marketType !== 'moneyline') continue;
+    const impliedOdds = leg.fairProb >= 0.5 ? Math.round(-100 * leg.fairProb / (1 - leg.fairProb)) : Math.round(100 * (1 - leg.fairProb) / leg.fairProb);
+    if (leg.lineInfo.sport === 'basketball_nba' && leg.fairProb > 0.6429) {
+      log.debug('Pricing', `Declined: NBA moneyline ${leg.lineInfo.teamName} is heavy favorite (${impliedOdds})`);
       priceParlay._lastFailure = {
         reason: 'NBA heavy favorite',
-        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -150 limit`,
-        blockerLeg: { team: leg.lineInfo.teamName, sport: 'basketball_nba', market: leg.lineInfo.marketType },
+        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -180 limit`,
+        blockerLeg: { team: leg.lineInfo.teamName, sport: 'basketball_nba', market: 'moneyline' },
+      };
+      return null;
+    }
+    if (leg.lineInfo.sport === 'tennis' && leg.fairProb > 0.6667) {
+      log.debug('Pricing', `Declined: Tennis moneyline ${leg.lineInfo.teamName} is heavy favorite (${impliedOdds})`);
+      priceParlay._lastFailure = {
+        reason: 'tennis heavy favorite',
+        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -200 limit`,
+        blockerLeg: { team: leg.lineInfo.teamName, sport: 'tennis', market: 'moneyline' },
       };
       return null;
     }
