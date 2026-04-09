@@ -550,6 +550,7 @@ function recordDecline(reason, detail) {
           origLine: cat.origLine,
           isKnownEvent: cat.isKnownEvent,
           resolveReason: cat.resolveReason,
+          resolveDetail: cat.resolveDetail,
         });
       }
     }

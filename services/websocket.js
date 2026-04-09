@@ -373,8 +373,12 @@ async function handleRFQ(data) {
           // Check resolve failure reason for additional context
           const resolveFailure = lineManagerEarly.resolveUnknownLine._lastFailure;
           let resolveReason = null;
+          let resolveDetail = null;
           if (resolveFailure && resolveFailure.lineId === lineId) {
             resolveReason = resolveFailure.reason; // 'no_event_id', 'unknown_event', 'no_odds_match', 'line_not_in_markets'
+            resolveDetail = resolveFailure.pxHome && resolveFailure.pxAway
+              ? `PX: ${resolveFailure.pxHome} vs ${resolveFailure.pxAway} [${resolveFailure.sportsAvail || ''}]`
+              : (resolveFailure.marketTypesFound ? `markets found: ${resolveFailure.marketTypesFound.join(',')}` : null);
           }
 
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
@@ -388,6 +392,7 @@ async function handleRFQ(data) {
             origLine,
             isKnownEvent,
             resolveReason,
+            resolveDetail,
           });
         }
       }

@@ -534,7 +534,7 @@ function startStatusServer() {
           count: info.count,
           bySport: info.bySport,
           byResolveReason: info.byResolveReason,
-          quotable: ['alt_line', 'alt_spread', 'alt_total'].includes(cat),
+          quotable: ['alt_line', 'alt_spread', 'alt_total', 'team_total'].includes(cat),
           sampleLegs: info.sampleLegs || [],
         };
       }

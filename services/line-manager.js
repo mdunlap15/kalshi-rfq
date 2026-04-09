@@ -486,9 +486,42 @@ async function resolveUnknownLine(rfqLeg) {
       }
     }
   }
+
+  // Second pass: try SharpAPI /events index (broader team name coverage)
+  // Mirrors the seed-time fallback for events with non-standard team names.
   if (!matchedHome || !matchedAway) {
-    log.debug('Lines', `Cannot resolve ${lineId}: no odds feed match for ${event.name}`);
-    resolveUnknownLine._lastFailure = { lineId, reason: 'no_odds_match', eventName: event.name, sport: event.sport || event.sportName };
+    for (const tryKey of possibleSportKeys) {
+      const sharpEvents = oddsFeed.getSharpEvents(tryKey);
+      if (!sharpEvents || sharpEvents.length === 0) continue;
+      const sharpTeams = [...new Set(sharpEvents.flatMap(e => [e.homeTeam, e.awayTeam]))];
+      const tryHome = matchTeamName(homeComp.name, sharpTeams);
+      const tryAway = matchTeamName(awayComp.name, sharpTeams);
+      if (tryHome && tryAway) {
+        const pxTime = event.scheduled || null;
+        const oddsEvt = oddsFeed.getEventMarkets(tryKey, tryHome, tryAway, pxTime)
+          || oddsFeed.getEventMarkets(tryKey, tryAway, tryHome, pxTime);
+        if (oddsEvt) {
+          matchedHome = tryHome;
+          matchedAway = tryAway;
+          sportKey = tryKey;
+          log.debug('Lines', `On-demand matched via events index: ${homeComp.name} → ${tryHome}, ${awayComp.name} → ${tryAway}`);
+          break;
+        }
+      }
+    }
+  }
+  if (!matchedHome || !matchedAway) {
+    // Log what we tried to match for debugging
+    const sportKeys = possibleSportKeys.join(',');
+    const pxHome = homeComp?.name || '?';
+    const pxAway = awayComp?.name || '?';
+    const oddsApiEvents = oddsFeed.getAllCachedEvents();
+    const sportsAvail = possibleSportKeys.map(k => {
+      const evts = oddsApiEvents.filter(e => e.sport === k);
+      return k + ':' + evts.length;
+    }).join(', ');
+    log.info('Lines', `Cannot resolve ${lineId}: no odds feed match for "${event.name}" (PX: ${pxHome} vs ${pxAway}, sports: [${sportsAvail}], keys: ${sportKeys})`);
+    resolveUnknownLine._lastFailure = { lineId, reason: 'no_odds_match', eventName: event.name, sport: event.sport || event.sportName, pxHome, pxAway, sportKeys, sportsAvail };
     return null;
   }
 
