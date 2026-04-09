@@ -1965,6 +1965,12 @@
           return posState.sortDir * va.localeCompare(vb);
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
+        case 'fanduel': {
+          const fdCalc = (o) => { const ls = o.meta?.legs || o.legs || []; const fds = ls.filter(l => l.fanduelOdds != null); if (fds.length !== ls.length) return 0; let p = 1; for (const l of fds) p *= americanToProb(l.fanduelOdds); return p > 0 && p < 1 ? decimalToAmerican(1/p) : 0; };
+          va = fdCalc(a); vb = fdCalc(b); break;
+        }
+        case 'kalshi': va = a.meta?.kalshiParlay || 0; vb = b.meta?.kalshiParlay || 0; break;
         case 'stake':
           // My Risk = payout = calcBettorWager
           va = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : 0;
@@ -2047,10 +2053,10 @@
         <th>Selections</th>
         <th ${pSortClick('legs')}>Legs${pSortArrow('legs')}</th>
         <th ${pSortClick('odds')}>My Odds${pSortArrow('odds')}</th>
-        <th style="text-align:right; color:var(--purple);">Pinnacle</th>
-        <th style="text-align:right; color:var(--blue);">FanDuel</th>
-        <th style="text-align:right; color:var(--amber);">Kalshi</th>
-        <th style="text-align:right">My Risk${pSortArrow('stake')}</th>
+        <th ${pSortClick('pinnacle', 'right')} style="color:var(--purple);">Pinnacle${pSortArrow('pinnacle')}</th>
+        <th ${pSortClick('fanduel', 'right')} style="color:var(--blue);">FanDuel${pSortArrow('fanduel')}</th>
+        <th ${pSortClick('kalshi', 'right')} style="color:var(--amber);">Kalshi${pSortArrow('kalshi')}</th>
+        <th ${pSortClick('stake', 'right')}>My Risk${pSortArrow('stake')}</th>
         <th ${pSortClick('towin', 'right')}>To Win${pSortArrow('towin')}</th>
         <th ${pSortClick('winprob', 'right')} title="Probability you win (at least one bettor leg fails)">Win Prob${pSortArrow('winprob')}</th>
         <th ${pSortClick('status')} title="Game status">Status${pSortArrow('status')}</th>
@@ -4327,6 +4333,12 @@
           vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
+        case 'fanduel': {
+          const fdCalc2 = (o) => { const ls = o.meta?.legs || o.legs || []; const fds = ls.filter(l => l.fanduelOdds != null); if (fds.length !== ls.length) return 0; let p = 1; for (const l of fds) p *= americanToProb(l.fanduelOdds); return p > 0 && p < 1 ? decimalToAmerican(1/p) : 0; };
+          va = fdCalc2(a); vb = fdCalc2(b); break;
+        }
+        case 'kalshi': va = a.meta?.kalshiParlay || 0; vb = b.meta?.kalshiParlay || 0; break;
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
         case 'result': {
           const rMap2 = { won: 0, lost: 1, push: 2, void: 3 };
@@ -4403,9 +4415,9 @@
     html += '<th>Selections</th>';
     html += '<th ' + pSortClick('legs') + '>Legs' + pSortArrow('legs') + '</th>';
     html += '<th ' + pSortClick('odds') + '>Odds' + pSortArrow('odds') + '</th>';
-    html += '<th style="text-align:right; color:var(--purple);">Pinnacle</th>';
-    html += '<th style="text-align:right; color:var(--blue);">FanDuel</th>';
-    html += '<th style="text-align:right; color:var(--amber);">Kalshi</th>';
+    html += '<th ' + pSortClick('pinnacle', 'right') + ' style="color:var(--purple);">Pinnacle' + pSortArrow('pinnacle') + '</th>';
+    html += '<th ' + pSortClick('fanduel', 'right') + ' style="color:var(--blue);">FanDuel' + pSortArrow('fanduel') + '</th>';
+    html += '<th ' + pSortClick('kalshi', 'right') + ' style="color:var(--amber);">Kalshi' + pSortArrow('kalshi') + '</th>';
     html += '<th ' + pSortClick('stake', 'right') + '>My Risk' + pSortArrow('stake') + '</th>';
     html += '<th ' + pSortClick('result') + ' title="Settlement outcome from our (SP) perspective">SP Result' + pSortArrow('result') + '</th>';
     html += '<th ' + pSortClick('pnl', 'right') + '>P&L' + pSortArrow('pnl') + '</th>';
