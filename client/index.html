@@ -5848,13 +5848,17 @@
     const sumEl = document.getElementById('pricing-edge-summary');
     if (!el) return;
 
-    // Collect per-leg data from all quoted parlays
+    // Collect per-leg data from quoted parlays (rolling 3-day window)
     const legData = [];
     let earliestQuote = null, latestQuote = null;
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
     for (const o of allQuoted) {
+      const qDate = o.quotedAt || o.confirmedAt;
+      // Rolling 3-day window
+      if (qDate && qDate < threeDaysAgo) continue;
       const legs = o.meta?.legs || o.legs || [];
       const vig = o.meta?.vig || o.vig || 0;
-      const qDate = o.quotedAt || o.confirmedAt;
+      const isWon = o.status === 'confirmed' || o.status?.startsWith('settled_');
       if (qDate) {
         if (!earliestQuote || qDate < earliestQuote) earliestQuote = qDate;
         if (!latestQuote || qDate > latestQuote) latestQuote = qDate;
@@ -5881,6 +5885,7 @@
           // Spread in pp: positive = we charge MORE than book (good)
           pinSpread: pinProb != null ? Math.round((myProb - pinProb) * 10000) / 100 : null,
           fdSpread: fdProb != null ? Math.round((myProb - fdProb) * 10000) / 100 : null,
+          isWon,
         });
       }
     }
@@ -5957,7 +5962,7 @@
     for (const l of withPin) {
       const x = scaleX(l.pinProb);
       const y = scaleY(l.pinSpread);
-      const color = l.pinSpread >= 0 ? 'var(--green)' : 'var(--red)';
+      const color = l.isWon ? 'var(--blue)' : (l.pinSpread >= 0 ? 'var(--green)' : 'var(--red)');
       const dotGame = l.matchup ? ' | ' + l.matchup : '';
       const dotDate = l.gameDate ? ' ' + l.gameDate : '';
       svg += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + color + '" opacity="0.6"><title>' + l.team + ' ' + l.market + dotGame + dotDate + '\nEdge: ' + (l.pinSpread >= 0 ? '+' : '') + l.pinSpread.toFixed(2) + 'pp | PIN ' + l.pinOdds + ' | MY ' + l.myOddsAm + '</title></circle>';
@@ -5980,7 +5985,7 @@
     html += '<div style="font-size:13px; font-weight:600; color:var(--text2);">Per-Leg Edge vs Pinnacle</div>';
     if (dateRangeStr) html += '<div style="font-size:11px; color:var(--text3);">' + dateRangeStr + '</div>';
     html += '</div>';
-    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Each dot = one leg. Green (above zero) = you charge more than Pinnacle. Red (below zero) = you\'re more generous. Hover for details.</div>';
+    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Each dot = one leg. <span style="color:var(--blue);">Blue = won/confirmed quote.</span> Green = you charge more than Pinnacle. Red = you\'re more generous. Hover for details. Rolling 3-day window.</div>';
     html += svg;
 
     // --- Histogram: edge distribution ---
