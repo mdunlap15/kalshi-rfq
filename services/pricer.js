@@ -333,6 +333,7 @@ async function priceParlay(legs) {
           awayTeam: l.lineInfo.awayTeam,
           startTime: l.lineInfo.startTime || null,
           pxEventId: l.lineInfo.pxEventId || null,
+          onDemand: l.lineInfo.onDemand || false,
         };
       }),
       vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb), 0) / pricedLegs.length * 10000) / 10000,
