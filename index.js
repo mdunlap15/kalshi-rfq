@@ -410,6 +410,20 @@ function startStatusServer() {
   });
 
   // Manual settlement poll
+  // Diagnostic: raw PX order data by UUID
+  app.get('/debug/px-order', async (req, res) => {
+    try {
+      const uuid = req.query.uuid;
+      if (!uuid) return res.status(400).json({ error: 'uuid query param required' });
+      const orders = await px.fetchOrders(500);
+      const match = orders.find(o => o.order_uuid === uuid || o.p_id === uuid || (o.order_uuid && o.order_uuid.startsWith(uuid)));
+      if (!match) return res.json({ error: 'Order not found in PX', searched: orders.length });
+      res.json({ ok: true, pxOrder: match });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Diagnostic: show raw sportsbook names from SharpAPI
   app.get('/debug/sportsbooks', async (req, res) => {
     try {
