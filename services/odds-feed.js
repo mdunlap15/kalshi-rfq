@@ -946,6 +946,10 @@ function buildConsensusMoneyline(bookPairs) {
     pinnacle,
     fanduel,
     kalshi,
+    draftkings: (() => {
+      const dkBook = bookPairs.find(bp => bp.book === 'draftkings');
+      return dkBook ? { home: dkBook.home.odds_american, away: dkBook.away.odds_american } : null;
+    })(),
   };
 }
 
@@ -994,6 +998,11 @@ function buildConsensusSpread(bookPairs) {
     home: klBook.home.odds_american,
     away: klBook.away.odds_american,
   } : null;
+  const dkBookS = matching.find(bp => bp.book === 'draftkings');
+  const draftkings = dkBookS ? {
+    home: dkBookS.home.odds_american,
+    away: dkBookS.away.odds_american,
+  } : null;
   return {
     home: {
       rawOdds: matching[0].home.odds_american,
@@ -1014,6 +1023,7 @@ function buildConsensusSpread(bookPairs) {
     pinnacle,
     fanduel,
     kalshi,
+    draftkings,
   };
 }
 
@@ -1076,6 +1086,10 @@ function buildConsensusTotals(bookPairs) {
     kalshi: (() => {
       const klBook = matching.find(bp => bp.book === 'kalshi');
       return klBook ? { over: klBook.over.odds_american, under: klBook.under.odds_american } : null;
+    })(),
+    draftkings: (() => {
+      const dkBook = matching.find(bp => bp.book === 'draftkings');
+      return dkBook ? { over: dkBook.over.odds_american, under: dkBook.under.odds_american } : null;
     })(),
   };
 }
@@ -1419,6 +1433,26 @@ function getKalshiOdds(sport, homeTeam, awayTeam, marketType, selection, targetT
   } else if (marketType === 'totals') {
     if (selection === 'over') return market.kalshi.over || null;
     if (selection === 'under') return market.kalshi.under || null;
+  }
+  return null;
+}
+
+function getDraftKingsOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime) {
+  const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
+  if (!event) return null;
+
+  const market = event.markets[marketType];
+  if (!market) return null;
+
+  if (marketType === 'team_totals') return null;
+
+  if (!market.draftkings) return null;
+  if (marketType === 'h2h' || marketType === 'spreads') {
+    if (selection === 'home') return market.draftkings.home || null;
+    if (selection === 'away') return market.draftkings.away || null;
+  } else if (marketType === 'totals') {
+    if (selection === 'over') return market.draftkings.over || null;
+    if (selection === 'under') return market.draftkings.under || null;
   }
   return null;
 }
@@ -2040,6 +2074,7 @@ module.exports = {
   getDisplayFairProb,
   getFanDuelOdds,
   getKalshiOdds,
+  getDraftKingsOdds,
   getDNBFairProb,
   fetchAltLines,
   getEventMarkets,

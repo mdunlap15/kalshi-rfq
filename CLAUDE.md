@@ -2,6 +2,11 @@
 
 Automated market maker for parlay bets on ProphetX (PX). Receives RFQs via WebSocket, prices them using de-vigged sportsbook odds, and submits offers back.
 
+## User Context
+
+- **Timezone**: US Eastern (ET)
+- **Operator**: Mike — runs the parlay SP, monitors via dashboard
+
 ## Architecture
 
 ```

@@ -127,6 +127,10 @@ async function priceParlay(legs) {
       lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
       lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
     );
+    const draftkingsOdds = oddsFeed.getDraftKingsOdds(
+      lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
+    );
 
     // Require a valid fair probability — if we have one, sportsbook data exists
     // (fair prob is built from de-vigged consensus of all available books).
@@ -176,6 +180,7 @@ async function priceParlay(legs) {
       pinnacleOdds,
       fanduelOdds,
       kalshiOdds,
+      draftkingsOdds,
     });
 
     fairParlayProb *= fairProb;
@@ -328,6 +333,7 @@ async function priceParlay(legs) {
           pinnacleOdds: l.pinnacleOdds || null,
           fanduelOdds: l.fanduelOdds || null,
           kalshiOdds: l.kalshiOdds || null,
+          draftkingsOdds: l.draftkingsOdds || null,
           sport: l.lineInfo.sport,
           homeTeam: l.lineInfo.homeTeam,
           awayTeam: l.lineInfo.awayTeam,
@@ -361,6 +367,16 @@ async function priceParlay(legs) {
         }
         if (klProb <= 0 || klProb >= 1) return null;
         return decimalToAmerican(1 / klProb);
+      })(),
+      draftkingsParlay: (() => {
+        const dkLegs = pricedLegs.filter(l => l.draftkingsOdds != null);
+        if (dkLegs.length !== pricedLegs.length) return null;
+        let dkProb = 1;
+        for (const l of dkLegs) {
+          dkProb *= oddsFeed.americanToImpliedProb(l.draftkingsOdds);
+        }
+        if (dkProb <= 0 || dkProb >= 1) return null;
+        return decimalToAmerican(1 / dkProb);
       })(),
       maxRisk,
     },
