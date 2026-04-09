@@ -5979,14 +5979,17 @@
       svg += svgText(x, pad.t + chartH + 16, (p * 100).toFixed(0) + '%', { size: 11, fill: 'var(--text3)' });
     }
 
-    // Dots
-    for (const l of withPin) {
+    // Dots — render non-won first (green/red), then won (blue) on top so they're visible
+    const sortedDots = [...withPin].sort((a, b) => (a.isWon ? 1 : 0) - (b.isWon ? 1 : 0));
+    for (const l of sortedDots) {
       const x = scaleX(l.pinProb);
       const y = scaleY(l.pinSpread);
       const color = l.isWon ? 'var(--blue)' : (l.pinSpread >= 0 ? 'var(--green)' : 'var(--red)');
+      const r = l.isWon ? 5 : 4; // won dots slightly larger to stand out
       const dotGame = l.matchup ? ' | ' + l.matchup : '';
       const dotDate = l.gameDate ? ' ' + l.gameDate : '';
-      svg += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + color + '" opacity="0.6"><title>' + l.team + ' ' + l.market + dotGame + dotDate + '\nEdge: ' + (l.pinSpread >= 0 ? '+' : '') + l.pinSpread.toFixed(2) + 'pp | PIN ' + l.pinOdds + ' | MY ' + l.myOddsAm + '</title></circle>';
+      const wonLabel = l.isWon ? ' [CONFIRMED]' : '';
+      svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + color + '" opacity="0.6"><title>' + l.team + ' ' + l.market + dotGame + dotDate + wonLabel + '\nEdge: ' + (l.pinSpread >= 0 ? '+' : '') + l.pinSpread.toFixed(2) + 'pp | PIN ' + l.pinOdds + ' | MY ' + l.myOddsAm + '</title></circle>';
     }
 
     // Shaded regions
@@ -6006,7 +6009,7 @@
     html += '<div style="font-size:13px; font-weight:600; color:var(--text2);">Per-Leg Edge vs Pinnacle</div>';
     if (dateRangeStr) html += '<div style="font-size:11px; color:var(--text3);">' + dateRangeStr + '</div>';
     html += '</div>';
-    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Each dot = one leg. <span style="color:var(--blue);">Blue = won/confirmed quote.</span> Green = you charge more than Pinnacle. Red = you\'re more generous. Hover for details. Rolling 3-day window.</div>';
+    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Each dot = one leg. <span style="color:var(--blue);">Blue = confirmed fill (you won the quote).</span> Green = unconfirmed, you charge more. Red = unconfirmed, you\'re more generous. Rolling 3-day window.</div>';
     html += svg;
 
     // --- Histogram: edge distribution ---
