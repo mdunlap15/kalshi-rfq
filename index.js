@@ -526,13 +526,39 @@ function startStatusServer() {
         byTag[r.tag].count += r.count;
         byTag[r.tag].distinctEvents++;
       }
-      // Aggregate decline reasons
+      // Unknown leg categories (granular drill-down)
+      const categories = declines.unknownLegCategories || {};
+      const categorySummary = {};
+      for (const [cat, info] of Object.entries(categories)) {
+        categorySummary[cat] = {
+          count: info.count,
+          bySport: info.bySport,
+          byResolveReason: info.byResolveReason,
+          quotable: ['alt_line', 'alt_spread', 'alt_total'].includes(cat),
+          sampleLegs: info.sampleLegs || [],
+        };
+      }
+      // Compute actionable summary
+      const quotableCount = Object.entries(categorySummary)
+        .filter(([, v]) => v.quotable)
+        .reduce((s, [, v]) => s + v.count, 0);
+      const unquotableCount = Object.entries(categorySummary)
+        .filter(([, v]) => !v.quotable)
+        .reduce((s, [, v]) => s + v.count, 0);
+
       res.json({
         ok: true,
         totalDeclines: declines.total,
         byReason: declines.reasons,
         byTag,
         topUnknowns: ranked.slice(0, 50),
+        // New: granular unknown leg categories
+        unknownLegDrillDown: {
+          totalUnknownLegs: quotableCount + unquotableCount,
+          quotable: quotableCount,
+          unquotable: unquotableCount,
+          categories: categorySummary,
+        },
       });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });

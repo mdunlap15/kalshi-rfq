@@ -30,6 +30,11 @@ const declineStats = {
   nearMisses: [], // RFQs where all legs were known but couldn't price (no fair value)
   // Rolling log of recent declines for the alert banner
   recent: [], // { reason, detail, time, parlayId }
+  // Granular unknown leg categorization
+  unknownLegCategories: {
+    // category -> { count, bySport: { sport: count }, byResolveReason: { reason: count }, sampleLegs: [] }
+    // Categories: player_prop, alt_line, alt_spread, alt_total, team_total, other_line, unknown
+  },
 };
 // Limit-related reasons — these are the ones we alert on (user-controllable)
 const LIMIT_REASONS = new Set([
@@ -523,6 +528,33 @@ function recordDecline(reason, detail) {
     }
   }
 
+  // Track granular unknown leg categories
+  if (detail?.unknownCategories) {
+    for (const cat of detail.unknownCategories) {
+      const c = cat.category || 'unknown';
+      if (!declineStats.unknownLegCategories[c]) {
+        declineStats.unknownLegCategories[c] = { count: 0, bySport: {}, byResolveReason: {}, sampleLegs: [] };
+      }
+      const bucket2 = declineStats.unknownLegCategories[c];
+      bucket2.count++;
+      const sp = cat.sport || 'unknown';
+      bucket2.bySport[sp] = (bucket2.bySport[sp] || 0) + 1;
+      if (cat.resolveReason) {
+        bucket2.byResolveReason[cat.resolveReason] = (bucket2.byResolveReason[cat.resolveReason] || 0) + 1;
+      }
+      if (bucket2.sampleLegs.length < 10) {
+        bucket2.sampleLegs.push({
+          eventName: cat.eventName,
+          sport: sp,
+          line: cat.line,
+          origLine: cat.origLine,
+          isKnownEvent: cat.isKnownEvent,
+          resolveReason: cat.resolveReason,
+        });
+      }
+    }
+  }
+
   // Track near-misses (all legs known but couldn't price)
   // Near-miss reasons include: 'no fair value', 'stale odds', 'parlay too unlikely', 'odds too high'
   const nearMissReasons = new Set(['no fair value', 'stale odds', 'parlay too unlikely', 'odds too high', 'event started']);
@@ -546,6 +578,7 @@ function getMarketIntel(limit = 50) {
       reasons: { ...declineStats.reasons },
       volumeByReason: declineStats.volumeByReason || {},
       unknownSports: { ...declineStats.unknownSports },
+      unknownLegCategories: declineStats.unknownLegCategories || {},
       nearMissCount: declineStats.nearMisses.length,
       recentNearMisses: declineStats.nearMisses.slice(0, 500),
     },

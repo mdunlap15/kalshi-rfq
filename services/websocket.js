@@ -304,6 +304,7 @@ async function handleRFQ(data) {
       const knownLegs = [];
       const unknownLegs = [];
       const unknownSports = [];
+      const unknownCategories = []; // granular categorization for each unknown leg
       for (const l of legs) {
         const lineId = l.line_id || l.lineId || l;
         const info = lineManager.lookupLine(lineId);
@@ -313,28 +314,81 @@ async function handleRFQ(data) {
           unknownLegs.push(lineId);
           // Build specific description with market detail
           const eventName = l.sport_event_id ? lineManager.getEventName(l.sport_event_id) : null;
+          const eventInfo = l.sport_event_id ? lineManager.getEventInfo(l.sport_event_id) : null;
           const tName = l.tournament_id ? lineManager.getTournamentName(l.tournament_id) : null;
           const baseName = eventName || tName || 'unknown';
-          // Add context: is this a known event but unregistered line?
           const isKnownEvent = !!eventName;
+          const eventSport = eventInfo?.sport || eventInfo?.sportName || 'unknown';
 
-          // Build a simple detail string from what we know
-          // Don't try to map market_ids — PX reuses them across different market types
           const hasLine = l.line != null;
           const lineNum = hasLine ? l.line : null;
           const origLine = l.origin_market_line != null ? l.origin_market_line : null;
 
+          // --- Granular categorization ---
+          let category = 'unknown';
           let detail;
-          if (hasLine && origLine != null && lineNum !== origLine) {
-            // Alt line — show the line it's based on
+
+          if (!hasLine) {
+            // No line number = player prop or 2-way exotic
+            category = 'player_prop';
+            detail = 'no line (prop or 2-way)';
+          } else if (hasLine && origLine != null && lineNum !== origLine) {
+            // Has an origin_market_line different from line = PX identifies this as an alt
+            category = 'alt_line';
             detail = `alt line ${lineNum} (primary: ${origLine})`;
           } else if (hasLine) {
-            detail = `line ${lineNum}`;
-          } else {
-            detail = 'no line (prop or 2-way)';
+            // Has a line but no origin_market_line or they match
+            // Infer category from the line value + sport context
+            const absLine = Math.abs(lineNum);
+            if (eventSport.includes('basketball') && absLine > 100) {
+              category = 'alt_total'; // game total like 224.5
+              detail = `line ${lineNum}`;
+            } else if (eventSport.includes('basketball') && absLine >= 15 && absLine <= 60) {
+              category = 'team_total'; // team total like 25.5, 30.5
+              detail = `line ${lineNum}`;
+            } else if (eventSport.includes('basketball') && absLine <= 14) {
+              category = 'alt_spread'; // alt spread like +3.5, -5.5
+              detail = `line ${lineNum}`;
+            } else if (eventSport.includes('baseball') && absLine >= 5 && absLine <= 15) {
+              category = 'alt_total';
+              detail = `line ${lineNum}`;
+            } else if (eventSport.includes('baseball') && absLine < 5) {
+              category = 'alt_spread';
+              detail = `line ${lineNum}`;
+            } else if (eventSport.includes('hockey') && absLine >= 4 && absLine <= 10) {
+              category = 'alt_total';
+              detail = `line ${lineNum}`;
+            } else if (eventSport.includes('hockey') && absLine < 4) {
+              category = 'alt_spread';
+              detail = `line ${lineNum}`;
+            } else if (eventSport.includes('soccer') && absLine <= 5) {
+              category = absLine <= 2 ? 'alt_spread' : 'alt_total';
+              detail = `line ${lineNum}`;
+            } else {
+              category = 'other_line';
+              detail = `line ${lineNum}`;
+            }
           }
+
+          // Check resolve failure reason for additional context
+          const resolveFailure = lineManagerEarly.resolveUnknownLine._lastFailure;
+          let resolveReason = null;
+          if (resolveFailure && resolveFailure.lineId === lineId) {
+            resolveReason = resolveFailure.reason; // 'no_event_id', 'unknown_event', 'no_odds_match', 'line_not_in_markets'
+          }
+
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
           unknownSports.push(`${baseName} ${tag} ${detail}`);
+          unknownCategories.push({
+            lineId,
+            category,
+            sport: eventSport,
+            eventName: baseName,
+            line: lineNum,
+            origLine,
+            isKnownEvent,
+            resolveReason,
+          });
         }
       }
       // Use the specific reason from shouldDecline (correlation, started, limit, etc.)
@@ -346,6 +400,7 @@ async function handleRFQ(data) {
         knownLegs,
         unknownLegs,
         unknownSports,
+        unknownCategories,
         declineDetail: declineCheck.detail || null,
       });
       rfqStages.declined++;

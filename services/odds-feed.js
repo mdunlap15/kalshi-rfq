@@ -1040,6 +1040,12 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
     'icehockey_nhl': 'icehockey_nhl',
     'soccer_usa_mls': 'soccer_usa_mls',
     'soccer_epl': 'soccer_epl',
+    'soccer_spain_la_liga': 'soccer_spain_la_liga',
+    'soccer_germany_bundesliga': 'soccer_germany_bundesliga',
+    'soccer_italy_serie_a': 'soccer_italy_serie_a',
+    'soccer_france_ligue_one': 'soccer_france_ligue_one',
+    'soccer_uefa_champs_league': 'soccer_uefa_champions',
+    'soccer_uefa_europa_league': 'soccer_uefa_europa_league',
   };
   const oddsApiSport = oddsApiSportMap[sport];
   if (!oddsApiSport) return null;

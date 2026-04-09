@@ -442,12 +442,14 @@ async function resolveUnknownLine(rfqLeg) {
   const eventId = rfqLeg.sport_event_id;
   if (!eventId) {
     log.debug('Lines', `Cannot resolve ${lineId}: no sport_event_id in RFQ leg`);
+    resolveUnknownLine._lastFailure = { lineId, reason: 'no_event_id' };
     return null;
   }
 
   const event = eventIndex[eventId];
   if (!event) {
     log.debug('Lines', `Cannot resolve ${lineId}: unknown event ${eventId}`);
+    resolveUnknownLine._lastFailure = { lineId, reason: 'unknown_event', eventId };
     return null;
   }
 
@@ -486,6 +488,7 @@ async function resolveUnknownLine(rfqLeg) {
   }
   if (!matchedHome || !matchedAway) {
     log.debug('Lines', `Cannot resolve ${lineId}: no odds feed match for ${event.name}`);
+    resolveUnknownLine._lastFailure = { lineId, reason: 'no_odds_match', eventName: event.name, sport: event.sport || event.sportName };
     return null;
   }
 
@@ -561,7 +564,11 @@ async function resolveUnknownLine(rfqLeg) {
       }
 
       if (!foundInfo) {
-        log.debug('Lines', `Could not locate line ${lineId} in event ${eventId} markets`);
+        // Log what market types we DID find for this event (helps diagnose player props etc.)
+        const foundTypes = (markets || []).map(m => m.type).filter(Boolean);
+        const marketNames = (markets || []).map(m => m.name).filter(Boolean).slice(0, 5);
+        log.debug('Lines', `Could not locate line ${lineId} in event ${eventId} markets (types found: ${foundTypes.join(',')}; names: ${marketNames.join(', ')})`);
+        resolveUnknownLine._lastFailure = { lineId, reason: 'line_not_in_markets', eventName: event.name, sport: sportKey, marketTypesFound: foundTypes, marketNamesFound: marketNames };
         return null;
       }
 
@@ -641,6 +648,13 @@ function getEventName(eventId) {
   return e ? e.name : null;
 }
 
+/**
+ * Get full event info for a sport_event_id (sport, name, competitors, scheduled).
+ */
+function getEventInfo(eventId) {
+  return eventIndex[eventId] || null;
+}
+
 module.exports = {
   seedAllLines,
   refreshLines,
@@ -654,4 +668,5 @@ module.exports = {
   normalizeTeamName,
   getTournamentName,
   getEventName,
+  getEventInfo,
 };
