@@ -33,6 +33,12 @@ const LEAGUE_MAP = {
 // Bookmakers for The Odds API — Pinnacle (sharpest), DraftKings, FanDuel
 const ODDS_API_BOOKMAKERS = 'pinnacle,draftkings,fanduel';
 
+// Expanded bookmakers for alt-line fetching only — more books = more alt line values.
+// Primary pricing is NOT affected (uses ODDS_API_BOOKMAKERS via SharpAPI consensus).
+// Minimum 2 books required per alt line to ensure de-vig accuracy.
+const ALT_LINES_BOOKMAKERS = 'pinnacle,draftkings,fanduel,bovada,betonlineag,betrivers,williamhill_us,unibet_us,superbook,betmgm';
+const ALT_LINES_MIN_BOOKS = 2; // Require at least 2 books for each alt line value
+
 // Sports that use The Odds API as fallback (SharpAPI free tier doesn't cover them)
 const ODDS_API_FALLBACK = {
   'tennis': {
@@ -1147,7 +1153,7 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
     + `?apiKey=${theOddsApiKey}`
     + `&regions=us,eu`
     + `&markets=alternate_spreads,alternate_totals`
-    + `&bookmakers=${ODDS_API_BOOKMAKERS}`
+    + `&bookmakers=${ALT_LINES_BOOKMAKERS}`
     + `&oddsFormat=american`;
 
   log.info('OddsFeed', `Fetching alt lines for ${homeTeam} vs ${awayTeam}...`);
@@ -1166,51 +1172,59 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
     for (const book of (data.bookmakers || [])) {
       for (const market of (book.markets || [])) {
         if (market.key === 'alternate_spreads') {
-          // Group by point value, collect home/away
+          // Group by point value, collect home/away with book attribution
           for (const o of (market.outcomes || [])) {
             const lineKey = Math.abs(o.point);
-            if (!result.altSpreads[lineKey]) result.altSpreads[lineKey] = { probs: [] };
+            if (!result.altSpreads[lineKey]) result.altSpreads[lineKey] = { probs: [], books: new Set() };
             const isHome = o.name === homeTeam || o.name === data.home_team;
             const prob = americanToImpliedProb(o.price);
             result.altSpreads[lineKey].probs.push({ isHome, prob, point: o.point });
+            result.altSpreads[lineKey].books.add(book.key);
           }
         } else if (market.key === 'alternate_totals') {
           for (const o of (market.outcomes || [])) {
             const lineKey = o.point;
-            if (!result.altTotals[lineKey]) result.altTotals[lineKey] = { probs: [] };
+            if (!result.altTotals[lineKey]) result.altTotals[lineKey] = { probs: [], books: new Set() };
             const isOver = o.name === 'Over';
             const prob = americanToImpliedProb(o.price);
             result.altTotals[lineKey].probs.push({ isOver, prob });
+            result.altTotals[lineKey].books.add(book.key);
           }
         }
       }
     }
 
-    // De-vig each line
-    for (const [lineKey, data] of Object.entries(result.altSpreads)) {
-      const homeProbs = data.probs.filter(p => p.isHome).map(p => p.prob);
-      const awayProbs = data.probs.filter(p => !p.isHome).map(p => p.prob);
-      if (homeProbs.length > 0 && awayProbs.length > 0) {
+    // De-vig each line — require minimum number of books for accuracy
+    let skippedThinSpreads = 0, skippedThinTotals = 0;
+    for (const [lineKey, lineData] of Object.entries(result.altSpreads)) {
+      const bookCount = lineData.books.size;
+      const homeProbs = lineData.probs.filter(p => p.isHome).map(p => p.prob);
+      const awayProbs = lineData.probs.filter(p => !p.isHome).map(p => p.prob);
+      if (homeProbs.length > 0 && awayProbs.length > 0 && bookCount >= ALT_LINES_MIN_BOOKS) {
         const [fh, fa] = deVig2Way(avg(homeProbs), avg(awayProbs));
-        result.altSpreads[lineKey] = { home: fh, away: fa };
+        result.altSpreads[lineKey] = { home: fh, away: fa, books: bookCount };
       } else {
+        if (homeProbs.length > 0 && awayProbs.length > 0) skippedThinSpreads++;
         delete result.altSpreads[lineKey];
       }
     }
 
-    for (const [lineKey, data] of Object.entries(result.altTotals)) {
-      const overProbs = data.probs.filter(p => p.isOver).map(p => p.prob);
-      const underProbs = data.probs.filter(p => !p.isOver).map(p => p.prob);
-      if (overProbs.length > 0 && underProbs.length > 0) {
+    for (const [lineKey, lineData] of Object.entries(result.altTotals)) {
+      const bookCount = lineData.books.size;
+      const overProbs = lineData.probs.filter(p => p.isOver).map(p => p.prob);
+      const underProbs = lineData.probs.filter(p => !p.isOver).map(p => p.prob);
+      if (overProbs.length > 0 && underProbs.length > 0 && bookCount >= ALT_LINES_MIN_BOOKS) {
         const [fo, fu] = deVig2Way(avg(overProbs), avg(underProbs));
-        result.altTotals[lineKey] = { over: fo, under: fu };
+        result.altTotals[lineKey] = { over: fo, under: fu, books: bookCount };
       } else {
+        if (overProbs.length > 0 && underProbs.length > 0) skippedThinTotals++;
         delete result.altTotals[lineKey];
       }
     }
 
     altLinesCache[key] = result;
-    log.info('OddsFeed', `Cached alt lines: ${Object.keys(result.altSpreads).length} spreads, ${Object.keys(result.altTotals).length} totals`);
+    const skippedNote = (skippedThinSpreads + skippedThinTotals) > 0 ? ` (skipped ${skippedThinSpreads} spreads + ${skippedThinTotals} totals with <${ALT_LINES_MIN_BOOKS} books)` : '';
+    log.info('OddsFeed', `Cached alt lines: ${Object.keys(result.altSpreads).length} spreads, ${Object.keys(result.altTotals).length} totals${skippedNote}`);
     return result;
   } catch (err) {
     log.error('OddsFeed', `Alt lines error: ${err.message}`);
