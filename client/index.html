@@ -4095,27 +4095,39 @@
         case 'time': va = a.confirmedAt || ''; vb = b.confirmedAt || ''; return popenState.sortDir * va.localeCompare(vb);
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'pin': va = compoundParlayOdds(a.meta?.legs || a.legs || [], 'pinnacleOdds') || 0; vb = compoundParlayOdds(b.meta?.legs || b.legs || [], 'pinnacleOdds') || 0; break;
+        case 'fd': va = compoundParlayOdds(a.meta?.legs || a.legs || [], 'fanduelOdds') || 0; vb = compoundParlayOdds(b.meta?.legs || b.legs || [], 'fanduelOdds') || 0; break;
+        case 'kalshi': va = compoundParlayOdds(a.meta?.legs || a.legs || [], 'kalshiOdds') || 0; vb = compoundParlayOdds(b.meta?.legs || b.legs || [], 'kalshiOdds') || 0; break;
         case 'stake':
-          va = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : (a.confirmedStake || 0);
-          vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
+          va = a.confirmedStake || 0;
+          vb = b.confirmedStake || 0; break;
         case 'towin':
-          const dA = a.offeredOdds >= 100 ? 1 + a.offeredOdds / 100 : 1 + 100 / Math.abs(a.offeredOdds || 1);
-          const dB = b.offeredOdds >= 100 ? 1 + b.offeredOdds / 100 : 1 + 100 / Math.abs(b.offeredOdds || 1);
-          va = (a.confirmedStake || 0) * (dA - 1); vb = (b.confirmedStake || 0) * (dB - 1); break;
+          va = a.confirmedStake && a.offeredOdds ? calcSpProfit(a.confirmedStake, a.offeredOdds) : 0;
+          vb = b.confirmedStake && b.offeredOdds ? calcSpProfit(b.confirmedStake, b.offeredOdds) : 0; break;
         case 'winprob':
-          // Compute win prob for sorting: 1 - product of leg probs
           const wpCalc = (o) => {
             const legs = o.meta?.legs || o.legs || [];
             let hitProb = 1;
             for (const l of legs) {
               const ls = getLegResult(l);
-              if (ls === 'lost') return 1; // parlay dead
+              if (ls === 'lost') return 1;
               if (ls === 'won') continue;
               hitProb *= (l.liveFairProb || l.fairProb || 0.5);
             }
             return 1 - hitProb;
           };
           va = wpCalc(a); vb = wpCalc(b); break;
+        case 'status':
+          const statusRank = (o) => {
+            const legs = o.meta?.legs || o.legs || [];
+            const anyDead = legs.some(l => getLegResult(l) === 'lost');
+            if (anyDead) return 0;
+            const starts = legs.map(l => l.startTime ? new Date(l.startTime).getTime() : Infinity);
+            const earliest = Math.min(...starts);
+            if (earliest > Date.now()) return 3;
+            return 1;
+          };
+          va = statusRank(a); vb = statusRank(b); break;
         default: va = a.confirmedAt || ''; vb = b.confirmedAt || ''; return popenState.sortDir * va.localeCompare(vb);
       }
       return popenState.sortDir * (va - vb);
@@ -4146,7 +4158,7 @@
     }
 
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">My Odds' + poSortArrow('odds') + '</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th style="text-align:right; color:var(--amber);">Kalshi</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th ' + poSortClick('winprob') + ' style="text-align:right" title="Probability you win (at least one bettor leg fails)">Win Prob' + poSortArrow('winprob') + '</th><th>Status</th></tr>';
+    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">My Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('pin') + ' style="text-align:right; color:var(--purple);">Pinnacle' + poSortArrow('pin') + '</th><th ' + poSortClick('fd') + ' style="text-align:right; color:var(--blue);">FanDuel' + poSortArrow('fd') + '</th><th ' + poSortClick('kalshi') + ' style="text-align:right; color:var(--amber);">Kalshi' + poSortArrow('kalshi') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th ' + poSortClick('winprob') + ' style="text-align:right" title="Probability you win (at least one bettor leg fails)">Win Prob' + poSortArrow('winprob') + '</th><th ' + poSortClick('status') + '>Status' + poSortArrow('status') + '</th></tr>';
 
     const isPopenFiltering = popenState.search || popenState.dateFrom || popenState.dateTo;
     const popenLimit = (popenState.showAll || isPopenFiltering) ? filtered.length : popenState.pageSize;
