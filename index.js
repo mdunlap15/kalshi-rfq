@@ -448,10 +448,24 @@ function startStatusServer() {
         if (!events[key]) events[key] = new Set();
         events[key].add(r.sportsbook);
       }
+      // Show selection_type values per sportsbook
+      const selTypes = {};
+      for (const r of rows) {
+        const key = r.sportsbook;
+        if (!selTypes[key]) selTypes[key] = new Set();
+        selTypes[key].add(r.selection_type);
+      }
+      // Show sample raw rows for first sportsbook
+      const sampleRows = rows.slice(0, 3).map(r => ({
+        sportsbook: r.sportsbook, selection_type: r.selection_type, selection: r.selection,
+        home_team: r.home_team, away_team: r.away_team, odds_american: r.odds_american,
+      }));
       res.json({
         league, market,
         totalRows: rows.length,
         sportsbooks: Object.entries(books).sort((a, b) => b[1] - a[1]).map(([book, count]) => ({ book, count })),
+        selectionTypes: Object.entries(selTypes).map(([book, types]) => ({ book, types: [...types] })),
+        sampleRows,
         sampleEvents: Object.entries(events).slice(0, 5).map(([event, booksSet]) => ({ event, books: [...booksSet] })),
       });
     } catch (err) {

@@ -251,6 +251,22 @@ async function priceParlay(legs) {
 
   const americanOdds = decimalToAmerican(decimalOdds);
 
+  // Decline any parlay containing an NBA leg where the selection is a heavy favorite (> -150).
+  // NBA heavy favorites have been the biggest loss category.
+  for (const leg of pricedLegs) {
+    if (leg.lineInfo.sport === 'basketball_nba' && leg.fairProb > 0.60) {
+      // fairProb 0.60 ≈ -150 implied
+      const impliedOdds = leg.fairProb >= 0.5 ? Math.round(-100 * leg.fairProb / (1 - leg.fairProb)) : Math.round(100 * (1 - leg.fairProb) / leg.fairProb);
+      log.debug('Pricing', `Declined: NBA leg ${leg.lineInfo.teamName} is heavy favorite (${impliedOdds})`);
+      priceParlay._lastFailure = {
+        reason: 'NBA heavy favorite',
+        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -150 limit`,
+        blockerLeg: { team: leg.lineInfo.teamName, sport: 'basketball_nba', market: leg.lineInfo.marketType },
+      };
+      return null;
+    }
+  }
+
   // Don't quote on very high odds parlays — even small stakes create huge payouts
   const maxOdds = config.pricing.maxOdds || 1000;
   if (americanOdds > maxOdds) {
