@@ -3231,6 +3231,7 @@
         case 'time': va = a.quotedAt || ''; vb = b.quotedAt || ''; break;
         case 'fairOdds': va = fairToAmerican(a.fairParlayProb); vb = fairToAmerican(b.fairParlayProb); break;
         case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
+        case 'kalshi': va = a.meta?.kalshiParlay || 0; vb = b.meta?.kalshiParlay || 0; break;
         case 'offeredOdds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'legs': va = (a.legs||a.meta?.legs||[]).length; vb = (b.legs||b.meta?.legs||[]).length; break;
         case 'stake':
@@ -3279,6 +3280,7 @@
         <th ${sortClick('legs')}>Legs${sortArrow('legs')}</th>
         <th ${sortClick('fairOdds')}>Fair${sortArrow('fairOdds')}</th>
         <th ${sortClick('pinnacle')}>Pinnacle${sortArrow('pinnacle')}</th>
+        <th ${sortClick('kalshi')}>Kalshi${sortArrow('kalshi')}</th>
         <th ${sortClick('offeredOdds')}>Offered${sortArrow('offeredOdds')}</th>
         <th>Winner</th>
         <th ${sortClick('stake')} style="text-align:right">My Risk${sortArrow('stake')}</th>
@@ -3304,6 +3306,8 @@
       const fairAm = (qDisplayFairProb || order.fairParlayProb) ? decimalToAmerican(1 / (qDisplayFairProb || order.fairParlayProb)) : '-';
       const pinParlay = order.meta?.pinnacleParlay;
       const pinAm = pinParlay != null ? pinParlay : '-';
+      const klParlay = order.meta?.kalshiParlay;
+      const klAm = klParlay != null ? klParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
       // confirmedStake = bettor's wager = To Win, My Risk = payout
@@ -3328,6 +3332,7 @@
           <td>${legs.length}</td>
           <td>${fairAm}</td>
           <td style="color:var(--purple);">${pinAm}</td>
+          <td style="color:var(--amber);">${klAm}</td>
           <td style="font-weight:600;">${offeredAm}</td>
           <td style="color:${order.status === 'lost' ? 'var(--amber)' : 'var(--text3)'};">${winnerOdds}</td>
           <td style="text-align:right">${myRiskStr}</td>
@@ -3336,7 +3341,7 @@
           <td style="text-align:right">${pnlHtml}</td>
         </tr>
         <tr id="ord-${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-          <td colspan="11" style="padding: 12px 16px;">
+          <td colspan="12" style="padding: 12px 16px;">
             <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
             ${buildLegTable(legs, { vig: order.meta?.vig || order.vig || 0 })}
             <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
@@ -6379,6 +6384,7 @@
         case 'legs': va = (a.legs||a.meta?.legs||[]).length; vb = (b.legs||b.meta?.legs||[]).length; break;
         case 'fair': va = a.fairParlayProb || 0; vb = b.fairParlayProb || 0; break;
         case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
+        case 'kalshi': va = a.meta?.kalshiParlay || 0; vb = b.meta?.kalshiParlay || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'risk':
           va = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : 0;
@@ -6457,6 +6463,7 @@
         <th ${hSortClick('legs')}>Legs${hSortArrow('legs')}</th>
         <th ${hSortClick('fair')}>Fair${hSortArrow('fair')}</th>
         <th ${hSortClick('pinnacle')}>Pinnacle${hSortArrow('pinnacle')}</th>
+        <th ${hSortClick('kalshi')}>Kalshi${hSortArrow('kalshi')}</th>
         <th ${hSortClick('odds')}>Offered${hSortArrow('odds')}</th>
         <th>Winner</th>
         <th ${hSortClick('risk', 'right')}>My Risk${hSortArrow('risk')}</th>
@@ -6480,6 +6487,8 @@
       const fairAm = (hDisplayFairProb || order.fairParlayProb) ? decimalToAmerican(1 / (hDisplayFairProb || order.fairParlayProb)) : '-';
       const pinParlay = order.meta?.pinnacleParlay;
       const pinAm = pinParlay != null ? pinParlay : '-';
+      const klParlay = order.meta?.kalshiParlay;
+      const klAm = klParlay != null ? klParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
       const myRisk = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
@@ -6503,6 +6512,7 @@
         <td>${legs.length}</td>
         <td>${fairAm}</td>
         <td style="color:var(--purple);">${pinAm}</td>
+        <td style="color:var(--amber);">${klAm}</td>
         <td style="font-weight:600;">${offeredAm}</td>
         <td style="color:${order.status === 'lost' ? 'var(--amber)' : 'var(--text3)'};">${winnerOdds}</td>
         <td style="text-align:right">${myRisk}</td>
@@ -6511,7 +6521,7 @@
         <td style="text-align:right">${pnlHtml}</td>
       </tr>
       <tr id="${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-        <td colspan="11" style="padding: 12px 16px;">
+        <td colspan="12" style="padding: 12px 16px;">
           ${buildLegTable(legs, { showStatus: true, pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 })}
           <div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ${order.parlayId || '-'}</div>
         </td>

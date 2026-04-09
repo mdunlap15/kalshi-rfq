@@ -351,6 +351,16 @@ async function priceParlay(legs) {
         if (pinProb <= 0 || pinProb >= 1) return null;
         return decimalToAmerican(1 / pinProb);
       })(),
+      kalshiParlay: (() => {
+        const klLegs = pricedLegs.filter(l => l.kalshiOdds != null);
+        if (klLegs.length !== pricedLegs.length) return null;
+        let klProb = 1;
+        for (const l of klLegs) {
+          klProb *= oddsFeed.americanToImpliedProb(l.kalshiOdds);
+        }
+        if (klProb <= 0 || klProb >= 1) return null;
+        return decimalToAmerican(1 / klProb);
+      })(),
       maxRisk,
     },
   };
