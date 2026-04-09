@@ -1024,6 +1024,10 @@
         unseenConfirmations = 0;
       }
     }
+    // Update browser tab title with unseen confirmation count
+    document.title = unseenConfirmations > 0
+      ? `(${unseenConfirmations}) PARLAY SP`
+      : 'PARLAY SP';
 
     const pnl = o.runningPnL || 0;
     const pnlEl = document.getElementById('stat-pnl');
@@ -6260,6 +6264,7 @@
       unseenConfirmations = 0;
       const badge = document.getElementById('orders-badge');
       if (badge) badge.style.display = 'none';
+      document.title = 'PARLAY SP';
     }
     // Start/stop live odds refresh based on which tab is active
     if (section === 'exposure') startLiveOddsRefresh();
