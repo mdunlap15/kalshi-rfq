@@ -501,7 +501,27 @@ function startStatusServer() {
     }
   });
 
-  // Debug: list raw PX orders (to inspect what fields PX returns)
+  // Debug: test alt-line fetch for a specific event
+  app.get('/debug/alt-lines', async (req, res) => {
+    try {
+      const sport = req.query.sport || 'basketball_nba';
+      const home = req.query.home;
+      const away = req.query.away;
+      if (!home || !away) {
+        // List available events
+        const events = oddsFeed.getAllCachedEvents().filter(e => e.sport === sport);
+        return res.json({ ok: true, hint: 'Pass ?home=TeamA&away=TeamB&sport=xxx', events: events.map(e => ({ home: e.homeTeam, away: e.awayTeam, sport: e.sport })) });
+      }
+      const result = await oddsFeed.fetchAltLines(sport, home, away);
+      if (!result) return res.json({ ok: false, error: 'No alt lines returned (no event match or API error)' });
+      const spreads = Object.entries(result.altSpreads || {}).map(([line, data]) => ({ line: parseFloat(line), home: data.home?.toFixed(4), away: data.away?.toFixed(4), books: data.books }));
+      const totals = Object.entries(result.altTotals || {}).map(([line, data]) => ({ line: parseFloat(line), over: data.over?.toFixed(4), under: data.under?.toFixed(4), books: data.books }));
+      res.json({ ok: true, sport, home, away, fetchedAt: new Date(result.fetchedAt).toISOString(), altSpreads: spreads.sort((a, b) => a.line - b.line), altTotals: totals.sort((a, b) => a.line - b.line), spreadCount: spreads.length, totalCount: totals.length });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Decline audit: rank unknown events/sports by how often they're declining parlays
   app.get('/decline-audit', (req, res) => {
     try {
