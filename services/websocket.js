@@ -269,11 +269,8 @@ async function handleRFQ(data) {
 
   rfqStages.received++;
 
-  if (paused) {
-    rfqStages.paused++;
-    log.debug('WS', 'Paused — ignoring RFQ');
-    return;
-  }
+  const isPausedNow = paused;
+  if (isPausedNow) rfqStages.paused++;
 
   try {
     // RFQ data is nested under data.payload
@@ -282,7 +279,7 @@ async function handleRFQ(data) {
     const legs = payload.market_lines || payload.legs || [];
     const callbackUrl = payload.callback_url || payload.callbackUrl;
 
-    log.info('RFQ', `Received: parlay=${parlayId}, legs=${legs.length}`);
+    log.info('RFQ', `${isPausedNow ? '[PAUSED] ' : ''}Received: parlay=${parlayId}, legs=${legs.length}`);
 
     // Attempt on-demand resolution of any unknown lines where the event IS known
     // (e.g., alt spreads/totals not pre-registered at startup).
@@ -402,8 +399,10 @@ async function handleRFQ(data) {
       result.meta
     );
 
-    // Submit offer to PX
-    if (callbackUrl) {
+    // Submit offer to PX (skip when paused — paper-trade mode)
+    if (isPausedNow) {
+      log.debug('RFQ', `[PAUSED] Would offer: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}`);
+    } else if (callbackUrl) {
       log.info('RFQ', `Submitting: parlay=${parlayId}, decimal=${result.meta.decimalOdds}, american=${result.meta.americanOdds}, offer=${JSON.stringify(result.offer)}`);
       await px.submitOffer(callbackUrl, parlayId, [result.offer]);
       const elapsed = Date.now() - startTime;
