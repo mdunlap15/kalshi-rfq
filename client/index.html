@@ -1147,12 +1147,20 @@
         </div>`);
     }
 
-    // Action hint
+    // Action hint — show only the relevant env var based on the limit that was hit
+    const allReasons = [
+      ...Object.keys(alerts.declineByReason || {}),
+      ...Object.keys(alerts.rejectByBucket || {}),
+    ].join(' ').toLowerCase();
+    const code = (v) => `<code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">${v}</code>`;
+    let hintVar = '';
+    if (allReasons.includes('game exposure')) hintVar = code('MAX_EXPOSURE_PER_GAME_PCT');
+    else if (allReasons.includes('team exposure')) hintVar = code('MAX_EXPOSURE_PER_TEAM');
+    else if (allReasons.includes('risk') && allReasons.includes('max')) hintVar = code('MAX_RISK_PER_PARLAY');
+    else if (allReasons.includes('drawdown') || allReasons.includes('portfolio')) hintVar = code('MAX_DRAWDOWN_PCT');
+    else hintVar = code('MAX_RISK_PER_PARLAY') + ', ' + code('MAX_EXPOSURE_PER_TEAM') + ', or ' + code('MAX_EXPOSURE_PER_GAME_PCT');
     parts.push(`<div style="margin-top:8px; font-size:11px; color:var(--text3);">
-      Adjust <code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">MAX_DRAWDOWN_PCT</code>,
-      <code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">MAX_RISK_PER_PARLAY</code>,
-      <code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">MAX_EXPOSURE_PER_TEAM</code>,
-      or <code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">ASSUMED_BANKROLL</code> in Railway env vars.
+      Adjust ${hintVar} in Railway env vars.
     </div>`);
 
     content.innerHTML = parts.join('');
@@ -2557,10 +2565,10 @@
           const legs = o.legs || o.meta?.legs || [];
           const allTeams = formatParlaySelections(legs);
           const oddsStr = o.offeredOdds ? (o.offeredOdds >= 0 ? '+' : '') + o.offeredOdds : '-';
-          // confirmedStake = bettor's wager (To Win), calculated payout = My Risk
-          const toWin = o.confirmedStake ? fmtDollar(o.confirmedStake) : '-';
-          const myRiskVal = o.confirmedStake && o.offeredOdds ? calcBettorWager(o.confirmedStake, o.offeredOdds) : null;
-          const myRisk = myRiskVal != null ? fmtDollar(myRiskVal) : '-';
+          // confirmedStake = SP's risk (My Risk), calcSpProfit = bettor's wager (To Win)
+          const myRisk = o.confirmedStake ? fmtDollar(o.confirmedStake) : '-';
+          const toWinVal = o.confirmedStake && o.offeredOdds ? calcSpProfit(o.confirmedStake, o.offeredOdds) : null;
+          const toWin = toWinVal != null ? fmtDollar(toWinVal) : '-';
           const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleString() : '-';
           detailHtml += '<tr>';
           detailHtml += '<td style="padding:2px 8px; white-space:nowrap;">' + time + '</td>';
