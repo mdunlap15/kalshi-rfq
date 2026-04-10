@@ -554,6 +554,10 @@ async function seedAllLines() {
 // LOOKUPS
 // ---------------------------------------------------------------------------
 
+function __debugGetLineIndex() {
+  return lineIndex;
+}
+
 function lookupLine(lineId) {
   return lineIndex[lineId] || null;
 }
@@ -899,6 +903,7 @@ module.exports = {
   seedAllLines,
   refreshLines,
   lookupLine,
+  __debugGetLineIndex,
   resolveUnknownLine,
   getRegisteredLineIds,
   getStats,

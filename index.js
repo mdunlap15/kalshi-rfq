@@ -539,6 +539,26 @@ function startStatusServer() {
   // Bulk lookup of line_ids against the current line-manager index.
   // POST body: { lineIds: ['abc...', 'def...'] }
   // Response: { [lineId]: { marketType, marketName, line, sport, teamName } | null }
+  // Return a sample of registered lines filtered by market type substring.
+  // Useful for debugging seed results: /debug/lineindex-sample?marketType=first_5&limit=5
+  app.get('/debug/lineindex-sample', (req, res) => {
+    try {
+      const marketFilter = (req.query.marketType || '').toLowerCase();
+      const limit = Number(req.query.limit) || 10;
+      const idx = lineManager.__debugGetLineIndex ? lineManager.__debugGetLineIndex() : null;
+      if (!idx) return res.status(500).json({ error: 'lineIndex accessor missing' });
+      const matching = [];
+      for (const [lineId, info] of Object.entries(idx)) {
+        if (marketFilter && !(info.marketType || '').toLowerCase().includes(marketFilter)) continue;
+        matching.push({ lineId, ...info });
+        if (matching.length >= limit) break;
+      }
+      res.json({ ok: true, count: matching.length, sample: matching });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Audit a single parlay by fetching PX's authoritative market data
   // for each leg's sport_event_id, finding the line_id, and returning
   // the actual market.type and market.name from PX. Used to verify that
