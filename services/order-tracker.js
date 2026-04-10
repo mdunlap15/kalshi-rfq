@@ -301,13 +301,22 @@ function recordSettlement(orderUuid, result, payout) {
     //   bettor's wager = americanOddsToProfit(confirmedOdds, confirmedStake)
     const bettorWager = americanOddsToProfit(order.confirmedOdds, order.confirmedStake);
 
+    // If PX provided the actual profit/loss amount, prefer it over our
+    // computed value. This correctly handles push-reduced parlays where a
+    // pushed leg shrinks the payout (actual loss < full confirmedStake).
+    // Stored on the order for later reference.
+    const pxProfit = (payout != null && payout !== 0) ? Number(payout) : null;
+    if (pxProfit != null) order.pxProfit = pxProfit;
+
     if (result === 'won') {
       // SP won — bettor's parlay lost, we keep their wager
-      order.pnl = bettorWager;
+      order.pnl = pxProfit != null && pxProfit > 0 ? pxProfit : bettorWager;
       stats.totalWins++;
     } else if (result === 'lost') {
-      // SP lost — bettor's parlay won, we pay out our stake
-      order.pnl = -(order.confirmedStake || 0);
+      // SP lost — bettor's parlay won, we pay out the actual reduced payout.
+      // Prefer PX's profit field (negative) when provided; fall back to -stake
+      // for cases where PX didn't include profit.
+      order.pnl = pxProfit != null && pxProfit < 0 ? pxProfit : -(order.confirmedStake || 0);
       stats.totalLosses++;
     } else if (result === 'push' || result === 'void') {
       order.pnl = 0;
@@ -1419,9 +1428,21 @@ async function pollOrderSettlements(px) {
       }
 
       if (!order) continue;
-      // Skip if already settled with matching status
-      // PX settlement_status is SP-perspective — use directly
-      if (order.status === `settled_${pxOrder.settlement_status}`) continue;
+      // If already settled with matching status, still check if PX's profit
+      // field disagrees with our stored pnl — this catches push-reduced
+      // parlays where our derivation produced the wrong magnitude.
+      if (order.status === `settled_${pxOrder.settlement_status}`) {
+        const pxProfit = pxOrder.profit != null ? Number(pxOrder.profit) : null;
+        if (pxProfit != null && order.pnl != null && Math.abs(pxProfit - order.pnl) > 0.01) {
+          log.info('Poll', `Fixing stale pnl for ${order.parlayId}: was ${order.pnl}, PX profit ${pxProfit}`);
+          stats.runningPnL -= order.pnl;
+          order.pnl = pxProfit;
+          order.pxProfit = pxProfit;
+          stats.runningPnL += pxProfit;
+          db.saveOrder(order).catch(() => {});
+        }
+        continue;
+      }
 
       const settlementStatus = pxOrder.settlement_status;
       if (!settlementStatus || settlementStatus === 'tbd' || settlementStatus === 'requested') continue;
@@ -2055,6 +2076,7 @@ async function loadFromDb() {
       if (o.meta.winningOdds != null && o.winningOdds == null) o.winningOdds = o.meta.winningOdds;
       if (o.meta.winningStake != null && o.winningStake == null) o.winningStake = o.meta.winningStake;
       if (o.meta.lostAt && !o.lostAt) o.lostAt = o.meta.lostAt;
+      if (o.meta.pxProfit != null && o.pxProfit == null) o.pxProfit = o.meta.pxProfit;
     }
     orders[o.parlayId] = o;
     if (o.orderUuid) ordersByUuid[o.orderUuid] = o.parlayId;
@@ -2140,11 +2162,14 @@ async function loadFromDb() {
       // Recalculate P&L on load. Status is SP-perspective:
       //   settled_won  = SP won (bettor's parlay lost) → +bettor's wager
       //   settled_lost = SP lost (bettor's parlay won) → -confirmedStake
+      // Prefer stored pxProfit when present — it's PX's authoritative amount
+      // and correctly handles push-reduced parlays.
       const bettorWager = americanOddsToProfit(o.confirmedOdds, o.confirmedStake);
+      const pxProfit = o.pxProfit != null ? Number(o.pxProfit) : null;
       if (spResult === 'won') {
-        o.pnl = bettorWager;              // SP won
+        o.pnl = pxProfit != null && pxProfit > 0 ? pxProfit : bettorWager;
       } else if (spResult === 'lost') {
-        o.pnl = -(o.confirmedStake || 0); // SP lost
+        o.pnl = pxProfit != null && pxProfit < 0 ? pxProfit : -(o.confirmedStake || 0);
       } else {
         o.pnl = 0;
       }

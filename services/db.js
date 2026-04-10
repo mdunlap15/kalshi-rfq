@@ -28,6 +28,10 @@ async function saveOrder(order) {
   if (!db) return;
 
   try {
+    // Stash pxProfit inside meta (no dedicated column — keeps schema stable)
+    const metaWithExtras = { ...(order.meta || {}) };
+    if (order.pxProfit != null) metaWithExtras.pxProfit = order.pxProfit;
+
     const row = {
       parlay_id: order.parlayId,
       status: order.status,
@@ -44,7 +48,7 @@ async function saveOrder(order) {
       quoted_at: order.quotedAt,
       confirmed_at: order.confirmedAt,
       settled_at: order.settledAt,
-      meta: order.meta || {},
+      meta: metaWithExtras,
     };
 
     const { error } = await db
