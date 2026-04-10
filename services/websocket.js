@@ -279,6 +279,10 @@ async function handleRFQ(data) {
     const legs = payload.market_lines || payload.legs || [];
     const callbackUrl = payload.callback_url || payload.callbackUrl;
 
+    // Record raw receipt IMMEDIATELY so we can positively confirm this RFQ
+    // was broadcast to us, regardless of whether we decline/error/quote.
+    recordRfqReceipt(parlayId, legs.length, isPausedNow);
+
     log.info('RFQ', `${isPausedNow ? '[PAUSED] ' : ''}Received: parlay=${parlayId}, legs=${legs.length}`);
 
     // Attempt on-demand resolution of any unknown lines where the event IS known
@@ -409,6 +413,7 @@ async function handleRFQ(data) {
         declineDetail: declineCheck.detail || null,
       });
       rfqStages.declined++;
+      updateRfqOutcome(parlayId, 'declined', reason);
       return;
     }
 
@@ -446,6 +451,7 @@ async function handleRFQ(data) {
         declineDetail: failure.detail,
       });
       rfqStages.priceFailed++;
+      updateRfqOutcome(parlayId, 'price_failed', declineReason);
       return;
     }
 
@@ -462,21 +468,25 @@ async function handleRFQ(data) {
     // Submit offer to PX (skip when paused — paper-trade mode)
     if (isPausedNow) {
       log.debug('RFQ', `[PAUSED] Would offer: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}`);
+      updateRfqOutcome(parlayId, 'paused_skip', `would offer ${result.meta.americanOdds}`);
     } else if (callbackUrl) {
       log.info('RFQ', `Submitting: parlay=${parlayId}, decimal=${result.meta.decimalOdds}, american=${result.meta.americanOdds}, offer=${JSON.stringify(result.offer)}`);
       await px.submitOffer(callbackUrl, parlayId, [result.offer]);
       const elapsed = Date.now() - startTime;
       rfqStages.submitted++;
       recordResponseTime(parlayId, elapsed, result.meta.americanOdds);
+      updateRfqOutcome(parlayId, 'submitted', `odds ${result.meta.americanOdds}`);
       log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms`);
     } else {
       rfqStages.noCallback++;
+      updateRfqOutcome(parlayId, 'no_callback');
       log.warn('RFQ', `No callback URL for parlay ${parlayId}`);
     }
   } catch (err) {
     const pid = typeof parlayId !== 'undefined' ? parlayId : 'unknown';
     log.error('RFQ', `Error handling RFQ for ${pid}: ${err.message}`);
     rfqStages.submitError++;
+    updateRfqOutcome(pid, 'submit_error', err.message);
     offerErrors.unshift({ error: err.message, time: new Date().toISOString(), parlayId: pid, stack: err.stack?.split('\n')[1]?.trim() });
     if (offerErrors.length > 50) offerErrors.pop();
   }
@@ -738,6 +748,50 @@ const rfqStages = {
   submitError: 0,
 };
 
+// Raw RFQ receipt log — track every parlayId received via WebSocket,
+// regardless of whether we quoted, declined, or errored. Lets us positively
+// confirm whether a specific parlay was ever broadcast to us.
+// Keyed by parlayId → { receivedAt, legCount, stage, outcome }
+const receivedRfqs = new Map();
+const MAX_RECEIVED_RFQS = 20000;
+const receivedRfqOrder = []; // FIFO for memory cap
+
+function recordRfqReceipt(parlayId, legCount, paused) {
+  if (!parlayId) return;
+  receivedRfqs.set(parlayId, {
+    receivedAt: new Date().toISOString(),
+    legCount: legCount || 0,
+    paused: !!paused,
+    outcome: 'received', // updated later when we know the final outcome
+  });
+  receivedRfqOrder.push(parlayId);
+  while (receivedRfqOrder.length > MAX_RECEIVED_RFQS) {
+    const oldId = receivedRfqOrder.shift();
+    receivedRfqs.delete(oldId);
+  }
+}
+
+function updateRfqOutcome(parlayId, outcome, detail) {
+  if (!parlayId) return;
+  const entry = receivedRfqs.get(parlayId);
+  if (entry) {
+    entry.outcome = outcome;
+    if (detail) entry.detail = detail;
+  }
+}
+
+function wasRfqReceived(parlayId) {
+  return receivedRfqs.get(parlayId) || null;
+}
+
+function getReceivedRfqStats() {
+  const outcomes = {};
+  for (const entry of receivedRfqs.values()) {
+    outcomes[entry.outcome] = (outcomes[entry.outcome] || 0) + 1;
+  }
+  return { total: receivedRfqs.size, outcomes };
+}
+
 function recordResponseTime(parlayId, elapsed, offeredOdds) {
   responseTimes.unshift({ parlayId, elapsed, offeredOdds, time: new Date().toISOString() });
   if (responseTimes.length > MAX_RESPONSE_TIMES) responseTimes.pop();
@@ -781,4 +835,6 @@ module.exports = {
   resume,
   getState,
   getResponseTimeStats,
+  wasRfqReceived,
+  getReceivedRfqStats,
 };

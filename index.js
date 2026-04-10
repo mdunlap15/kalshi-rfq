@@ -522,6 +522,51 @@ function startStatusServer() {
     }
   });
 
+  // Debug: check if a specific parlayId was received via WebSocket
+  app.get('/debug/rfq-receipt', (req, res) => {
+    try {
+      const parlayId = req.query.parlayId || req.query.id;
+      if (!parlayId) {
+        // No ID → return summary stats
+        return res.json({ ok: true, hint: 'Pass ?parlayId=xxx to check a specific parlay', stats: websocket.getReceivedRfqStats() });
+      }
+      const entry = websocket.wasRfqReceived(parlayId);
+      if (!entry) {
+        return res.json({ ok: true, parlayId, received: false, note: 'This parlayId is NOT in our receipt log. Either we never received it from PX, or it was received before our receipt tracking started (after a restart).' });
+      }
+      res.json({ ok: true, parlayId, received: true, ...entry });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Debug: bulk check — given a list of parlayIds (from market-intel missed list),
+  // return which ones we received vs didn't
+  app.post('/debug/rfq-receipt-bulk', (req, res) => {
+    try {
+      const ids = (req.body && req.body.parlayIds) || [];
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.json({ ok: false, error: 'POST { parlayIds: [...] } required' });
+      }
+      const results = { received: [], notReceived: [] };
+      for (const id of ids) {
+        const entry = websocket.wasRfqReceived(id);
+        if (entry) results.received.push({ parlayId: id, ...entry });
+        else results.notReceived.push(id);
+      }
+      res.json({
+        ok: true,
+        totalChecked: ids.length,
+        receivedCount: results.received.length,
+        notReceivedCount: results.notReceived.length,
+        receiptRate: Math.round(results.received.length / ids.length * 1000) / 10 + '%',
+        ...results,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Decline audit: rank unknown events/sports by how often they're declining parlays
   app.get('/decline-audit', (req, res) => {
     try {
