@@ -5899,7 +5899,10 @@
       if (qDate && qDate < threeDaysAgo) continue;
       const legs = o.meta?.legs || o.legs || [];
       const vig = o.meta?.vig || o.vig || 0;
-      const isWon = o.status === 'confirmed' || o.status?.startsWith('settled_');
+      // Blue dot = quote we WON (bettor accepted our offer). Only confirmed status.
+      // Settled parlays are tracked separately — blue is reserved for active confirmed fills
+      // so the chart is not dominated by the historical backlog.
+      const isWon = o.status === 'confirmed';
       if (qDate) {
         if (!earliestQuote || qDate < earliestQuote) earliestQuote = qDate;
         if (!latestQuote || qDate > latestQuote) latestQuote = qDate;
@@ -5999,13 +6002,14 @@
       svg += svgText(x, pad.t + chartH + 16, (p * 100).toFixed(0) + '%', { size: 11, fill: 'var(--text3)' });
     }
 
-    // Dots — render non-won first (green/red), then won (blue) on top so they're visible
-    const sortedDots = [...withPin].sort((a, b) => (a.isWon ? 1 : 0) - (b.isWon ? 1 : 0));
+    // Dots — render blue FIRST (behind), then green/red on top so pricing data is visible.
+    // Won dots are smaller so they don't visually dominate the chart.
+    const sortedDots = [...withPin].sort((a, b) => (b.isWon ? 1 : 0) - (a.isWon ? 1 : 0));
     for (const l of sortedDots) {
       const x = scaleX(l.pinProb);
       const y = scaleY(l.pinSpread);
       const color = l.isWon ? 'var(--blue)' : (l.pinSpread >= 0 ? 'var(--green)' : 'var(--red)');
-      const r = l.isWon ? 5 : 4; // won dots slightly larger to stand out
+      const r = l.isWon ? 3 : 4; // won dots smaller so green/red dominate the view
       const dotGame = l.matchup ? ' | ' + l.matchup : '';
       const dotDate = l.gameDate ? ' ' + l.gameDate : '';
       const wonLabel = l.isWon ? ' [CONFIRMED]' : '';
@@ -6029,7 +6033,7 @@
     html += '<div style="font-size:13px; font-weight:600; color:var(--text2);">Per-Leg Edge vs Pinnacle</div>';
     if (dateRangeStr) html += '<div style="font-size:11px; color:var(--text3);">' + dateRangeStr + '</div>';
     html += '</div>';
-    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Each dot = one leg. <span style="color:var(--blue);">Blue = confirmed fill (you won the quote).</span> Green = unconfirmed, you charge more. Red = unconfirmed, you\'re more generous. Rolling 3-day window.</div>';
+    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">Each dot = one leg. Green = you charge more than Pinnacle. Red = you\'re more generous. <span style="color:var(--blue);">Blue dots (small, behind)</span> = active confirmed fills. Rolling 3-day window.</div>';
     html += svg;
 
     // --- Histogram: edge distribution ---
