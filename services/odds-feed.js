@@ -163,35 +163,45 @@ async function fetchOddsForSport(sport, opts) {
   const mapping = LEAGUE_MAP[sport];
   if (!mapping) throw new Error(`Unknown sport: ${sport}`);
 
-  // Market types vary by sport
-  const marketTypes = {
-    'baseball_mlb': 'moneyline,run_line,total_runs,team_total',
-    'icehockey_nhl': 'moneyline,puck_line,total_goals,team_total',
-    'basketball_nba': 'moneyline,point_spread,total_points,team_total',
-    'tennis': 'moneyline,point_spread,total_points',
-    'soccer': 'moneyline,point_spread,total_goals,team_total',
-  }[sport] || 'moneyline,point_spread,total_points,team_total';
+  // Market types vary by sport. SharpAPI Hobby tier caps responses at 50 rows
+  // per call regardless of the limit parameter, so we split market types into
+  // separate API calls to ensure coverage of all market types for all events.
+  const marketTypesList = {
+    'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total'],
+    'icehockey_nhl': ['moneyline', 'puck_line', 'total_goals', 'team_total'],
+    'basketball_nba': ['moneyline', 'point_spread', 'total_points', 'team_total'],
+    'tennis': ['moneyline', 'point_spread', 'total_points'],
+    'soccer': ['moneyline', 'point_spread', 'total_goals', 'team_total'],
+  }[sport] || ['moneyline', 'point_spread', 'total_points', 'team_total'];
 
-  const url = `${config.oddsApi.baseUrl}/odds`
-    + `?${mapping.param}=${mapping.value}`
-    + `&market=${marketTypes}`
-    + `&live=${liveMode ? 'true' : 'false'}`
-    + `&limit=200`;
+  log.info('OddsFeed', `Fetching ${liveMode ? 'LIVE ' : ''}${mapping.value} odds from SharpAPI (${marketTypesList.length} market types)...`);
 
-  log.info('OddsFeed', `Fetching ${liveMode ? 'LIVE ' : ''}${mapping.value} odds from SharpAPI...`);
-
-  const resp = await fetch(url, {
-    headers: { 'X-API-Key': config.oddsApi.apiKey },
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`SharpAPI ${resp.status} for ${mapping.value}: ${text}`);
+  // Fetch each market type separately to avoid the Hobby tier row cap
+  const rows = [];
+  for (const mt of marketTypesList) {
+    const url = `${config.oddsApi.baseUrl}/odds`
+      + `?${mapping.param}=${mapping.value}`
+      + `&market=${mt}`
+      + `&live=${liveMode ? 'true' : 'false'}`
+      + `&limit=500`;
+    try {
+      const resp = await fetch(url, {
+        headers: { 'X-API-Key': config.oddsApi.apiKey },
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        log.warn('OddsFeed', `SharpAPI ${resp.status} for ${mapping.value}/${mt}: ${text.substring(0, 100)}`);
+        continue;
+      }
+      const body = await resp.json();
+      const mtRows = body.data || [];
+      rows.push(...mtRows);
+      log.debug('OddsFeed', `  ${mt}: ${mtRows.length} rows`);
+    } catch (err) {
+      log.warn('OddsFeed', `Fetch error for ${mapping.value}/${mt}: ${err.message}`);
+    }
   }
-
-  const body = await resp.json();
-  const rows = body.data || [];
-  log.info('OddsFeed', `Got ${rows.length} odds rows for ${mapping.value}`);
+  log.info('OddsFeed', `Got ${rows.length} total odds rows for ${mapping.value} across ${marketTypesList.length} markets`);
 
   // Group by event, then by market+selection to de-vig across books
   const eventMap = {};
@@ -2007,42 +2017,57 @@ async function fetchOddsDelta(sport) {
     return fetchOddsForSport(sport);
   }
 
-  const marketTypes = {
-    'baseball_mlb': 'moneyline,run_line,total_runs,team_total',
-    'icehockey_nhl': 'moneyline,puck_line,total_goals,team_total',
-    'basketball_nba': 'moneyline,point_spread,total_points,team_total',
-    'soccer': 'moneyline,point_spread,total_goals,team_total',
-  }[sport] || 'moneyline,point_spread,total_points,team_total';
+  // Split delta fetch by market type — SharpAPI Hobby caps at 50 rows per call
+  const marketTypesList = {
+    'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total'],
+    'icehockey_nhl': ['moneyline', 'puck_line', 'total_goals', 'team_total'],
+    'basketball_nba': ['moneyline', 'point_spread', 'total_points', 'team_total'],
+    'soccer': ['moneyline', 'point_spread', 'total_goals', 'team_total'],
+  }[sport] || ['moneyline', 'point_spread', 'total_points', 'team_total'];
 
-  const url = `${config.oddsApi.baseUrl}/odds/delta`
-    + `?${mapping.param}=${mapping.value}`
-    + `&market=${marketTypes}`
-    + `&since=${encodeURIComponent(since)}`
-    + `&limit=200`;
+  const rows = [];
+  let anyFailed = false;
+  for (const mt of marketTypesList) {
+    const url = `${config.oddsApi.baseUrl}/odds/delta`
+      + `?${mapping.param}=${mapping.value}`
+      + `&market=${mt}`
+      + `&since=${encodeURIComponent(since)}`
+      + `&limit=500`;
+    try {
+      const resp = await fetch(url, {
+        headers: { 'X-API-Key': config.oddsApi.apiKey },
+      });
+      if (!resp.ok) {
+        log.warn('OddsFeed', `Delta fetch failed (${resp.status}) for ${sport}/${mt}`);
+        anyFailed = true;
+        continue;
+      }
+      const body = await resp.json();
+      const mtRows = body.data || [];
+      rows.push(...mtRows);
+    } catch (err) {
+      log.warn('OddsFeed', `Delta fetch error for ${sport}/${mt}: ${err.message}`);
+      anyFailed = true;
+    }
+  }
+
+  // If everything failed, fall back to full fetch
+  if (anyFailed && rows.length === 0) {
+    log.warn('OddsFeed', `All delta fetches failed for ${sport}, falling back to full`);
+    return fetchOddsForSport(sport);
+  }
 
   try {
-    const resp = await fetch(url, {
-      headers: { 'X-API-Key': config.oddsApi.apiKey },
-    });
-    if (!resp.ok) {
-      log.warn('OddsFeed', `Delta fetch failed (${resp.status}) for ${sport}, falling back to full`);
-      return fetchOddsForSport(sport);
-    }
-
-    const body = await resp.json();
-    const rows = body.data || [];
     lastDeltaTimestamp[sport] = new Date().toISOString();
-
     if (rows.length === 0) {
       log.debug('OddsFeed', `No delta changes for ${sport}`);
       return null;
     }
-
     log.info('OddsFeed', `Delta: ${rows.length} changed rows for ${mapping.value}`);
     mergeDeltas(sport, rows);
     return oddsCache[sport]?.events;
   } catch (err) {
-    log.warn('OddsFeed', `Delta fetch error for ${sport}: ${err.message}, falling back to full`);
+    log.warn('OddsFeed', `Delta merge error for ${sport}: ${err.message}, falling back to full`);
     return fetchOddsForSport(sport);
   }
 }
