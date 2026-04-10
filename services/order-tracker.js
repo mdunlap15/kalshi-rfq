@@ -2087,16 +2087,39 @@ async function loadFromDb() {
       if (o.meta.pxProfit != null && o.pxProfit == null) o.pxProfit = o.meta.pxProfit;
     }
 
-    // Normalize stale inferredResult to match PX's authoritative settlementStatus
-    // on every leg (both o.legs and o.meta.legs). Old records from before the
-    // priority fix have scraper inferredResult values that contradict PX.
-    for (const src of [o.legs, o.meta?.legs]) {
-      if (!Array.isArray(src)) continue;
+    // Normalize leg data across both sources (o.legs and o.meta.legs).
+    // Historical records have PX settlementStatus on o.legs only (set by
+    // recordLegSettlement at the time) but NOT on meta.legs (which was
+    // populated at quote time with scraper inferredResult). The client
+    // often reads `order.meta?.legs || order.legs`, preferring meta.legs
+    // first, so we need to mirror the PX truth onto meta.legs too.
+    // Strategy:
+    //   1) Build a map from o.legs by lineId (and fall back to team name)
+    //      of the authoritative settlementStatus.
+    //   2) For every leg in both sources: if settlementStatus is missing,
+    //      copy it from the authoritative map. Then sync inferredResult to
+    //      match the settlementStatus whenever present.
+    const legsA = Array.isArray(o.legs) ? o.legs : [];
+    const legsB = Array.isArray(o.meta?.legs) ? o.meta.legs : [];
+    const authMap = {};
+    for (const src of [legsA, legsB]) {
       for (const leg of src) {
+        const ss = leg.settlementStatus || leg.settlement_status;
+        if (!ss) continue;
+        const lid = leg.lineId || leg.line_id;
+        const tm = leg.team || leg.teamName;
+        if (lid) authMap['l:' + lid] = ss;
+        if (tm) authMap['t:' + tm] = ss;
+      }
+    }
+    for (const src of [legsA, legsB]) {
+      for (const leg of src) {
+        const lid = leg.lineId || leg.line_id;
+        const tm = leg.team || leg.teamName;
+        const lookedUp = (lid && authMap['l:' + lid]) || (tm && authMap['t:' + tm]) || null;
+        if (lookedUp && !leg.settlementStatus) leg.settlementStatus = lookedUp;
         const px = leg.settlementStatus || leg.settlement_status;
-        if (px && leg.inferredResult !== px) {
-          leg.inferredResult = px;
-        }
+        if (px && leg.inferredResult !== px) leg.inferredResult = px;
       }
     }
     orders[o.parlayId] = o;
