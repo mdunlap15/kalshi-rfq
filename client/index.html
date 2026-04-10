@@ -6669,12 +6669,13 @@
     });
   }
 
-  /** Get effective leg result: PX settlement > inferred from scores > null */
+  /** Get effective leg result: PX settlement is authoritative; inferredResult
+   * (from our own score scraping) is a best-effort fallback only. The earlier
+   * priority was backwards — it caused leg icons to show ❌ for legs PX had
+   * actually settled as 'won', producing false contradictions with the parlay-
+   * level SP Result. */
   function getLegResult(l) {
-    // inferredResult (from actual game scores) takes priority over PX per-leg
-    // settlementStatus, which can be wrong (e.g., PX says 'won' for a spread
-    // that game scores show as lost)
-    return l.inferredResult || l.settlementStatus || l.settlement_status || null;
+    return l.settlementStatus || l.settlement_status || l.inferredResult || null;
   }
 
   /** Compound per-leg sportsbook odds into parlay American odds */

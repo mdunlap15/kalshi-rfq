@@ -1544,39 +1544,48 @@ function reconcileSettlements() {
   for (const o of Object.values(orders)) {
     if (!o.status || !o.status.startsWith('settled_')) continue;
 
-    // Collect leg statuses from ALL available sources (same logic as frontend's getLegResult)
-    const legSources = [o.meta?.legs, o.legs].filter(Boolean);
+    // Collect leg statuses. PX settlementStatus is authoritative — check it in
+    // EVERY source before falling back to inferredResult in any source.
+    // Previously we broke on the first source that had ANY status, which meant
+    // if meta.legs had only inferredResult and o.legs had settlementStatus from
+    // a late WS event, we'd use the stale inferredResult and skip the correction.
+    const legSources = [o.legs, o.meta?.legs].filter(Boolean);
     const legStatuses = [];
-    // Use the longest legs array as the base
     const primaryLegs = legSources.reduce((a, b) => (a || []).length >= (b || []).length ? a : b, []) || [];
     for (let li = 0; li < primaryLegs.length; li++) {
       let st = null;
-      // Check this index in all sources
+      const pLeg = primaryLegs[li];
+      const pTeam = pLeg?.team || pLeg?.teamName;
+      const pLineId = pLeg?.lineId || pLeg?.line_id;
+
+      // Helper: find the matching leg in a source by index first, then lineId, then team
+      const findMatching = (src) => {
+        const byIdx = src[li];
+        if (byIdx && ((byIdx.lineId || byIdx.line_id) === pLineId || (byIdx.team || byIdx.teamName) === pTeam)) return byIdx;
+        if (pLineId) {
+          const byLineId = src.find(l => (l.lineId || l.line_id) === pLineId);
+          if (byLineId) return byLineId;
+        }
+        if (pTeam) {
+          const byTeam = src.find(l => (l.team || l.teamName) === pTeam);
+          if (byTeam) return byTeam;
+        }
+        return byIdx;
+      };
+
+      // Pass 1: prefer PX settlementStatus from ANY source
       for (const src of legSources) {
-        const l = src[li];
-        if (l) {
-          // PX settlement is authoritative; fall back to our scraped inferredResult only
-          // if PX hasn't provided one yet.
-          st = l.settlementStatus || l.settlement_status || l.inferredResult;
-          if (st) break;
+        const l = findMatching(src);
+        if (l?.settlementStatus || l?.settlement_status) {
+          st = l.settlementStatus || l.settlement_status;
+          break;
         }
       }
-      // Also try matching by team name across sources if index didn't work
+      // Pass 2: fall back to our scraped inferredResult only if no PX status anywhere
       if (!st) {
-        const pLeg = primaryLegs[li];
-        const pTeam = pLeg?.team || pLeg?.teamName;
-        if (pTeam) {
-          for (const src of legSources) {
-            for (const l of src) {
-              if ((l.team || l.teamName) === pTeam) {
-                // PX settlement is authoritative; fall back to our scraped inferredResult only
-          // if PX hasn't provided one yet.
-          st = l.settlementStatus || l.settlement_status || l.inferredResult;
-                if (st) break;
-              }
-            }
-            if (st) break;
-          }
+        for (const src of legSources) {
+          const l = findMatching(src);
+          if (l?.inferredResult) { st = l.inferredResult; break; }
         }
       }
       if (st) legStatuses.push(st);
@@ -2064,9 +2073,12 @@ async function loadFromDb() {
       for (let li = 0; li < maxLen; li++) {
         const a = legsA[li];
         const b = legsB[li];
-        const stA = a && (a.settlementStatus || a.settlement_status || a.inferredResult);
-        const stB = b && (b.settlementStatus || b.settlement_status || b.inferredResult);
-        const st = stA || stB;
+        // Pass 1: prefer PX settlementStatus from either source
+        let st = (a?.settlementStatus || a?.settlement_status)
+              || (b?.settlementStatus || b?.settlement_status)
+              || null;
+        // Pass 2: fall back to inferredResult only if no PX status anywhere
+        if (!st) st = a?.inferredResult || b?.inferredResult || null;
         if (st) legStatuses.push(st);
       }
 

@@ -938,6 +938,18 @@ function startStatusServer() {
     }
   });
 
+  // Manually trigger a reconcileSettlements pass. Returns number corrected.
+  // Use after deploy to clean up historical mismatches without waiting for
+  // the 2-min polling loop.
+  app.post('/force-reconcile', async (req, res) => {
+    try {
+      const result = orderTracker.reconcileSettlements();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Reconcile all settled orders between PX and local. Returns only mismatches.
   app.get('/reconcile-settlements', async (req, res) => {
     try {
