@@ -1555,7 +1555,9 @@ function reconcileSettlements() {
       for (const src of legSources) {
         const l = src[li];
         if (l) {
-          st = l.inferredResult || l.settlementStatus || l.settlement_status;
+          // PX settlement is authoritative; fall back to our scraped inferredResult only
+          // if PX hasn't provided one yet.
+          st = l.settlementStatus || l.settlement_status || l.inferredResult;
           if (st) break;
         }
       }
@@ -1567,7 +1569,9 @@ function reconcileSettlements() {
           for (const src of legSources) {
             for (const l of src) {
               if ((l.team || l.teamName) === pTeam) {
-                st = l.inferredResult || l.settlementStatus || l.settlement_status;
+                // PX settlement is authoritative; fall back to our scraped inferredResult only
+          // if PX hasn't provided one yet.
+          st = l.settlementStatus || l.settlement_status || l.inferredResult;
                 if (st) break;
               }
             }
@@ -1684,10 +1688,16 @@ async function checkLegResults() {
 
       if (market === 'moneyline') {
         // Moneyline: did the selected team win?
-        if (selection === 'home') {
-          l.inferredResult = result.winner === 'home' ? 'won' : (result.winner === 'away' ? 'lost' : 'push');
-        } else if (selection === 'away') {
-          l.inferredResult = result.winner === 'away' ? 'won' : (result.winner === 'home' ? 'lost' : 'push');
+        // Only set a result if we have a definitive winner. Unknown/missing winner
+        // must NOT default to 'push' — moneylines in NBA/NHL/MLB can't push (OT,
+        // shootout, extra innings). A silent push default caused us to record
+        // pushed parlays as $0 P&L when they were actually losses.
+        if (result.winner === 'home' || result.winner === 'away') {
+          if (selection === 'home') {
+            l.inferredResult = result.winner === 'home' ? 'won' : 'lost';
+          } else if (selection === 'away') {
+            l.inferredResult = result.winner === 'away' ? 'won' : 'lost';
+          }
         }
       } else if (market === 'spread') {
         // Spread: did the selected team cover?
@@ -2054,8 +2064,8 @@ async function loadFromDb() {
       for (let li = 0; li < maxLen; li++) {
         const a = legsA[li];
         const b = legsB[li];
-        const stA = a && (a.inferredResult || a.settlementStatus || a.settlement_status);
-        const stB = b && (b.inferredResult || b.settlementStatus || b.settlement_status);
+        const stA = a && (a.settlementStatus || a.settlement_status || a.inferredResult);
+        const stB = b && (b.settlementStatus || b.settlement_status || b.inferredResult);
         const st = stA || stB;
         if (st) legStatuses.push(st);
       }
