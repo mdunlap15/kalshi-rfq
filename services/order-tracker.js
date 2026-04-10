@@ -35,7 +35,35 @@ const declineStats = {
     // category -> { count, bySport: { sport: count }, byResolveReason: { reason: count }, sampleLegs: [] }
     // Categories: player_prop, alt_line, alt_spread, alt_total, team_total, other_line, unknown
   },
+  // PX market types we don't support — logged when a line_id is found in an
+  // unsupported market.type during resolveUnknownLine. Lets us see exactly what
+  // bettors are trying to price that we're declining wholesale.
+  // key = marketType + '|' + marketName
+  unsupportedMarkets: {},
 };
+
+function recordUnsupportedMarket(info) {
+  if (!info || !info.marketType) return;
+  const key = info.marketType + '|' + (info.marketName || '');
+  if (!declineStats.unsupportedMarkets[key]) {
+    declineStats.unsupportedMarkets[key] = {
+      marketType: info.marketType,
+      marketName: info.marketName || null,
+      count: 0,
+      sports: {}, // sport → count
+      sampleEvents: [], // up to 5 event names
+      firstSeen: new Date().toISOString(),
+      lastSeen: null,
+    };
+  }
+  const entry = declineStats.unsupportedMarkets[key];
+  entry.count++;
+  entry.lastSeen = new Date().toISOString();
+  if (info.sport) entry.sports[info.sport] = (entry.sports[info.sport] || 0) + 1;
+  if (info.eventName && !entry.sampleEvents.includes(info.eventName) && entry.sampleEvents.length < 5) {
+    entry.sampleEvents.push(info.eventName);
+  }
+}
 // Limit-related reasons — these are the ones we alert on (user-controllable)
 const LIMIT_REASONS = new Set([
   'team exposure limit',
@@ -580,6 +608,7 @@ function getMarketIntel(limit = 50) {
       volumeByReason: declineStats.volumeByReason || {},
       unknownSports: { ...declineStats.unknownSports },
       unknownLegCategories: declineStats.unknownLegCategories || {},
+      unsupportedMarkets: declineStats.unsupportedMarkets || {},
       nearMissCount: declineStats.nearMisses.length,
       recentNearMisses: declineStats.nearMisses.slice(0, 500),
     },
@@ -1778,6 +1807,7 @@ module.exports = {
   getExposureSnapshot,
   recordMatchedParlay,
   recordDecline,
+  recordUnsupportedMarket,
   getMarketIntel,
   getAlerts,
   refreshLiveOdds,

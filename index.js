@@ -611,6 +611,13 @@ function startStatusServer() {
         .filter(([, v]) => !v.quotable)
         .reduce((s, [, v]) => s + v.count, 0);
 
+      // Unsupported PX market types — bettor is trying to price these
+      // but our code doesn't recognize the market.type
+      const unsupportedMarkets = declines.unsupportedMarkets || {};
+      const sortedUnsupported = Object.values(unsupportedMarkets)
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 100);
+
       res.json({
         ok: true,
         totalDeclines: declines.total,
@@ -623,6 +630,13 @@ function startStatusServer() {
           quotable: quotableCount,
           unquotable: unquotableCount,
           categories: categorySummary,
+        },
+        // Unsupported PX market types — what bettors are trying to price
+        // that we decline wholesale (e.g., F5 innings, quarters, etc.)
+        unsupportedMarketTypes: {
+          uniqueTypes: Object.keys(unsupportedMarkets).length,
+          totalOccurrences: Object.values(unsupportedMarkets).reduce((s, v) => s + v.count, 0),
+          top: sortedUnsupported,
         },
       });
     } catch (err) {

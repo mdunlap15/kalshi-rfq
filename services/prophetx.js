@@ -318,14 +318,20 @@ function parseMarketSelections(market) {
     return name.replace(/\s+[+-]?\d+(\.\d+)?$/, '').trim();
   }
 
-  if (marketType === 'moneyline' && market.selections) {
+  // F5 moneyline uses same structure as full-game moneyline (selections array)
+  const isF5Moneyline = /first_5_innings_moneyline|first_five_innings_moneyline/.test(marketType);
+  // F5 spread/total uses same structure as full-game spread/total (market_lines)
+  const isF5Spread = /first_5_innings_run_line|first_five_innings_run_line/.test(marketType);
+  const isF5Total = /first_5_innings_total|first_five_innings_total/.test(marketType);
+
+  if ((marketType === 'moneyline' || isF5Moneyline) && market.selections) {
     // Moneyline: selections is array of arrays, each inner array has one object
     for (const selGroup of market.selections) {
       for (const sel of selGroup) {
         if (!sel.line_id) continue;
         results.push({
           lineId: sel.line_id,
-          marketType: 'moneyline',
+          marketType, // preserves F5 market type name
           selection: sel.competitor_id ? 'team' : 'unknown',
           teamName: cleanSelectionName(sel.display_name || sel.name || ''),
           line: null,
@@ -334,7 +340,7 @@ function parseMarketSelections(market) {
         });
       }
     }
-  } else if ((marketType === 'spread' || marketType === 'total' || marketType === 'team_total') && market.market_lines) {
+  } else if ((marketType === 'spread' || marketType === 'total' || marketType === 'team_total' || isF5Spread || isF5Total) && market.market_lines) {
     // Spread/Total: market_lines array, each with selections
     // Include ALL alternate lines so we can respond to any RFQ
     for (const marketLine of market.market_lines) {
@@ -343,16 +349,16 @@ function parseMarketSelections(market) {
           if (!sel.line_id) continue;
 
           let selection = 'unknown';
-          if (marketType === 'spread') {
+          if (marketType === 'spread' || isF5Spread) {
             selection = sel.line < 0 ? 'favorite' : 'underdog';
-          } else if (marketType === 'total' || marketType === 'team_total') {
+          } else if (marketType === 'total' || marketType === 'team_total' || isF5Total) {
             const nameLC = (sel.name || sel.display_name || '').toLowerCase();
             selection = nameLC.includes('over') ? 'over' : nameLC.includes('under') ? 'under' : 'unknown';
           }
 
           results.push({
             lineId: sel.line_id,
-            marketType,
+            marketType, // preserves F5 market type name
             selection,
             teamName: cleanSelectionName(sel.display_name || sel.name || ''),
             line: sel.line != null ? sel.line : marketLine.line,

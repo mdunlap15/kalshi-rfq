@@ -2,6 +2,12 @@ const { config } = require('../config');
 const log = require('./logger');
 const px = require('./prophetx');
 const oddsFeed = require('./odds-feed');
+// Lazy require for orderTracker to avoid circular dependency
+let orderTracker = null;
+function getOrderTracker() {
+  if (!orderTracker) orderTracker = require('./order-tracker');
+  return orderTracker;
+}
 
 // ---------------------------------------------------------------------------
 // LINE INDEX — maps PX line_id → metadata + Odds API match
@@ -95,7 +101,25 @@ const MARKET_TYPE_MAP = {
   'btts': 'btts',
   'both_teams_to_score': 'btts',
   'double_chance': 'double_chance',
+  // First 5 Innings (MLB) — PX market.type guesses; adjust based on decline-audit log
+  'first_5_innings_moneyline': 'h2h_f5',
+  'first_five_innings_moneyline': 'h2h_f5',
+  'first_5_innings_run_line': 'spreads_f5',
+  'first_five_innings_run_line': 'spreads_f5',
+  'first_5_innings_total': 'totals_f5',
+  'first_5_innings_total_runs': 'totals_f5',
+  'first_five_innings_total': 'totals_f5',
 };
+
+const F5_MARKET_TYPES = [
+  'first_5_innings_moneyline',
+  'first_five_innings_moneyline',
+  'first_5_innings_run_line',
+  'first_five_innings_run_line',
+  'first_5_innings_total',
+  'first_5_innings_total_runs',
+  'first_five_innings_total',
+];
 
 // ---------------------------------------------------------------------------
 // SEEDING
@@ -291,7 +315,8 @@ async function seedAllLines() {
     };
 
     const mainMarkets = markets.filter(m => {
-      if (!['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'].includes(m.type)) return false;
+      const supportedBase = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
+      if (!supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type)) return false;
       // Exclude anything matching half/quarter/prop patterns
       if (excludePatterns.test(m.name)) return false;
       // Require exact name match for ALL types — excludes player props
@@ -347,6 +372,21 @@ async function seedAllLines() {
         } else if (sel.marketType === 'double_chance') {
           // '1X', 'X2', or '12' selection
           oddsApiSelection = sel.selection;
+        } else if (F5_MARKET_TYPES.includes(sel.marketType)) {
+          // First 5 Innings — same selection logic as full-game for h2h/spreads/totals
+          if (sel.marketType.includes('moneyline')) {
+            if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
+            else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
+          } else if (sel.marketType.includes('run_line')) {
+            if (matchTeamName(sel.teamName, [matchedHome]) ||
+                (sel.teamName.toLowerCase().includes(normalizeTeamName(matchedHome).split(' ').pop()))) {
+              oddsApiSelection = 'home';
+            } else {
+              oddsApiSelection = 'away';
+            }
+          } else if (sel.marketType.includes('total')) {
+            oddsApiSelection = sel.selection; // 'over' or 'under'
+          }
         }
 
         if (!oddsApiSelection || !oddsApiMarket) continue;
@@ -547,10 +587,43 @@ async function resolveUnknownLine(rfqLeg) {
         resolvedEventMarkets.set(eventId, { time: now, markets });
       }
 
+      // First pass: find which market contains this line_id (any type)
+      // so we can log unsupported market types for diagnostics.
+      const SUPPORTED_TYPES = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance', ...F5_MARKET_TYPES];
+      let unsupportedMarketInfo = null;
+      for (const market of markets || []) {
+        if (SUPPORTED_TYPES.includes(market.type)) continue;
+        // Walk the market structure generically to find the line_id
+        const selections = [];
+        if (market.selections) {
+          for (const sg of market.selections) for (const s of sg) if (s.line_id) selections.push(s);
+        }
+        if (market.market_lines) {
+          for (const ml of market.market_lines) {
+            for (const sg of (ml.selections || [])) for (const s of sg) if (s.line_id) selections.push(s);
+          }
+        }
+        if (selections.some(s => s.line_id === lineId)) {
+          unsupportedMarketInfo = {
+            marketType: market.type,
+            marketName: market.name,
+            eventName: event.name,
+            sport: sportKey,
+          };
+          break;
+        }
+      }
+      if (unsupportedMarketInfo) {
+        log.info('Lines', `Unsupported market type: ${unsupportedMarketInfo.marketType} / "${unsupportedMarketInfo.marketName}" (${unsupportedMarketInfo.sport}, ${unsupportedMarketInfo.eventName})`);
+        getOrderTracker().recordUnsupportedMarket(unsupportedMarketInfo);
+        resolveUnknownLine._lastFailure = { lineId, reason: 'unsupported_market_type', ...unsupportedMarketInfo };
+        return null;
+      }
+
       // Find the line in the markets
       let foundInfo = null;
       for (const market of markets || []) {
-        if (!['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'].includes(market.type)) continue;
+        if (!SUPPORTED_TYPES.includes(market.type)) continue;
         const parsed = px.parseMarketSelections(market);
         for (const sel of parsed) {
           if (sel.lineId !== lineId) continue;
@@ -577,6 +650,20 @@ async function resolveUnknownLine(rfqLeg) {
             oddsApiSelection = (sel.selection || '').toLowerCase();
           } else if (sel.marketType === 'double_chance') {
             oddsApiSelection = sel.selection;
+          } else if (F5_MARKET_TYPES.includes(sel.marketType)) {
+            if (sel.marketType.includes('moneyline')) {
+              if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
+              else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
+            } else if (sel.marketType.includes('run_line')) {
+              if (matchTeamName(sel.teamName, [matchedHome]) ||
+                  sel.teamName.toLowerCase().includes(normalizeTeamName(matchedHome).split(' ').pop())) {
+                oddsApiSelection = 'home';
+              } else {
+                oddsApiSelection = 'away';
+              }
+            } else if (sel.marketType.includes('total')) {
+              oddsApiSelection = sel.selection;
+            }
           }
           if (!oddsApiSelection || !oddsApiMarket) continue;
 

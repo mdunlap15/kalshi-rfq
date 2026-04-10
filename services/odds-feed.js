@@ -397,8 +397,102 @@ async function fetchOddsForSport(sport, opts) {
     lastDeltaTimestamp[sport] = new Date().toISOString();
   }
 
+  // Supplement with First-5-Innings markets for MLB (separate from full-game)
+  if (!liveMode && sport === 'baseball_mlb') {
+    try {
+      await supplementMlbF5Markets(parsed);
+    } catch (err) {
+      log.warn('OddsFeed', `MLB F5 supplement failed: ${err.message}`);
+    }
+  }
+
   log.info('OddsFeed', `Cached ${Object.keys(parsed).length} ${liveMode ? 'LIVE ' : ''}events for ${mapping.value}`);
   return parsed;
+}
+
+/**
+ * Fetch First-5-Innings (F5) markets for MLB from The Odds API and attach them
+ * to the existing event cache as separate market types: h2h_f5, spreads_f5, totals_f5.
+ * These are independent from full-game markets and need their own pricing.
+ */
+async function supplementMlbF5Markets(parsedEvents) {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return;
+
+  const url = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds`
+    + `?apiKey=${theOddsApiKey}`
+    + `&regions=us,eu`
+    + `&markets=h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings`
+    + `&bookmakers=pinnacle,draftkings,fanduel`
+    + `&oddsFormat=american`;
+
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    log.warn('OddsFeed', `MLB F5 fetch failed (${resp.status})`);
+    return;
+  }
+  const remaining = resp.headers.get('x-requests-remaining');
+  if (remaining != null) log.debug('OddsFeed', `The Odds API usage (MLB F5): ${remaining} remaining`);
+
+  const events = await resp.json();
+  let matched = 0;
+  for (const event of events) {
+    const key = normalizeEventKey(cleanTeamName(event.home_team), cleanTeamName(event.away_team));
+    const entry = parsedEvents[key];
+    if (!entry) continue;
+    const eventArr = Array.isArray(entry) ? entry : [entry];
+    // Match by date to handle back-to-back games
+    const evDate = event.commence_time ? new Date(event.commence_time).toISOString().substring(0, 10) : '';
+    const matchedEv = eventArr.find(e => {
+      const d = e.commenceTime ? new Date(e.commenceTime).toISOString().substring(0, 10) : '';
+      return !evDate || !d || d === evDate;
+    }) || eventArr[0];
+    if (!matchedEv) continue;
+
+    // Collect book pairs for each F5 market type
+    const mlPairs = [], spreadPairs = [], totalPairs = [];
+    for (const book of (event.bookmakers || [])) {
+      for (const m of (book.markets || [])) {
+        if (m.key === 'h2h_1st_5_innings') {
+          const home = m.outcomes?.find(o => o.name === event.home_team);
+          const away = m.outcomes?.find(o => o.name === event.away_team);
+          if (home && away) {
+            mlPairs.push({
+              book: book.key,
+              home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price },
+              away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price },
+            });
+          }
+        } else if (m.key === 'spreads_1st_5_innings') {
+          const home = m.outcomes?.find(o => o.name === event.home_team);
+          const away = m.outcomes?.find(o => o.name === event.away_team);
+          if (home && away) {
+            spreadPairs.push({
+              book: book.key,
+              home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price, point: home.point, line: home.point },
+              away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price, point: away.point, line: away.point },
+            });
+          }
+        } else if (m.key === 'totals_1st_5_innings') {
+          const over = m.outcomes?.find(o => o.name === 'Over');
+          const under = m.outcomes?.find(o => o.name === 'Under');
+          if (over && under) {
+            totalPairs.push({
+              book: book.key,
+              over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
+              under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
+            });
+          }
+        }
+      }
+    }
+
+    if (mlPairs.length > 0 || spreadPairs.length > 0 || totalPairs.length > 0) matched++;
+    if (mlPairs.length > 0) matchedEv.markets.h2h_f5 = buildConsensusMoneyline(mlPairs);
+    if (spreadPairs.length > 0) matchedEv.markets.spreads_f5 = buildConsensusSpread(spreadPairs);
+    if (totalPairs.length > 0) matchedEv.markets.totals_f5 = buildConsensusTotals(totalPairs);
+  }
+  log.info('OddsFeed', `MLB F5: attached to ${matched} events`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1434,6 +1528,12 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
   } else if (marketType === 'double_chance') {
     // Selection: '1X' (home or draw), 'X2' (draw or away), '12' (home or away)
     if (market[selection]) return market[selection].fairProb || null;
+  } else if (marketType === 'h2h_f5' || marketType === 'spreads_f5') {
+    if (selection === 'home') return market.home?.fairProb || null;
+    if (selection === 'away') return market.away?.fairProb || null;
+  } else if (marketType === 'totals_f5') {
+    if (selection === 'over') return market.over?.fairProb || null;
+    if (selection === 'under') return market.under?.fairProb || null;
   }
 
   return null;

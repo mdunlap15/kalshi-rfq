@@ -467,6 +467,9 @@ function shouldDecline(legs) {
     const hasDoubleChance = types.includes('double_chance');
     const hasBtts = types.includes('btts') || types.includes('both_teams_to_score');
     const hasTotal = types.includes('total');
+    const hasF5Moneyline = types.some(t => /first_5_innings_moneyline|first_five_innings_moneyline/.test(t));
+    const hasF5RunLine = types.some(t => /first_5_innings_run_line|first_five_innings_run_line/.test(t));
+    const hasF5Total = types.some(t => /first_5_innings_total|first_five_innings_total/.test(t));
     const uniqueTypes = new Set(types);
     // Block: two of the same type on same game
     if (uniqueTypes.size < types.length) {
@@ -494,7 +497,21 @@ function shouldDecline(legs) {
       log.info('Pricing', `Declined: BTTS + total on ${gameLabel}`);
       return { declined: true, reason: 'correlated legs', detail: `BTTS + total on same game: ${gameLabel}` };
     }
-    // Allow: spread/moneyline + total, BTTS + moneyline/spread, double_chance + BTTS
+    // Block: F5 + full-game on same market type (F5 is a subset of the full game)
+    if (hasF5Moneyline && hasMoneyline) {
+      log.info('Pricing', `Declined: F5 moneyline + full-game moneyline on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `F5 + full-game moneyline on same game: ${gameLabel}` };
+    }
+    if (hasF5RunLine && hasSpread) {
+      log.info('Pricing', `Declined: F5 run line + full-game spread on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `F5 + full-game spread on same game: ${gameLabel}` };
+    }
+    if (hasF5Total && hasTotal) {
+      log.info('Pricing', `Declined: F5 total + full-game total on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `F5 + full-game total on same game: ${gameLabel}` };
+    }
+    // Also block F5 moneyline + F5 total? Acceptable correlation like full-game.
+    // Allow: spread/moneyline + total, BTTS + moneyline/spread, double_chance + BTTS, F5 ML + F5 total
   }
 
   // Check team-level exposure limits
