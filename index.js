@@ -497,6 +497,56 @@ function startStatusServer() {
     }
   });
 
+  // Query The Odds API directly (not SharpAPI) — used to debug what
+  // specific books actually return. sport defaults to baseball_mlb.
+  app.get('/debug/odds-api-raw', async (req, res) => {
+    try {
+      const fetch = require('node-fetch');
+      const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+      if (!theOddsApiKey) return res.status(500).json({ ok: false, error: 'THE_ODDS_API_KEY not set' });
+      const sport = req.query.sport || 'baseball_mlb';
+      const markets = req.query.markets || 'h2h';
+      const bookmakers = req.query.bookmakers || 'pinnacle,fanduel,draftkings';
+      const team = req.query.team;
+      const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds`
+        + `?apiKey=${theOddsApiKey}&regions=us,eu&markets=${markets}&bookmakers=${bookmakers}&oddsFormat=american`;
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const txt = await resp.text();
+        return res.status(500).json({ ok: false, status: resp.status, body: txt.substring(0, 500) });
+      }
+      const data = await resp.json();
+      const filtered = team
+        ? data.filter(e => (e.home_team || '').toLowerCase().includes(team.toLowerCase()) || (e.away_team || '').toLowerCase().includes(team.toLowerCase()))
+        : data;
+      // Summarize per event: book -> {home, away}
+      const out = [];
+      for (const ev of filtered.slice(0, 20)) {
+        const byBook = {};
+        for (const b of (ev.bookmakers || [])) {
+          const mkt = (b.markets || []).find(m => m.key === 'h2h');
+          if (!mkt) continue;
+          const home = (mkt.outcomes || []).find(o => o.name === ev.home_team);
+          const away = (mkt.outcomes || []).find(o => o.name === ev.away_team);
+          byBook[b.key] = {
+            home: home?.price,
+            away: away?.price,
+            last_update: b.last_update,
+          };
+        }
+        out.push({
+          home: ev.home_team,
+          away: ev.away_team,
+          commence_time: ev.commence_time,
+          books: byBook,
+        });
+      }
+      res.json({ ok: true, url: url.replace(theOddsApiKey, 'REDACTED'), count: filtered.length, events: out });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Diagnostic: mirror the exact fetch that fetchOddsForSport uses
   app.get('/debug/raw-mlb-fetch', async (req, res) => {
     try {
