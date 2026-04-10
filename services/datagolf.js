@@ -114,14 +114,11 @@ function parseMatchup(entry, eventName, roundNum) {
   }
   if (p1Probs.length === 0) return null; // no tradeable book data
 
+  // Fair probability = de-vigged consensus across sportsbooks only.
+  // DataGolf's model predictions are NOT used for pricing — only real
+  // tradeable book odds feed into the consensus.
   const dvP1 = avg(p1Probs);
   const dvP2 = avg(p2Probs);
-  // Use DataGolf's model as a sanity check floor for heavy favorites (>65%)
-  const dgOdds = (entry.odds && entry.odds.datagolf) || {};
-  const dgP1 = americanToImpliedProb(dgOdds.p1);
-  const dgP2 = americanToImpliedProb(dgOdds.p2);
-  const floorP1 = dgP1 != null && dvP1 >= 0.65 ? Math.max(dvP1, dgP1) : dvP1;
-  const floorP2 = dgP2 != null && dvP2 >= 0.65 ? Math.max(dvP2, dgP2) : dvP2;
 
   return {
     homeTeam: p2Name, // p2 → home (consistent arbitrary choice)
@@ -135,13 +132,13 @@ function parseMatchup(entry, eventName, roundNum) {
         home: {
           rawOdds: p2Raw[0] || null,
           impliedProb: avg(p2Raw.map(americanToImpliedProb)),
-          fairProb: floorP2,
+          fairProb: dvP2,
           displayFairProb: dvP2,
         },
         away: {
           rawOdds: p1Raw[0] || null,
           impliedProb: avg(p1Raw.map(americanToImpliedProb)),
-          fairProb: floorP1,
+          fairProb: dvP1,
           displayFairProb: dvP1,
         },
         books: p1Probs.length,
