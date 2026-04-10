@@ -154,6 +154,19 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
     order.confirmedStake = confirmedStake;
     order.orderUuid = orderUuid;
 
+    // Compute Expected Value at confirmation time (SP perspective):
+    //   EV = P(bettor_loses) * bettor_wager   - P(bettor_wins) * confirmedStake
+    //      = (1 - fairParlayProb) * bettorWager - fairParlayProb * confirmedStake
+    // Positive EV = we expect to profit on this parlay over many repetitions.
+    // Negative EV = we expect to lose money on it.
+    // This is stored at confirm time (freezes fair prob and stake together).
+    if (order.fairParlayProb != null && order.fairParlayProb > 0 && order.fairParlayProb < 1 && confirmedOdds != null && confirmedStake != null) {
+      const bettorWager = americanOddsToProfit(confirmedOdds, confirmedStake);
+      const fair = order.fairParlayProb;
+      order.expectedValue = (1 - fair) * bettorWager - fair * confirmedStake;
+      if (order.meta) order.meta.expectedValue = order.expectedValue;
+    }
+
     if (orderUuid) {
       ordersByUuid[orderUuid] = parlayId;
     }
@@ -2116,6 +2129,7 @@ async function loadFromDb() {
       if (o.meta.winningStake != null && o.winningStake == null) o.winningStake = o.meta.winningStake;
       if (o.meta.lostAt && !o.lostAt) o.lostAt = o.meta.lostAt;
       if (o.meta.pxProfit != null && o.pxProfit == null) o.pxProfit = o.meta.pxProfit;
+      if (o.meta.expectedValue != null && o.expectedValue == null) o.expectedValue = o.meta.expectedValue;
     }
 
     // Normalize leg data across both sources (o.legs and o.meta.legs).

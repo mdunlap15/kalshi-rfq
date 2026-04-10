@@ -599,12 +599,30 @@ function shouldDecline(legs) {
       log.info('Pricing', `Declined: F5 total + full-game total on ${gameLabel}`);
       return { declined: true, reason: 'correlated legs', detail: `F5 + full-game total on same game: ${gameLabel}` };
     }
-    // Block: team_total with any other same-game leg — team totals are strongly
-    // correlated with moneyline, spread, and full-game total on the same event.
-    const hasTeamTotal = types.includes('team_total');
-    if (hasTeamTotal && types.length > 1) {
-      log.info('Pricing', `Declined: team_total + other same-game leg on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `team_total combined with other legs on same game: ${gameLabel}` };
+    // Block: team_total combined with any other leg FOR THE SAME TEAM on the
+    // same game. team_total for the home team is highly correlated with home
+    // moneyline, home spread cover, and total goes over. A team_total leg
+    // standalone (no other legs on this game) OR combined with legs for the
+    // OPPOSING team is allowed.
+    const teamTotalEntries = entries.filter(e => e.market === 'team_total');
+    if (teamTotalEntries.length > 0 && entries.length > 1) {
+      // Figure out which team each leg is for: team_total's .team is the team
+      // side; other legs' .team is also the team (for ML/spread) or uses home
+      // for totals (which are event-level). Block if ANY other leg is for the
+      // SAME team as a team_total leg.
+      for (const tt of teamTotalEntries) {
+        const ttTeam = tt.team;
+        const sameTeamOther = entries.find(e => e !== tt && e.team === ttTeam);
+        if (sameTeamOther) {
+          log.info('Pricing', `Declined: team_total + ${sameTeamOther.market} on ${ttTeam} (same game ${gameLabel})`);
+          return { declined: true, reason: 'correlated legs', detail: `team_total + ${sameTeamOther.market} for ${ttTeam}: ${gameLabel}` };
+        }
+        // Also block team_total + full-game total (both depend on same goals)
+        if (entries.some(e => e !== tt && e.market === 'total')) {
+          log.info('Pricing', `Declined: team_total + full-game total on ${gameLabel}`);
+          return { declined: true, reason: 'correlated legs', detail: `team_total + full-game total on same game: ${gameLabel}` };
+        }
+      }
     }
     // Note: same-game spread+total and moneyline+total are NOT blocked here
     // because they're still reasonable to quote — but they receive a correlation

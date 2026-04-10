@@ -28,9 +28,11 @@ async function saveOrder(order) {
   if (!db) return;
 
   try {
-    // Stash pxProfit inside meta (no dedicated column — keeps schema stable)
+    // Stash pxProfit and expectedValue inside meta (no dedicated columns —
+    // keeps schema stable while persisting these derived fields).
     const metaWithExtras = { ...(order.meta || {}) };
     if (order.pxProfit != null) metaWithExtras.pxProfit = order.pxProfit;
+    if (order.expectedValue != null) metaWithExtras.expectedValue = order.expectedValue;
 
     const row = {
       parlay_id: order.parlayId,

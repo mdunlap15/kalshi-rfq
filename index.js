@@ -1160,6 +1160,63 @@ function startStatusServer() {
     }
   });
 
+  // Expected Value report: sum Σ EV across confirmed & settled parlays and
+  // compare to actual P&L. Over a large enough sample, Σ EV should converge
+  // toward realized P&L. Persistent gaps indicate miscalibrated fair prob.
+  app.get('/ev-report', (req, res) => {
+    try {
+      const all = orderTracker.getRecentOrders(20000);
+      // Only include orders with both EV and a known outcome (settled) for
+      // the main comparison; also report open positions' pending EV.
+      const settled = all.filter(o => o.status && o.status.startsWith('settled_'));
+      const open = all.filter(o => o.status === 'confirmed');
+      const withEv = settled.filter(o => o.expectedValue != null);
+      const openWithEv = open.filter(o => o.expectedValue != null);
+
+      const sumEv = withEv.reduce((s, o) => s + (o.expectedValue || 0), 0);
+      const sumPnl = withEv.reduce((s, o) => s + (o.pnl || 0), 0);
+      const sumOpenEv = openWithEv.reduce((s, o) => s + (o.expectedValue || 0), 0);
+
+      // By sport breakdown
+      const bySport = {};
+      for (const o of withEv) {
+        const legs = o.meta?.legs || o.legs || [];
+        const sports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
+        const key = sports.length === 1 ? sports[0] : (sports.length > 1 ? 'multi' : 'unknown');
+        if (!bySport[key]) bySport[key] = { count: 0, sumEv: 0, sumPnl: 0 };
+        bySport[key].count++;
+        bySport[key].sumEv += o.expectedValue || 0;
+        bySport[key].sumPnl += o.pnl || 0;
+      }
+      for (const k of Object.keys(bySport)) {
+        bySport[k].delta = Math.round((bySport[k].sumPnl - bySport[k].sumEv) * 100) / 100;
+        bySport[k].sumEv = Math.round(bySport[k].sumEv * 100) / 100;
+        bySport[k].sumPnl = Math.round(bySport[k].sumPnl * 100) / 100;
+      }
+
+      res.json({
+        ok: true,
+        settled: {
+          count: withEv.length,
+          totalSettled: settled.length,
+          withEvPct: settled.length > 0 ? Math.round(withEv.length / settled.length * 1000) / 10 : 0,
+          sumExpectedValue: Math.round(sumEv * 100) / 100,
+          sumActualPnl: Math.round(sumPnl * 100) / 100,
+          delta: Math.round((sumPnl - sumEv) * 100) / 100,
+          note: 'delta = actualPnL - expectedValue; positive = variance in our favor, negative = fair prob underestimating bettor wins',
+        },
+        open: {
+          count: openWithEv.length,
+          totalOpen: open.length,
+          sumExpectedValue: Math.round(sumOpenEv * 100) / 100,
+        },
+        bySport,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Reconcile all settled orders between PX and local. Returns only mismatches.
   app.get('/reconcile-settlements', async (req, res) => {
     try {
