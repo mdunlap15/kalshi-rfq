@@ -1127,18 +1127,21 @@ function buildConsensusTeamTotals(bookPairs) {
     const dvOver = avg(devigged.over);
     const dvUnder = avg(devigged.under);
     const pinBook = matching.find(bp => bp.book === 'pinnacle');
+    // Floor at Pinnacle's DE-VIGGED fair prob (not raw) to avoid double-vig.
+    const pinFairO = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[0] : 0;
+    const pinFairU = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[1] : 0;
 
     result[side] = {
       over: {
         rawOdds: matching[0].over.odds_american,
         impliedProb: matching[0].over.odds_probability,
-        fairProb: dvOver >= 0.65 ? Math.max(dvOver, pinBook ? pinBook.over.odds_probability : 0) : dvOver,
+        fairProb: dvOver >= 0.65 ? Math.max(dvOver, pinFairO) : dvOver,
         displayFairProb: dvOver,
       },
       under: {
         rawOdds: matching[0].under.odds_american,
         impliedProb: matching[0].under.odds_probability,
-        fairProb: dvUnder >= 0.65 ? Math.max(dvUnder, pinBook ? pinBook.under.odds_probability : 0) : dvUnder,
+        fairProb: dvUnder >= 0.65 ? Math.max(dvUnder, pinFairU) : dvUnder,
         displayFairProb: dvUnder,
       },
       line: primaryLine,
@@ -1161,13 +1164,17 @@ function buildConsensusMoneyline(bookPairs) {
   const dvAway = avg(devigged.away);
 
   // For PRICING: use de-vigged consensus as fair value for normal legs.
-  // Apply Pinnacle raw as floor on heavy favorites (>65%) to catch de-vig over-correction.
-  // When Pinnacle is missing, fall back to Kalshi as the floor.
+  // On heavy favorites (>=65%), floor at Pinnacle's DE-VIGGED fair prob to catch
+  // de-vig over-correction, NOT raw implied (which contains Pinnacle's own vig —
+  // using raw would double-vig when we apply our own vig on top, making heavy-
+  // favorite parlays significantly worse than Pinnacle's direct parlay price).
   const pinBook = bookPairs.find(bp => bp.book === 'pinnacle');
   const fdBook = bookPairs.find(bp => bp.book === 'fanduel');
   const klBook = bookPairs.find(bp => bp.book === 'kalshi');
-  const floorHome = pinBook ? pinBook.home.odds_probability : (klBook ? Math.min(klBook.home.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-  const floorAway = pinBook ? pinBook.away.odds_probability : (klBook ? Math.min(klBook.away.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+  const pinFairHome = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[0] : 0;
+  const pinFairAway = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[1] : 0;
+  const floorHome = pinBook ? pinFairHome : (klBook ? Math.min(klBook.home.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+  const floorAway = pinBook ? pinFairAway : (klBook ? Math.min(klBook.away.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
   const pricingHome = dvHome >= 0.65 ? Math.max(dvHome, floorHome) : dvHome;
   const pricingAway = dvAway >= 0.65 ? Math.max(dvAway, floorAway) : dvAway;
 
@@ -1234,8 +1241,12 @@ function buildConsensusSpread(bookPairs) {
   const pinBook = matching.find(bp => bp.book === 'pinnacle');
   const fdBook = matching.find(bp => bp.book === 'fanduel');
   const klBookS = matching.find(bp => bp.book === 'kalshi');
-  const floorHomeS = pinBook ? pinBook.home.odds_probability : (klBookS ? klBookS.home.odds_probability : 0);
-  const floorAwayS = pinBook ? pinBook.away.odds_probability : (klBookS ? klBookS.away.odds_probability : 0);
+  // Floor at Pinnacle's DE-VIGGED fair prob (not raw implied) — raw would
+  // include Pinnacle's vig and cause double-vig when we apply ours on top.
+  const pinFairHomeS = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[0] : 0;
+  const pinFairAwayS = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[1] : 0;
+  const floorHomeS = pinBook ? pinFairHomeS : (klBookS ? klBookS.home.odds_probability : 0);
+  const floorAwayS = pinBook ? pinFairAwayS : (klBookS ? klBookS.away.odds_probability : 0);
   const pricingHome = dvHome >= 0.65 ? Math.max(dvHome, floorHomeS) : dvHome;
   const pricingAway = dvAway >= 0.65 ? Math.max(dvAway, floorAwayS) : dvAway;
 
@@ -1307,8 +1318,11 @@ function buildConsensusTotals(bookPairs) {
   const pinBook = matching.find(bp => bp.book === 'pinnacle');
   const fdBook2 = matching.find(bp => bp.book === 'fanduel');
   const klBookT = matching.find(bp => bp.book === 'kalshi');
-  const floorOver = pinBook ? pinBook.over.odds_probability : (klBookT ? Math.min(klBookT.over.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-  const floorUnder = pinBook ? pinBook.under.odds_probability : (klBookT ? Math.min(klBookT.under.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+  // Floor at Pinnacle's DE-VIGGED fair prob (not raw implied) to avoid double-vig.
+  const pinFairOver = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[0] : 0;
+  const pinFairUnder = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[1] : 0;
+  const floorOver = pinBook ? pinFairOver : (klBookT ? Math.min(klBookT.over.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+  const floorUnder = pinBook ? pinFairUnder : (klBookT ? Math.min(klBookT.under.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
   const pricingOver = dvOver >= 0.65 ? Math.max(dvOver, floorOver) : dvOver;
   const pricingUnder = dvUnder >= 0.65 ? Math.max(dvUnder, floorUnder) : dvUnder;
 
