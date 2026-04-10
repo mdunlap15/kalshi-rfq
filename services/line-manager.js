@@ -332,12 +332,88 @@ async function seedAllLines() {
         const allowed = fullGameNames[m.type];
         if (allowed && !allowed.includes(m.name)) return false;
       }
-      // Exclude sub-game totals (first-inning runs, etc.) — lines ≤ 2.5 are never full-game
-      // F5 totals are typically 4-5 runs, full game 7-10 runs; both OK.
+      // Exclude sub-game totals and prop totals by sport-aware line bounds.
+      // These are the valid ranges for FULL-GAME totals by sport:
+      //   NBA: 180-300 points
+      //   NHL: 4-9 goals
+      //   MLB: 4-15 runs
+      //   NCAAB: 100-200 points
+      //   Soccer: 0.5-7 goals
+      //   Tennis: 15-40 games
+      // Anything outside these bounds is a prop, sub-game, or team total.
+      // F5 totals bypass this check (MLB F5 is ~4-5).
       if (m.type === 'total' && !isF5) {
         const parsed = px.parseMarketSelections(m);
         const line = parsed[0]?.line;
-        if (line != null && Math.abs(line) <= 2.5) return false;
+        if (line != null) {
+          const absLine = Math.abs(line);
+          const sport = sportKey;
+          const bounds = {
+            'basketball_nba': [180, 300],
+            'basketball_ncaab': [100, 200],
+            'basketball_wnba': [130, 200],
+            'icehockey_nhl': [4, 9],
+            'baseball_mlb': [4, 15],
+            'soccer': [0.5, 7],
+            'soccer_usa_mls': [0.5, 7],
+            'soccer_epl': [0.5, 7],
+            'soccer_uefa_champs_league': [0.5, 7],
+            'soccer_uefa_europa_league': [0.5, 7],
+            'soccer_spain_la_liga': [0.5, 7],
+            'soccer_italy_serie_a': [0.5, 7],
+            'soccer_germany_bundesliga': [0.5, 7],
+            'soccer_france_ligue_one': [0.5, 7],
+            'soccer_usa_nwsl': [0.5, 7],
+            'tennis': [15, 40],
+          }[sport];
+          if (bounds) {
+            if (absLine < bounds[0] || absLine > bounds[1]) {
+              log.debug('Lines', `Rejecting sub-game/prop total ${absLine} for ${sport} (bounds ${bounds[0]}-${bounds[1]}): ${m.name}`);
+              return false;
+            }
+          } else {
+            // Fallback: still reject obviously-sub-game totals ≤ 2.5
+            if (absLine <= 2.5) return false;
+          }
+        }
+      }
+      // Sport-aware spread bounds — reject prop spreads.
+      if (m.type === 'spread' && !isF5) {
+        const parsed = px.parseMarketSelections(m);
+        const line = parsed[0]?.line;
+        if (line != null) {
+          const absLine = Math.abs(line);
+          const sport = sportKey;
+          // Max plausible full-game spread magnitude by sport:
+          //   NBA: 30 (blowouts)
+          //   NCAAB: 40
+          //   NHL: 2.5 (puck line is ±1.5, alts ±2.5)
+          //   MLB: 2.5 (run line is ±1.5, alts ±2.5)
+          //   Soccer: 5 (Asian handicap can go deep but rarely beyond 5)
+          //   Tennis: 10 (games handicap)
+          const maxSpread = {
+            'basketball_nba': 30,
+            'basketball_ncaab': 40,
+            'basketball_wnba': 30,
+            'icehockey_nhl': 3,
+            'baseball_mlb': 3,
+            'soccer': 5,
+            'soccer_usa_mls': 5,
+            'soccer_epl': 5,
+            'soccer_uefa_champs_league': 5,
+            'soccer_uefa_europa_league': 5,
+            'soccer_spain_la_liga': 5,
+            'soccer_italy_serie_a': 5,
+            'soccer_germany_bundesliga': 5,
+            'soccer_france_ligue_one': 5,
+            'soccer_usa_nwsl': 5,
+            'tennis': 10,
+          }[sport];
+          if (maxSpread != null && absLine > maxSpread) {
+            log.debug('Lines', `Rejecting prop spread ${line} for ${sport} (max ${maxSpread}): ${m.name}`);
+            return false;
+          }
+        }
       }
       return true;
     });
