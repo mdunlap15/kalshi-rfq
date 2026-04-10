@@ -418,9 +418,20 @@ async function seedAllLines() {
     });
 
     for (const market of mainMarkets) {
+      // Detect PX 3-way moneyline sub-markets like "Arsenal Football Club To Win
+      // (90 Min)" which are yes/no propositions on a 3-way outcome. We don't
+      // currently support quoting these — skip them entirely so they don't leak
+      // into the moneyline path where they'd be mispriced as 2-way team bets.
+      // The regular 2-way market is "Moneyline (2 Way)" with team selections.
+      if (market.type === 'moneyline' && /\bto win\b.*\(.*min.*\)|^draw\s*\(.*min.*\)/i.test(market.name || '')) {
+        log.debug('Lines', `Skipping PX 3-way sub-market at seed: ${market.name}`);
+        continue;
+      }
       const parsed = px.parseMarketSelections(market);
-      // Detect 2-way / Draw No Bet soccer moneylines
-      const isDNB = market.type === 'moneyline' && /2.way|draw.no.bet/i.test(market.name);
+      // Detect 2-way / Draw No Bet soccer moneylines.
+      // PX labels the 2-way soccer ML market as "Moneyline (2 Way)".
+      // Also catch explicit "Draw No Bet" / "DNB" / "Moneyline 2W" variants.
+      const isDNB = market.type === 'moneyline' && /\b2\s*[\s\-_]?way\b|draw\s*no\s*bet|\bdnb\b|\b2w\b/i.test(market.name || '');
 
       for (const sel of parsed) {
         totalLines++;
@@ -820,7 +831,18 @@ async function resolveUnknownLine(rfqLeg) {
           // PX scheduled is authoritative; odds cache is unreliable (midnight UTC placeholder).
           const startTime = event.scheduled || oddsEvt?.commenceTime || null;
 
-          const onDemandDNB = market.type === 'moneyline' && /2.way|draw.no.bet/i.test(market.name);
+          // Skip PX 3-way sub-markets ("Arsenal To Win (90 Min)") — we don't
+          // support them and the parser would fail to map Yes/No to home/away.
+          if (market.type === 'moneyline' && /\bto win\b.*\(.*min.*\)|^draw\s*\(.*min.*\)/i.test(market.name || '')) {
+            log.info('Lines', `Skipping PX 3-way sub-market on-demand: ${market.name}`);
+            resolveUnknownLine._lastFailure = {
+              lineId, reason: 'unsupported_market_type',
+              marketType: market.type, marketName: market.name,
+              sport: sportKey, eventName: event.name,
+            };
+            continue;
+          }
+          const onDemandDNB = market.type === 'moneyline' && /\b2\s*[\s\-_]?way\b|draw\s*no\s*bet|\bdnb\b|\b2w\b/i.test(market.name || '');
           foundInfo = {
             sport: sportKey,
             pxEventId: eventId,

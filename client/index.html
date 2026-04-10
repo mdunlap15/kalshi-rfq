@@ -6678,11 +6678,28 @@
     return l.settlementStatus || l.settlement_status || l.inferredResult || null;
   }
 
-  /** Compound per-leg sportsbook odds into parlay American odds */
+  /** Compound per-leg sportsbook odds into parlay American odds.
+   * For DNB legs (soccer 2-way moneyline), prefer the server-computed
+   * DNB-adjusted per-book implied prob (pinnacleDNBProb etc.) over the raw
+   * 3-way home/away implied. Without this adjustment the parlay columns
+   * would compound raw 3-way home probs, producing a misleading number that
+   * doesn't match the semantics of our DNB offer. */
   function compoundParlayOdds(legs, field) {
+    // Map raw-odds field → DNB-adjusted-prob field
+    const dnbField = {
+      pinnacleOdds: 'pinnacleDNBProb',
+      fanduelOdds: 'fanduelDNBProb',
+      kalshiOdds: 'kalshiDNBProb',
+      draftkingsOdds: 'draftkingsDNBProb',
+    }[field];
     let prob = 1;
     let allPresent = true;
     for (const l of legs) {
+      // Use DNB-adjusted implied when available (set at quote time for DNB legs)
+      if (l.isDNB && dnbField && l[dnbField] != null) {
+        prob *= l[dnbField];
+        continue;
+      }
       const odds = l[field];
       if (odds == null) { allPresent = false; continue; }
       prob *= americanToProb(odds);

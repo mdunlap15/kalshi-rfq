@@ -143,6 +143,47 @@ async function priceParlay(legs) {
       lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
     );
 
+    // For DNB (Draw No Bet) legs, also fetch the opposite-side book odds so
+    // we can compute DNB-adjusted per-book implied probs. The raw book home
+    // implied from a 3-way soccer market is NOT the DNB implied — it must be
+    // renormalized as pinHome / (pinHome + pinAway). Without this, the
+    // dashboard's Pinnacle/DK parlay columns compound raw 3-way home probs,
+    // producing a misleading apples-to-oranges comparison with our DNB offer.
+    let pinnacleDNBProb = null;
+    let fanduelDNBProb = null;
+    let kalshiDNBProb = null;
+    let draftkingsDNBProb = null;
+    if (lineInfo.isDNB && lineInfo.oddsApiMarket === 'h2h') {
+      const oppSel = lineInfo.oddsApiSelection === 'home' ? 'away' : 'home';
+      function calcDNB(sameOdds, oppOdds) {
+        if (sameOdds == null || oppOdds == null) return null;
+        const pSame = oddsFeed.americanToImpliedProb(sameOdds);
+        const pOpp = oddsFeed.americanToImpliedProb(oppOdds);
+        const sum = pSame + pOpp;
+        return sum > 0 ? pSame / sum : null;
+      }
+      const pinOpp = oddsFeed.getPinnacleOdds(
+        lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+        'h2h', oppSel, lineInfo.startTime
+      );
+      const fdOpp = oddsFeed.getFanDuelOdds(
+        lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+        'h2h', oppSel, lineInfo.startTime
+      );
+      const klOpp = oddsFeed.getKalshiOdds(
+        lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+        'h2h', oppSel, lineInfo.startTime
+      );
+      const dkOpp = oddsFeed.getDraftKingsOdds(
+        lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
+        'h2h', oppSel, lineInfo.startTime
+      );
+      pinnacleDNBProb = calcDNB(pinnacleOdds, pinOpp);
+      fanduelDNBProb = calcDNB(fanduelOdds, fdOpp);
+      kalshiDNBProb = calcDNB(kalshiOdds, klOpp);
+      draftkingsDNBProb = calcDNB(draftkingsOdds, dkOpp);
+    }
+
     // Require a valid fair probability — if we have one, sportsbook data exists
     // (fair prob is built from de-vigged consensus of all available books).
     // Previously required specifically Pinnacle or FanDuel, but with 25 books
@@ -192,6 +233,10 @@ async function priceParlay(legs) {
       fanduelOdds,
       kalshiOdds,
       draftkingsOdds,
+      pinnacleDNBProb,
+      fanduelDNBProb,
+      kalshiDNBProb,
+      draftkingsDNBProb,
     });
 
     fairParlayProb *= fairProb;
@@ -358,6 +403,8 @@ async function priceParlay(legs) {
           lineId: l.lineId,
           team,
           market: l.lineInfo.marketType,
+          marketName: l.lineInfo.marketName || null,
+          isDNB: l.lineInfo.isDNB || false,
           selection: l.lineInfo.oddsApiSelection,
           line: l.lineInfo.line,
           fairProb: Math.round(l.fairProb * 10000) / 10000,
@@ -367,6 +414,12 @@ async function priceParlay(legs) {
           fanduelOdds: l.fanduelOdds || null,
           kalshiOdds: l.kalshiOdds || null,
           draftkingsOdds: l.draftkingsOdds || null,
+          // DNB-adjusted per-book implied probs for soccer 2-way parlay compound.
+          // Null for non-DNB legs (use standard americanToProb(odds) instead).
+          pinnacleDNBProb: l.pinnacleDNBProb != null ? Math.round(l.pinnacleDNBProb * 10000) / 10000 : null,
+          fanduelDNBProb: l.fanduelDNBProb != null ? Math.round(l.fanduelDNBProb * 10000) / 10000 : null,
+          kalshiDNBProb: l.kalshiDNBProb != null ? Math.round(l.kalshiDNBProb * 10000) / 10000 : null,
+          draftkingsDNBProb: l.draftkingsDNBProb != null ? Math.round(l.draftkingsDNBProb * 10000) / 10000 : null,
           sport: l.lineInfo.sport,
           homeTeam: l.lineInfo.homeTeam,
           awayTeam: l.lineInfo.awayTeam,
@@ -381,13 +434,22 @@ async function priceParlay(legs) {
       offeredImpliedProb: Math.round(cappedProb * 100000) / 100000,
       decimalOdds: Math.round(decimalOdds * 100) / 100,
       americanOdds,
-      // Compute Pinnacle parlay odds from per-leg Pinnacle implied probs
+      // Compute competitor book parlay odds from per-leg book implied probs.
+      // For DNB legs (soccer 2-way moneyline), use the DNB-adjusted per-book
+      // implied (pinHome / (pinHome + pinAway)) instead of the raw 3-way home
+      // implied. This makes the comparison apples-to-apples: our DNB offer
+      // vs. the book's DNB-equivalent parlay. Previously we compounded raw
+      // 3-way implied, producing a misleadingly loose "Pinnacle parlay" number
+      // that looked ~200 American points better than our DNB offer.
       pinnacleParlay: (() => {
         const pinLegs = pricedLegs.filter(l => l.pinnacleOdds != null);
-        if (pinLegs.length !== pricedLegs.length) return null; // need all legs
+        if (pinLegs.length !== pricedLegs.length) return null;
         let pinProb = 1;
         for (const l of pinLegs) {
-          pinProb *= oddsFeed.americanToImpliedProb(l.pinnacleOdds);
+          const legImpl = l.lineInfo.isDNB && l.pinnacleDNBProb != null
+            ? l.pinnacleDNBProb
+            : oddsFeed.americanToImpliedProb(l.pinnacleOdds);
+          pinProb *= legImpl;
         }
         if (pinProb <= 0 || pinProb >= 1) return null;
         return decimalToAmerican(1 / pinProb);
@@ -397,7 +459,10 @@ async function priceParlay(legs) {
         if (klLegs.length !== pricedLegs.length) return null;
         let klProb = 1;
         for (const l of klLegs) {
-          klProb *= oddsFeed.americanToImpliedProb(l.kalshiOdds);
+          const legImpl = l.lineInfo.isDNB && l.kalshiDNBProb != null
+            ? l.kalshiDNBProb
+            : oddsFeed.americanToImpliedProb(l.kalshiOdds);
+          klProb *= legImpl;
         }
         if (klProb <= 0 || klProb >= 1) return null;
         return decimalToAmerican(1 / klProb);
@@ -407,7 +472,10 @@ async function priceParlay(legs) {
         if (dkLegs.length !== pricedLegs.length) return null;
         let dkProb = 1;
         for (const l of dkLegs) {
-          dkProb *= oddsFeed.americanToImpliedProb(l.draftkingsOdds);
+          const legImpl = l.lineInfo.isDNB && l.draftkingsDNBProb != null
+            ? l.draftkingsDNBProb
+            : oddsFeed.americanToImpliedProb(l.draftkingsOdds);
+          dkProb *= legImpl;
         }
         if (dkProb <= 0 || dkProb >= 1) return null;
         return decimalToAmerican(1 / dkProb);
