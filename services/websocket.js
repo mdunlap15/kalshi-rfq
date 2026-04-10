@@ -349,8 +349,22 @@ async function handleRFQ(data) {
             // Authoritative categorization from PX-level data
             if (resolveReason === 'unsupported_market_type') {
               // PX explicitly told us this is a sup_moneyline / prop / etc.
-              category = 'player_prop';
-              detail = `unsupported PX market type${resolveFailure.marketName ? ': ' + resolveFailure.marketName : ''}`;
+              // Subdivide based on market name: sub-game vs player prop vs other
+              const mn = (resolveFailure.marketName || '').toLowerCase();
+              if (/first half|1st half|second half|2nd half|quarter|period|inning|overtime/i.test(mn)) {
+                category = 'sub_game';
+                detail = `sub-game market: ${resolveFailure.marketName}`;
+              } else if (/milestone|points|rebound|assist|strikeout|yards|receptions|block|steal|to record/i.test(mn)) {
+                category = 'player_prop';
+                detail = `player prop: ${resolveFailure.marketName}`;
+              } else {
+                category = 'other_unsupported';
+                detail = `unsupported: ${resolveFailure.marketName || resolveFailure.marketType}`;
+              }
+            } else if (resolveReason === 'sub_game_market') {
+              // Sub-game detected by name in the spread/total market walk
+              category = 'sub_game';
+              detail = `sub-game: ${resolveFailure.marketName}`;
             } else if (resolveReason === 'unknown_event') {
               category = 'unknown_event';
               detail = `event ${resolveFailure.eventId} not in lineManager`;

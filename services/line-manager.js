@@ -723,8 +723,39 @@ async function resolveUnknownLine(rfqLeg) {
       // F5 name pattern — detect F5 markets by name since PX uses
       // market.type='spread'/'total' for them (distinguishes only via name)
       const f5NamePat = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings|f5\b/i;
+      // Sub-game name pattern — halves, quarters, periods, innings.
+      // These markets come through with supported types (spread/total/moneyline)
+      // but the market.name identifies them as sub-game. We must NOT register
+      // them as full-game markets because their lines can coincidentally match
+      // full-game primaries (e.g. NBA 1st-half spread 5.5 vs full-game 5.5),
+      // leading to mispriced offers. Mirror the seed-time excludePatterns.
+      // F5 is exempt (handled via its own marketType above).
+      const subGameNamePat = /first half|1st half|second half|2nd half|first quarter|1st quarter|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|2nd inning|3rd inning|overtime/i;
       for (const market of markets || []) {
         if (!SUPPORTED_TYPES.includes(market.type)) continue;
+        // Reject sub-game markets (halves/quarters/periods) by name BEFORE
+        // the bounds check. F5 is exempt because it has its own marketType.
+        const isF5ByName = f5NamePat.test(market.name || '');
+        if (!isF5ByName && subGameNamePat.test(market.name || '')) {
+          // Check if the lineId is actually in this market — if so, we've
+          // identified the request as a sub-game bet and should decline
+          // cleanly with a specific reason.
+          const parsedSub = px.parseMarketSelections(market);
+          if (parsedSub.some(s => s.lineId === lineId)) {
+            log.info('Lines', `Declined sub-game market: ${market.type} / "${market.name}" (${event.name})`);
+            resolveUnknownLine._lastFailure = {
+              lineId,
+              reason: 'sub_game_market',
+              marketType: market.type,
+              marketName: market.name,
+              sport: sportKey,
+              eventName: event.name,
+            };
+            return null;
+          }
+          // Otherwise skip this market and keep searching
+          continue;
+        }
         // Reject sub-game/prop totals and spreads by sport-aware bounds.
         // F5 markets must be exempt — detect by NAME, not type, because PX
         // uses type='spread' / 'total' for F5 (only name distinguishes).
