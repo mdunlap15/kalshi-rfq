@@ -45,7 +45,7 @@ const ODDS_API_FALLBACK = {
     // Tennis tournaments rotate — discover active ones dynamically
     dynamic: true,
     sportPrefix: 'tennis_',
-    markets: 'h2h',
+    markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'basketball_ncaab': {
@@ -584,6 +584,44 @@ async function fetchDynamicSports(sport, fallback, apiKey) {
     }
     if (mlPairs.length > 0) {
       markets.h2h = buildConsensusMoneyline(mlPairs);
+    }
+
+    // Spreads (game handicaps for tennis)
+    const spreadPairs = [];
+    for (const book of allBooks) {
+      const sMarket = book.markets?.find(m => m.key === 'spreads');
+      if (!sMarket) continue;
+      const home = sMarket.outcomes?.find(o => o.name === event.home_team);
+      const away = sMarket.outcomes?.find(o => o.name === event.away_team);
+      if (home && away) {
+        spreadPairs.push({
+          book: book.key,
+          home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price, point: home.point, line: home.point },
+          away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price, point: away.point, line: away.point },
+        });
+      }
+    }
+    if (spreadPairs.length > 0) {
+      markets.spreads = buildConsensusSpread(spreadPairs);
+    }
+
+    // Totals (total games for tennis)
+    const totalPairs = [];
+    for (const book of allBooks) {
+      const tMarket = book.markets?.find(m => m.key === 'totals');
+      if (!tMarket) continue;
+      const over = tMarket.outcomes?.find(o => o.name === 'Over');
+      const under = tMarket.outcomes?.find(o => o.name === 'Under');
+      if (over && under) {
+        totalPairs.push({
+          book: book.key,
+          over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
+          under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
+        });
+      }
+    }
+    if (totalPairs.length > 0) {
+      markets.totals = buildConsensusTotals(totalPairs);
     }
 
     if (Object.keys(markets).length > 0) {
