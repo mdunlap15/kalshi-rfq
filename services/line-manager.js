@@ -720,11 +720,18 @@ async function resolveUnknownLine(rfqLeg) {
 
       // Find the line in the markets
       let foundInfo = null;
+      // F5 name pattern — detect F5 markets by name since PX uses
+      // market.type='spread'/'total' for them (distinguishes only via name)
+      const f5NamePat = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings|f5\b/i;
       for (const market of markets || []) {
         if (!SUPPORTED_TYPES.includes(market.type)) continue;
         // Reject sub-game/prop totals and spreads by sport-aware bounds.
-        // F5 markets carry their own types and are exempt from these bounds.
-        const isF5Market = F5_MARKET_TYPES.includes(market.type);
+        // F5 markets must be exempt — detect by NAME, not type, because PX
+        // uses type='spread' / 'total' for F5 (only name distinguishes).
+        // Using F5_MARKET_TYPES against market.type was always false, causing
+        // MLB F5 total line 3.5 to be rejected against the MLB total bounds
+        // [4, 15] and preventing any F5 parlay from being quoted.
+        const isF5Market = f5NamePat.test(market.name || '');
         if ((market.type === 'total' || market.type === 'spread') && !isF5Market) {
           const parsedAll = px.parseMarketSelections(market);
           const firstLine = parsedAll[0]?.line;
