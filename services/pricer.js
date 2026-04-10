@@ -425,7 +425,11 @@ async function priceParlay(legs) {
           awayTeam: l.lineInfo.awayTeam,
           startTime: l.lineInfo.startTime || null,
           pxEventId: l.lineInfo.pxEventId || null,
+          pxEventName: l.lineInfo.pxEventName || null,
           onDemand: l.lineInfo.onDemand || false,
+          // Golf-specific: tournament name + round number for display
+          tournamentName: l.lineInfo.tournamentName || null,
+          roundNum: l.lineInfo.roundNum || null,
         };
       }),
       vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb), 0) / pricedLegs.length * 10000) / 10000,

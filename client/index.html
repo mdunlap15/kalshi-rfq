@@ -6191,10 +6191,35 @@
       if (showStatus) h += '<td style="padding:' + pad + '; color:' + lColor + '; font-size:14px; text-align:center; width:40px;" title="' + lTitle + '">' + lIcon + '</td>';
       if (showSport) h += '<td style="padding:' + pad + ';">' + sportPill(l.sport || 'unknown') + '</td>';
       const mkt = l.market || l.marketType || '';
-      const teamLabel = formatSelection(l.team || l.teamName || '?', mkt, l.line);
+      let teamLabel = formatSelection(l.team || l.teamName || '?', mkt, l.line);
+
+      // Golf matchups: append opponent + event + round context so the
+      // display answers "who is this golfer playing against, in what
+      // tournament, which round?"
+      if (l.sport === 'golf_matchups') {
+        const self = l.team || l.teamName || '';
+        // The opponent is whichever of homeTeam/awayTeam isn't the selection
+        const opponent = (l.homeTeam && l.homeTeam !== self) ? l.homeTeam
+                       : (l.awayTeam && l.awayTeam !== self) ? l.awayTeam
+                       : null;
+        const rounds = l.roundNum != null ? ('R' + l.roundNum) : '';
+        const tourn = l.tournamentName ? (rounds ? rounds + ' ' + l.tournamentName : l.tournamentName) : rounds;
+        const ctx = (opponent ? ('vs ' + opponent) : '') + (tourn ? (opponent ? ' · ' + tourn : tourn) : '');
+        if (ctx) {
+          teamLabel += ' <span style="color:var(--text3); font-size:10px;">' + ctx + '</span>';
+        }
+      }
+
+      // DNB badge for soccer 2-way moneyline legs so operators can tell
+      // apart DNB vs 3-way at a glance
+      let dnbBadge = '';
+      if (l.isDNB) {
+        dnbBadge = ' <span title="Draw No Bet — stake refunds on a draw" style="color:var(--blue); font-size:9px; padding:1px 4px; border:1px solid var(--blue); border-radius:3px; margin-left:4px;">DNB</span>';
+      }
+
       const lineDisplay = (mkt === 'spread' || mkt === 'total') && l.line != null ? l.line : '-';
 
-      h += '<td style="padding:' + pad + ';">' + teamLabel + blockerBadge + '</td>';
+      h += '<td style="padding:' + pad + ';">' + teamLabel + dnbBadge + blockerBadge + '</td>';
       h += '<td style="padding:' + pad + ';"><span class="market-pill">' + (mkt || '-') + '</span></td>';
       h += '<td style="padding:' + pad + '; color:var(--text2);">' + lineDisplay + '</td>';
       h += '<td style="padding:' + pad + '; white-space:nowrap; font-size:11px; color:var(--text3);">' + eventTime + '</td>';

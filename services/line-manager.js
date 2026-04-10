@@ -521,6 +521,10 @@ async function seedAllLines() {
           oddsApiSelection,
           competitorId: sel.competitorId,
           startTime,
+          // Golf-specific metadata from DataGolf (tournament name, round).
+          // Undefined for non-golf sports — harmless to always copy.
+          tournamentName: oddsEvt?.eventName || null,
+          roundNum: oddsEvt?.roundNum || null,
         };
       }
     }
@@ -861,6 +865,9 @@ async function resolveUnknownLine(rfqLeg) {
             competitorId: sel.competitorId,
             startTime,
             onDemand: true,
+            // Golf-specific metadata from DataGolf cache
+            tournamentName: oddsEvt?.eventName || null,
+            roundNum: oddsEvt?.roundNum || null,
           };
           break;
         }
