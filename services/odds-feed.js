@@ -70,47 +70,47 @@ const ODDS_API_FALLBACK = {
   },
   'soccer_usa_mls': {
     oddsApiSport: 'soccer_usa_mls',
-    markets: 'h2h,spreads,totals,btts,double_chance',
+    markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_epl': {
     oddsApiSport: 'soccer_epl',
-    markets: 'h2h,spreads,totals,btts,double_chance',
+    markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_uefa_champs_league': {
     oddsApiSport: 'soccer_uefa_champs_league',
-    markets: 'h2h,spreads,totals,btts,double_chance',
+    markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_uefa_europa_league': {
     oddsApiSport: 'soccer_uefa_europa_league',
-    markets: 'h2h,spreads,totals,btts,double_chance',
+    markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_spain_la_liga': {
     oddsApiSport: 'soccer_spain_la_liga',
-    markets: 'h2h,spreads,totals,btts,double_chance',
+    markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_italy_serie_a': {
     oddsApiSport: 'soccer_italy_serie_a',
-    markets: 'h2h,spreads,totals,btts,double_chance',
+    markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_germany_bundesliga': {
     oddsApiSport: 'soccer_germany_bundesliga',
-    markets: 'h2h,spreads,totals,btts,double_chance',
+    markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_france_ligue_one': {
     oddsApiSport: 'soccer_france_ligue_one',
-    markets: 'h2h,spreads,totals,btts,double_chance',
+    markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_usa_nwsl': {
     oddsApiSport: 'soccer_usa_nwsl',
-    markets: 'h2h,spreads,totals,btts,double_chance',
+    markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   // Golf and combat sports — h2h only (no spreads/totals on these markets)
