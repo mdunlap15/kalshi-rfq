@@ -146,6 +146,17 @@ async function startup() {
     }
   }, 30 * 1000);
 
+  // Closing line capture for CLV analysis — runs every 60s, snapshots
+  // Pinnacle + consensus fair probs for events whose commenceTime has just
+  // crossed into the past. Idempotent.
+  setInterval(() => {
+    try {
+      oddsFeed.captureClosingLines();
+    } catch (err) {
+      log.debug('CLV', `Closing line capture failed: ${err.message}`);
+    }
+  }, 60 * 1000);
+
   lineRefreshTimer = setInterval(async () => {
     try {
       await lineManager.refreshLines();
@@ -1308,6 +1319,86 @@ function startStatusServer() {
         draftkings: summarize(o => o.meta?.draftkingsParlay, 'DraftKings'),
         fanduel: summarize(o => o.meta?.fanduelParlay, 'FanDuel'),
         kalshi: summarize(o => o.meta?.kalshiParlay, 'Kalshi'),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // CLV (Closing Line Value) report — aggregates clvDelta across settled
+  // parlays that had closing-line snapshots captured at event start. This
+  // is the definitive "are we sharper than the market" metric.
+  //
+  // clvDelta = ourOfferedImplied - closingParlayImplied (SP perspective)
+  //   positive → we priced LOOSER than close; bettor got positive CLV; bad
+  //   negative → we priced TIGHTER than close; we captured edge; good
+  //
+  // Over a large sample, negative avg clvDelta correlates strongly with
+  // positive long-run P&L. Positive avg clvDelta means sharps are picking
+  // us off.
+  app.get('/clv-report', (req, res) => {
+    try {
+      const all = orderTracker.getRecentOrders(20000);
+      const settled = all.filter(o =>
+        o.status && o.status.startsWith('settled_') && o.clvDelta != null
+      );
+      const withCoverage = all.filter(o => o.status && o.status.startsWith('settled_'));
+      const sumDelta = settled.reduce((s, o) => s + (o.clvDelta || 0), 0);
+      const avgDelta = settled.length > 0 ? sumDelta / settled.length : 0;
+
+      function summarize(orders) {
+        if (orders.length === 0) return { count: 0 };
+        const deltas = orders.map(o => o.clvDelta).sort((a, b) => a - b);
+        const median = deltas[Math.floor(deltas.length / 2)];
+        const winningForSp = orders.filter(o => o.clvDelta < 0).length;
+        const sumPnl = orders.reduce((s, o) => s + (o.pnl || 0), 0);
+        return {
+          count: orders.length,
+          avgClvDelta: Math.round(avgDelta * 100000) / 100000,
+          medianClvDelta: Math.round(median * 100000) / 100000,
+          spSharpPct: Math.round(winningForSp / orders.length * 1000) / 10, // % where we priced tighter than close
+          sumPnl: Math.round(sumPnl * 100) / 100,
+        };
+      }
+
+      // Break down by sport
+      const bySport = {};
+      for (const o of settled) {
+        const legs = o.meta?.legs || o.legs || [];
+        const sports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
+        const k = sports.length === 1 ? sports[0] : 'multi';
+        if (!bySport[k]) bySport[k] = [];
+        bySport[k].push(o);
+      }
+      const bySportSummary = {};
+      for (const [k, orders] of Object.entries(bySport)) {
+        const deltas = orders.map(o => o.clvDelta).sort((a, b) => a - b);
+        const avg = deltas.reduce((s, d) => s + d, 0) / deltas.length;
+        const median = deltas[Math.floor(deltas.length / 2)];
+        const sumPnl = orders.reduce((s, o) => s + (o.pnl || 0), 0);
+        bySportSummary[k] = {
+          count: orders.length,
+          avgClvDelta: Math.round(avg * 100000) / 100000,
+          medianClvDelta: Math.round(median * 100000) / 100000,
+          sumPnl: Math.round(sumPnl * 100) / 100,
+        };
+      }
+
+      // Current closing-line cache status
+      const closingStatus = oddsFeed.getClosingLinesStatus
+        ? oddsFeed.getClosingLinesStatus()
+        : null;
+
+      res.json({
+        ok: true,
+        note: 'clvDelta = offeredImplied - closingImplied (SP view). negative = SP priced tighter than close (good). positive = SP priced looser than close (bad, sharps picking us off).',
+        overall: {
+          ...summarize(settled),
+          coveragePct: withCoverage.length > 0 ? Math.round(settled.length / withCoverage.length * 1000) / 10 : 0,
+          totalSettled: withCoverage.length,
+        },
+        bySport: bySportSummary,
+        closingLinesCache: closingStatus,
       });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });

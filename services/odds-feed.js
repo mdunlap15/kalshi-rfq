@@ -20,6 +20,23 @@ const KALSHI_BUFFER = 0.02;
 // { [sport]: { fetchedAt, events: [{ eventId, homeTeam, awayTeam, startTime }] } }
 const sharpEventsIndex = {};
 
+// Closing line snapshots. Keyed by normalized event key (home|away). Captured
+// once per event when the event's commenceTime crosses into the past. Stores
+// the final Pinnacle + consensus per-market fair probs as a snapshot for CLV
+// analysis. Persisted only in memory — lost on restart.
+// {
+//   [eventKey]: {
+//     sport, homeTeam, awayTeam, commenceTime, capturedAt,
+//     markets: {
+//       h2h:     { home, away },  // implied probs
+//       spreads: { line, home, away },
+//       totals:  { line, over, under },
+//     },
+//     pinnacle: { ... same structure ... },
+//   }
+// }
+const closingLinesCache = {};
+
 // SharpAPI league/sport keys mapping
 const LEAGUE_MAP = {
   'basketball_nba': { param: 'league', value: 'nba' },
@@ -2266,6 +2283,126 @@ function __debugGetCache(sport) {
   return oddsCache[sport] || null;
 }
 
+// ---------------------------------------------------------------------------
+// CLOSING LINE CAPTURE — snapshots Pinnacle + consensus fair probs for every
+// event the moment its commenceTime crosses into the past. Used for CLV
+// analysis at settlement time. Idempotent — only captures a given event once.
+// ---------------------------------------------------------------------------
+
+const CLOSING_CAPTURE_WINDOW_MS = 20 * 60 * 1000; // capture within 20min of commence
+
+function captureClosingLines() {
+  const now = Date.now();
+  let captured = 0;
+  for (const sport of Object.keys(oddsCache)) {
+    const cache = oddsCache[sport];
+    if (!cache || !cache.events) continue;
+    for (const [key, entry] of Object.entries(cache.events)) {
+      const events = Array.isArray(entry) ? entry : [entry];
+      for (const event of events) {
+        if (!event || !event.homeTeam || !event.commenceTime) continue;
+        const startMs = new Date(event.commenceTime).getTime();
+        if (isNaN(startMs)) continue;
+        // Only capture events whose commenceTime is in the past but within
+        // the capture window. Events more than 20 min past commence are
+        // already "closed" enough — don't overwrite.
+        const age = now - startMs;
+        if (age < 0) continue; // not yet started
+        if (age > CLOSING_CAPTURE_WINDOW_MS) continue; // already past window
+        const cacheKey = sport + '|' + key + '|' + (event.eventId || '');
+        if (closingLinesCache[cacheKey]) continue; // already captured
+        // Snapshot the relevant markets
+        const m = event.markets || {};
+        const snap = {
+          sport,
+          homeTeam: event.homeTeam,
+          awayTeam: event.awayTeam,
+          commenceTime: event.commenceTime,
+          capturedAt: new Date().toISOString(),
+          markets: {},
+          pinnacle: {},
+        };
+        if (m.h2h) {
+          snap.markets.h2h = {
+            home: m.h2h.home?.fairProb || null,
+            away: m.h2h.away?.fairProb || null,
+            homeDisplayFair: m.h2h.home?.displayFairProb || null,
+            awayDisplayFair: m.h2h.away?.displayFairProb || null,
+          };
+          if (m.h2h.pinnacle) {
+            snap.pinnacle.h2h = {
+              home: m.h2h.pinnacle.home,
+              away: m.h2h.pinnacle.away,
+            };
+          }
+        }
+        if (m.spreads) {
+          snap.markets.spreads = {
+            line: m.spreads.line,
+            home: m.spreads.home?.fairProb || null,
+            away: m.spreads.away?.fairProb || null,
+          };
+          if (m.spreads.pinnacle) {
+            snap.pinnacle.spreads = {
+              line: m.spreads.line,
+              home: m.spreads.pinnacle.home,
+              away: m.spreads.pinnacle.away,
+            };
+          }
+        }
+        if (m.totals) {
+          snap.markets.totals = {
+            line: m.totals.line,
+            over: m.totals.over?.fairProb || null,
+            under: m.totals.under?.fairProb || null,
+          };
+          if (m.totals.pinnacle) {
+            snap.pinnacle.totals = {
+              line: m.totals.line,
+              over: m.totals.pinnacle.over,
+              under: m.totals.pinnacle.under,
+            };
+          }
+        }
+        closingLinesCache[cacheKey] = snap;
+        captured++;
+      }
+    }
+  }
+  if (captured > 0) log.info('CLV', `Captured ${captured} closing line snapshot(s) (total cached: ${Object.keys(closingLinesCache).length})`);
+  return { captured, total: Object.keys(closingLinesCache).length };
+}
+
+/**
+ * Look up a closing line snapshot by event key. Tries primary key first,
+ * then falls back to any matching sport + event key.
+ */
+function getClosingLineSnapshot(sport, homeTeam, awayTeam, pxEventId) {
+  const key = normalizeEventKey(homeTeam, awayTeam);
+  // Try exact match first
+  const exactKey = sport + '|' + key + '|' + (pxEventId || '');
+  if (closingLinesCache[exactKey]) return closingLinesCache[exactKey];
+  // Fallback: any snapshot matching sport + team key
+  const prefix = sport + '|' + key + '|';
+  for (const k of Object.keys(closingLinesCache)) {
+    if (k.startsWith(prefix)) return closingLinesCache[k];
+  }
+  return null;
+}
+
+function getClosingLinesStatus() {
+  return {
+    total: Object.keys(closingLinesCache).length,
+    sports: (() => {
+      const bySport = {};
+      for (const snap of Object.values(closingLinesCache)) {
+        bySport[snap.sport] = (bySport[snap.sport] || 0) + 1;
+      }
+      return bySport;
+    })(),
+  };
+}
+
 function getAllCachedEvents() {
   const all = [];
   for (const sport of Object.keys(oddsCache)) {
@@ -2461,6 +2598,9 @@ module.exports = {
   getCacheStatus,
   getAllCachedEvents,
   __debugGetCache,
+  captureClosingLines,
+  getClosingLineSnapshot,
+  getClosingLinesStatus,
   getSharpEvents,
   refreshAllSportsDelta,
   normalizeTeamName,

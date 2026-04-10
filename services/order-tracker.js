@@ -350,6 +350,59 @@ function recordSettlement(orderUuid, result, payout) {
       stats.runningPnL += order.pnl;
     }
 
+    // CLV capture: for each leg, look up the closing line snapshot captured
+    // when the event started. Compute the closing implied prob per leg and
+    // the parlay-level closing implied prob. Store on the order so the
+    // /clv-report endpoint can aggregate across settled parlays.
+    try {
+      const oddsFeed = require('./odds-feed');
+      const legs = order.legs || order.meta?.legs || [];
+      let closingParlayImplied = 1;
+      let allLegsHaveClose = true;
+      for (const leg of legs) {
+        const snap = oddsFeed.getClosingLineSnapshot(
+          leg.sport, leg.homeTeam, leg.awayTeam, leg.pxEventId
+        );
+        if (!snap) { allLegsHaveClose = false; continue; }
+        let closeImpl = null;
+        const mt = leg.market;
+        const sel = leg.selection;
+        if (mt === 'moneyline' && snap.markets?.h2h) {
+          closeImpl = sel === 'home' ? snap.markets.h2h.home : snap.markets.h2h.away;
+        } else if (mt === 'spread' && snap.markets?.spreads) {
+          // Only count CLV when the leg's line matches the snapshot's primary
+          if (leg.line != null && snap.markets.spreads.line != null
+              && Math.abs(Math.abs(leg.line) - Math.abs(snap.markets.spreads.line)) < 0.01) {
+            closeImpl = sel === 'home' ? snap.markets.spreads.home : snap.markets.spreads.away;
+          }
+        } else if (mt === 'total' && snap.markets?.totals) {
+          if (leg.line != null && snap.markets.totals.line != null
+              && Math.abs(leg.line - snap.markets.totals.line) < 0.01) {
+            closeImpl = sel === 'over' ? snap.markets.totals.over : snap.markets.totals.under;
+          }
+        }
+        if (closeImpl != null && closeImpl > 0 && closeImpl < 1) {
+          leg.closingImpliedProb = Math.round(closeImpl * 10000) / 10000;
+          closingParlayImplied *= closeImpl;
+        } else {
+          allLegsHaveClose = false;
+        }
+      }
+      if (allLegsHaveClose && legs.length > 0) {
+        order.closingImpliedProb = Math.round(closingParlayImplied * 100000) / 100000;
+        // CLV from SP perspective:
+        //   ourOfferedImplied - closingImplied
+        //   > 0: we priced looser than close (bettor got positive CLV; bad for SP)
+        //   < 0: we priced tighter than close (SP captured edge)
+        const ourOffered = order.meta?.offeredImpliedProb;
+        if (ourOffered != null) {
+          order.clvDelta = Math.round((ourOffered - closingParlayImplied) * 100000) / 100000;
+        }
+      }
+    } catch (err) {
+      log.debug('CLV', `CLV capture failed for ${order.parlayId}: ${err.message}`);
+    }
+
     // Release exposure for settled parlay
     removeExposure(order);
 
@@ -2179,6 +2232,8 @@ async function loadFromDb() {
       if (o.meta.lostAt && !o.lostAt) o.lostAt = o.meta.lostAt;
       if (o.meta.pxProfit != null && o.pxProfit == null) o.pxProfit = o.meta.pxProfit;
       if (o.meta.expectedValue != null && o.expectedValue == null) o.expectedValue = o.meta.expectedValue;
+      if (o.meta.closingImpliedProb != null && o.closingImpliedProb == null) o.closingImpliedProb = o.meta.closingImpliedProb;
+      if (o.meta.clvDelta != null && o.clvDelta == null) o.clvDelta = o.meta.clvDelta;
     }
 
     // Normalize leg data across both sources (o.legs and o.meta.legs).
