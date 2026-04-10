@@ -27,6 +27,69 @@ const tournamentIndex = {};
 let lastSeedStats = null;
 
 // ---------------------------------------------------------------------------
+// SPORT-AWARE LINE BOUNDS — reject sub-game/prop totals and spreads
+// ---------------------------------------------------------------------------
+const TOTAL_BOUNDS_BY_SPORT = {
+  'basketball_nba': [180, 300],
+  'basketball_ncaab': [100, 200],
+  'basketball_wnba': [130, 200],
+  'icehockey_nhl': [4, 9],
+  'baseball_mlb': [4, 15],
+  'soccer': [0.5, 7],
+  'soccer_usa_mls': [0.5, 7],
+  'soccer_epl': [0.5, 7],
+  'soccer_uefa_champs_league': [0.5, 7],
+  'soccer_uefa_europa_league': [0.5, 7],
+  'soccer_spain_la_liga': [0.5, 7],
+  'soccer_italy_serie_a': [0.5, 7],
+  'soccer_germany_bundesliga': [0.5, 7],
+  'soccer_france_ligue_one': [0.5, 7],
+  'soccer_usa_nwsl': [0.5, 7],
+  'tennis': [15, 40],
+};
+const MAX_SPREAD_BY_SPORT = {
+  'basketball_nba': 30,
+  'basketball_ncaab': 40,
+  'basketball_wnba': 30,
+  'icehockey_nhl': 3,
+  'baseball_mlb': 3,
+  'soccer': 5,
+  'soccer_usa_mls': 5,
+  'soccer_epl': 5,
+  'soccer_uefa_champs_league': 5,
+  'soccer_uefa_europa_league': 5,
+  'soccer_spain_la_liga': 5,
+  'soccer_italy_serie_a': 5,
+  'soccer_germany_bundesliga': 5,
+  'soccer_france_ligue_one': 5,
+  'soccer_usa_nwsl': 5,
+  'tennis': 10,
+};
+
+/**
+ * Returns true if `line` is within the plausible full-game range for the
+ * given sport+markettype. Returns true (accept) for markets/sports without
+ * defined bounds. `marketType` = 'total' or 'spread'. F5 markets should be
+ * excluded by the caller.
+ */
+function isValidFullGameLine(sport, marketType, line) {
+  if (line == null) return true;
+  const absLine = Math.abs(line);
+  if (marketType === 'total') {
+    const bounds = TOTAL_BOUNDS_BY_SPORT[sport];
+    if (bounds) return absLine >= bounds[0] && absLine <= bounds[1];
+    // Fallback: reject obviously sub-game totals
+    return absLine > 2.5;
+  }
+  if (marketType === 'spread') {
+    const max = MAX_SPREAD_BY_SPORT[sport];
+    if (max != null) return absLine <= max;
+    return true;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // TEAM NAME MATCHING
 // ---------------------------------------------------------------------------
 
@@ -332,87 +395,14 @@ async function seedAllLines() {
         const allowed = fullGameNames[m.type];
         if (allowed && !allowed.includes(m.name)) return false;
       }
-      // Exclude sub-game totals and prop totals by sport-aware line bounds.
-      // These are the valid ranges for FULL-GAME totals by sport:
-      //   NBA: 180-300 points
-      //   NHL: 4-9 goals
-      //   MLB: 4-15 runs
-      //   NCAAB: 100-200 points
-      //   Soccer: 0.5-7 goals
-      //   Tennis: 15-40 games
-      // Anything outside these bounds is a prop, sub-game, or team total.
-      // F5 totals bypass this check (MLB F5 is ~4-5).
-      if (m.type === 'total' && !isF5) {
+      // Exclude sub-game totals/spreads and prop markets via sport-aware bounds.
+      // F5 markets bypass (MLB F5 totals are ~4-5, spreads ~1.5).
+      if ((m.type === 'total' || m.type === 'spread') && !isF5) {
         const parsed = px.parseMarketSelections(m);
         const line = parsed[0]?.line;
-        if (line != null) {
-          const absLine = Math.abs(line);
-          const sport = sportKey;
-          const bounds = {
-            'basketball_nba': [180, 300],
-            'basketball_ncaab': [100, 200],
-            'basketball_wnba': [130, 200],
-            'icehockey_nhl': [4, 9],
-            'baseball_mlb': [4, 15],
-            'soccer': [0.5, 7],
-            'soccer_usa_mls': [0.5, 7],
-            'soccer_epl': [0.5, 7],
-            'soccer_uefa_champs_league': [0.5, 7],
-            'soccer_uefa_europa_league': [0.5, 7],
-            'soccer_spain_la_liga': [0.5, 7],
-            'soccer_italy_serie_a': [0.5, 7],
-            'soccer_germany_bundesliga': [0.5, 7],
-            'soccer_france_ligue_one': [0.5, 7],
-            'soccer_usa_nwsl': [0.5, 7],
-            'tennis': [15, 40],
-          }[sport];
-          if (bounds) {
-            if (absLine < bounds[0] || absLine > bounds[1]) {
-              log.debug('Lines', `Rejecting sub-game/prop total ${absLine} for ${sport} (bounds ${bounds[0]}-${bounds[1]}): ${m.name}`);
-              return false;
-            }
-          } else {
-            // Fallback: still reject obviously-sub-game totals ≤ 2.5
-            if (absLine <= 2.5) return false;
-          }
-        }
-      }
-      // Sport-aware spread bounds — reject prop spreads.
-      if (m.type === 'spread' && !isF5) {
-        const parsed = px.parseMarketSelections(m);
-        const line = parsed[0]?.line;
-        if (line != null) {
-          const absLine = Math.abs(line);
-          const sport = sportKey;
-          // Max plausible full-game spread magnitude by sport:
-          //   NBA: 30 (blowouts)
-          //   NCAAB: 40
-          //   NHL: 2.5 (puck line is ±1.5, alts ±2.5)
-          //   MLB: 2.5 (run line is ±1.5, alts ±2.5)
-          //   Soccer: 5 (Asian handicap can go deep but rarely beyond 5)
-          //   Tennis: 10 (games handicap)
-          const maxSpread = {
-            'basketball_nba': 30,
-            'basketball_ncaab': 40,
-            'basketball_wnba': 30,
-            'icehockey_nhl': 3,
-            'baseball_mlb': 3,
-            'soccer': 5,
-            'soccer_usa_mls': 5,
-            'soccer_epl': 5,
-            'soccer_uefa_champs_league': 5,
-            'soccer_uefa_europa_league': 5,
-            'soccer_spain_la_liga': 5,
-            'soccer_italy_serie_a': 5,
-            'soccer_germany_bundesliga': 5,
-            'soccer_france_ligue_one': 5,
-            'soccer_usa_nwsl': 5,
-            'tennis': 10,
-          }[sport];
-          if (maxSpread != null && absLine > maxSpread) {
-            log.debug('Lines', `Rejecting prop spread ${line} for ${sport} (max ${maxSpread}): ${m.name}`);
-            return false;
-          }
+        if (!isValidFullGameLine(sportKey, m.type, line)) {
+          log.debug('Lines', `Rejecting out-of-bounds ${m.type} ${line} for ${sportKey}: ${m.name}`);
+          return false;
         }
       }
       return true;
@@ -481,9 +471,14 @@ async function seedAllLines() {
         // For moneylines, verify fair value exists now
         // For spreads/totals, register all alternate lines (fair value available for primary line)
         matchedLines++;
-        // Get event start time from odds cache or PX event
+        // Get event start time — PX's event.scheduled is authoritative (PX owns
+        // the game clock for the games we're quoting on). SharpAPI's
+        // event_start_time is unreliable for games that haven't loaded yet —
+        // it defaults to midnight UTC which is 8pm ET the PREVIOUS day, causing
+        // false "event started" declines all day until SharpAPI loads real
+        // tip-off times. Fall back to odds cache only if PX has no scheduled.
         const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxScheduled);
-        const startTime = oddsEvt?.commenceTime || event.scheduled || null;
+        const startTime = event.scheduled || oddsEvt?.commenceTime || null;
 
         lineIndex[sel.lineId] = {
           sport: sportKey,
@@ -710,6 +705,18 @@ async function resolveUnknownLine(rfqLeg) {
       let foundInfo = null;
       for (const market of markets || []) {
         if (!SUPPORTED_TYPES.includes(market.type)) continue;
+        // Reject sub-game/prop totals and spreads by sport-aware bounds.
+        // F5 markets carry their own types and are exempt from these bounds.
+        const isF5Market = F5_MARKET_TYPES.includes(market.type);
+        if ((market.type === 'total' || market.type === 'spread') && !isF5Market) {
+          const parsedAll = px.parseMarketSelections(market);
+          const firstLine = parsedAll[0]?.line;
+          if (!isValidFullGameLine(sportKey, market.type, firstLine)) {
+            log.debug('Lines', `resolveUnknownLine: rejecting out-of-bounds ${market.type} ${firstLine} for ${sportKey}: ${market.name}`);
+            resolveUnknownLine._lastFailure = { lineId, reason: 'out_of_bounds_line', sport: sportKey, marketType: market.type, line: firstLine, marketName: market.name };
+            continue;
+          }
+        }
         const parsed = px.parseMarketSelections(market);
         for (const sel of parsed) {
           if (sel.lineId !== lineId) continue;
@@ -755,7 +762,8 @@ async function resolveUnknownLine(rfqLeg) {
 
           const pxTime = event.scheduled || null;
           const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxTime);
-          const startTime = oddsEvt?.commenceTime || event.scheduled || null;
+          // PX scheduled is authoritative; odds cache is unreliable (midnight UTC placeholder).
+          const startTime = event.scheduled || oddsEvt?.commenceTime || null;
 
           const onDemandDNB = market.type === 'moneyline' && /2.way|draw.no.bet/i.test(market.name);
           foundInfo = {
