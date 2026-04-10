@@ -945,9 +945,14 @@ function startStatusServer() {
         const s = o.settlement_status || 'none';
         byStatus[s] = (byStatus[s] || 0) + 1;
       }
-      // Only return settled ones in detail + summary
+      // Return settled by default; add ?include=all or ?include=tbd to also return pending
+      const include = req.query.include || 'settled';
       const settled = pxOrders.filter(o => o.settlement_status && !['tbd','requested','none'].includes(o.settlement_status));
-      res.json({ ok: true, total: pxOrders.length, byStatus, settled });
+      const tbd = pxOrders.filter(o => o.settlement_status === 'tbd' || o.status === 'tbd');
+      const body = { ok: true, total: pxOrders.length, byStatus };
+      if (include === 'all' || include === 'settled') body.settled = settled;
+      if (include === 'all' || include === 'tbd') body.tbd = tbd;
+      res.json(body);
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
