@@ -381,6 +381,35 @@ function parseMarketSelections(market) {
         }
       }
     }
+  } else if ((marketType === 'spread' || marketType === 'total' || marketType === 'team_total' || isF5Spread || isF5Total) && market.selections) {
+    // Fallback: spread/total market with selections directly (no market_lines
+    // wrapper). PX sometimes returns alt lines as SEPARATE market entries,
+    // each a flat spread/total market with its own selections array. Without
+    // this branch we'd miss thousands of alt spreads/totals per day and
+    // decline 'unknown legs' unnecessarily. market.line carries the value.
+    const topLine = market.line;
+    for (const selGroup of market.selections) {
+      for (const sel of selGroup) {
+        if (!sel.line_id) continue;
+        const legLine = sel.line != null ? sel.line : topLine;
+        let selection = 'unknown';
+        if (marketType === 'spread' || isF5Spread) {
+          selection = (legLine != null && legLine < 0) ? 'favorite' : 'underdog';
+        } else if (marketType === 'total' || marketType === 'team_total' || isF5Total) {
+          const nameLC = (sel.name || sel.display_name || '').toLowerCase();
+          selection = nameLC.includes('over') ? 'over' : nameLC.includes('under') ? 'under' : 'unknown';
+        }
+        results.push({
+          lineId: sel.line_id,
+          marketType,
+          selection,
+          teamName: cleanSelectionName(sel.display_name || sel.name || ''),
+          line: legLine,
+          competitorId: sel.competitor_id,
+          outcomeName: sel.name,
+        });
+      }
+    }
   } else if ((marketType === 'btts' || marketType === 'both_teams_to_score') && market.selections) {
     // BTTS: selections array, Yes/No outcomes
     for (const selGroup of market.selections) {

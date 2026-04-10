@@ -388,12 +388,21 @@ async function seedAllLines() {
       if (excludePatterns.test(m.name)) return false;
       // Allow F5 markets by name pattern
       const isF5 = f5NamePattern.test(m.name || '');
-      // Require exact name match for ALL types — excludes player props
-      // (e.g., "CJ McCollum To Record a Double Double" typed as moneyline)
-      // Skip the whitelist check for F5 markets
+      // Name filter: previously required EXACT match against a fixed whitelist
+      // which rejected alt-line markets like "Alternate Spread +3.5" — costing
+      // us thousands of unknown-leg declines per day. Relaxed to substring
+      // match: the market name must CONTAIN one of the canonical full-game
+      // names (e.g. "Alternate Spread" contains "Spread"). Player props still
+      // fail because their names don't contain "Spread", "Moneyline", etc.
+      // Additional safety comes from excludePatterns (above) and sport-aware
+      // line bounds (below).
       if (!isF5) {
         const allowed = fullGameNames[m.type];
-        if (allowed && !allowed.includes(m.name)) return false;
+        if (allowed) {
+          const nameL = (m.name || '').toLowerCase();
+          const matches = allowed.some(a => nameL.includes(a.toLowerCase()));
+          if (!matches) return false;
+        }
       }
       // Exclude sub-game totals/spreads and prop markets via sport-aware bounds.
       // F5 markets bypass (MLB F5 totals are ~4-5, spreads ~1.5).
