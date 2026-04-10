@@ -70,47 +70,47 @@ const ODDS_API_FALLBACK = {
   },
   'soccer_usa_mls': {
     oddsApiSport: 'soccer_usa_mls',
-    markets: 'h2h,spreads,totals',
+    markets: 'h2h,spreads,totals,btts,double_chance',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_epl': {
     oddsApiSport: 'soccer_epl',
-    markets: 'h2h,spreads,totals',
+    markets: 'h2h,spreads,totals,btts,double_chance',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_uefa_champs_league': {
     oddsApiSport: 'soccer_uefa_champs_league',
-    markets: 'h2h,spreads,totals',
+    markets: 'h2h,spreads,totals,btts,double_chance',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_uefa_europa_league': {
     oddsApiSport: 'soccer_uefa_europa_league',
-    markets: 'h2h,spreads,totals',
+    markets: 'h2h,spreads,totals,btts,double_chance',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_spain_la_liga': {
     oddsApiSport: 'soccer_spain_la_liga',
-    markets: 'h2h,spreads,totals',
+    markets: 'h2h,spreads,totals,btts,double_chance',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_italy_serie_a': {
     oddsApiSport: 'soccer_italy_serie_a',
-    markets: 'h2h,spreads,totals',
+    markets: 'h2h,spreads,totals,btts,double_chance',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_germany_bundesliga': {
     oddsApiSport: 'soccer_germany_bundesliga',
-    markets: 'h2h,spreads,totals',
+    markets: 'h2h,spreads,totals,btts,double_chance',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_france_ligue_one': {
     oddsApiSport: 'soccer_france_ligue_one',
-    markets: 'h2h,spreads,totals',
+    markets: 'h2h,spreads,totals,btts,double_chance',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   'soccer_usa_nwsl': {
     oddsApiSport: 'soccer_usa_nwsl',
-    markets: 'h2h,spreads,totals',
+    markets: 'h2h,spreads,totals,btts,double_chance',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
   // Golf and combat sports — h2h only (no spreads/totals on these markets)
@@ -797,6 +797,75 @@ async function fetchFromTheOddsApi(sport) {
       };
     }
 
+    // BTTS (Both Teams To Score) — simple 2-way Yes/No
+    const bttsPairs = [];
+    for (const book of allBooks) {
+      const bMarket = book.markets?.find(m => m.key === 'btts');
+      if (!bMarket) continue;
+      const yes = bMarket.outcomes?.find(o => o.name === 'Yes');
+      const no = bMarket.outcomes?.find(o => o.name === 'No');
+      if (yes && no) {
+        bttsPairs.push({
+          yes: { odds_probability: americanToImpliedProb(yes.price), odds_american: yes.price },
+          no: { odds_probability: americanToImpliedProb(no.price), odds_american: no.price },
+        });
+      }
+    }
+    if (bttsPairs.length > 0) {
+      const fairYes = [], fairNo = [];
+      for (const p of bttsPairs) {
+        const [fy, fn] = deVig2Way(p.yes.odds_probability, p.no.odds_probability);
+        fairYes.push(fy);
+        fairNo.push(fn);
+      }
+      const dvYes = avg(fairYes), dvNo = avg(fairNo);
+      markets.btts = {
+        yes: { rawOdds: bttsPairs[0].yes.odds_american, impliedProb: bttsPairs[0].yes.odds_probability, fairProb: dvYes, displayFairProb: dvYes },
+        no: { rawOdds: bttsPairs[0].no.odds_american, impliedProb: bttsPairs[0].no.odds_probability, fairProb: dvNo, displayFairProb: dvNo },
+        books: bttsPairs.length,
+      };
+    }
+
+    // Double Chance — 3-way (1X, X2, 12)
+    const dcPairs = [];
+    for (const book of allBooks) {
+      const dMarket = book.markets?.find(m => m.key === 'double_chance');
+      if (!dMarket) continue;
+      // Outcome names from The Odds API: "Home/Draw", "Away/Draw", "Home/Away"
+      // Some books use: "1X", "X2", "12"
+      const outcomes = dMarket.outcomes || [];
+      const find = (patterns) => outcomes.find(o => {
+        const name = (o.name || '').toLowerCase().replace(/\s+/g, '');
+        return patterns.some(p => name === p || name.includes(p));
+      });
+      const oneX = find(['1x', 'homeordraw', 'home/draw', 'homedraw', event.home_team?.toLowerCase() + '/draw']);
+      const xTwo = find(['x2', 'awayordraw', 'away/draw', 'awaydraw', 'draw/' + event.away_team?.toLowerCase()]);
+      const oneTwo = find(['12', 'homeoraway', 'home/away', 'homeaway', event.home_team?.toLowerCase() + '/' + event.away_team?.toLowerCase()]);
+      if (oneX && xTwo && oneTwo) {
+        dcPairs.push({
+          oneX: { odds_probability: americanToImpliedProb(oneX.price), odds_american: oneX.price },
+          xTwo: { odds_probability: americanToImpliedProb(xTwo.price), odds_american: xTwo.price },
+          oneTwo: { odds_probability: americanToImpliedProb(oneTwo.price), odds_american: oneTwo.price },
+        });
+      }
+    }
+    if (dcPairs.length > 0) {
+      const fair1X = [], fairX2 = [], fair12 = [];
+      for (const p of dcPairs) {
+        const [f1x, fx2, f12] = deVigDoubleChance(p.oneX.odds_probability, p.xTwo.odds_probability, p.oneTwo.odds_probability);
+        fair1X.push(f1x);
+        fairX2.push(fx2);
+        fair12.push(f12);
+      }
+      const dv1X = avg(fair1X), dvX2 = avg(fairX2), dv12 = avg(fair12);
+      markets.double_chance = {
+        '1X': { rawOdds: dcPairs[0].oneX.odds_american, impliedProb: dcPairs[0].oneX.odds_probability, fairProb: dv1X, displayFairProb: dv1X },
+        'X2': { rawOdds: dcPairs[0].xTwo.odds_american, impliedProb: dcPairs[0].xTwo.odds_probability, fairProb: dvX2, displayFairProb: dvX2 },
+        '12': { rawOdds: dcPairs[0].oneTwo.odds_american, impliedProb: dcPairs[0].oneTwo.odds_probability, fairProb: dv12, displayFairProb: dv12 },
+        books: dcPairs.length,
+      };
+    }
+
     if (Object.keys(markets).length > 0) {
       if (!parsed[key]) parsed[key] = [];
       parsed[key].push({
@@ -1142,6 +1211,19 @@ function deVig2Way(prob1, prob2) {
   return [prob1 / total, prob2 / total];
 }
 
+/**
+ * De-vig a Double Chance 3-way market.
+ * Double Chance outcomes are 1X (home or draw), X2 (draw or away), 12 (home or away).
+ * Each outcome covers 2 of the 3 possible results, so fair probabilities sum to 2.0.
+ * Vig-adjusted: divide each by (sum / 2).
+ */
+function deVigDoubleChance(p1X, pX2, p12) {
+  const total = p1X + pX2 + p12;
+  if (total === 0) return [0.5, 0.5, 0.5];
+  const scale = total / 2;
+  return [p1X / scale, pX2 / scale, p12 / scale];
+}
+
 function americanToImpliedProb(odds) {
   if (odds >= 100) return 100 / (odds + 100);
   if (odds <= -100) return Math.abs(odds) / (Math.abs(odds) + 100);
@@ -1346,6 +1428,12 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
     if (!teamData) return null;
     if (dir === 'over') return teamData.over?.fairProb || null;
     if (dir === 'under') return teamData.under?.fairProb || null;
+  } else if (marketType === 'btts') {
+    if (selection === 'yes') return market.yes?.fairProb || null;
+    if (selection === 'no') return market.no?.fairProb || null;
+  } else if (marketType === 'double_chance') {
+    // Selection: '1X' (home or draw), 'X2' (draw or away), '12' (home or away)
+    if (market[selection]) return market[selection].fairProb || null;
   }
 
   return null;

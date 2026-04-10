@@ -464,6 +464,9 @@ function shouldDecline(legs) {
     const gameLabel = entries[0].away && entries[0].home ? `${entries[0].away} @ ${entries[0].home}` : `event ${eid}`;
     const hasSpread = types.includes('spread');
     const hasMoneyline = types.includes('moneyline');
+    const hasDoubleChance = types.includes('double_chance');
+    const hasBtts = types.includes('btts') || types.includes('both_teams_to_score');
+    const hasTotal = types.includes('total');
     const uniqueTypes = new Set(types);
     // Block: two of the same type on same game
     if (uniqueTypes.size < types.length) {
@@ -476,7 +479,22 @@ function shouldDecline(legs) {
       log.info('Pricing', `Declined: spread + moneyline on ${gameLabel}`);
       return { declined: true, reason: 'correlated legs', detail: `spread + moneyline on same game: ${gameLabel}` };
     }
-    // Allow: spread/moneyline + total (acceptable correlation)
+    // Block: double_chance + moneyline (double chance is derived from moneyline, perfectly correlated)
+    if (hasDoubleChance && hasMoneyline) {
+      log.info('Pricing', `Declined: double_chance + moneyline on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `double_chance + moneyline on same game: ${gameLabel}` };
+    }
+    // Block: double_chance + spread (both tied to match result)
+    if (hasDoubleChance && hasSpread) {
+      log.info('Pricing', `Declined: double_chance + spread on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `double_chance + spread on same game: ${gameLabel}` };
+    }
+    // Block: BTTS + total (both depend on goal count, strongly correlated)
+    if (hasBtts && hasTotal) {
+      log.info('Pricing', `Declined: BTTS + total on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `BTTS + total on same game: ${gameLabel}` };
+    }
+    // Allow: spread/moneyline + total, BTTS + moneyline/spread, double_chance + BTTS
   }
 
   // Check team-level exposure limits

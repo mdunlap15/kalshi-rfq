@@ -363,6 +363,45 @@ function parseMarketSelections(market) {
         }
       }
     }
+  } else if ((marketType === 'btts' || marketType === 'both_teams_to_score') && market.selections) {
+    // BTTS: selections array, Yes/No outcomes
+    for (const selGroup of market.selections) {
+      for (const sel of selGroup) {
+        if (!sel.line_id) continue;
+        const nameLC = (sel.name || sel.display_name || '').toLowerCase();
+        const selection = nameLC.includes('yes') ? 'yes' : nameLC.includes('no') ? 'no' : 'unknown';
+        results.push({
+          lineId: sel.line_id,
+          marketType: 'btts',
+          selection,
+          teamName: sel.display_name || sel.name || '',
+          line: null,
+          competitorId: sel.competitor_id,
+          outcomeName: sel.name,
+        });
+      }
+    }
+  } else if (marketType === 'double_chance' && market.selections) {
+    // Double Chance: 3-way selections — 1X, X2, 12
+    for (const selGroup of market.selections) {
+      for (const sel of selGroup) {
+        if (!sel.line_id) continue;
+        const nameLC = (sel.name || sel.display_name || '').toLowerCase().replace(/\s+/g, '');
+        let selection = 'unknown';
+        if (nameLC.includes('1x') || nameLC.includes('homeordraw') || nameLC.includes('home/draw')) selection = '1X';
+        else if (nameLC.includes('x2') || nameLC.includes('awayordraw') || nameLC.includes('draw/away') || nameLC.includes('draworaway')) selection = 'X2';
+        else if (nameLC.includes('12') || nameLC.includes('homeoraway') || nameLC.includes('home/away')) selection = '12';
+        results.push({
+          lineId: sel.line_id,
+          marketType: 'double_chance',
+          selection,
+          teamName: sel.display_name || sel.name || '',
+          line: null,
+          competitorId: sel.competitor_id,
+          outcomeName: sel.name,
+        });
+      }
+    }
   }
 
   return results;

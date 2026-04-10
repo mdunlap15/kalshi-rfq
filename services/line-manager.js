@@ -92,6 +92,9 @@ const MARKET_TYPE_MAP = {
   'spread': 'spreads',
   'total': 'totals',
   'team_total': 'team_totals',
+  'btts': 'btts',
+  'both_teams_to_score': 'btts',
+  'double_chance': 'double_chance',
 };
 
 // ---------------------------------------------------------------------------
@@ -288,7 +291,7 @@ async function seedAllLines() {
     };
 
     const mainMarkets = markets.filter(m => {
-      if (!['moneyline', 'spread', 'total', 'team_total'].includes(m.type)) return false;
+      if (!['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'].includes(m.type)) return false;
       // Exclude anything matching half/quarter/prop patterns
       if (excludePatterns.test(m.name)) return false;
       // Require exact name match for ALL types — excludes player props
@@ -338,6 +341,12 @@ async function seedAllLines() {
           const isHome = matchTeamName(sel.teamName, [matchedHome]);
           const teamSide = isHome ? 'home' : 'away';
           oddsApiSelection = teamSide + '_' + (sel.selection || 'over'); // "home_over", "away_under", etc.
+        } else if (sel.marketType === 'btts' || sel.marketType === 'both_teams_to_score') {
+          // Yes/No selection from parseMarketSelections
+          oddsApiSelection = (sel.selection || '').toLowerCase();
+        } else if (sel.marketType === 'double_chance') {
+          // '1X', 'X2', or '12' selection
+          oddsApiSelection = sel.selection;
         }
 
         if (!oddsApiSelection || !oddsApiMarket) continue;
@@ -541,7 +550,7 @@ async function resolveUnknownLine(rfqLeg) {
       // Find the line in the markets
       let foundInfo = null;
       for (const market of markets || []) {
-        if (!['moneyline', 'spread', 'total', 'team_total'].includes(market.type)) continue;
+        if (!['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'].includes(market.type)) continue;
         const parsed = px.parseMarketSelections(market);
         for (const sel of parsed) {
           if (sel.lineId !== lineId) continue;
@@ -564,6 +573,10 @@ async function resolveUnknownLine(rfqLeg) {
             const isHome = matchTeamName(sel.teamName, [matchedHome]);
             const teamSide = isHome ? 'home' : 'away';
             oddsApiSelection = teamSide + '_' + (sel.selection || 'over');
+          } else if (sel.marketType === 'btts' || sel.marketType === 'both_teams_to_score') {
+            oddsApiSelection = (sel.selection || '').toLowerCase();
+          } else if (sel.marketType === 'double_chance') {
+            oddsApiSelection = sel.selection;
           }
           if (!oddsApiSelection || !oddsApiMarket) continue;
 
