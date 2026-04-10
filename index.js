@@ -424,6 +424,56 @@ function startStatusServer() {
     }
   });
 
+  // Diagnostic: mirror the exact fetch that fetchOddsForSport uses
+  app.get('/debug/raw-mlb-fetch', async (req, res) => {
+    try {
+      const fetch = require('node-fetch');
+      const cfg = config.config || config;
+      // Exactly mirror fetchOddsForSport for baseball_mlb
+      const url = `${cfg.oddsApi.baseUrl}/odds?league=mlb&market=moneyline,run_line,total_runs,team_total&live=false&limit=500`;
+      const resp = await fetch(url, { headers: { 'X-API-Key': cfg.oddsApi.apiKey } });
+      const body = await resp.json();
+      const rows = body.data || [];
+      // Group by event
+      const byEvent = {};
+      for (const row of rows) {
+        const key = row.event_id;
+        if (!byEvent[key]) {
+          byEvent[key] = {
+            event_id: key,
+            home: row.home_team,
+            away: row.away_team,
+            start: row.event_start_time,
+            rows: 0,
+            books: new Set(),
+            markets: new Set(),
+            selections: new Set(),
+          };
+        }
+        byEvent[key].rows++;
+        byEvent[key].books.add(row.sportsbook);
+        byEvent[key].markets.add(row.market_type);
+        byEvent[key].selections.add(row.selection_type);
+      }
+      const events = Object.values(byEvent).map(e => ({
+        event_id: e.event_id,
+        home: e.home, away: e.away, start: e.start,
+        rows: e.rows,
+        books: [...e.books],
+        markets: [...e.markets],
+        selections: [...e.selections],
+      })).sort((a, b) => (a.start || '').localeCompare(b.start || ''));
+      res.json({
+        totalRows: rows.length,
+        totalEvents: events.length,
+        url,
+        events,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Diagnostic: show raw sportsbook names from SharpAPI
   app.get('/debug/sportsbooks', async (req, res) => {
     try {
