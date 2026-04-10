@@ -1616,6 +1616,15 @@ function getDisplayFairProb(sport, homeTeam, awayTeam, marketType, selection, li
   const market = event.markets[marketType];
   if (!market) return null;
 
+  // For spreads/totals, require the requested line to match the cached primary.
+  // If it doesn't match (e.g. requested -0.5 but cache has -0.25), return null
+  // so the dashboard shows a dash rather than the wrong line's fair value.
+  // Pricing uses the alt-lines cache for these cases; display has no equivalent
+  // path, so it's better to show nothing than to show a misleading number.
+  if ((marketType === 'spreads' || marketType === 'totals') && market.line != null && line != null) {
+    if (Math.abs(Math.abs(market.line) - Math.abs(line)) > 0.01) return null;
+  }
+
   if (marketType === 'h2h') {
     if (selection === 'home') return market.home?.displayFairProb || market.home?.fairProb || null;
     if (selection === 'away') return market.away?.displayFairProb || market.away?.fairProb || null;

@@ -428,11 +428,15 @@ async function seedAllLines() {
             oddsApiSelection = 'away';
           }
         } else if (sel.marketType === 'spread') {
-          // Match by team name
-          if (matchTeamName(sel.teamName, [matchedHome]) ||
-              (sel.teamName.toLowerCase().includes(normalizeTeamName(matchedHome).split(' ').pop()))) {
+          // Match by team name against home and away explicitly. Do NOT fall
+          // back to guessing — previously a loose substring check on the last
+          // word of home team name would misclassify e.g. "AS Monaco FC" as
+          // home of "Paris FC" (because both contain 'FC'), causing us to
+          // price the WRONG team's spread. If neither side matches, leave
+          // selection null so the leg is rejected as unresolvable.
+          if (matchTeamName(sel.teamName, [matchedHome])) {
             oddsApiSelection = 'home';
-          } else {
+          } else if (matchTeamName(sel.teamName, [matchedAway])) {
             oddsApiSelection = 'away';
           }
         } else if (sel.marketType === 'total') {
@@ -454,10 +458,10 @@ async function seedAllLines() {
             if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
             else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
           } else if (sel.marketType.includes('run_line')) {
-            if (matchTeamName(sel.teamName, [matchedHome]) ||
-                (sel.teamName.toLowerCase().includes(normalizeTeamName(matchedHome).split(' ').pop()))) {
+            // Explicit home/away match only — no substring fallback.
+            if (matchTeamName(sel.teamName, [matchedHome])) {
               oddsApiSelection = 'home';
-            } else {
+            } else if (matchTeamName(sel.teamName, [matchedAway])) {
               oddsApiSelection = 'away';
             }
           } else if (sel.marketType.includes('total')) {
@@ -727,10 +731,10 @@ async function resolveUnknownLine(rfqLeg) {
             if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
             else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
           } else if (sel.marketType === 'spread') {
-            if (matchTeamName(sel.teamName, [matchedHome]) ||
-                sel.teamName.toLowerCase().includes(normalizeTeamName(matchedHome).split(' ').pop())) {
+            // Explicit home/away match only — no substring fallback (see seed path).
+            if (matchTeamName(sel.teamName, [matchedHome])) {
               oddsApiSelection = 'home';
-            } else {
+            } else if (matchTeamName(sel.teamName, [matchedAway])) {
               oddsApiSelection = 'away';
             }
           } else if (sel.marketType === 'total') {
@@ -748,10 +752,10 @@ async function resolveUnknownLine(rfqLeg) {
               if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
               else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
             } else if (sel.marketType.includes('run_line')) {
-              if (matchTeamName(sel.teamName, [matchedHome]) ||
-                  sel.teamName.toLowerCase().includes(normalizeTeamName(matchedHome).split(' ').pop())) {
+              // Explicit home/away match only — no substring fallback.
+              if (matchTeamName(sel.teamName, [matchedHome])) {
                 oddsApiSelection = 'home';
-              } else {
+              } else if (matchTeamName(sel.teamName, [matchedAway])) {
                 oddsApiSelection = 'away';
               }
             } else if (sel.marketType.includes('total')) {
