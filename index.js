@@ -1160,6 +1160,148 @@ function startStatusServer() {
     }
   });
 
+  // Fill-rate breakdown: how often does a submitted quote become a
+  // confirmed order, sliced by sport / leg count / odds tier. Low fill
+  // rate = we're too tight (outbid) or not competitive. High fill rate
+  // on negative-EV slices = we're getting picked off by sharps.
+  app.get('/fill-rate-report', (req, res) => {
+    try {
+      const all = orderTracker.getRecentOrders(20000);
+      // Consider all orders that reached the submit stage — these have
+      // status 'quoted' (submitted, not confirmed), 'confirmed', or
+      // 'settled_*'. Decline/priceFailed ones aren't in the orders map.
+      const candidates = all.filter(o =>
+        o.status === 'quoted' || o.status === 'confirmed' || (o.status && o.status.startsWith('settled_'))
+      );
+
+      function bucketLegs(n) {
+        if (n <= 2) return '2';
+        if (n === 3) return '3';
+        if (n === 4) return '4';
+        if (n === 5) return '5';
+        return '6+';
+      }
+      function bucketOdds(am) {
+        if (am == null) return '?';
+        const a = Math.abs(am);
+        if (a < 150) return '+100 to +150';
+        if (a < 250) return '+150 to +250';
+        if (a < 400) return '+250 to +400';
+        if (a < 700) return '+400 to +700';
+        return '+700+';
+      }
+      function primarySport(o) {
+        const legs = o.meta?.legs || o.legs || [];
+        const sports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
+        if (sports.length === 1) return sports[0];
+        if (sports.length > 1) return 'multi';
+        return 'unknown';
+      }
+
+      const byKey = (grouper, label) => {
+        const buckets = {};
+        for (const o of candidates) {
+          const k = grouper(o);
+          if (!buckets[k]) buckets[k] = { submitted: 0, confirmed: 0, filled: 0 };
+          buckets[k].submitted++;
+          if (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_'))) {
+            buckets[k].confirmed++;
+          }
+        }
+        for (const k of Object.keys(buckets)) {
+          const b = buckets[k];
+          b.fillPct = b.submitted > 0 ? Math.round(b.confirmed / b.submitted * 1000) / 10 : 0;
+        }
+        return Object.fromEntries(
+          Object.entries(buckets).sort((a, b) => b[1].submitted - a[1].submitted)
+        );
+      };
+
+      res.json({
+        ok: true,
+        totalCandidates: candidates.length,
+        overall: {
+          submitted: candidates.length,
+          confirmed: candidates.filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_'))).length,
+        },
+        bySport: byKey(primarySport, 'sport'),
+        byLegCount: byKey(o => bucketLegs((o.meta?.legs || o.legs || []).length), 'legs'),
+        byOddsTier: byKey(o => bucketOdds(o.offeredOdds), 'odds'),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Competitor comparison report: for every parlay where we have both our
+  // offered American odds and the corresponding Pinnacle (or DK / FD)
+  // compound parlay odds, measure the delta. Positive delta (ours > Pin)
+  // means we offered a LARGER bettor payout than Pinnacle would — we're
+  // leaking edge to bettors. Negative delta means we're tighter than
+  // Pinnacle — we're uncompetitive and losing fills.
+  //
+  // This is a proxy for CLV (Closing Line Value). A proper CLV uses the
+  // line AT EVENT START; this uses the line AT QUOTE TIME. Directionally
+  // it's still the single best indicator of whether we're sharper than
+  // the market.
+  app.get('/competitor-report', (req, res) => {
+    try {
+      const all = orderTracker.getRecentOrders(20000);
+      // Only consider confirmed or settled parlays (places where we actually
+      // locked in an offer) where the parlay had enough book data to
+      // compound a Pinnacle/DK/FD parlay value.
+      const withData = all.filter(o =>
+        (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
+        && o.offeredOdds != null
+        && o.meta
+      );
+
+      function summarize(getCompetitorOdds, name) {
+        const pts = withData
+          .map(o => ({
+            ours: Number(o.offeredOdds),
+            comp: getCompetitorOdds(o),
+            parlayId: o.parlayId,
+          }))
+          .filter(p => p.comp != null && !isNaN(p.comp));
+        if (pts.length === 0) return { name, count: 0 };
+        const deltas = pts.map(p => p.ours - p.comp);
+        const avgDelta = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+        const positive = deltas.filter(d => d > 0).length;
+        const negative = deltas.filter(d => d < 0).length;
+        const zero = deltas.filter(d => d === 0).length;
+        // Convert avg American delta to implied prob delta for context
+        function amToImpl(am) { return am >= 0 ? 100 / (am + 100) : Math.abs(am) / (Math.abs(am) + 100); }
+        const avgOurs = pts.reduce((s, p) => s + p.ours, 0) / pts.length;
+        const avgComp = pts.reduce((s, p) => s + p.comp, 0) / pts.length;
+        return {
+          name,
+          count: pts.length,
+          avgDeltaAmerican: Math.round(avgDelta),
+          avgOursAmerican: Math.round(avgOurs),
+          avgCompAmerican: Math.round(avgComp),
+          oursHigher: positive,   // we offered better payout than competitor
+          oursLower: negative,    // we offered worse payout (tighter) than competitor
+          equal: zero,
+          pctHigher: Math.round(positive / pts.length * 1000) / 10,
+          // Median delta is more robust to outliers
+          medianDelta: deltas.sort((a, b) => a - b)[Math.floor(deltas.length / 2)],
+        };
+      }
+
+      res.json({
+        ok: true,
+        note: 'delta = (our American) - (competitor American). Positive = we gave bettor more than competitor (leaked edge). Negative = we were tighter (may be outbid).',
+        pinnacle: summarize(o => o.meta?.pinnacleParlay, 'Pinnacle'),
+        draftkings: summarize(o => o.meta?.draftkingsParlay, 'DraftKings'),
+        fanduel: summarize(o => o.meta?.fanduelParlay, 'FanDuel'),
+        kalshi: summarize(o => o.meta?.kalshiParlay, 'Kalshi'),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Expected Value report: sum Σ EV across confirmed & settled parlays and
   // compare to actual P&L. Over a large enough sample, Σ EV should converge
   // toward realized P&L. Persistent gaps indicate miscalibrated fair prob.
