@@ -539,6 +539,76 @@ function startStatusServer() {
   // Bulk lookup of line_ids against the current line-manager index.
   // POST body: { lineIds: ['abc...', 'def...'] }
   // Response: { [lineId]: { marketType, marketName, line, sport, teamName } | null }
+  // Audit a single parlay by fetching PX's authoritative market data
+  // for each leg's sport_event_id, finding the line_id, and returning
+  // the actual market.type and market.name from PX. Used to verify that
+  // our locally-stored marketType matches PX reality.
+  app.get('/debug/audit-parlay/:id', async (req, res) => {
+    try {
+      const parlayId = req.params.id;
+      const local = orderTracker.findByParlayId(parlayId);
+      if (!local) return res.status(404).json({ error: 'local parlay not found' });
+      // Resolve each leg via PX fetchMarkets
+      const auditedLegs = [];
+      for (const leg of (local.legs || local.meta?.legs || [])) {
+        const lineId = leg.lineId || leg.line_id;
+        const eventId = leg.pxEventId;
+        if (!lineId || !eventId) {
+          auditedLegs.push({ team: leg.team, storedMarket: leg.market, note: 'missing line_id or pxEventId' });
+          continue;
+        }
+        let markets;
+        try {
+          markets = await px.fetchMarkets(eventId);
+        } catch (err) {
+          auditedLegs.push({ team: leg.team, storedMarket: leg.market, note: 'fetchMarkets failed: ' + err.message });
+          continue;
+        }
+        // Find which market contains this line_id by walking all markets
+        let foundMarket = null;
+        let foundSel = null;
+        for (const m of markets || []) {
+          // Check flat selections
+          for (const sg of (m.selections || [])) {
+            for (const s of (sg || [])) {
+              if (s.line_id === lineId) { foundMarket = m; foundSel = s; break; }
+            }
+            if (foundMarket) break;
+          }
+          if (foundMarket) break;
+          // Check nested market_lines
+          for (const ml of (m.market_lines || [])) {
+            for (const sg of (ml.selections || [])) {
+              for (const s of (sg || [])) {
+                if (s.line_id === lineId) { foundMarket = m; foundSel = s; break; }
+              }
+              if (foundMarket) break;
+            }
+            if (foundMarket) break;
+          }
+          if (foundMarket) break;
+        }
+        auditedLegs.push({
+          team: leg.team,
+          storedMarket: leg.market,
+          storedLine: leg.line,
+          pxMarketType: foundMarket?.type || null,
+          pxMarketName: foundMarket?.name || null,
+          pxSelName: foundSel?.name || null,
+          pxSelLine: foundSel?.line ?? null,
+          matches: foundMarket ? (
+            (leg.market === 'moneyline' && foundMarket.type === 'moneyline' && !/1st.*5|first.*5|f5\b/i.test(foundMarket.name || '')) ||
+            (leg.market === 'spread' && foundMarket.type === 'spread' && !/1st.*5|first.*5|f5\b/i.test(foundMarket.name || '')) ||
+            (leg.market === 'total' && foundMarket.type === 'total' && !/1st.*5|first.*5|f5\b/i.test(foundMarket.name || ''))
+          ) : 'line not found in PX markets',
+        });
+      }
+      res.json({ ok: true, parlayId, legs: auditedLegs });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   app.post('/debug/lookup-lines', (req, res) => {
     try {
       const ids = Array.isArray(req.body?.lineIds) ? req.body.lineIds : [];
