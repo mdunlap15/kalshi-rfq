@@ -424,6 +424,34 @@ function startStatusServer() {
     }
   });
 
+  // Diagnostic: force a full fetchOddsForSport for a specific sport
+  app.get('/debug/force-fetch', async (req, res) => {
+    try {
+      const sport = req.query.sport;
+      if (!sport) return res.status(400).json({ ok: false, error: 'sport query param required' });
+      const result = await oddsFeed.fetchOddsForSport(sport);
+      const eventCount = result ? Object.keys(result).length : 0;
+      // Sample events
+      const sample = [];
+      if (result) {
+        for (const [key, entry] of Object.entries(result).slice(0, 5)) {
+          const events = Array.isArray(entry) ? entry : [entry];
+          for (const e of events) {
+            sample.push({
+              home: e.homeTeam,
+              away: e.awayTeam,
+              markets: Object.keys(e.markets || {}),
+              commenceTime: e.commenceTime,
+            });
+          }
+        }
+      }
+      res.json({ ok: true, sport, eventCount, sample });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack?.split('\n').slice(0, 5) });
+    }
+  });
+
   // Diagnostic: fetch any SharpAPI sport+market combo using the production query
   app.get('/debug/raw-fetch', async (req, res) => {
     try {
