@@ -258,7 +258,7 @@ async function priceParlay(legs) {
 
   // Decline heavy favorite moneyline legs — PX sign-flip bug causes overpayment.
   // NBA: no moneyline favorites beyond -180 (fairProb > 0.6429)
-  // Tennis: no moneyline favorites beyond -200 (fairProb > 0.6667)
+  // Tennis: no moneyline favorites beyond -300 (fairProb > 0.75)
   for (const leg of pricedLegs) {
     if (leg.lineInfo.marketType !== 'moneyline') continue;
     const impliedOdds = leg.fairProb >= 0.5 ? Math.round(-100 * leg.fairProb / (1 - leg.fairProb)) : Math.round(100 * (1 - leg.fairProb) / leg.fairProb);
@@ -271,11 +271,11 @@ async function priceParlay(legs) {
       };
       return null;
     }
-    if (leg.lineInfo.sport === 'tennis' && leg.fairProb > 0.6667) {
+    if (leg.lineInfo.sport === 'tennis' && leg.fairProb > 0.75) {
       log.debug('Pricing', `Declined: Tennis moneyline ${leg.lineInfo.teamName} is heavy favorite (${impliedOdds})`);
       priceParlay._lastFailure = {
         reason: 'tennis heavy favorite',
-        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -200 limit`,
+        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -300 limit`,
         blockerLeg: { team: leg.lineInfo.teamName, sport: 'tennis', market: 'moneyline' },
       };
       return null;
