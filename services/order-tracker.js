@@ -1592,16 +1592,24 @@ function reconcileSettlements() {
     }
     if (legStatuses.length === 0) continue; // no leg data to reconcile against
 
-    // Derive correct SP result from legs (bettor-perspective leg data)
+    // Derive correct SP result from legs (bettor-perspective leg data).
+    // Rules:
+    //   - Any leg LOST → bettor's parlay busted → SP WON
+    //   - All legs PUSHED → stake refunded → PUSH
+    //   - Some pushed, rest all won (no losses) → bettor wins at reduced odds → SP LOST
+    //   - All legs WON → bettor hit parlay → SP LOST
+    // Note: a pushed leg in a parlay does NOT turn the whole parlay into a push;
+    // it just removes that leg and the rest of the parlay continues.
     const anyLegLost = legStatuses.some(s => s === 'lost');
-    const anyPush = legStatuses.some(s => s === 'push' || s === 'void');
+    const allPushed = legStatuses.length > 0 && legStatuses.every(s => s === 'push' || s === 'void');
     let derivedResult;
     if (anyLegLost) {
       derivedResult = 'won'; // bettor's parlay missed ≥1 leg → SP won
-    } else if (anyPush && legStatuses.every(s => s === 'won' || s === 'push' || s === 'void')) {
-      derivedResult = 'push';
-    } else if (legStatuses.every(s => s === 'won')) {
-      derivedResult = 'lost'; // all legs hit → bettor won → SP lost
+    } else if (allPushed) {
+      derivedResult = 'push'; // every leg pushed → refund
+    } else if (legStatuses.every(s => s === 'won' || s === 'push' || s === 'void')) {
+      // Mix of wins and pushes (no losses) — bettor wins the reduced parlay → SP lost
+      derivedResult = 'lost';
     } else {
       continue; // mixed/incomplete — can't determine yet
     }
@@ -2084,15 +2092,19 @@ async function loadFromDb() {
 
       let spResult;
       if (legStatuses.length > 0) {
-        // We have leg data — derive SP result definitively
+        // Derive SP result (bettor-perspective leg data):
+        //   any leg LOST → SP WON
+        //   all legs PUSHED → PUSH
+        //   mix of won+push (no losses) → bettor wins reduced parlay → SP LOST
+        //   all legs WON → SP LOST
         const anyLegLost = legStatuses.some(s => s === 'lost');
-        const anyPush = legStatuses.some(s => s === 'push' || s === 'void');
+        const allPushed = legStatuses.every(s => s === 'push' || s === 'void');
         if (anyLegLost) {
-          spResult = 'won'; // bettor's parlay missed ≥1 leg → SP won
-        } else if (anyPush && legStatuses.every(s => s === 'won' || s === 'push' || s === 'void')) {
+          spResult = 'won';
+        } else if (allPushed) {
           spResult = 'push';
         } else {
-          spResult = 'lost'; // all legs hit → bettor won → SP lost
+          spResult = 'lost';
         }
       } else {
         // No leg data — check if games have actually started.
