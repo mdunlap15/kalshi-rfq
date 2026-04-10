@@ -313,34 +313,62 @@ async function fetchOddsForSport(sport, opts) {
   }
 
   // Supplement with Pinnacle odds from The Odds API
-  // Pinnacle events have different IDs, so match by team names and merge
+  // Pinnacle events have different IDs, so match by team names and merge.
+  // Rows that don't match an existing SharpAPI event become NEW events —
+  // this guarantees Pinnacle coverage even when SharpAPI's 50-row cap drops
+  // events from the response.
   if (PINNACLE_SPORT_MAP[sport]) {
     const pinnacleRows = await fetchPinnacleRows(sport);
     if (pinnacleRows.length > 0) {
-      // Build team-name + date lookup to match Pinnacle events to SharpAPI events.
-      // Include date to prevent merging today's Pinnacle odds into tomorrow's event
-      // when the same teams play on consecutive days (PX reuses event IDs).
       const teamDateToEventId = {};
       for (const [eid, ev] of Object.entries(eventMap)) {
         const key = normalizeEventKey(ev.homeTeam, ev.awayTeam);
         const date = ev.commenceTime ? new Date(ev.commenceTime).toISOString().substring(0, 10) : '';
         teamDateToEventId[key + '|' + date] = eid;
-        // Also store without date as fallback for events without commence time
         if (!teamDateToEventId[key + '|']) teamDateToEventId[key + '|'] = eid;
       }
 
-      let merged = 0;
+      // Group Pinnacle rows by event (key + date) so we can create new events
+      // for unmatched groups.
+      const pinGroups = {};
       for (const row of pinnacleRows) {
-        const key = normalizeEventKey(cleanTeamName(row.home_team), cleanTeamName(row.away_team));
+        const home = cleanTeamName(row.home_team);
+        const away = cleanTeamName(row.away_team);
+        const key = normalizeEventKey(home, away);
         const rowDate = row.event_start_time ? new Date(row.event_start_time).toISOString().substring(0, 10) : '';
-        // Try date-specific match first, then fallback to any match
-        const matchedId = teamDateToEventId[key + '|' + rowDate] || teamDateToEventId[key + '|'];
+        const groupKey = key + '|' + rowDate;
+        if (!pinGroups[groupKey]) {
+          pinGroups[groupKey] = {
+            home, away, key, rowDate,
+            commenceTime: row.event_start_time,
+            rows: [],
+          };
+        }
+        pinGroups[groupKey].rows.push(row);
+      }
+
+      let merged = 0, created = 0;
+      for (const [groupKey, group] of Object.entries(pinGroups)) {
+        const matchedId = teamDateToEventId[group.key + '|' + group.rowDate] || teamDateToEventId[group.key + '|'];
         if (matchedId && eventMap[matchedId]) {
-          eventMap[matchedId].odds.push(row);
-          merged++;
+          // Merge into existing SharpAPI event
+          for (const row of group.rows) eventMap[matchedId].odds.push(row);
+          merged += group.rows.length;
+        } else {
+          // No matching SharpAPI event — create a NEW event from Pinnacle data.
+          // Use a synthetic event_id prefixed with 'pin_' to avoid collisions.
+          const synEventId = 'pin_' + group.key + '_' + group.rowDate;
+          eventMap[synEventId] = {
+            homeTeam: group.home,
+            awayTeam: group.away,
+            commenceTime: group.commenceTime,
+            eventId: synEventId,
+            odds: group.rows,
+          };
+          created++;
         }
       }
-      log.info('OddsFeed', `Pinnacle: merged ${merged} of ${pinnacleRows.length} rows into ${mapping.value} events`);
+      log.info('OddsFeed', `Pinnacle: merged ${merged} rows, created ${created} new events for ${mapping.value}`);
     }
   }
 
@@ -551,71 +579,78 @@ async function fetchPinnacleRows(sport) {
   const oddsApiSport = PINNACLE_SPORT_MAP[sport];
   if (!theOddsApiKey || !oddsApiSport) return [];
 
+  // Fetch Pinnacle + DraftKings + FanDuel from The Odds API — these supplement
+  // SharpAPI's (often incomplete) coverage so we have guaranteed book data for
+  // all games regardless of SharpAPI's 50-row cap.
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
     + `?apiKey=${theOddsApiKey}`
     + `&regions=us,eu`
     + `&markets=h2h,spreads,totals`
-    + `&bookmakers=pinnacle,fanduel`
+    + `&bookmakers=pinnacle,draftkings,fanduel`
     + `&oddsFormat=american`;
 
   try {
     const resp = await fetch(url);
     if (!resp.ok) {
-      log.warn('OddsFeed', `Pinnacle fetch failed (${resp.status}) for ${sport}`);
+      log.warn('OddsFeed', `Odds API supplement fetch failed (${resp.status}) for ${sport}`);
       return [];
     }
 
     const remaining = resp.headers.get('x-requests-remaining');
     const used = resp.headers.get('x-requests-used');
     if (remaining != null) {
-      log.info('OddsFeed', `The Odds API usage (Pinnacle): ${used} used, ${remaining} remaining`);
+      log.info('OddsFeed', `The Odds API usage (supplement): ${used} used, ${remaining} remaining`);
     }
 
     const events = await resp.json();
     const rows = [];
 
     for (const event of events) {
-      const pinnacle = (event.bookmakers || []).find(b => b.key === 'pinnacle');
-      if (!pinnacle) continue;
+      // Process ALL bookmakers, not just Pinnacle
+      for (const book of (event.bookmakers || [])) {
+        const bookKey = book.key; // 'pinnacle', 'draftkings', 'fanduel'
+        for (const market of (book.markets || [])) {
+          const marketType = oddsApiToSharpMarket(market.key, sport);
+          if (!marketType) continue;
 
-      for (const market of (pinnacle.markets || [])) {
-        const marketType = oddsApiToSharpMarket(market.key, sport);
-        if (!marketType) continue;
+          for (const outcome of (market.outcomes || [])) {
+            const isHome = outcome.name === event.home_team;
+            const isAway = outcome.name === event.away_team;
+            const isOver = outcome.name === 'Over';
+            const isUnder = outcome.name === 'Under';
 
-        for (const outcome of (market.outcomes || [])) {
-          const isHome = outcome.name === event.home_team;
-          const isAway = outcome.name === event.away_team;
-          const isOver = outcome.name === 'Over';
-          const isUnder = outcome.name === 'Under';
+            let selectionType;
+            if (market.key === 'totals') {
+              selectionType = isOver ? 'over' : isUnder ? 'under' : null;
+            } else {
+              selectionType = isHome ? 'home' : isAway ? 'away' : null;
+            }
+            if (!selectionType) continue;
 
-          let selectionType;
-          if (market.key === 'totals') {
-            selectionType = isOver ? 'over' : isUnder ? 'under' : null;
-          } else {
-            selectionType = isHome ? 'home' : isAway ? 'away' : null;
+            rows.push({
+              event_id: event.id,
+              home_team: event.home_team,
+              away_team: event.away_team,
+              event_start_time: event.commence_time,
+              sportsbook: bookKey,
+              market_type: marketType,
+              selection_type: selectionType,
+              odds_american: outcome.price,
+              odds_probability: americanToImpliedProb(outcome.price),
+              line: outcome.point != null ? outcome.point : null,
+            });
           }
-          if (!selectionType) continue;
-
-          rows.push({
-            event_id: event.id,
-            home_team: event.home_team,
-            away_team: event.away_team,
-            event_start_time: event.commence_time,
-            sportsbook: 'pinnacle',
-            market_type: marketType,
-            selection_type: selectionType,
-            odds_american: outcome.price,
-            odds_probability: americanToImpliedProb(outcome.price),
-            line: outcome.point != null ? outcome.point : null,
-          });
         }
       }
     }
 
-    log.info('OddsFeed', `Pinnacle: ${rows.length} odds rows for ${sport} (${events.length} events)`);
+    // Count rows per book for logging
+    const byBook = {};
+    for (const r of rows) byBook[r.sportsbook] = (byBook[r.sportsbook] || 0) + 1;
+    log.info('OddsFeed', `Odds API supplement: ${rows.length} rows for ${sport} (${events.length} events) — ${JSON.stringify(byBook)}`);
     return rows;
   } catch (err) {
-    log.warn('OddsFeed', `Pinnacle fetch error for ${sport}: ${err.message}`);
+    log.warn('OddsFeed', `Odds API supplement fetch error for ${sport}: ${err.message}`);
     return [];
   }
 }
