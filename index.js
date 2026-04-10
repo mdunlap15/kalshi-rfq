@@ -859,6 +859,182 @@ function startStatusServer() {
     }
   });
 
+  // Reconcile a single order between PX and local state.
+  // :id can be a parlay_id OR an order_uuid — we scan recent PX orders for either.
+  app.get('/reconcile-order/:id', async (req, res) => {
+    try {
+      const id = req.params.id;
+      const limit = Number(req.query.limit) || 1000;
+      // Pull recent PX orders and scan for a match on either parlay_id or order_uuid
+      const pxOrders = await px.fetchOrders(limit);
+      const pxMatch = pxOrders.find(o =>
+        o.order_uuid === id || o.p_id === id || o.parlay_id === id
+      );
+      // Find local order (try both ID types)
+      const localByParlay = orderTracker.findByParlayId(id);
+      const localByUuid = orderTracker.findByOrderUuid(id);
+      const local = localByParlay || localByUuid || null;
+
+      // Build a compact diff summary if we found both
+      const diff = {};
+      if (pxMatch && local) {
+        const pxStatus = pxMatch.settlement_status || null;
+        const localStatus = local.status && local.status.startsWith('settled_')
+          ? local.status.substring('settled_'.length)
+          : local.status;
+        if (pxStatus !== localStatus) diff.settlementStatus = { px: pxStatus, local: localStatus };
+
+        const pxStake = pxMatch.stake != null ? Number(pxMatch.stake) : (pxMatch.confirmed_stake != null ? Number(pxMatch.confirmed_stake) : null);
+        if (pxStake != null && local.confirmedStake != null && Math.abs(pxStake - local.confirmedStake) > 0.01) {
+          diff.stake = { px: pxStake, local: local.confirmedStake };
+        }
+
+        const pxOdds = pxMatch.confirmed_odds != null ? Number(pxMatch.confirmed_odds) : (pxMatch.odds != null ? Number(pxMatch.odds) : null);
+        if (pxOdds != null && local.confirmedOdds != null && pxOdds !== local.confirmedOdds) {
+          diff.confirmedOdds = { px: pxOdds, local: local.confirmedOdds };
+        }
+
+        const pxProfit = pxMatch.profit != null ? Number(pxMatch.profit) : null;
+        if (pxProfit != null && local.pnl != null && Math.abs(pxProfit - local.pnl) > 0.01) {
+          diff.pnl = { px: pxProfit, local: local.pnl };
+        }
+
+        const pxLegCount = (pxMatch.legs || []).length;
+        const localLegs = local.legs || local.meta?.legs || [];
+        if (pxLegCount !== localLegs.length) {
+          diff.legCount = { px: pxLegCount, local: localLegs.length };
+        }
+
+        // Per-leg settlement comparison (by line_id)
+        const legDiffs = [];
+        for (const pxLeg of pxMatch.legs || []) {
+          const localLeg = localLegs.find(l => l.lineId === pxLeg.line_id || l.line_id === pxLeg.line_id);
+          const localLegStatus = localLeg && (localLeg.settlementStatus || localLeg.settlement_status || localLeg.inferredResult);
+          if (pxLeg.settlement_status && localLegStatus && pxLeg.settlement_status !== localLegStatus) {
+            legDiffs.push({
+              line_id: pxLeg.line_id,
+              team: localLeg?.teamName || localLeg?.team || '?',
+              px: pxLeg.settlement_status,
+              local: localLegStatus,
+            });
+          } else if (pxLeg.settlement_status && !localLeg) {
+            legDiffs.push({ line_id: pxLeg.line_id, team: '?', px: pxLeg.settlement_status, local: 'MISSING' });
+          }
+        }
+        if (legDiffs.length > 0) diff.legs = legDiffs;
+      }
+
+      res.json({
+        ok: true,
+        id,
+        found: { px: !!pxMatch, local: !!local },
+        match: pxMatch && local ? (Object.keys(diff).length === 0 ? 'identical' : 'differs') : 'incomplete',
+        diff,
+        px: pxMatch || null,
+        local: local || null,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
+  // Reconcile all settled orders between PX and local. Returns only mismatches.
+  app.get('/reconcile-settlements', async (req, res) => {
+    try {
+      const limit = Number(req.query.limit) || 1000;
+      const pxOrders = await px.fetchOrders(limit);
+
+      const mismatches = [];
+      const missingLocal = []; // PX has settled, we don't
+      const missingPx = [];    // we have settled, PX doesn't see it
+      const matched = [];
+
+      // Build a PX lookup by parlay_id for fast pairing
+      const pxByParlayId = {};
+      const pxByUuid = {};
+      for (const o of pxOrders) {
+        const pid = o.p_id || o.parlay_id;
+        if (pid) pxByParlayId[pid] = o;
+        if (o.order_uuid) pxByUuid[o.order_uuid] = o;
+      }
+
+      // Check every settled PX order against local
+      for (const pxOrder of pxOrders) {
+        const pxStatus = pxOrder.settlement_status;
+        if (!pxStatus || ['tbd','requested','none',''].includes(pxStatus)) continue;
+        const pid = pxOrder.p_id || pxOrder.parlay_id;
+        const local = (pid && orderTracker.findByParlayId(pid))
+          || (pxOrder.order_uuid && orderTracker.findByOrderUuid(pxOrder.order_uuid))
+          || null;
+
+        if (!local) {
+          missingLocal.push({
+            parlayId: pid,
+            orderUuid: pxOrder.order_uuid,
+            pxStatus,
+            pxStake: pxOrder.stake != null ? Number(pxOrder.stake) : null,
+            pxProfit: pxOrder.profit != null ? Number(pxOrder.profit) : null,
+          });
+          continue;
+        }
+
+        const localStatus = local.status && local.status.startsWith('settled_')
+          ? local.status.substring('settled_'.length)
+          : local.status;
+        const pxProfit = pxOrder.profit != null ? Number(pxOrder.profit) : null;
+        const pxStake = pxOrder.stake != null ? Number(pxOrder.stake) : null;
+
+        const statusMismatch = pxStatus !== localStatus;
+        const pnlMismatch = pxProfit != null && local.pnl != null && Math.abs(pxProfit - local.pnl) > 0.01;
+        const stakeMismatch = pxStake != null && local.confirmedStake != null && Math.abs(pxStake - local.confirmedStake) > 0.01;
+
+        if (statusMismatch || pnlMismatch || stakeMismatch) {
+          mismatches.push({
+            parlayId: pid,
+            orderUuid: pxOrder.order_uuid,
+            status: statusMismatch ? { px: pxStatus, local: localStatus } : undefined,
+            pnl: pnlMismatch ? { px: pxProfit, local: local.pnl } : undefined,
+            stake: stakeMismatch ? { px: pxStake, local: local.confirmedStake } : undefined,
+          });
+        } else {
+          matched.push({ parlayId: pid, status: pxStatus, pnl: pxProfit });
+        }
+      }
+
+      // Find local settled orders that PX doesn't know about
+      const allLocal = orderTracker.getRecentOrders(10000);
+      for (const local of allLocal) {
+        if (!local.status || !local.status.startsWith('settled_')) continue;
+        const pxMatch = (local.parlayId && pxByParlayId[local.parlayId])
+          || (local.orderUuid && pxByUuid[local.orderUuid]);
+        if (!pxMatch) {
+          missingPx.push({
+            parlayId: local.parlayId,
+            orderUuid: local.orderUuid,
+            localStatus: local.status.substring('settled_'.length),
+            localPnl: local.pnl,
+          });
+        }
+      }
+
+      res.json({
+        ok: true,
+        summary: {
+          pxSettledTotal: pxOrders.filter(o => o.settlement_status && !['tbd','requested','none',''].includes(o.settlement_status)).length,
+          matched: matched.length,
+          mismatches: mismatches.length,
+          missingLocal: missingLocal.length,
+          missingPx: missingPx.length,
+        },
+        mismatches,
+        missingLocal,
+        missingPx,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Pause/resume RFQ handling
   app.post('/pause', (req, res) => {
     websocket.pause();
