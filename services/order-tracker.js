@@ -234,11 +234,18 @@ function recordLegSettlement(orderUuid, legPayload) {
   const status = legPayload.settlement_status || legPayload.status;
   if (!lineId || !status) return;
 
-  const legs = order.legs || order.meta?.legs || [];
-  for (const leg of legs) {
-    if (leg.lineId === lineId || leg.line_id === lineId) {
-      leg.settlementStatus = status;
-      break;
+  // Update ALL matching legs in BOTH sources (o.legs and o.meta.legs) —
+  // previously we broke after finding the first match in order.legs, leaving
+  // stale settlementStatus on meta.legs. Also overwrite any stale
+  // inferredResult (from our scraper) with PX's authoritative status so the
+  // dashboard never shows contradictory leg icons vs parlay-level result.
+  const sources = [order.legs, order.meta?.legs].filter(Boolean);
+  for (const src of sources) {
+    for (const leg of src) {
+      if (leg.lineId === lineId || leg.line_id === lineId) {
+        leg.settlementStatus = status;
+        leg.inferredResult = status; // sync so any stale UI component sees PX truth
+      }
     }
   }
 
@@ -2078,6 +2085,19 @@ async function loadFromDb() {
       if (o.meta.winningStake != null && o.winningStake == null) o.winningStake = o.meta.winningStake;
       if (o.meta.lostAt && !o.lostAt) o.lostAt = o.meta.lostAt;
       if (o.meta.pxProfit != null && o.pxProfit == null) o.pxProfit = o.meta.pxProfit;
+    }
+
+    // Normalize stale inferredResult to match PX's authoritative settlementStatus
+    // on every leg (both o.legs and o.meta.legs). Old records from before the
+    // priority fix have scraper inferredResult values that contradict PX.
+    for (const src of [o.legs, o.meta?.legs]) {
+      if (!Array.isArray(src)) continue;
+      for (const leg of src) {
+        const px = leg.settlementStatus || leg.settlement_status;
+        if (px && leg.inferredResult !== px) {
+          leg.inferredResult = px;
+        }
+      }
     }
     orders[o.parlayId] = o;
     if (o.orderUuid) ordersByUuid[o.orderUuid] = o.parlayId;
