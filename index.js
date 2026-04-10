@@ -1148,6 +1148,18 @@ function startStatusServer() {
     }
   });
 
+  // Manually trigger golf metadata backfill. Walks stored orders and
+  // populates tournamentName/roundNum on golf legs by looking up the
+  // line_id in the current line-manager index. Idempotent.
+  app.post('/backfill-golf-metadata', (req, res) => {
+    try {
+      const result = orderTracker.backfillGolfMetadata();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Manually trigger a reconcileSettlements pass. Returns number corrected.
   // Use after deploy to clean up historical mismatches without waiting for
   // the 2-min polling loop.

@@ -1915,6 +1915,7 @@ module.exports = {
   enrichReconstructedOrders,
   enrichReconstructedFromPx,
   loadFromDb,
+  backfillGolfMetadata,
 };
 
 /**
@@ -2112,6 +2113,54 @@ function getAlerts() {
  * Load historical data from Supabase on startup.
  * Restores orders and matched parlays into in-memory stores.
  */
+/**
+ * Backfill golf metadata (tournamentName, roundNum) onto existing stored
+ * golf legs by looking up each leg's line_id in the current line-manager
+ * index. Only legs from lines still registered in the current lineIndex
+ * can be backfilled (that's always the currently-active tournament).
+ *
+ * Walks both o.legs and o.meta.legs. Saves touched orders to DB.
+ *
+ * Returns: { ordersTouched, updated, skipped, goldLegsTotal }
+ */
+function backfillGolfMetadata() {
+  const lineManager = require('./line-manager');
+  let ordersTouched = 0;
+  let updated = 0;
+  let skipped = 0;
+  let goldLegsTotal = 0;
+  for (const o of Object.values(orders)) {
+    let orderDirty = false;
+    for (const src of [o.legs, o.meta?.legs]) {
+      if (!Array.isArray(src)) continue;
+      for (const leg of src) {
+        if (leg.sport !== 'golf_matchups') continue;
+        goldLegsTotal++;
+        // Skip if already populated
+        if (leg.tournamentName != null && leg.roundNum != null) continue;
+        const lid = leg.lineId || leg.line_id;
+        if (!lid) { skipped++; continue; }
+        const info = lineManager.lookupLine(lid);
+        if (!info) { skipped++; continue; }
+        if (info.tournamentName != null && leg.tournamentName == null) {
+          leg.tournamentName = info.tournamentName;
+          orderDirty = true;
+        }
+        if (info.roundNum != null && leg.roundNum == null) {
+          leg.roundNum = info.roundNum;
+          orderDirty = true;
+        }
+        if (orderDirty) updated++;
+      }
+    }
+    if (orderDirty) {
+      ordersTouched++;
+      db.saveOrder(o).catch(() => {});
+    }
+  }
+  return { ordersTouched, updated, skipped, goldLegsTotal };
+}
+
 async function loadFromDb() {
   if (!db.isEnabled()) {
     log.info('DB', 'Supabase not configured — running in memory-only mode');
@@ -2278,6 +2327,22 @@ async function loadFromDb() {
     }
   }
   log.info('DB', `Loaded ${dbOrders.length} orders (P&L: $${stats.runningPnL.toFixed(2)})`);
+
+  // One-time golf metadata backfill on startup. For existing stored golf legs
+  // missing tournamentName / roundNum, look up the lineId against the current
+  // lineIndex (which was seeded before loadFromDb runs in the service bootstrap
+  // sequence) and copy those fields over if the line is still registered.
+  // Legs from past tournaments where the lineId is no longer indexed will be
+  // skipped — the client's display fallback still shows the opponent from
+  // homeTeam/awayTeam regardless.
+  try {
+    const result = backfillGolfMetadata();
+    if (result.updated > 0) {
+      log.info('DB', `Golf backfill: ${result.updated} legs enriched with tournamentName/roundNum across ${result.ordersTouched} orders (${result.skipped} legs not in current lineIndex)`);
+    }
+  } catch (err) {
+    log.warn('DB', `Golf backfill failed: ${err.message}`);
+  }
 
   // Load matched parlays (paginated in loadMatchedParlays)
   const dbMatched = await db.loadMatchedParlays(10000);
