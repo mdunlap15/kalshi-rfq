@@ -497,6 +497,45 @@ function startStatusServer() {
     }
   });
 
+  // Dump the raw cached odds for a specific event. Shows every row we've
+  // accumulated from all sources (SharpAPI + Odds API supplement + deltas).
+  app.get('/debug/event-raw', (req, res) => {
+    try {
+      const sport = req.query.sport || 'baseball_mlb';
+      const team = (req.query.team || '').toLowerCase();
+      if (!team) return res.status(400).json({ error: 'team required' });
+      const cache = oddsFeed.getRawCache?.();
+      // Access internal cache via the module — use require to get fresh reference
+      const of = require('./services/odds-feed');
+      const sportCache = of.__debugGetCache ? of.__debugGetCache(sport) : null;
+      if (!sportCache) return res.status(500).json({ error: 'cache accessor missing' });
+      const events = Object.values(sportCache.events || {}).flat();
+      const ev = events.find(e => (e.homeTeam || '').toLowerCase().includes(team) || (e.awayTeam || '').toLowerCase().includes(team));
+      if (!ev) return res.status(404).json({ error: 'not found' });
+      // Summarize _rawOdds: count per book + market_type, plus all rows
+      const byBookMarket = {};
+      const mlRows = [];
+      for (const r of (ev._rawOdds || [])) {
+        const k = r.sportsbook + '|' + r.market_type;
+        byBookMarket[k] = (byBookMarket[k] || 0) + 1;
+        if (r.market_type === 'moneyline') {
+          mlRows.push({ sb: r.sportsbook, sel: r.selection_type, odds: r.odds_american, line: r.line, updated: r.odds_changed_at || r.last_seen_at });
+        }
+      }
+      res.json({
+        homeTeam: ev.homeTeam,
+        awayTeam: ev.awayTeam,
+        commenceTime: ev.commenceTime,
+        eventId: ev.eventId,
+        byBookMarket,
+        markets: ev.markets,
+        moneylineRows: mlRows.sort((a, b) => a.sb.localeCompare(b.sb)),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message, stack: err.stack });
+    }
+  });
+
   // Query The Odds API directly (not SharpAPI) — used to debug what
   // specific books actually return. sport defaults to baseball_mlb.
   app.get('/debug/odds-api-raw', async (req, res) => {

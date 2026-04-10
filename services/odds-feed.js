@@ -2213,6 +2213,10 @@ function getCacheStatus() {
   return status;
 }
 
+function __debugGetCache(sport) {
+  return oddsCache[sport] || null;
+}
+
 function getAllCachedEvents() {
   const all = [];
   for (const sport of Object.keys(oddsCache)) {
@@ -2407,6 +2411,7 @@ module.exports = {
   isStale,
   getCacheStatus,
   getAllCachedEvents,
+  __debugGetCache,
   getSharpEvents,
   refreshAllSportsDelta,
   normalizeTeamName,
