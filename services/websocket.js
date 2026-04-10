@@ -329,60 +329,94 @@ async function handleRFQ(data) {
           const origLine = l.origin_market_line != null ? l.origin_market_line : null;
 
           // --- Granular categorization ---
+          // Priority order: authoritative signals from resolveUnknownLine
+          // first, then line-value heuristic as a fallback. Previously the
+          // heuristic was primary, which mis-tagged thousands of player
+          // props as 'team_total' (NBA 15-60 line range).
           let category = 'unknown';
           let detail;
 
-          if (!hasLine) {
-            // No line number = player prop or 2-way exotic
-            category = 'player_prop';
-            detail = 'no line (prop or 2-way)';
-          } else if (hasLine && origLine != null && lineNum !== origLine) {
-            // Has an origin_market_line different from line = PX identifies this as an alt
-            category = 'alt_line';
-            detail = `alt line ${lineNum} (primary: ${origLine})`;
-          } else if (hasLine) {
-            // Has a line but no origin_market_line or they match
-            // Infer category from the line value + sport context
-            const absLine = Math.abs(lineNum);
-            if (eventSport.includes('basketball') && absLine > 100) {
-              category = 'alt_total'; // game total like 224.5
-              detail = `line ${lineNum}`;
-            } else if (eventSport.includes('basketball') && absLine >= 15 && absLine <= 60) {
-              category = 'team_total'; // team total like 25.5, 30.5
-              detail = `line ${lineNum}`;
-            } else if (eventSport.includes('basketball') && absLine <= 14) {
-              category = 'alt_spread'; // alt spread like +3.5, -5.5
-              detail = `line ${lineNum}`;
-            } else if (eventSport.includes('baseball') && absLine >= 5 && absLine <= 15) {
-              category = 'alt_total';
-              detail = `line ${lineNum}`;
-            } else if (eventSport.includes('baseball') && absLine < 5) {
-              category = 'alt_spread';
-              detail = `line ${lineNum}`;
-            } else if (eventSport.includes('hockey') && absLine >= 4 && absLine <= 10) {
-              category = 'alt_total';
-              detail = `line ${lineNum}`;
-            } else if (eventSport.includes('hockey') && absLine < 4) {
-              category = 'alt_spread';
-              detail = `line ${lineNum}`;
-            } else if (eventSport.includes('soccer') && absLine <= 5) {
-              category = absLine <= 2 ? 'alt_spread' : 'alt_total';
-              detail = `line ${lineNum}`;
-            } else {
-              category = 'other_line';
-              detail = `line ${lineNum}`;
-            }
-          }
-
-          // Check resolve failure reason for additional context
+          // Check resolveUnknownLine failure FIRST — most reliable signal
           const resolveFailure = lineManagerEarly.resolveUnknownLine._lastFailure;
           let resolveReason = null;
           let resolveDetail = null;
           if (resolveFailure && resolveFailure.lineId === lineId) {
-            resolveReason = resolveFailure.reason; // 'no_event_id', 'unknown_event', 'no_odds_match', 'line_not_in_markets'
+            resolveReason = resolveFailure.reason;
             resolveDetail = resolveFailure.pxHome && resolveFailure.pxAway
               ? `PX: ${resolveFailure.pxHome} vs ${resolveFailure.pxAway} [${resolveFailure.sportsAvail || ''}]`
               : (resolveFailure.marketTypesFound ? `markets found: ${resolveFailure.marketTypesFound.join(',')}` : null);
+
+            // Authoritative categorization from PX-level data
+            if (resolveReason === 'unsupported_market_type') {
+              // PX explicitly told us this is a sup_moneyline / prop / etc.
+              category = 'player_prop';
+              detail = `unsupported PX market type${resolveFailure.marketName ? ': ' + resolveFailure.marketName : ''}`;
+            } else if (resolveReason === 'unknown_event') {
+              category = 'unknown_event';
+              detail = `event ${resolveFailure.eventId} not in lineManager`;
+            } else if (resolveReason === 'no_event_id') {
+              category = 'no_event_id';
+              detail = 'leg missing sport_event_id';
+            } else if (resolveReason === 'no_odds_match') {
+              category = 'event_match_gap';
+              detail = `PX event not matched to odds feed${resolveDetail ? ': ' + resolveDetail : ''}`;
+            } else if (resolveReason === 'out_of_bounds_line') {
+              category = 'sub_game';
+              detail = `rejected by sport-aware bounds (line ${resolveFailure.line})`;
+            }
+            // line_not_in_markets falls through to the heuristic below
+          }
+
+          if (category === 'unknown') {
+            if (!hasLine) {
+              // No line number = moneyline-style leg for a prop / 2-way exotic
+              category = 'player_prop';
+              detail = 'no line (prop or 2-way)';
+            } else if (hasLine && origLine != null && lineNum !== origLine) {
+              category = 'alt_line';
+              detail = `alt line ${lineNum} (primary: ${origLine})`;
+            } else if (hasLine) {
+              // Fall back to line-value heuristic (less reliable — player props
+              // often have NBA lines 15-60 that overlap with team totals).
+              // When PX gave us line_not_in_markets (walked all markets, nothing),
+              // the leg is definitely not a primary full-game market — it's
+              // more likely a prop than an alt line, so tag as player_prop.
+              const absLine = Math.abs(lineNum);
+              const isNbaPropRange = eventSport.includes('basketball') && absLine >= 5 && absLine <= 60;
+              if (resolveReason === 'line_not_in_markets' && isNbaPropRange) {
+                category = 'player_prop';
+                detail = `line ${lineNum} (walked ${resolveFailure?.marketTypesFound?.length || '?'} markets, no match)`;
+              } else if (eventSport.includes('basketball') && absLine > 100) {
+                category = 'alt_total'; // game total like 224.5
+                detail = `line ${lineNum}`;
+              } else if (eventSport.includes('basketball') && absLine >= 15 && absLine <= 60) {
+                // Narrow bucket — most fall into player_prop above, remainder
+                // are genuine team totals
+                category = 'team_total';
+                detail = `line ${lineNum}`;
+              } else if (eventSport.includes('basketball') && absLine <= 14) {
+                category = 'alt_spread';
+                detail = `line ${lineNum}`;
+              } else if (eventSport.includes('baseball') && absLine >= 5 && absLine <= 15) {
+                category = 'alt_total';
+                detail = `line ${lineNum}`;
+              } else if (eventSport.includes('baseball') && absLine < 5) {
+                category = 'alt_spread';
+                detail = `line ${lineNum}`;
+              } else if (eventSport.includes('hockey') && absLine >= 4 && absLine <= 10) {
+                category = 'alt_total';
+                detail = `line ${lineNum}`;
+              } else if (eventSport.includes('hockey') && absLine < 4) {
+                category = 'alt_spread';
+                detail = `line ${lineNum}`;
+              } else if (eventSport.includes('soccer') && absLine <= 5) {
+                category = absLine <= 2 ? 'alt_spread' : 'alt_total';
+                detail = `line ${lineNum}`;
+              } else {
+                category = 'other_line';
+                detail = `line ${lineNum}`;
+              }
+            }
           }
 
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
