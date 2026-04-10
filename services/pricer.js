@@ -243,6 +243,28 @@ async function priceParlay(legs) {
     offeredImpliedProb *= applyOddsVig(leg.fairProb);
   }
 
+  // Correlation adjustment for same-game multi-leg parlays. Legs on the same
+  // game are positively correlated (e.g. favorite winning & game going over),
+  // so the true joint probability is higher than the product of per-leg fair
+  // probs. Applied as a multiplicative boost on the parlay's fair prob, then
+  // re-vigged as a single combined bet. We take max(per-leg vig result,
+  // correlation-adjusted-with-vig) so we never price BELOW the uncorrelated
+  // baseline — correlation only pushes prices tighter, never looser.
+  const correlationBoost = computeCorrelationBoost(pricedLegs);
+  if (correlationBoost > 1.0) {
+    const adjustedFair = Math.min(fairParlayProb * correlationBoost, 0.99);
+    const adjustedFairDecimal = 1 / adjustedFair;
+    // Apply a conservative 3% vig on the correlation-adjusted fair as a
+    // single combined bet (matching the per-leg vig method).
+    const corrVig = Math.max(baseVig, 0.03);
+    const adjustedPayout = (adjustedFairDecimal - 1) * (1 - corrVig);
+    const correlatedOfferedProb = 1 / (1 + adjustedPayout);
+    if (correlatedOfferedProb > offeredImpliedProb) {
+      log.info('Pricing', `Correlation penalty: boost ${correlationBoost.toFixed(2)}x raised offered implied ${(offeredImpliedProb*100).toFixed(2)}% → ${(correlatedOfferedProb*100).toFixed(2)}% for ${pricedLegs.length}-leg parlay`);
+      offeredImpliedProb = correlatedOfferedProb;
+    }
+  }
+
   // Cap at 0.99 (can't offer 100%+ implied)
   const cappedProb = Math.min(offeredImpliedProb, 0.99);
 
@@ -355,6 +377,7 @@ async function priceParlay(legs) {
       }),
       vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb), 0) / pricedLegs.length * 10000) / 10000,
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
+      correlationBoost: correlationBoost > 1 ? Math.round(correlationBoost * 1000) / 1000 : undefined,
       offeredImpliedProb: Math.round(cappedProb * 100000) / 100000,
       decimalOdds: Math.round(decimalOdds * 100) / 100,
       americanOdds,
@@ -429,6 +452,51 @@ async function buildOffers(legs) {
     offers,
     meta: base.meta,
   };
+}
+
+/**
+ * Compute a multiplicative boost to the parlay's fair probability to account
+ * for correlation between same-game legs. Returns 1.0 if no correlated pairs.
+ *
+ * Factors are conservative estimates of the positive correlation between:
+ *   - moneyline/spread + total on the same game (both depend on game flow)
+ *   - double_chance + total similarly
+ *
+ * For same-team spread + total, the correlation is stronger when the bettor
+ * takes the favorite and the over (winning teams tend to score more).
+ *
+ * Each correlated pair multiplies the boost independently; a 3-leg same-game
+ * SGP therefore compounds multiple pair penalties.
+ */
+function computeCorrelationBoost(pricedLegs) {
+  // Group by event id
+  const byEvent = {};
+  for (const pl of pricedLegs) {
+    const eid = pl.lineInfo.pxEventId;
+    if (!eid) continue;
+    if (!byEvent[eid]) byEvent[eid] = [];
+    byEvent[eid].push(pl);
+  }
+  let boost = 1.0;
+  for (const legs of Object.values(byEvent)) {
+    if (legs.length < 2) continue;
+    // Find moneyline, spread, and total legs in this event
+    const ml = legs.find(l => l.lineInfo.marketType === 'moneyline');
+    const spread = legs.find(l => l.lineInfo.marketType === 'spread');
+    const total = legs.find(l => l.lineInfo.marketType === 'total');
+    const dc = legs.find(l => l.lineInfo.marketType === 'double_chance');
+    const btts = legs.find(l => l.lineInfo.marketType === 'btts' || l.lineInfo.marketType === 'both_teams_to_score');
+    // Spread + total: strongest correlation among allowed combinations
+    if (spread && total) boost *= 1.22;
+    // Moneyline + total: moderately correlated
+    if (ml && total) boost *= 1.15;
+    // Double-chance + total: weaker but positive
+    if (dc && total) boost *= 1.12;
+    // BTTS + moneyline/spread: BTTS yes requires both teams to score,
+    // which is correlated with a close game (dog ML / cover scenario)
+    if (btts && (ml || spread)) boost *= 1.10;
+  }
+  return boost;
 }
 
 /**
@@ -531,8 +599,16 @@ function shouldDecline(legs) {
       log.info('Pricing', `Declined: F5 total + full-game total on ${gameLabel}`);
       return { declined: true, reason: 'correlated legs', detail: `F5 + full-game total on same game: ${gameLabel}` };
     }
-    // Also block F5 moneyline + F5 total? Acceptable correlation like full-game.
-    // Allow: spread/moneyline + total, BTTS + moneyline/spread, double_chance + BTTS, F5 ML + F5 total
+    // Block: team_total with any other same-game leg — team totals are strongly
+    // correlated with moneyline, spread, and full-game total on the same event.
+    const hasTeamTotal = types.includes('team_total');
+    if (hasTeamTotal && types.length > 1) {
+      log.info('Pricing', `Declined: team_total + other same-game leg on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `team_total combined with other legs on same game: ${gameLabel}` };
+    }
+    // Note: same-game spread+total and moneyline+total are NOT blocked here
+    // because they're still reasonable to quote — but they receive a correlation
+    // penalty at pricing time (see computeCorrelationBoost in priceParlay).
   }
 
   // Check team-level exposure limits
