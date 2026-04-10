@@ -536,6 +536,32 @@ function startStatusServer() {
     }
   });
 
+  // Bulk lookup of line_ids against the current line-manager index.
+  // POST body: { lineIds: ['abc...', 'def...'] }
+  // Response: { [lineId]: { marketType, marketName, line, sport, teamName } | null }
+  app.post('/debug/lookup-lines', (req, res) => {
+    try {
+      const ids = Array.isArray(req.body?.lineIds) ? req.body.lineIds : [];
+      const out = {};
+      for (const id of ids) {
+        const info = lineManager.lookupLine(id);
+        out[id] = info ? {
+          marketType: info.marketType,
+          marketName: info.marketName,
+          line: info.line,
+          sport: info.sport,
+          teamName: info.teamName,
+          selection: info.selection,
+          pxEventId: info.pxEventId,
+          pxEventName: info.pxEventName,
+        } : null;
+      }
+      res.json({ ok: true, results: out });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Query The Odds API directly (not SharpAPI) — used to debug what
   // specific books actually return. sport defaults to baseball_mlb.
   app.get('/debug/odds-api-raw', async (req, res) => {
