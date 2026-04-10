@@ -1614,25 +1614,26 @@ function reconcileSettlements() {
     if (legStatuses.length === 0) continue; // no leg data to reconcile against
 
     // Derive correct SP result from legs (bettor-perspective leg data).
-    // Rules:
-    //   - Any leg LOST → bettor's parlay busted → SP WON
-    //   - All legs PUSHED → stake refunded → PUSH
-    //   - Some pushed, rest all won (no losses) → bettor wins at reduced odds → SP LOST
-    //   - All legs WON → bettor hit parlay → SP LOST
-    // Note: a pushed leg in a parlay does NOT turn the whole parlay into a push;
-    // it just removes that leg and the rest of the parlay continues.
+    // Only derive when the leg pattern is unambiguous. PX has inconsistent
+    // handling of won+push mixed parlays (sometimes 'lost', sometimes 'push')
+    // so we don't try to guess — leave those to pollOrderSettlements which
+    // fetches PX's authoritative order-level decision directly.
+    //   - Any leg LOST → bettor's parlay busted → SP WON (always)
+    //   - All legs WON (no pushes) → bettor hit everything → SP LOST (always)
+    //   - All legs PUSHED → stake refunded → PUSH (always)
+    //   - Anything else (mix of won + push) → skip, let polling handle it
     const anyLegLost = legStatuses.some(s => s === 'lost');
+    const allWon = legStatuses.length > 0 && legStatuses.every(s => s === 'won');
     const allPushed = legStatuses.length > 0 && legStatuses.every(s => s === 'push' || s === 'void');
     let derivedResult;
     if (anyLegLost) {
-      derivedResult = 'won'; // bettor's parlay missed ≥1 leg → SP won
-    } else if (allPushed) {
-      derivedResult = 'push'; // every leg pushed → refund
-    } else if (legStatuses.every(s => s === 'won' || s === 'push' || s === 'void')) {
-      // Mix of wins and pushes (no losses) — bettor wins the reduced parlay → SP lost
+      derivedResult = 'won';
+    } else if (allWon) {
       derivedResult = 'lost';
+    } else if (allPushed) {
+      derivedResult = 'push';
     } else {
-      continue; // mixed/incomplete — can't determine yet
+      continue; // mixed won+push — PX-specific, let polling handle
     }
 
     const storedResult = o.settlementResult || o.status.replace('settled_', '');
@@ -2114,19 +2115,21 @@ async function loadFromDb() {
 
       let spResult;
       if (legStatuses.length > 0) {
-        // Derive SP result (bettor-perspective leg data):
-        //   any leg LOST → SP WON
-        //   all legs PUSHED → PUSH
-        //   mix of won+push (no losses) → bettor wins reduced parlay → SP LOST
-        //   all legs WON → SP LOST
+        // Only derive when leg pattern is unambiguous. PX treats won+push
+        // mixed parlays inconsistently — leave those alone and let
+        // pollOrderSettlements fetch the authoritative status from PX.
         const anyLegLost = legStatuses.some(s => s === 'lost');
+        const allWon = legStatuses.every(s => s === 'won');
         const allPushed = legStatuses.every(s => s === 'push' || s === 'void');
         if (anyLegLost) {
           spResult = 'won';
+        } else if (allWon) {
+          spResult = 'lost';
         } else if (allPushed) {
           spResult = 'push';
         } else {
-          spResult = 'lost';
+          // Mixed won+push — keep stored value
+          spResult = o.status.replace('settled_', '');
         }
       } else {
         // No leg data — check if games have actually started.
