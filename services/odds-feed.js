@@ -855,6 +855,7 @@ async function fetchFromTheOddsApi(sport) {
       const away = mlMarket.outcomes?.find(o => o.name === event.away_team);
       if (home && away) {
         mlPairs.push({
+          book: book.key,
           home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price },
           away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price },
         });
@@ -867,18 +868,32 @@ async function fetchFromTheOddsApi(sport) {
         fairHome.push(fh);
         fairAway.push(fa);
       }
-      // Pinnacle floor only on heavy favorites (>65%) where de-vig over-corrects
+      // Pinnacle floor only on heavy favorites (>65%) where de-vig over-corrects.
+      // Use de-vigged Pinnacle (not raw implied) to avoid double-vig.
       const pinPair = mlPairs.find(p => p.book === 'pinnacle');
       const klPair = mlPairs.find(p => p.book === 'kalshi');
+      const pinFairH = pinPair ? deVig2Way(pinPair.home.odds_probability, pinPair.away.odds_probability)[0] : 0;
+      const pinFairA = pinPair ? deVig2Way(pinPair.home.odds_probability, pinPair.away.odds_probability)[1] : 0;
       const dvH = avg(fairHome), dvA = avg(fairAway);
-      const flrH = pinPair ? pinPair.home.odds_probability : (klPair ? Math.min(klPair.home.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-      const flrA = pinPair ? pinPair.away.odds_probability : (klPair ? Math.min(klPair.away.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+      const flrH = pinPair ? pinFairH : (klPair ? Math.min(klPair.home.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+      const flrA = pinPair ? pinFairA : (klPair ? Math.min(klPair.away.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
       const maxHome = dvH >= 0.65 ? Math.max(dvH, flrH) : dvH;
       const maxAway = dvA >= 0.65 ? Math.max(dvA, flrA) : dvA;
+      // Find named books for per-book display columns (previously unpopulated
+      // in this fallback path — dashboard book columns were always blank).
+      const findBook = (name) => mlPairs.find(p => p.book === name);
+      const pinBook = findBook('pinnacle');
+      const fdBook = findBook('fanduel');
+      const dkBook = findBook('draftkings');
+      const klBook = findBook('kalshi');
       markets.h2h = {
         home: { rawOdds: mlPairs[0].home.odds_american, impliedProb: mlPairs[0].home.odds_probability, fairProb: maxHome, displayFairProb: avg(fairHome) },
         away: { rawOdds: mlPairs[0].away.odds_american, impliedProb: mlPairs[0].away.odds_probability, fairProb: maxAway, displayFairProb: avg(fairAway) },
         books: mlPairs.length,
+        pinnacle: pinBook ? { home: pinBook.home.odds_american, away: pinBook.away.odds_american } : null,
+        fanduel: fdBook ? { home: fdBook.home.odds_american, away: fdBook.away.odds_american } : null,
+        draftkings: dkBook ? { home: dkBook.home.odds_american, away: dkBook.away.odds_american } : null,
+        kalshi: klBook ? { home: klBook.home.odds_american, away: klBook.away.odds_american } : null,
       };
     }
 
@@ -891,6 +906,7 @@ async function fetchFromTheOddsApi(sport) {
       const away = sMarket.outcomes?.find(o => o.name === event.away_team);
       if (home && away) {
         spreadPairs.push({
+          book: book.key,
           home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price, point: home.point },
           away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price, point: away.point },
         });
@@ -905,16 +921,27 @@ async function fetchFromTheOddsApi(sport) {
       }
       const pinSpread = spreadPairs.find(p => p.book === 'pinnacle');
       const klSpread = spreadPairs.find(p => p.book === 'kalshi');
+      const pinFairH = pinSpread ? deVig2Way(pinSpread.home.odds_probability, pinSpread.away.odds_probability)[0] : 0;
+      const pinFairA = pinSpread ? deVig2Way(pinSpread.home.odds_probability, pinSpread.away.odds_probability)[1] : 0;
       const dvSHome = avg(fairHome), dvSAway = avg(fairAway);
-      const flrSH = pinSpread ? pinSpread.home.odds_probability : (klSpread ? Math.min(klSpread.home.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-      const flrSA = pinSpread ? pinSpread.away.odds_probability : (klSpread ? Math.min(klSpread.away.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+      const flrSH = pinSpread ? pinFairH : (klSpread ? Math.min(klSpread.home.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+      const flrSA = pinSpread ? pinFairA : (klSpread ? Math.min(klSpread.away.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
       const maxSHome = dvSHome >= 0.65 ? Math.max(dvSHome, flrSH) : dvSHome;
       const maxSAway = dvSAway >= 0.65 ? Math.max(dvSAway, flrSA) : dvSAway;
+      const findBook = (name) => spreadPairs.find(p => p.book === name);
+      const pinBook = findBook('pinnacle');
+      const fdBook = findBook('fanduel');
+      const dkBook = findBook('draftkings');
+      const klBook = findBook('kalshi');
       markets.spreads = {
         home: { rawOdds: spreadPairs[0].home.odds_american, point: spreadPairs[0].home.point, impliedProb: spreadPairs[0].home.odds_probability, fairProb: maxSHome, displayFairProb: avg(fairHome) },
         away: { rawOdds: spreadPairs[0].away.odds_american, point: spreadPairs[0].away.point, impliedProb: spreadPairs[0].away.odds_probability, fairProb: maxSAway, displayFairProb: avg(fairAway) },
         line: spreadPairs[0].home.point,
         books: spreadPairs.length,
+        pinnacle: pinBook ? { home: pinBook.home.odds_american, away: pinBook.away.odds_american } : null,
+        fanduel: fdBook ? { home: fdBook.home.odds_american, away: fdBook.away.odds_american } : null,
+        draftkings: dkBook ? { home: dkBook.home.odds_american, away: dkBook.away.odds_american } : null,
+        kalshi: klBook ? { home: klBook.home.odds_american, away: klBook.away.odds_american } : null,
       };
     }
 
@@ -927,6 +954,7 @@ async function fetchFromTheOddsApi(sport) {
       const under = tMarket.outcomes?.find(o => o.name === 'Under');
       if (over && under) {
         totalPairs.push({
+          book: book.key,
           over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point },
           under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point },
         });
@@ -941,16 +969,27 @@ async function fetchFromTheOddsApi(sport) {
       }
       const pinTotal = totalPairs.find(p => p.book === 'pinnacle');
       const klTotal = totalPairs.find(p => p.book === 'kalshi');
+      const pinFairO = pinTotal ? deVig2Way(pinTotal.over.odds_probability, pinTotal.under.odds_probability)[0] : 0;
+      const pinFairU = pinTotal ? deVig2Way(pinTotal.over.odds_probability, pinTotal.under.odds_probability)[1] : 0;
       const dvTOver = avg(fairOver), dvTUnder = avg(fairUnder);
-      const flrTO = pinTotal ? pinTotal.over.odds_probability : (klTotal ? Math.min(klTotal.over.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-      const flrTU = pinTotal ? pinTotal.under.odds_probability : (klTotal ? Math.min(klTotal.under.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+      const flrTO = pinTotal ? pinFairO : (klTotal ? Math.min(klTotal.over.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+      const flrTU = pinTotal ? pinFairU : (klTotal ? Math.min(klTotal.under.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
       const maxTOver = dvTOver >= 0.65 ? Math.max(dvTOver, flrTO) : dvTOver;
       const maxTUnder = dvTUnder >= 0.65 ? Math.max(dvTUnder, flrTU) : dvTUnder;
+      const findBook = (name) => totalPairs.find(p => p.book === name);
+      const pinBook = findBook('pinnacle');
+      const fdBook = findBook('fanduel');
+      const dkBook = findBook('draftkings');
+      const klBook = findBook('kalshi');
       markets.totals = {
         over: { rawOdds: totalPairs[0].over.odds_american, point: totalPairs[0].over.point, impliedProb: totalPairs[0].over.odds_probability, fairProb: maxTOver, displayFairProb: avg(fairOver) },
         under: { rawOdds: totalPairs[0].under.odds_american, point: totalPairs[0].under.point, impliedProb: totalPairs[0].under.odds_probability, fairProb: maxTUnder, displayFairProb: avg(fairUnder) },
         line: totalPairs[0].over.point,
         books: totalPairs.length,
+        pinnacle: pinBook ? { over: pinBook.over.odds_american, under: pinBook.under.odds_american } : null,
+        fanduel: fdBook ? { over: fdBook.over.odds_american, under: fdBook.under.odds_american } : null,
+        draftkings: dkBook ? { over: dkBook.over.odds_american, under: dkBook.under.odds_american } : null,
+        kalshi: klBook ? { over: klBook.over.odds_american, under: klBook.under.odds_american } : null,
       };
     }
 
