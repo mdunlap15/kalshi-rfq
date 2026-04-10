@@ -424,6 +424,51 @@ function startStatusServer() {
     }
   });
 
+  // Diagnostic: fetch any SharpAPI sport+market combo using the production query
+  app.get('/debug/raw-fetch', async (req, res) => {
+    try {
+      const fetch = require('node-fetch');
+      const cfg = config.config || config;
+      const sport = req.query.sport || 'baseball_mlb';
+      const market = req.query.market || 'moneyline';
+      // Map our sport key to SharpAPI params
+      const mapping = {
+        'basketball_nba': { param: 'league', value: 'nba' },
+        'basketball_ncaab': { param: 'league', value: 'ncaab' },
+        'baseball_mlb': { param: 'league', value: 'mlb' },
+        'icehockey_nhl': { param: 'league', value: 'nhl' },
+        'soccer': { param: 'sport', value: 'soccer' },
+        'tennis': { param: 'sport', value: 'tennis' },
+      }[sport] || { param: 'league', value: sport };
+      const url = `${cfg.oddsApi.baseUrl}/odds?${mapping.param}=${mapping.value}&market=${market}&live=false&limit=500`;
+      const resp = await fetch(url, { headers: { 'X-API-Key': cfg.oddsApi.apiKey } });
+      const body = await resp.json();
+      const rows = body.data || [];
+      // Summarize
+      const byEvent = {};
+      const bySelType = {};
+      const byBook = {};
+      for (const r of rows) {
+        byBook[r.sportsbook] = (byBook[r.sportsbook] || 0) + 1;
+        bySelType[r.selection_type] = (bySelType[r.selection_type] || 0) + 1;
+        const key = (r.home_team || '?') + ' vs ' + (r.away_team || '?');
+        if (!byEvent[key]) byEvent[key] = new Set();
+        byEvent[key].add(r.sportsbook);
+      }
+      res.json({
+        url,
+        totalRows: rows.length,
+        totalEvents: Object.keys(byEvent).length,
+        byBook,
+        bySelType,
+        sampleEvents: Object.entries(byEvent).slice(0, 20).map(([k, v]) => ({ event: k, books: [...v] })),
+        sampleRows: rows.slice(0, 3),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Diagnostic: mirror the exact fetch that fetchOddsForSport uses
   app.get('/debug/raw-mlb-fetch', async (req, res) => {
     try {
