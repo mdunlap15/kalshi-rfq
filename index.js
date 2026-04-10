@@ -648,12 +648,15 @@ function startStatusServer() {
   app.get('/px-events-debug', async (req, res) => {
     try {
       const allEvents = await px.fetchSportEvents();
+      const filter = req.query.sport_name;
+      const sampleLimit = parseInt(req.query.limit || '3');
       const bySportName = {};
       for (const e of allEvents) {
         const sn = e.sport_name || '(none)';
+        if (filter && sn !== filter) continue;
         if (!bySportName[sn]) bySportName[sn] = { count: 0, sample: [] };
         bySportName[sn].count++;
-        if (bySportName[sn].sample.length < 3) {
+        if (bySportName[sn].sample.length < sampleLimit) {
           bySportName[sn].sample.push({
             name: e.name,
             event_id: e.event_id,
