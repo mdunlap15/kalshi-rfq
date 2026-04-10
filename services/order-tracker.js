@@ -276,21 +276,25 @@ function recordSettlement(orderUuid, result, payout) {
       return order;
     }
 
-    // Reject bogus settlements where any leg hasn't finished.
-    // A parlay can't be legitimately won/lost if a game is future or in-progress.
-    if (result !== 'void' && result !== 'push') {
+    // Reject bogus settlements where any leg hasn't finished. SP 'lost'
+    // requires every leg to have played. SP 'won' can legitimately settle
+    // early if a leg lost (the parlay is dead). When the caller doesn't
+    // pass leg-level context, we can't distinguish the two — be strict for
+    // 'lost' only and permissive for 'won' (callers that DO have PX leg
+    // data should filter there, e.g. pollOrderSettlements does).
+    if (result === 'lost') {
       const legs = order.legs || order.meta?.legs || [];
       const now = Date.now();
       const anyUnfinished = legs.some(l => {
         const st = l.startTime || l.start_time;
         if (!st) return false;
         const startMs = new Date(st).getTime();
-        if (startMs > now) return true; // future
-        if ((now - startMs) < 4 * 3600 * 1000) return true; // in-progress (< 4h)
+        if (startMs > now) return true;
+        if ((now - startMs) < 4 * 3600 * 1000) return true;
         return false;
       });
       if (anyUnfinished) {
-        log.warn('Settle', `Rejecting bogus settlement for ${order.parlayId}: leg(s) not yet finished (result=${result})`);
+        log.warn('Settle', `Rejecting bogus lost settlement for ${order.parlayId}: leg(s) not yet finished`);
         return order;
       }
     }
@@ -1473,8 +1477,14 @@ async function pollOrderSettlements(px) {
       if (!order.confirmedStake && pxOrder.confirmed_stake != null) order.confirmedStake = Number(pxOrder.confirmed_stake);
       if (!order.confirmedOdds && pxOrder.confirmed_odds != null) order.confirmedOdds = Number(pxOrder.confirmed_odds);
 
-      // Reject bogus settlements where any leg hasn't finished (future or in-progress)
-      if (settlementStatus !== 'void' && settlementStatus !== 'push') {
+      // Reject bogus settlements where any leg hasn't finished. This matters
+      // only for SP LOST (bettor's parlay hit) — SP can't legitimately lose
+      // a parlay until every leg has played. For SP WON (bettor's parlay
+      // busted), PX can settle early as soon as ANY leg losses — the parlay
+      // is dead and PX's early settlement is correct. Verify via PX leg-level
+      // settlement data: if the SP-won order contains at least one lost leg
+      // per PX, accept the settlement immediately.
+      if (settlementStatus === 'lost') {
         const orderLegs = order.legs || order.meta?.legs || [];
         const now = Date.now();
         const anyUnfinished = orderLegs.some(l => {
@@ -1486,8 +1496,29 @@ async function pollOrderSettlements(px) {
           return false;
         });
         if (anyUnfinished) {
-          log.warn('Poll', `Skipping bogus settlement for ${order.parlayId}: leg(s) not yet finished (PX says ${settlementStatus})`);
+          log.warn('Poll', `Skipping bogus lost settlement for ${order.parlayId}: leg(s) not yet finished`);
           continue;
+        }
+      } else if (settlementStatus === 'won') {
+        // For 'won', only accept if PX has at least one leg marked lost.
+        // If no PX leg is marked lost but we'd still have an unfinished leg,
+        // something is off — skip to avoid recording a fake win.
+        const pxHasLostLeg = (pxOrder.legs || []).some(l => l.settlement_status === 'lost');
+        if (!pxHasLostLeg) {
+          const orderLegs = order.legs || order.meta?.legs || [];
+          const now = Date.now();
+          const anyUnfinished = orderLegs.some(l => {
+            const st = l.startTime || l.start_time;
+            if (!st) return false;
+            const startMs = new Date(st).getTime();
+            if (startMs > now) return true;
+            if ((now - startMs) < 4 * 3600 * 1000) return true;
+            return false;
+          });
+          if (anyUnfinished) {
+            log.warn('Poll', `Skipping suspicious won settlement for ${order.parlayId}: no PX lost leg + unfinished game`);
+            continue;
+          }
         }
       }
 
