@@ -320,12 +320,19 @@ async function fetchOddsForSport(sport, opts) {
   if (PINNACLE_SPORT_MAP[sport]) {
     const pinnacleRows = await fetchPinnacleRows(sport);
     if (pinnacleRows.length > 0) {
+      // Match Odds API events to SharpAPI events by team key + DATE.
+      // CRITICAL: do NOT use a dateless fallback. When The Odds API returns
+      // multiple events for the same team matchup on different dates (today +
+      // tomorrow), a dateless fallback merges tomorrow's odds into today's
+      // SharpAPI event, corrupting the cached values. Concrete case: Reds @
+      // Angels had a -190 fanduel for today and -132 for tomorrow; both got
+      // pushed into the same _rawOdds array, and byBook last-write-wins made
+      // tomorrow's (wrong) values overwrite today's (correct) values.
       const teamDateToEventId = {};
       for (const [eid, ev] of Object.entries(eventMap)) {
         const key = normalizeEventKey(ev.homeTeam, ev.awayTeam);
         const date = ev.commenceTime ? new Date(ev.commenceTime).toISOString().substring(0, 10) : '';
-        teamDateToEventId[key + '|' + date] = eid;
-        if (!teamDateToEventId[key + '|']) teamDateToEventId[key + '|'] = eid;
+        if (date) teamDateToEventId[key + '|' + date] = eid;
       }
 
       // Group Pinnacle rows by event (key + date) so we can create new events
@@ -349,7 +356,10 @@ async function fetchOddsForSport(sport, opts) {
 
       let merged = 0, created = 0;
       for (const [groupKey, group] of Object.entries(pinGroups)) {
-        const matchedId = teamDateToEventId[group.key + '|' + group.rowDate] || teamDateToEventId[group.key + '|'];
+        // Strictly require a date-specific match. If SharpAPI doesn't have
+        // the same matchup on the same date, create a synthetic event for
+        // the Odds API data rather than merging into a different date.
+        const matchedId = group.rowDate ? teamDateToEventId[group.key + '|' + group.rowDate] : null;
         if (matchedId && eventMap[matchedId]) {
           // Merge into existing SharpAPI event
           for (const row of group.rows) eventMap[matchedId].odds.push(row);
