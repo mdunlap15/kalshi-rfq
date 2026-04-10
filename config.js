@@ -12,6 +12,10 @@ const config = {
     apiKey: process.env.SHARP_ODDS_API_KEY || process.env.ODDS_API_KEY,
     cacheTtlMinutes: parseInt(process.env.ODDS_CACHE_TTL_MINUTES) || 5,
   },
+  dataGolf: {
+    apiKey: process.env.DATAGOLF_API_KEY,
+    baseUrl: 'https://feeds.datagolf.com',
+  },
   pricing: {
     defaultVig: parseFloat(process.env.DEFAULT_VIG) || 0.001,
     maxRiskPerParlay: parseFloat(process.env.MAX_RISK_PER_PARLAY) || 500,
@@ -52,6 +56,7 @@ const config = {
     'soccer_france_ligue_one': 'Soccer',
     'soccer_usa_nwsl': 'Soccer',
     'golf_pga_championship': 'Golf',
+    'golf_matchups': 'Golf',
     'mma_mixed_martial_arts': 'Mixed Martial Arts',
     'boxing_boxing': 'Boxing',
   },

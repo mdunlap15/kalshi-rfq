@@ -143,6 +143,14 @@ const ODDS_API_FALLBACK = {
 async function fetchOddsForSport(sport, opts) {
   opts = opts || {};
   const liveMode = !!opts.live;
+  // DataGolf integration for golf matchups — handled separately
+  if (sport === 'golf_matchups') {
+    if (liveMode) return null;
+    const datagolf = require('./datagolf');
+    const result = await datagolf.fetchGolfMatchupsCache();
+    oddsCache[sport] = { fetchedAt: result.fetchedAt, events: result.events };
+    return result.events;
+  }
   // Check if this sport uses The Odds API fallback
   if (ODDS_API_FALLBACK[sport]) {
     if (liveMode) {
@@ -2090,10 +2098,15 @@ async function refreshAllSports() {
   await refreshEventsIndex();
 
   const results = {};
-  for (const sport of config.supportedSports) {
+  // Build the list: configured sports + golf_matchups if DataGolf key is set
+  const sportsToRefresh = [...config.supportedSports];
+  if (config.dataGolf && config.dataGolf.apiKey && !sportsToRefresh.includes('golf_matchups')) {
+    sportsToRefresh.push('golf_matchups');
+  }
+  for (const sport of sportsToRefresh) {
     try {
       const events = await fetchOddsForSport(sport);
-      results[sport] = { ok: true, events: Object.keys(events).length };
+      results[sport] = { ok: true, events: Object.keys(events || {}).length };
     } catch (err) {
       log.error('OddsFeed', `Failed to fetch ${sport}: ${err.message}`);
       results[sport] = { ok: false, error: err.message };

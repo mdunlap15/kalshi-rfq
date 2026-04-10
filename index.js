@@ -501,6 +501,30 @@ function startStatusServer() {
     }
   });
 
+  // Debug: show DataGolf matchup cache
+  app.get('/debug/golf-matchups', async (req, res) => {
+    try {
+      const events = oddsFeed.getAllCachedEvents().filter(e => e.sport === 'golf_matchups');
+      // Deduplicate — cache has mirror entries for order-independence
+      const seen = new Set();
+      const unique = [];
+      for (const e of events) {
+        const key = [e.homeTeam, e.awayTeam].sort().join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(e);
+      }
+      res.json({
+        ok: true,
+        totalCacheEntries: events.length,
+        uniqueMatchups: unique.length,
+        sample: unique.slice(0, 50).map(e => ({ home: e.homeTeam, away: e.awayTeam, markets: e.markets })),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Debug: test alt-line fetch for a specific event
   app.get('/debug/alt-lines', async (req, res) => {
     try {
