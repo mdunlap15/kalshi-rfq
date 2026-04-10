@@ -314,17 +314,27 @@ async function seedAllLines() {
       team_total: ['Team Total', 'Team Total Points', 'Team Total Runs', 'Team Total Goals', 'Home Total', 'Away Total'],
     };
 
+    // F5 markets (PX uses market.type === 'moneyline'/'spread'/'total' but
+    // distinguishes via market.name). Allow these through the filter.
+    const f5NamePattern = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings/i;
+
     const mainMarkets = markets.filter(m => {
       const supportedBase = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
       if (!supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type)) return false;
       // Exclude anything matching half/quarter/prop patterns
       if (excludePatterns.test(m.name)) return false;
+      // Allow F5 markets by name pattern
+      const isF5 = f5NamePattern.test(m.name || '');
       // Require exact name match for ALL types — excludes player props
       // (e.g., "CJ McCollum To Record a Double Double" typed as moneyline)
-      const allowed = fullGameNames[m.type];
-      if (allowed && !allowed.includes(m.name)) return false;
+      // Skip the whitelist check for F5 markets
+      if (!isF5) {
+        const allowed = fullGameNames[m.type];
+        if (allowed && !allowed.includes(m.name)) return false;
+      }
       // Exclude sub-game totals (first-inning runs, etc.) — lines ≤ 2.5 are never full-game
-      if (m.type === 'total') {
+      // F5 totals are typically 4-5 runs, full game 7-10 runs; both OK.
+      if (m.type === 'total' && !isF5) {
         const parsed = px.parseMarketSelections(m);
         const line = parsed[0]?.line;
         if (line != null && Math.abs(line) <= 2.5) return false;

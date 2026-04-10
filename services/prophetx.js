@@ -309,13 +309,25 @@ async function fetchOrders(limit = 50, status = null) {
  */
 function parseMarketSelections(market) {
   const results = [];
-  const marketType = market.type; // 'moneyline', 'spread', 'total'
+  let marketType = market.type; // 'moneyline', 'spread', 'total'
 
   // Strip trailing odds from team names (e.g., "Kansas City Royals -103" → "Kansas City Royals")
   function cleanSelectionName(name) {
     if (!name) return '';
     // Remove trailing odds pattern: space + optional sign + digits (e.g., " -103", " +275", " 150")
     return name.replace(/\s+[+-]?\d+(\.\d+)?$/, '').trim();
+  }
+
+  // PX uses the same market.type ('moneyline', 'spread', 'total') for both
+  // full-game and First 5 Innings markets, distinguishing them only by
+  // market.name. Detect F5 by name and override the marketType so downstream
+  // code (line-manager, pricer) routes to the correct cache entry (h2h_f5, etc).
+  const marketName = market.name || '';
+  const isF5ByName = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings|f5\b|1st\s*half/i.test(marketName);
+  if (isF5ByName) {
+    if (marketType === 'moneyline') marketType = 'first_5_innings_moneyline';
+    else if (marketType === 'spread') marketType = 'first_5_innings_run_line';
+    else if (marketType === 'total') marketType = 'first_5_innings_total';
   }
 
   // F5 moneyline uses same structure as full-game moneyline (selections array)
