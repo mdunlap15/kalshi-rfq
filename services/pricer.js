@@ -62,14 +62,25 @@ async function priceParlay(legs) {
       awayTeam: lineInfo.awayTeam,
     };
 
-    // Check if event has already started — don't quote with stale pre-game odds
+    // Check if event has already started — don't quote with stale pre-game odds.
+    // Golf matchups exempt (no commenceTime from DataGolf; isStale check covers).
+    const isGolfMatchup = lineInfo.sport === 'golf_matchups' || lineInfo.oddsApiSport === 'golf_matchups';
     if (lineInfo.startTime) {
       const startMs = new Date(lineInfo.startTime).getTime();
-      if (!isNaN(startMs) && Date.now() > startMs) {
+      if (isNaN(startMs)) {
+        log.debug('Pricing', `Declined: invalid startTime for ${lineInfo.teamName} (${lineInfo.startTime})`);
+        priceParlay._lastFailure = { reason: 'unknown start time', detail: `${legLabel} has invalid startTime ${lineInfo.startTime}`, blockerLeg: legDescriptor };
+        return null;
+      }
+      if (Date.now() > startMs) {
         log.debug('Pricing', `Declined: event already started (${lineInfo.teamName}, started ${lineInfo.startTime})`);
         priceParlay._lastFailure = { reason: 'event started', detail: `${legLabel} already in progress`, blockerLeg: legDescriptor };
         return null;
       }
+    } else if (!isGolfMatchup) {
+      log.debug('Pricing', `Declined: null startTime for ${lineInfo.teamName} (${lineInfo.sport})`);
+      priceParlay._lastFailure = { reason: 'unknown start time', detail: `${legLabel} has no startTime — cannot verify game hasn't started`, blockerLeg: legDescriptor };
+      return null;
     }
 
     // Check if prices are stale for this sport
@@ -436,12 +447,22 @@ function shouldDecline(legs) {
     const lineInfo = lineManager.lookupLine(lineId);
     if (!lineInfo) return { declined: true, reason: 'unknown legs', detail: null };
 
-    // Reject if event has already started
+    // Reject if event has already started.
+    // Golf matchups legitimately have no commenceTime (DataGolf doesn't expose
+    // per-matchup tee times); we rely on isStale() instead for those.
+    const isGolfMatchup = lineInfo.sport === 'golf_matchups' || lineInfo.oddsApiSport === 'golf_matchups';
     if (lineInfo.startTime) {
       const startMs = new Date(lineInfo.startTime).getTime();
-      if (!isNaN(startMs) && Date.now() > startMs) {
+      if (isNaN(startMs)) {
+        return { declined: true, reason: 'unknown start time', detail: `${lineInfo.teamName || '?'} (${lineInfo.sport || '?'}) has invalid startTime ${lineInfo.startTime} — cannot verify game hasn't started` };
+      }
+      if (Date.now() > startMs) {
         return { declined: true, reason: 'event started', detail: `${lineInfo.teamName || '?'} (${lineInfo.sport || '?'}) already in progress` };
       }
+    } else if (!isGolfMatchup) {
+      // Null startTime is a risk — game could already be live. Decline rather than
+      // silently skip the check. Golf matchups exempt (see comment above).
+      return { declined: true, reason: 'unknown start time', detail: `${lineInfo.teamName || '?'} (${lineInfo.sport || '?'}) has no startTime — cannot verify game hasn't started` };
     }
 
     resolvedLegs.push({ lineId, lineInfo });
