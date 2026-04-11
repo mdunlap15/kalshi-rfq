@@ -2147,12 +2147,13 @@
         case 'kalshi': va = a.meta?.kalshiParlay || 0; vb = b.meta?.kalshiParlay || 0; break;
         case 'draftkings': va = a.meta?.draftkingsParlay || 0; vb = b.meta?.draftkingsParlay || 0; break;
         case 'stake':
-          // My Risk = payout = calcBettorWager
-          va = a.confirmedStake && a.offeredOdds ? calcBettorWager(a.confirmedStake, a.offeredOdds) : 0;
-          vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : 0; break;
+          // My Risk = confirmedStake = SP's stake
+          va = a.confirmedStake || 0;
+          vb = b.confirmedStake || 0; break;
         case 'towin':
-          // To Win = confirmedStake (bettor's wager)
-          va = a.confirmedStake || 0; vb = b.confirmedStake || 0; break;
+          // To Win = calcSpProfit = stake × 100/|odds| = bettor's wager
+          va = a.confirmedStake && a.offeredOdds ? calcSpProfit(a.confirmedStake, a.offeredOdds) : 0;
+          vb = b.confirmedStake && b.offeredOdds ? calcSpProfit(b.confirmedStake, b.offeredOdds) : 0; break;
         case 'winprob':
           const wpCalcPos = (o) => {
             const ls2 = o.meta?.legs || o.legs || [];
@@ -3507,11 +3508,12 @@
       const dkAm = dkParlay != null ? dkParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
       const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
-      // confirmedStake = bettor's wager = To Win, My Risk = payout
+      // confirmedStake = OUR SP stake = My Risk (max payout liability)
+      // calcSpProfit = stake × 100/|odds| = bettor's wager = To Win
       const stakeVal = order.confirmedStake || order.winningStake;
-      const toWinStr = stakeVal ? fmtDollar(stakeVal) : '-';
-      const riskCalc = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
-      const myRiskStr = riskCalc != null ? fmtDollar(riskCalc) : '-';
+      const myRiskStr = stakeVal ? fmtDollar(stakeVal) : '-';
+      const toWinCalc = order.confirmedStake && order.offeredOdds ? calcSpProfit(order.confirmedStake, order.offeredOdds) : null;
+      const toWinStr = toWinCalc != null ? fmtDollar(toWinCalc) : '-';
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
       let pnlHtml = '-';
@@ -4262,16 +4264,23 @@
       return;
     }
 
-    let totalStaked = 0;
-    let totalPayouts = 0;
+    // Semantics (matches backend order-tracker.js + dashboard header):
+    //   confirmedStake = OUR SP stake = max payout liability = "My Risk"
+    //   calcSpProfit(stake, odds) = stake × 100/|odds| = bettor's original
+    //     wager = SP's profit if SP wins = "To Win"
+    // The previous version mislabeled confirmedStake as "bettor's wager" and
+    // summed it twice (both "risk" and "to win"), making the Portfolio tab
+    // summary disagree with the dashboard header Deployed/To Win pair.
+    let totalRisk = 0;
+    let totalToWin = 0;
     for (const o of active) {
-      totalStaked += (o.confirmedStake || 0); // bettor's wagers = to win
+      totalRisk += (o.confirmedStake || 0);
       if (o.confirmedStake && o.offeredOdds) {
-        totalPayouts += calcBettorWager(o.confirmedStake, o.offeredOdds); // our risk
+        totalToWin += calcSpProfit(o.confirmedStake, o.offeredOdds);
       }
     }
 
-    if (countEl) countEl.textContent = active.length + ' active · ' + fmtDollar(totalPayouts) + ' risk · ' + fmtDollar(totalStaked) + ' to win';
+    if (countEl) countEl.textContent = active.length + ' active · ' + fmtDollar(totalRisk) + ' risk · ' + fmtDollar(totalToWin) + ' to win';
 
     // Search + date filter
     let filtered = active.filter(o => {
@@ -4381,10 +4390,11 @@
       const pinFmt = pinParlay != null ? pinParlay : '-';
       const fdFmt = fdParlay != null ? fdParlay : '-';
       const klFmt = klParlay != null ? klParlay : '-';
-      // confirmedStake = bettor's wager = To Win, My Risk = payout
-      const toWin = o.confirmedStake ? fmtDollar(o.confirmedStake) : '-';
-      const riskV = o.confirmedStake && o.offeredOdds ? calcBettorWager(o.confirmedStake, o.offeredOdds) : null;
-      const myRisk = riskV != null ? fmtDollar(riskV) : '-';
+      // confirmedStake = OUR SP stake = max payout liability = My Risk
+      // calcSpProfit = stake × 100/|odds| = bettor's wager = To Win
+      const myRisk = o.confirmedStake ? fmtDollar(o.confirmedStake) : '-';
+      const toWinV = o.confirmedStake && o.offeredOdds ? calcSpProfit(o.confirmedStake, o.offeredOdds) : null;
+      const toWin = toWinV != null ? fmtDollar(toWinV) : '-';
 
       const rowKey = 'popen-' + (o.parlayId || '');
       const expanded = expandedRows.has(rowKey);
