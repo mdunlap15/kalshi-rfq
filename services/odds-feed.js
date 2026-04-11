@@ -1748,7 +1748,23 @@ function getDisplayFairProb(sport, homeTeam, awayTeam, marketType, selection, li
  * Get Pinnacle's raw American odds for a specific selection.
  * Returns the odds integer or null if Pinnacle data not available.
  */
-function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime) {
+/**
+ * Returns true if the caller-requested line matches the market's primary
+ * cached line. When they don't match, the per-book raw odds stored on the
+ * primary line are for a DIFFERENT betting product (e.g. Arsenal -1.25 vs
+ * Arsenal -1) and must NOT be reported to the caller — doing so corrupts
+ * competitor comparisons. Callers should return null in that case.
+ *
+ * h2h (moneyline) and team_totals have no line — always match.
+ */
+function lineMatchesPrimary(market, marketType, requestedLine) {
+  if (marketType !== 'spreads' && marketType !== 'totals') return true;
+  if (requestedLine == null) return true; // legacy callers without line info
+  if (market.line == null) return false;
+  return Math.abs(Math.abs(market.line) - Math.abs(requestedLine)) < 0.01;
+}
+
+function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime, line) {
   const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
   if (!event) return null;
 
@@ -1764,6 +1780,7 @@ function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targe
     return null;
   }
 
+  if (!lineMatchesPrimary(market, marketType, line)) return null;
   if (!market.pinnacle) return null;
   if (marketType === 'h2h' || marketType === 'spreads') {
     if (selection === 'home') return market.pinnacle.home || null;
@@ -1796,7 +1813,7 @@ function getDNBFairProb(sport, homeTeam, awayTeam, selection, targetTime) {
   return null;
 }
 
-function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime) {
+function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime, line) {
   const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
   if (!event) return null;
 
@@ -1808,6 +1825,7 @@ function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, target
     return null;
   }
 
+  if (!lineMatchesPrimary(market, marketType, line)) return null;
   if (!market.fanduel) return null;
   if (marketType === 'h2h' || marketType === 'spreads') {
     if (selection === 'home') return market.fanduel.home || null;
@@ -1819,7 +1837,7 @@ function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, target
   return null;
 }
 
-function getKalshiOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime) {
+function getKalshiOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime, line) {
   const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
   if (!event) return null;
 
@@ -1828,6 +1846,7 @@ function getKalshiOdds(sport, homeTeam, awayTeam, marketType, selection, targetT
 
   if (marketType === 'team_totals') return null;
 
+  if (!lineMatchesPrimary(market, marketType, line)) return null;
   if (!market.kalshi) return null;
   if (marketType === 'h2h' || marketType === 'spreads') {
     if (selection === 'home') return market.kalshi.home || null;
@@ -1839,7 +1858,7 @@ function getKalshiOdds(sport, homeTeam, awayTeam, marketType, selection, targetT
   return null;
 }
 
-function getDraftKingsOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime) {
+function getDraftKingsOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime, line) {
   const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
   if (!event) return null;
 
@@ -1848,6 +1867,7 @@ function getDraftKingsOdds(sport, homeTeam, awayTeam, marketType, selection, tar
 
   if (marketType === 'team_totals') return null;
 
+  if (!lineMatchesPrimary(market, marketType, line)) return null;
   if (!market.draftkings) return null;
   if (marketType === 'h2h' || marketType === 'spreads') {
     if (selection === 'home') return market.draftkings.home || null;

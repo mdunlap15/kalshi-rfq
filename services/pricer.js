@@ -144,22 +144,26 @@ async function priceParlay(legs) {
       return null;
     }
 
-    // Look up sportsbook raw odds for this leg
+    // Look up sportsbook raw odds for this leg. Pass lineInfo.line so the
+    // accessor can reject cached values that belong to a different line
+    // (e.g. Arsenal -1.25 when the PX RFQ wanted Arsenal -1). Returning null
+    // on mismatch is safer than reporting the primary-line book odds and
+    // corrupting the dashboard's competitor comparison.
     const pinnacleOdds = oddsFeed.getPinnacleOdds(
       lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
-      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
+      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime, lineInfo.line
     );
     const fanduelOdds = oddsFeed.getFanDuelOdds(
       lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
-      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
+      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime, lineInfo.line
     );
     const kalshiOdds = oddsFeed.getKalshiOdds(
       lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
-      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
+      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime, lineInfo.line
     );
     const draftkingsOdds = oddsFeed.getDraftKingsOdds(
       lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
-      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime
+      lineInfo.oddsApiMarket, lineInfo.oddsApiSelection, lineInfo.startTime, lineInfo.line
     );
 
     // For DNB (Draw No Bet) legs, also fetch the opposite-side book odds so
