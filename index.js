@@ -2024,6 +2024,28 @@ function startStatusServer() {
   // sportsbook present (pinnacle, fanduel, draftkings, kalshi). Answers
   // "why don't my quotes show Kalshi odds?" — it's almost always because
   // SharpAPI returned zero Kalshi rows for that sport/event.
+  // Dump altLinesCache entries for an event (by normalized team key).
+  // Used to audit per-book alt line odds vs primary line values.
+  app.get('/debug-alt-lines', (req, res) => {
+    const home = req.query.home || '';
+    const away = req.query.away || '';
+    if (!home || !away) return res.status(400).json({ ok: false, error: 'need home + away' });
+    // Access private altLinesCache via eval against the odds-feed module.
+    // We don't expose it through __debugGetCache, so read via fs hack.
+    try {
+      const of = require('./services/odds-feed');
+      // Try to reach the normalizer + cache
+      const key = of.normalizeTeamName(home) + '|' + of.normalizeTeamName(away);
+      // altLinesCache is module-scoped; we need to add an accessor.
+      // Fall back: require module and look at its exports for a debug hook.
+      const dump = (of.__debugGetAltLinesCache && of.__debugGetAltLinesCache()) || null;
+      if (!dump) return res.json({ ok: false, error: '__debugGetAltLinesCache not exported' });
+      res.json({ key, entry: dump[key] || null, availableKeys: Object.keys(dump).slice(0, 20) });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Inspect line index entries matching a query. Shows exactly what the
   // line index has registered for an event + market type.
   app.get('/debug-line-index', (req, res) => {

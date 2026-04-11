@@ -2837,4 +2837,5 @@ module.exports = {
   getGameResult,
   checkLineupFreshness,
   getLineupCache,
+  __debugGetAltLinesCache: () => altLinesCache,
 };
