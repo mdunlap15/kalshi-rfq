@@ -542,6 +542,11 @@
         <div id="limit-alert-content" style="padding-right:22px;"></div>
       </div>
 
+      <!-- Settlement drift banner — shows when /drift-status reports PX vs local disagreement -->
+      <div id="drift-banner" style="display:none; margin-bottom:12px; padding:10px 14px; background:rgba(248,81,73,0.08); border:1px solid var(--red); border-left:4px solid var(--red); border-radius:6px; font-size:13px; position:relative;">
+        <div id="drift-banner-content" style="padding-right:22px;"></div>
+      </div>
+
       <!-- ===================== SECTION: DASHBOARD ===================== -->
       <!-- ===================== SECTION: ORDERS ===================== -->
       <div id="section-orders" class="section">
@@ -949,6 +954,9 @@
         renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
       }).catch(() => {});
 
+      // Fetch settlement drift separately (don't block main refresh)
+      fetchJSON('/drift-status').then(d => renderDriftBanner(d)).catch(() => {});
+
       renderStatus(status);
       renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
       renderPortfolio(orders);
@@ -1099,6 +1107,51 @@
     }
     if (banner) banner.style.display = 'none';
   };
+
+  // Settlement drift banner — rendered from /drift-status data. Shows when
+  // the periodic PX vs local comparison finds divergence (mismatched status,
+  // missing local settlements, or local orders PX doesn't see). Silent when
+  // drift counts are all zero.
+  function renderDriftBanner(d) {
+    const banner = document.getElementById('drift-banner');
+    const content = document.getElementById('drift-banner-content');
+    if (!banner || !content || !d || !d.ok) {
+      if (banner) banner.style.display = 'none';
+      return;
+    }
+    const mm = d.mismatchCount || 0;
+    const ml = d.missingLocalCount || 0;
+    const mp = d.missingPxCount || 0;
+    if (mm + ml + mp === 0) {
+      banner.style.display = 'none';
+      return;
+    }
+    const parts = [];
+    if (mm > 0) parts.push('<span style="color:var(--red); font-weight:600;">' + mm + ' mismatch' + (mm > 1 ? 'es' : '') + '</span>');
+    if (ml > 0) parts.push('<span style="color:var(--red); font-weight:600;">' + ml + ' missing local</span>');
+    if (mp > 0) parts.push('<span style="color:var(--red); font-weight:600;">' + mp + ' missing PX</span>');
+    const lastCheck = d.lastCheckedAt ? new Date(d.lastCheckedAt).toLocaleTimeString() : '—';
+    const sampleLines = [];
+    for (const m of (d.mismatches || []).slice(0, 3)) {
+      let line = m.parlayId?.substring(0, 8) + ': ';
+      if (m.status) line += 'status PX=' + m.status.px + ' local=' + m.status.local + ' ';
+      if (m.pnl) line += 'pnl PX=' + m.pnl.px + ' local=' + m.pnl.local + ' ';
+      if (m.stake) line += 'stake PX=' + m.stake.px + ' local=' + m.stake.local + ' ';
+      sampleLines.push(line);
+    }
+    for (const m of (d.missingLocal || []).slice(0, 3)) {
+      sampleLines.push(m.parlayId?.substring(0, 8) + ': MISSING LOCAL — PX says ' + m.pxStatus + ' profit ' + m.pxProfit);
+    }
+    content.innerHTML = '<div style="display:flex; gap:12px; align-items:center;">'
+      + '<span style="font-size:16px;">&#9888;</span>'
+      + '<div style="flex:1;">'
+      +   '<div style="font-weight:600; margin-bottom:2px;">Settlement drift detected: ' + parts.join(' · ') + '</div>'
+      +   '<div style="font-size:11px; color:var(--text3);">PX has ' + (d.pxSettledTotal || 0) + ' settled orders, ' + (d.matched || 0) + ' matched. Last check: ' + lastCheck + '.</div>'
+      +   (sampleLines.length > 0 ? '<div style="font-size:11px; color:var(--text2); margin-top:6px; font-family:monospace;">' + sampleLines.join('<br>') + '</div>' : '')
+      + '</div>'
+      + '</div>';
+    banner.style.display = 'block';
+  }
 
   function renderLimitAlert(alerts, portfolio) {
     const banner = document.getElementById('limit-alert-banner');

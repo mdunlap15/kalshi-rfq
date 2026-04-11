@@ -195,6 +195,18 @@ async function startup() {
     }
   }, 2 * 60 * 1000);
 
+  // Settlement drift monitor — every 5 min scan PX settled orders and flag
+  // any divergence from local state. Runs independently of the settlement
+  // poll so it catches drift that might otherwise go silent. Details
+  // available via GET /drift-status.
+  setInterval(async () => {
+    try {
+      await orderTracker.checkSettlementDrift(px);
+    } catch (err) {
+      log.debug('Drift', `Drift check failed: ${err.message}`);
+    }
+  }, 5 * 60 * 1000);
+
   // Initial balance fetch
   try {
     const bal = await px.fetchBalance();
@@ -1156,6 +1168,28 @@ function startStatusServer() {
       });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
+  // Settlement drift status — returns most recent PX-vs-local comparison
+  // from the periodic drift check (runs every 5min). Used by the dashboard
+  // drift banner and ops monitoring to catch silent reconciliation errors.
+  app.get('/drift-status', (req, res) => {
+    try {
+      res.json({ ok: true, ...orderTracker.getDriftState() });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Manually run the drift check on demand instead of waiting for the
+  // 5-minute interval.
+  app.post('/check-drift', async (req, res) => {
+    try {
+      const result = await orderTracker.checkSettlementDrift(px);
+      res.json({ ok: true, ...result, state: orderTracker.getDriftState() });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
     }
   });
 

@@ -1403,6 +1403,182 @@ async function refreshLiveOdds(oddsFeed) {
   return { sportsRefreshed, legsUpdated, inProgressGames, sportsWithInProgress: sports };
 }
 
+// ---------------------------------------------------------------------------
+// SETTLEMENT DRIFT MONITOR — periodic PX vs local reconciliation that logs
+// warnings on mismatch and exposes the most recent drift state via /drift-status.
+// Runs independently of the settlement poll so it catches drift even when
+// the poll is working correctly (e.g. a late WS event that contradicts
+// an already-polled settlement).
+// ---------------------------------------------------------------------------
+const driftState = {
+  lastCheckedAt: null,
+  lastCheckDurationMs: null,
+  lastError: null,
+  pxSettledTotal: 0,
+  matched: 0,
+  mismatches: [],
+  missingLocal: [],
+  missingPx: [],
+  history: [], // rolling log of drift events with parlayId + discovered-at timestamp
+};
+
+async function checkSettlementDrift(px) {
+  const started = Date.now();
+  try {
+    // Reuse existing fetchOrders path — paginates to 1000 orders.
+    const pxOrders = await px.fetchOrders(1000);
+    const pxByParlayId = {};
+    const pxByUuid = {};
+    for (const o of pxOrders) {
+      const pid = o.p_id || o.parlay_id;
+      if (pid) pxByParlayId[pid] = o;
+      if (o.order_uuid) pxByUuid[o.order_uuid] = o;
+    }
+
+    const mismatches = [];
+    const missingLocal = [];
+    const missingPx = [];
+    let matched = 0;
+    let pxSettledTotal = 0;
+
+    // Scan PX-settled orders for mismatches and missing-local
+    for (const pxOrder of pxOrders) {
+      const pxStatus = pxOrder.settlement_status;
+      if (!pxStatus || ['tbd', 'requested', 'none', ''].includes(pxStatus)) continue;
+      pxSettledTotal++;
+      const pid = pxOrder.p_id || pxOrder.parlay_id;
+      const local = (pid && orders[pid]) || (pxOrder.order_uuid && ordersByUuid[pxOrder.order_uuid] ? orders[ordersByUuid[pxOrder.order_uuid]] : null);
+      if (!local) {
+        missingLocal.push({
+          parlayId: pid,
+          orderUuid: pxOrder.order_uuid,
+          pxStatus,
+          pxProfit: pxOrder.profit != null ? Number(pxOrder.profit) : null,
+          pxStake: pxOrder.stake != null ? Number(pxOrder.stake) : null,
+        });
+        continue;
+      }
+      const localStatus = local.status && local.status.startsWith('settled_')
+        ? local.status.substring('settled_'.length)
+        : local.status;
+      const pxProfit = pxOrder.profit != null ? Number(pxOrder.profit) : null;
+      const pxStake = pxOrder.stake != null ? Number(pxOrder.stake) : null;
+      const statusMismatch = pxStatus !== localStatus;
+      const pnlMismatch = pxProfit != null && local.pnl != null && Math.abs(pxProfit - local.pnl) > 0.01;
+      const stakeMismatch = pxStake != null && local.confirmedStake != null && Math.abs(pxStake - local.confirmedStake) > 0.01;
+      if (statusMismatch || pnlMismatch || stakeMismatch) {
+        mismatches.push({
+          parlayId: pid,
+          orderUuid: pxOrder.order_uuid,
+          status: statusMismatch ? { px: pxStatus, local: localStatus } : undefined,
+          pnl: pnlMismatch ? { px: pxProfit, local: local.pnl } : undefined,
+          stake: stakeMismatch ? { px: pxStake, local: local.confirmedStake } : undefined,
+        });
+      } else {
+        matched++;
+      }
+    }
+
+    // Scan locally-settled orders that PX doesn't see
+    for (const local of Object.values(orders)) {
+      if (!local.status || !local.status.startsWith('settled_')) continue;
+      const pxMatch = (local.parlayId && pxByParlayId[local.parlayId])
+        || (local.orderUuid && pxByUuid[local.orderUuid]);
+      if (!pxMatch) {
+        missingPx.push({
+          parlayId: local.parlayId,
+          orderUuid: local.orderUuid,
+          localStatus: local.status.substring('settled_'.length),
+          localPnl: local.pnl,
+        });
+      }
+    }
+
+    const anyDrift = mismatches.length + missingLocal.length + missingPx.length;
+
+    // Log only when drift is detected (don't spam green checks)
+    if (anyDrift > 0) {
+      log.warn('Drift', `PX vs local: ${mismatches.length} mismatches, ${missingLocal.length} missing-local, ${missingPx.length} missing-px (matched: ${matched}/${pxSettledTotal})`);
+      // Log up to 3 samples per bucket for diagnostic clarity
+      for (const m of mismatches.slice(0, 3)) {
+        log.warn('Drift', `  mismatch ${m.parlayId}: ${JSON.stringify({ status: m.status, pnl: m.pnl, stake: m.stake })}`);
+      }
+      for (const m of missingLocal.slice(0, 3)) {
+        log.warn('Drift', `  missing-local ${m.parlayId}: px=${m.pxStatus} profit=${m.pxProfit}`);
+      }
+      for (const m of missingPx.slice(0, 3)) {
+        log.warn('Drift', `  missing-px ${m.parlayId}: local=${m.localStatus} pnl=${m.localPnl}`);
+      }
+      // Record novel drift events in history for UI visibility
+      const seen = new Set((driftState.history || []).map(h => h.key));
+      for (const m of mismatches) {
+        const key = 'mm:' + m.parlayId;
+        if (!seen.has(key)) {
+          driftState.history.push({
+            key,
+            type: 'mismatch',
+            parlayId: m.parlayId,
+            detail: m,
+            detectedAt: new Date().toISOString(),
+          });
+        }
+      }
+      for (const m of missingLocal) {
+        const key = 'ml:' + m.parlayId;
+        if (!seen.has(key)) {
+          driftState.history.push({ key, type: 'missing_local', parlayId: m.parlayId, detail: m, detectedAt: new Date().toISOString() });
+        }
+      }
+      for (const m of missingPx) {
+        const key = 'mp:' + m.parlayId;
+        if (!seen.has(key)) {
+          driftState.history.push({ key, type: 'missing_px', parlayId: m.parlayId, detail: m, detectedAt: new Date().toISOString() });
+        }
+      }
+      // Cap history at 200 entries (drop oldest)
+      if (driftState.history.length > 200) {
+        driftState.history = driftState.history.slice(-200);
+      }
+    } else {
+      log.debug('Drift', `PX vs local clean (${matched}/${pxSettledTotal} matched)`);
+    }
+
+    driftState.lastCheckedAt = new Date().toISOString();
+    driftState.lastCheckDurationMs = Date.now() - started;
+    driftState.lastError = null;
+    driftState.pxSettledTotal = pxSettledTotal;
+    driftState.matched = matched;
+    driftState.mismatches = mismatches;
+    driftState.missingLocal = missingLocal;
+    driftState.missingPx = missingPx;
+
+    return {
+      pxSettledTotal,
+      matched,
+      mismatches: mismatches.length,
+      missingLocal: missingLocal.length,
+      missingPx: missingPx.length,
+      totalDrift: anyDrift,
+    };
+  } catch (err) {
+    driftState.lastError = err.message;
+    driftState.lastCheckedAt = new Date().toISOString();
+    driftState.lastCheckDurationMs = Date.now() - started;
+    log.warn('Drift', `Drift check failed: ${err.message}`);
+    return { error: err.message };
+  }
+}
+
+function getDriftState() {
+  return {
+    ...driftState,
+    // Summarize counts at the top level for quick dashboard read
+    mismatchCount: driftState.mismatches?.length || 0,
+    missingLocalCount: driftState.missingLocal?.length || 0,
+    missingPxCount: driftState.missingPx?.length || 0,
+  };
+}
+
 async function pollOrderSettlements(px) {
   const confirmed = Object.values(orders).filter(o => o.status === 'confirmed' && o.orderUuid);
   if (confirmed.length === 0) {
@@ -1942,6 +2118,8 @@ module.exports = {
   recordSettlement,
   recordLegSettlement,
   pollOrderSettlements,
+  checkSettlementDrift,
+  getDriftState,
   checkLegResults,
   revertBogusSettlements,
   reconcileSettlements,
