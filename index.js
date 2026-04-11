@@ -1338,6 +1338,23 @@ function startStatusServer() {
         if (sports.length > 1) return 'multi';
         return 'unknown';
       }
+      // A parlay is a Same-Game Parlay if 2+ legs share a pxEventId.
+      function isSGP(o) {
+        const legs = o.meta?.legs || o.legs || [];
+        if (legs.length < 2) return false;
+        const seen = new Set();
+        for (const l of legs) {
+          const eid = l.pxEventId;
+          if (!eid) continue;
+          if (seen.has(eid)) return true;
+          seen.add(eid);
+        }
+        return false;
+      }
+      // Did this parlay hit the correlation penalty? Recorded in meta.correlationBoost.
+      function wasBoosted(o) {
+        return o.meta?.correlationBoost != null && o.meta.correlationBoost > 1;
+      }
 
       const byKey = (grouper, label) => {
         const buckets = {};
@@ -1358,12 +1375,68 @@ function startStatusServer() {
         );
       };
 
+      // SGP split: is the correlation penalty killing fill volume?
+      // Compare SGP fill rate vs cross-game fill rate overall AND per-sport.
+      const sgpCandidates = candidates.filter(isSGP);
+      const nonSgpCandidates = candidates.filter(o => !isSGP(o));
+      const boostedCandidates = candidates.filter(wasBoosted);
+      function fillPct(arr) {
+        const confirmed = arr.filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_'))).length;
+        return {
+          submitted: arr.length,
+          confirmed,
+          fillPct: arr.length > 0 ? Math.round(confirmed / arr.length * 1000) / 10 : 0,
+        };
+      }
+      // SGP fill rate broken down by sport so we can see if it's a specific
+      // sport (e.g. NHL SGPs) that's failing to fill vs across-the-board.
+      const sgpBySport = {};
+      const nonSgpBySport = {};
+      for (const o of sgpCandidates) {
+        const s = primarySport(o);
+        if (!sgpBySport[s]) sgpBySport[s] = [];
+        sgpBySport[s].push(o);
+      }
+      for (const o of nonSgpCandidates) {
+        const s = primarySport(o);
+        if (!nonSgpBySport[s]) nonSgpBySport[s] = [];
+        nonSgpBySport[s].push(o);
+      }
+      const sgpVsNonSgpBySport = {};
+      const allSports = new Set([...Object.keys(sgpBySport), ...Object.keys(nonSgpBySport)]);
+      for (const s of allSports) {
+        const sgp = fillPct(sgpBySport[s] || []);
+        const nonSgp = fillPct(nonSgpBySport[s] || []);
+        sgpVsNonSgpBySport[s] = {
+          sgp,
+          nonSgp,
+          // Delta: positive = SGPs are filling HIGHER (correlation penalty isn't biting);
+          //        negative = SGPs are filling LOWER (penalty might be too aggressive)
+          fillDelta: sgp.fillPct - nonSgp.fillPct,
+        };
+      }
+
       res.json({
         ok: true,
         totalCandidates: candidates.length,
         overall: {
           submitted: candidates.length,
           confirmed: candidates.filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_'))).length,
+        },
+        // NEW: SGP vs cross-game split. If SGPs fill much worse than cross-game
+        // parlays, the correlation penalty is killing volume. If SGPs fill at
+        // a similar rate, the penalty is sized about right and the "below Pin"
+        // optics are safe to ignore.
+        sgpVsNonSgp: {
+          sgp: fillPct(sgpCandidates),
+          nonSgp: fillPct(nonSgpCandidates),
+          withCorrelationBoost: fillPct(boostedCandidates),
+          bySport: Object.fromEntries(
+            Object.entries(sgpVsNonSgpBySport)
+              .filter(([, v]) => v.sgp.submitted + v.nonSgp.submitted >= 10)
+              .sort((a, b) => (b[1].sgp.submitted + b[1].nonSgp.submitted) - (a[1].sgp.submitted + a[1].nonSgp.submitted))
+          ),
+          note: 'fillDelta = sgp.fillPct - nonSgp.fillPct. Strongly negative = correlation penalty may be too aggressive for this sport.',
         },
         bySport: byKey(primarySport, 'sport'),
         byLegCount: byKey(o => bucketLegs((o.meta?.legs || o.legs || []).length), 'legs'),
