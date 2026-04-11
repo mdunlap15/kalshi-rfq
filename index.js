@@ -1974,34 +1974,42 @@ function startStatusServer() {
   // "why don't my quotes show Kalshi odds?" — it's almost always because
   // SharpAPI returned zero Kalshi rows for that sport/event.
   app.get('/book-coverage', (req, res) => {
-    const all = oddsFeed.getAllCachedEvents();
+    const sports = ['basketball_nba', 'baseball_mlb', 'icehockey_nhl', 'tennis', 'soccer', 'soccer_epl', 'soccer_usa_mls', 'soccer_uefa_champs_league', 'basketball_wnba'];
     const out = { sports: {} };
-    for (const [sport, events] of Object.entries(all)) {
-      const sportStats = {
+    for (const sport of sports) {
+      const cache = oddsFeed.__debugGetCache(sport);
+      if (!cache || !cache.events) continue;
+      const stats = {
         totalEvents: 0,
         eventsWithH2H: 0,
+        eventsWithSpread: 0,
+        eventsWithTotals: 0,
         bookCounts: { pinnacle: 0, fanduel: 0, draftkings: 0, kalshi: 0 },
-        rawBookKeys: {}, // tracks every distinct sportsbook string seen in raw rows
+        rawBookKeys: {},
       };
-      const evList = Array.isArray(events) ? events : Object.values(events).flatMap(v => Array.isArray(v) ? v : [v]);
-      for (const ev of evList) {
-        sportStats.totalEvents++;
-        if (ev.markets?.h2h) {
-          sportStats.eventsWithH2H++;
-          if (ev.markets.h2h.pinnacle) sportStats.bookCounts.pinnacle++;
-          if (ev.markets.h2h.fanduel) sportStats.bookCounts.fanduel++;
-          if (ev.markets.h2h.draftkings) sportStats.bookCounts.draftkings++;
-          if (ev.markets.h2h.kalshi) sportStats.bookCounts.kalshi++;
-        }
-        // Inspect raw rows so we can see what sportsbook strings SharpAPI is
-        // actually returning (catches cases where Kalshi shows up under a
-        // different identifier like "kalshi_sports" or "kalshi_usa").
-        for (const r of (ev._rawOdds || [])) {
-          const sb = r.sportsbook || '(none)';
-          sportStats.rawBookKeys[sb] = (sportStats.rawBookKeys[sb] || 0) + 1;
+      for (const entry of Object.values(cache.events)) {
+        const evList = Array.isArray(entry) ? entry : [entry];
+        for (const ev of evList) {
+          if (!ev) continue;
+          stats.totalEvents++;
+          const m = ev.markets || {};
+          const addBookCounts = (mkt) => {
+            if (!mkt) return;
+            if (mkt.pinnacle) stats.bookCounts.pinnacle++;
+            if (mkt.fanduel) stats.bookCounts.fanduel++;
+            if (mkt.draftkings) stats.bookCounts.draftkings++;
+            if (mkt.kalshi) stats.bookCounts.kalshi++;
+          };
+          if (m.h2h) { stats.eventsWithH2H++; addBookCounts(m.h2h); }
+          if (m.spreads) stats.eventsWithSpread++;
+          if (m.totals) stats.eventsWithTotals++;
+          for (const r of (ev._rawOdds || [])) {
+            const sb = r.sportsbook || '(none)';
+            stats.rawBookKeys[sb] = (stats.rawBookKeys[sb] || 0) + 1;
+          }
         }
       }
-      out.sports[sport] = sportStats;
+      if (stats.totalEvents > 0) out.sports[sport] = stats;
     }
     res.json(out);
   });
