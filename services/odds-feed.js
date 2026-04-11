@@ -1570,50 +1570,79 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
           // Group by point value, collect home/away with book attribution
           for (const o of (market.outcomes || [])) {
             const lineKey = Math.abs(o.point);
-            if (!result.altSpreads[lineKey]) result.altSpreads[lineKey] = { probs: [], books: new Set() };
+            if (!result.altSpreads[lineKey]) {
+              result.altSpreads[lineKey] = { probs: [], books: new Set(), byBook: {} };
+            }
             const isHome = o.name === homeTeam || o.name === data.home_team;
             const prob = americanToImpliedProb(o.price);
             result.altSpreads[lineKey].probs.push({ isHome, prob, point: o.point });
             result.altSpreads[lineKey].books.add(book.key);
+            // Per-book raw odds so the dashboard can display actual
+            // Pinnacle/DK/FD values for this specific alt line.
+            if (!result.altSpreads[lineKey].byBook[book.key]) {
+              result.altSpreads[lineKey].byBook[book.key] = {};
+            }
+            result.altSpreads[lineKey].byBook[book.key][isHome ? 'home' : 'away'] = o.price;
           }
         } else if (market.key === 'alternate_totals') {
           for (const o of (market.outcomes || [])) {
             const lineKey = o.point;
-            if (!result.altTotals[lineKey]) result.altTotals[lineKey] = { probs: [], books: new Set() };
+            if (!result.altTotals[lineKey]) {
+              result.altTotals[lineKey] = { probs: [], books: new Set(), byBook: {} };
+            }
             const isOver = o.name === 'Over';
             const prob = americanToImpliedProb(o.price);
             result.altTotals[lineKey].probs.push({ isOver, prob });
             result.altTotals[lineKey].books.add(book.key);
+            if (!result.altTotals[lineKey].byBook[book.key]) {
+              result.altTotals[lineKey].byBook[book.key] = {};
+            }
+            result.altTotals[lineKey].byBook[book.key][isOver ? 'over' : 'under'] = o.price;
           }
         }
       }
     }
 
-    // De-vig each line — require minimum number of books for accuracy
+    // De-vig each line — require minimum number of books for accuracy.
+    // Preserve byBook raw odds through the consolidation so per-book
+    // accessors can look up the exact alt line even when consensus is too
+    // thin to de-vig.
     let skippedThinSpreads = 0, skippedThinTotals = 0;
     for (const [lineKey, lineData] of Object.entries(result.altSpreads)) {
       const bookCount = lineData.books.size;
+      const byBook = lineData.byBook;
       const homeProbs = lineData.probs.filter(p => p.isHome).map(p => p.prob);
       const awayProbs = lineData.probs.filter(p => !p.isHome).map(p => p.prob);
       if (homeProbs.length > 0 && awayProbs.length > 0 && bookCount >= ALT_LINES_MIN_BOOKS) {
         const [fh, fa] = deVig2Way(avg(homeProbs), avg(awayProbs));
-        result.altSpreads[lineKey] = { home: fh, away: fa, books: bookCount };
+        result.altSpreads[lineKey] = { home: fh, away: fa, books: bookCount, byBook };
       } else {
         if (homeProbs.length > 0 && awayProbs.length > 0) skippedThinSpreads++;
-        delete result.altSpreads[lineKey];
+        // Keep a stub with only byBook so accessors can still return per-book
+        // raw odds even when the consensus is too thin to de-vig.
+        if (Object.keys(byBook).length > 0) {
+          result.altSpreads[lineKey] = { home: null, away: null, books: bookCount, byBook };
+        } else {
+          delete result.altSpreads[lineKey];
+        }
       }
     }
 
     for (const [lineKey, lineData] of Object.entries(result.altTotals)) {
       const bookCount = lineData.books.size;
+      const byBook = lineData.byBook;
       const overProbs = lineData.probs.filter(p => p.isOver).map(p => p.prob);
       const underProbs = lineData.probs.filter(p => !p.isOver).map(p => p.prob);
       if (overProbs.length > 0 && underProbs.length > 0 && bookCount >= ALT_LINES_MIN_BOOKS) {
         const [fo, fu] = deVig2Way(avg(overProbs), avg(underProbs));
-        result.altTotals[lineKey] = { over: fo, under: fu, books: bookCount };
+        result.altTotals[lineKey] = { over: fo, under: fu, books: bookCount, byBook };
       } else {
         if (overProbs.length > 0 && underProbs.length > 0) skippedThinTotals++;
-        delete result.altTotals[lineKey];
+        if (Object.keys(byBook).length > 0) {
+          result.altTotals[lineKey] = { over: null, under: null, books: bookCount, byBook };
+        } else {
+          delete result.altTotals[lineKey];
+        }
       }
     }
 
@@ -1780,7 +1809,10 @@ function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targe
     return null;
   }
 
-  if (!lineMatchesPrimary(market, marketType, line)) return null;
+  if (!lineMatchesPrimary(market, marketType, line)) {
+    // Primary line doesn't match — try the alt-line per-book cache.
+    return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'pinnacle');
+  }
   if (!market.pinnacle) return null;
   if (marketType === 'h2h' || marketType === 'spreads') {
     if (selection === 'home') return market.pinnacle.home || null;
@@ -1825,7 +1857,9 @@ function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, target
     return null;
   }
 
-  if (!lineMatchesPrimary(market, marketType, line)) return null;
+  if (!lineMatchesPrimary(market, marketType, line)) {
+    return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'fanduel');
+  }
   if (!market.fanduel) return null;
   if (marketType === 'h2h' || marketType === 'spreads') {
     if (selection === 'home') return market.fanduel.home || null;
@@ -1846,7 +1880,9 @@ function getKalshiOdds(sport, homeTeam, awayTeam, marketType, selection, targetT
 
   if (marketType === 'team_totals') return null;
 
-  if (!lineMatchesPrimary(market, marketType, line)) return null;
+  if (!lineMatchesPrimary(market, marketType, line)) {
+    return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'kalshi');
+  }
   if (!market.kalshi) return null;
   if (marketType === 'h2h' || marketType === 'spreads') {
     if (selection === 'home') return market.kalshi.home || null;
@@ -1867,7 +1903,9 @@ function getDraftKingsOdds(sport, homeTeam, awayTeam, marketType, selection, tar
 
   if (marketType === 'team_totals') return null;
 
-  if (!lineMatchesPrimary(market, marketType, line)) return null;
+  if (!lineMatchesPrimary(market, marketType, line)) {
+    return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'draftkings');
+  }
   if (!market.draftkings) return null;
   if (marketType === 'h2h' || marketType === 'spreads') {
     if (selection === 'home') return market.draftkings.home || null;
@@ -1971,6 +2009,38 @@ function getAltLineFairProb(eventKey, marketType, selection, line) {
     if (selection === 'under') return lineData.under || null;
   }
 
+  return null;
+}
+
+/**
+ * Look up a specific book's raw American odds for a cached alt line.
+ * Returns null if the alt line isn't cached, the book didn't post it,
+ * or the requested selection wasn't covered. Used by getPinnacleOdds
+ * and siblings to supply accurate competitor comparison values when
+ * the PX RFQ line differs from the primary cached line.
+ */
+function getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, book) {
+  if (!homeTeam || !awayTeam || line == null || !book) return null;
+  const eventKey = normalizeEventKey(homeTeam, awayTeam);
+  const alt = altLinesCache[eventKey];
+  if (!alt) return null;
+
+  let lineData;
+  if (marketType === 'spreads') lineData = alt.altSpreads[Math.abs(line)];
+  else if (marketType === 'totals') lineData = alt.altTotals[line];
+  else return null;
+
+  if (!lineData || !lineData.byBook) return null;
+  const bookOdds = lineData.byBook[book];
+  if (!bookOdds) return null;
+
+  if (marketType === 'spreads') {
+    if (selection === 'home') return bookOdds.home != null ? bookOdds.home : null;
+    if (selection === 'away') return bookOdds.away != null ? bookOdds.away : null;
+  } else if (marketType === 'totals') {
+    if (selection === 'over') return bookOdds.over != null ? bookOdds.over : null;
+    if (selection === 'under') return bookOdds.under != null ? bookOdds.under : null;
+  }
   return null;
 }
 
