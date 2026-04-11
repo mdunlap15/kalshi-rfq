@@ -288,25 +288,78 @@ async function priceParlay(legs) {
     offeredImpliedProb *= applyOddsVig(leg.fairProb);
   }
 
-  // Correlation adjustment for same-game multi-leg parlays. Legs on the same
-  // game are positively correlated (e.g. favorite winning & game going over),
-  // so the true joint probability is higher than the product of per-leg fair
-  // probs. Applied as a multiplicative boost on the parlay's fair prob, then
-  // re-vigged as a single combined bet. We take max(per-leg vig result,
-  // correlation-adjusted-with-vig) so we never price BELOW the uncorrelated
-  // baseline — correlation only pushes prices tighter, never looser.
-  const correlationBoost = computeCorrelationBoost(pricedLegs);
-  if (correlationBoost > 1.0) {
-    const adjustedFair = Math.min(fairParlayProb * correlationBoost, 0.99);
-    const adjustedFairDecimal = 1 / adjustedFair;
-    // Apply a conservative 3% vig on the correlation-adjusted fair as a
-    // single combined bet (matching the per-leg vig method).
-    const corrVig = Math.max(baseVig, 0.03);
-    const adjustedPayout = (adjustedFairDecimal - 1) * (1 - corrVig);
-    const correlatedOfferedProb = 1 / (1 + adjustedPayout);
-    if (correlatedOfferedProb > offeredImpliedProb) {
-      log.info('Pricing', `Correlation penalty: boost ${correlationBoost.toFixed(2)}x raised offered implied ${(offeredImpliedProb*100).toFixed(2)}% → ${(correlatedOfferedProb*100).toFixed(2)}% for ${pricedLegs.length}-leg parlay`);
-      offeredImpliedProb = correlatedOfferedProb;
+  // ---------------------------------------------------------------------
+  // SGP correlation handling — PIN-MATCH approach
+  //
+  // Prior approach used hard-coded multiplicative boosts (1.15x ML+total,
+  // 1.22x spread+total) which consistently priced SGPs far below Pinnacle,
+  // crushing fill rate. New approach: target Pinnacle's raw compound parlay
+  // price (which already embeds Pin's own correlation model) and offer the
+  // bettor a small 0.5% edge below that. Pinnacle's SGP pricing is the
+  // sharpest public signal — matching it ensures we're competitive without
+  // overpaying on correlation.
+  //
+  // Formula: pinMatchTarget = pinRawCompound * (1 - 0.005)
+  //   offered = max(perLegVigResult, pinMatchTarget)
+  //
+  // max() ensures we never loosen below per-leg vig baseline. If Pin data
+  // missing for any leg, fall back to a modest 1.05x boost re-vigged.
+  // ---------------------------------------------------------------------
+  let pricingMethod = 'perLegVig';
+  let pinRawCompound = null;
+  let pinMatchTarget = null;
+
+  // Detect SGP: any event id shared by 2+ legs
+  const eventCounts = {};
+  for (const pl of pricedLegs) {
+    const eid = pl.lineInfo.pxEventId;
+    if (!eid) continue;
+    eventCounts[eid] = (eventCounts[eid] || 0) + 1;
+  }
+  const isSGP = Object.values(eventCounts).some(c => c >= 2);
+
+  if (isSGP) {
+    // Compute Pinnacle raw compound implied prob using DNB-adjusted values
+    // where applicable (soccer 2-way moneylines).
+    const pinLegs = pricedLegs.filter(l => l.pinnacleOdds != null);
+    const havePinAll = pinLegs.length === pricedLegs.length;
+
+    if (havePinAll) {
+      let pinProb = 1;
+      for (const l of pricedLegs) {
+        const legImpl = l.lineInfo.isDNB && l.pinnacleDNBProb != null
+          ? l.pinnacleDNBProb
+          : oddsFeed.americanToImpliedProb(l.pinnacleOdds);
+        pinProb *= legImpl;
+      }
+      if (pinProb > 0 && pinProb < 1) {
+        pinRawCompound = pinProb;
+        // Target 0.5% bettor edge below Pin raw compound
+        pinMatchTarget = pinRawCompound * (1 - 0.005);
+        if (pinMatchTarget > offeredImpliedProb) {
+          log.info('Pricing', `SGP pin-match: ${pricedLegs.length}-leg parlay offered ${(offeredImpliedProb*100).toFixed(2)}% → ${(pinMatchTarget*100).toFixed(2)}% (Pin raw ${(pinRawCompound*100).toFixed(2)}%)`);
+          offeredImpliedProb = pinMatchTarget;
+          pricingMethod = 'sgp_pin_match';
+        } else {
+          // Per-leg vig already gives bettor better value than Pin — keep it
+          pricingMethod = 'sgp_pin_match_keep_baseline';
+        }
+      }
+    }
+
+    // Fallback: Pin data missing — use modest 1.05x boost on fair prob re-vigged
+    if (pinRawCompound == null) {
+      const fallbackBoost = 1.05;
+      const adjustedFair = Math.min(fairParlayProb * fallbackBoost, 0.99);
+      const adjustedFairDecimal = 1 / adjustedFair;
+      const corrVig = Math.max(baseVig, 0.03);
+      const adjustedPayout = (adjustedFairDecimal - 1) * (1 - corrVig);
+      const fallbackOfferedProb = 1 / (1 + adjustedPayout);
+      if (fallbackOfferedProb > offeredImpliedProb) {
+        log.info('Pricing', `SGP fallback boost ${fallbackBoost.toFixed(2)}x (Pin missing): ${(offeredImpliedProb*100).toFixed(2)}% → ${(fallbackOfferedProb*100).toFixed(2)}% for ${pricedLegs.length}-leg parlay`);
+        offeredImpliedProb = fallbackOfferedProb;
+        pricingMethod = 'sgp_fallback_boost';
+      }
     }
   }
 
@@ -434,7 +487,10 @@ async function priceParlay(legs) {
       }),
       vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb), 0) / pricedLegs.length * 10000) / 10000,
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
-      correlationBoost: correlationBoost > 1 ? Math.round(correlationBoost * 1000) / 1000 : undefined,
+      pricingMethod,
+      isSGP,
+      pinRawCompound: pinRawCompound != null ? Math.round(pinRawCompound * 100000) / 100000 : null,
+      pinMatchTarget: pinMatchTarget != null ? Math.round(pinMatchTarget * 100000) / 100000 : null,
       offeredImpliedProb: Math.round(cappedProb * 100000) / 100000,
       decimalOdds: Math.round(decimalOdds * 100) / 100,
       americanOdds,
@@ -697,8 +753,8 @@ function shouldDecline(legs) {
       }
     }
     // Note: same-game spread+total and moneyline+total are NOT blocked here
-    // because they're still reasonable to quote — but they receive a correlation
-    // penalty at pricing time (see computeCorrelationBoost in priceParlay).
+    // because they're still reasonable to quote — SGP correlation is handled
+    // at pricing time via Pin-match logic (pinMatchTarget in priceParlay).
   }
 
   // Check team-level exposure limits

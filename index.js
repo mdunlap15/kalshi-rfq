@@ -1351,8 +1351,11 @@ function startStatusServer() {
         }
         return false;
       }
-      // Did this parlay hit the correlation penalty? Recorded in meta.correlationBoost.
+      // Did this SGP hit the correlation penalty? Post-pin-match refactor,
+      // the marker is meta.pricingMethod being an SGP variant. Legacy orders
+      // fall back to the old meta.correlationBoost field for historical data.
       function wasBoosted(o) {
+        if (o.meta?.pricingMethod && o.meta.pricingMethod.startsWith('sgp_')) return true;
         return o.meta?.correlationBoost != null && o.meta.correlationBoost > 1;
       }
 
