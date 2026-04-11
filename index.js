@@ -2458,6 +2458,48 @@ function startStatusServer() {
     }
   });
 
+  // Run the same fetch path enrichOpenPositionsFromAffiliate uses, but on
+  // an arbitrary set of event_ids. Returns eventInfo + lineIdInfo so we can
+  // verify the bulk markets parser works.
+  app.get('/debug-affiliate-enrich-dry', async (req, res) => {
+    try {
+      const pxSvc = require('./services/prophetx');
+      const ids = (req.query.event_ids || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (ids.length === 0) return res.status(400).json({ ok: false, error: 'missing event_ids' });
+      const seList = await pxSvc.fetchAffiliateSportEvents({ eventIds: ids });
+      const bulkMarkets = await pxSvc.fetchAffiliateMultipleMarkets(ids);
+      const lineIdInfo = {};
+      let marketsSeen = 0, marketsParsed = 0;
+      for (const [eid, marketList] of Object.entries(bulkMarkets || {})) {
+        if (!Array.isArray(marketList)) continue;
+        for (const market of marketList) {
+          marketsSeen++;
+          if (!['moneyline', 'spread', 'total', 'team_total'].includes(market.type)) continue;
+          let parsed;
+          try { parsed = pxSvc.parseMarketSelections(market); }
+          catch (e) { continue; }
+          marketsParsed++;
+          for (const sel of parsed || []) {
+            if (!sel.lineId) continue;
+            lineIdInfo[sel.lineId] = { teamName: sel.teamName, marketType: sel.marketType, selection: sel.selection, line: sel.line };
+          }
+        }
+      }
+      res.json({
+        ok: true,
+        requested: ids.length,
+        sportEventsResolved: (seList || []).length,
+        sportEventsSample: (seList || []).slice(0, 3).map(se => ({ event_id: se.event_id, name: se.name, competitors: (se.competitors || []).map(c => ({ side: c.side, display_name: c.display_name })), scheduled: se.scheduled, sport_name: se.sport_name })),
+        bulkMarketsTopKeys: Object.keys(bulkMarkets || {}),
+        marketsSeen, marketsParsed,
+        lineIdCount: Object.keys(lineIdInfo).length,
+        lineIdSample: Object.entries(lineIdInfo).slice(0, 5),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   app.get('/debug-px-probe', async (req, res) => {
     try {
       const pxSvc = require('./services/prophetx');
