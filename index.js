@@ -2350,6 +2350,62 @@ function startStatusServer() {
   // Dump raw PX markets for a specific event by team substring match.
   // Used to see whether PX is even returning alt puck lines / alt spread
   // markets for NHL / MLB so we can tell coverage from parsing bugs.
+  // Probe raw PX reference endpoints to find ones that return team/market
+  // names for events we can't currently resolve. Pass ?tournament_id=234 to
+  // try the tournament-scoped sport_events call, or ?event_ids=1,2,3 to
+  // try get_multiple_markets.
+  app.get('/debug-px-probe', async (req, res) => {
+    try {
+      const pxSvc = require('./services/prophetx');
+      const out = {};
+      if (req.query.tournament_id) {
+        try {
+          const raw = await pxSvc.pxFetch(`/partner/mm/get_sport_events?tournament_id=${req.query.tournament_id}`);
+          out.tournamentEvents = {
+            ok: true,
+            topKeys: raw && raw.data ? Object.keys(raw.data) : Object.keys(raw || {}),
+            count: (raw?.data?.sport_events || raw?.sport_events || []).length,
+            sample: (raw?.data?.sport_events || raw?.sport_events || []).slice(0, 3),
+          };
+        } catch (err) { out.tournamentEvents = { ok: false, error: err.message }; }
+      }
+      if (req.query.event_ids) {
+        const ids = req.query.event_ids.split(',').map(s => s.trim()).filter(Boolean);
+        // Try several URL shapes for "multiple markets"
+        const shapes = [
+          `/partner/mm/get_multiple_markets?event_ids=${ids.join(',')}`,
+          `/partner/mm/get_multiple_markets?event_id=${ids.join('&event_id=')}`,
+          `/partner/mm/get_markets?event_ids=${ids.join(',')}`,
+          `/partner/mm/get_markets?event_id=${ids.join('&event_id=')}`,
+        ];
+        out.multipleMarkets = [];
+        for (const shape of shapes) {
+          try {
+            const raw = await pxSvc.pxFetch(shape);
+            out.multipleMarkets.push({
+              url: shape,
+              ok: true,
+              topKeys: raw && raw.data ? Object.keys(raw.data) : Object.keys(raw || {}),
+              sample: JSON.stringify(raw).slice(0, 800),
+            });
+          } catch (err) {
+            out.multipleMarkets.push({ url: shape, ok: false, error: err.message });
+          }
+        }
+      }
+      if (req.query.event_id) {
+        // Single event resolution for comparison
+        try {
+          const markets = await pxSvc.fetchMarkets(req.query.event_id);
+          out.singleEvent = { ok: true, count: markets.length, marketTypes: [...new Set(markets.map(m => m.type))], sample: markets[0] };
+        } catch (err) { out.singleEvent = { ok: false, error: err.message }; }
+      }
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/debug-px-markets', async (req, res) => {
     const q = (req.query.q || '').toLowerCase();
     const sportFilter = req.query.sport || 'Hockey';
