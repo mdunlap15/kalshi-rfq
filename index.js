@@ -2432,7 +2432,7 @@ function startStatusServer() {
         for (const p of mmPaths) {
           try {
             const raw = await pxSvc.pxFetch(p);
-            out.multipleMarketsProbes.push({ path: p, ok: true, topKeys: Object.keys(raw || {}), sample: JSON.stringify(raw).slice(0, 800) });
+            out.multipleMarketsProbes.push({ path: p, ok: true, topKeys: Object.keys(raw || {}), sample: JSON.stringify(raw).slice(0, 4000) });
           } catch (err) {
             out.multipleMarketsProbes.push({ path: p, ok: false, error: err.message });
           }
