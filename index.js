@@ -1969,6 +1969,57 @@ function startStatusServer() {
     res.json({ events: oddsFeed.getAllCachedEvents() });
   });
 
+  // Full event detail — returns cached markets (all books) for a specific
+  // event by team-name substring match. Used to audit stale/wrong Pinnacle
+  // values in quoted parlays.
+  app.get('/odds-event-detail', (req, res) => {
+    const q = (req.query.q || '').toLowerCase();
+    const sportFilter = req.query.sport || null;
+    if (!q) return res.status(400).json({ ok: false, error: 'missing q param' });
+    const sports = sportFilter ? [sportFilter] : [
+      'basketball_nba', 'baseball_mlb', 'icehockey_nhl', 'tennis',
+      'soccer', 'soccer_epl', 'soccer_usa_mls', 'soccer_uefa_champs_league',
+      'soccer_uefa_europa_league', 'soccer_spain_la_liga',
+      'soccer_italy_serie_a', 'soccer_germany_bundesliga',
+      'soccer_france_ligue_one', 'soccer_usa_nwsl', 'basketball_wnba',
+    ];
+    const hits = [];
+    for (const sport of sports) {
+      const cache = oddsFeed.__debugGetCache(sport);
+      if (!cache || !cache.events) continue;
+      for (const entry of Object.values(cache.events)) {
+        const evList = Array.isArray(entry) ? entry : [entry];
+        for (const ev of evList) {
+          if (!ev) continue;
+          const hay = ((ev.homeTeam || '') + ' ' + (ev.awayTeam || '')).toLowerCase();
+          if (!hay.includes(q)) continue;
+          // Return full market structure + first few raw rows per book
+          const rawBySb = {};
+          for (const r of (ev._rawOdds || [])) {
+            if (!rawBySb[r.sportsbook]) rawBySb[r.sportsbook] = [];
+            rawBySb[r.sportsbook].push({
+              mt: r.market_type,
+              st: r.selection_type,
+              line: r.line,
+              american: r.odds_american,
+            });
+          }
+          hits.push({
+            sport,
+            homeTeam: ev.homeTeam,
+            awayTeam: ev.awayTeam,
+            commenceTime: ev.commenceTime,
+            fetchedAt: new Date(cache.fetchedAt).toISOString(),
+            cacheAgeMin: Math.round((Date.now() - cache.fetchedAt) / 60000),
+            markets: ev.markets,
+            rawBySb,
+          });
+        }
+      }
+    }
+    res.json({ hits });
+  });
+
   // Book coverage diagnostic — counts how many events per sport have each
   // sportsbook present (pinnacle, fanduel, draftkings, kalshi). Answers
   // "why don't my quotes show Kalshi odds?" — it's almost always because
