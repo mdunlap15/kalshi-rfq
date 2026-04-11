@@ -2054,7 +2054,7 @@ function startStatusServer() {
         ok: true,
         event: { id: hit.event_id, name: hit.name, sport: hit.sport_name },
         marketCount: markets.length,
-        markets: filtered.filter(m => /spread|puck|line|run/i.test(m.name || '') || m.type === 'spread'),
+        markets: req.query.all ? filtered : filtered.filter(m => /spread|puck|line|run/i.test(m.name || '') || m.type === 'spread'),
       });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
