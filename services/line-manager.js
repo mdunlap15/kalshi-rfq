@@ -47,12 +47,18 @@ const TOTAL_BOUNDS_BY_SPORT = {
   'soccer_usa_nwsl': [0.5, 7],
   'tennis': [15, 40],
 };
+// Max plausible alt-spread line per sport. PX bettors commonly play alt
+// lines out to ±4 or ±5 for hockey/baseball (e.g. Rangers -3.5 puck line,
+// Dodgers -4.5 run line). Previous bounds of 3 for NHL and MLB excluded
+// these entirely — ~350 NHL alt-spread RFQs/hour were silently declining
+// because the ENTIRE market bundle was rejected whenever its first
+// market_line happened to exceed 3. Widened to 5 for those sports.
 const MAX_SPREAD_BY_SPORT = {
   'basketball_nba': 30,
   'basketball_ncaab': 40,
   'basketball_wnba': 30,
-  'icehockey_nhl': 3,
-  'baseball_mlb': 3,
+  'icehockey_nhl': 5,
+  'baseball_mlb': 5,
   'soccer': 5,
   'soccer_usa_mls': 5,
   'soccer_epl': 5,
@@ -406,11 +412,21 @@ async function seedAllLines() {
       }
       // Exclude sub-game totals/spreads and prop markets via sport-aware bounds.
       // F5 markets bypass (MLB F5 totals are ~4-5, spreads ~1.5).
+      //
+      // IMPORTANT: PX bundles alt lines inside market.market_lines, so a
+      // single spread market can contain lines from ±0.5 to ±6.5. Previously
+      // this check read parsed[0].line and rejected the entire market if
+      // THAT one happened to be out of bounds — silently losing all the
+      // reasonable alt lines bundled in the same market. Fixed: accept the
+      // market if ANY selection has a line inside the sport's bounds. The
+      // individual selection-level bound check (below, inside the
+      // registration loop) filters out the out-of-range alt lines one-by-one.
       if ((m.type === 'total' || m.type === 'spread') && !isF5) {
         const parsed = px.parseMarketSelections(m);
-        const line = parsed[0]?.line;
-        if (!isValidFullGameLine(sportKey, m.type, line)) {
-          log.debug('Lines', `Rejecting out-of-bounds ${m.type} ${line} for ${sportKey}: ${m.name}`);
+        if (parsed.length === 0) return false;
+        const anyInBounds = parsed.some(p => isValidFullGameLine(sportKey, m.type, p.line));
+        if (!anyInBounds) {
+          log.debug('Lines', `Rejecting ${m.type} market (no lines in bounds) for ${sportKey}: ${m.name}`);
           return false;
         }
       }
@@ -435,6 +451,17 @@ async function seedAllLines() {
 
       for (const sel of parsed) {
         totalLines++;
+
+        // Per-selection bounds check for spread/total alt lines. The market-
+        // level filter above accepts the market if ANY selection is in
+        // bounds; this check rejects the individual out-of-range ones
+        // (e.g. Rangers -6.5 puck line) while keeping sibling in-range
+        // alts (Rangers -1.5, -2.5, -3.5) registered. Non-spread/total
+        // selections always pass (line is null or doesn't apply).
+        const selMarketType = (sel.marketType === 'spread' || sel.marketType === 'total') ? sel.marketType : null;
+        if (selMarketType && !isValidFullGameLine(sportKey, selMarketType, sel.line)) {
+          continue;
+        }
 
         // Determine Odds API selection mapping
         let oddsApiSelection = null;
