@@ -1817,8 +1817,18 @@ async function pollOrderSettlements(px) {
  */
 
 /**
- * Find and revert any settled orders where ALL legs have future start times.
- * These are bogus settlements — games haven't started so outcome is unknown.
+ * Find and revert any settled orders where NO leg could possibly have resolved.
+ *
+ * CRITICAL: previous version used legs.some(unfinished) which destroyed
+ * legitimate early settlements (e.g. 3-leg parlay where leg 1 busted bettor-
+ * side, making SP winner before legs 2 and 3 play out). That bug has been
+ * running every 2 minutes in a background loop, accumulating drift against
+ * PX REST ground truth. Observed impact: our in-memory P&L was off from
+ * PX by ~$4,700 with 151 settled parlays missing.
+ *
+ * Fixed: only revert when EVERY leg is still unfinished (future or within
+ * 4h of start). If any leg has had time to resolve, the parlay could
+ * legitimately have settled via early-win logic.
  */
 function revertBogusSettlements() {
   const now = Date.now();
@@ -1827,17 +1837,16 @@ function revertBogusSettlements() {
     if (!o.status || !o.status.startsWith('settled_')) continue;
     const legs = o.legs || o.meta?.legs || [];
     if (legs.length === 0) continue;
-    // Check for any leg that hasn't finished: future OR in-progress (started < 4h ago)
-    const anyUnfinished = legs.some(l => {
+    const allUnfinished = legs.every(l => {
       const st = l.startTime || l.start_time;
-      if (!st) return false;
+      if (!st) return false; // unknown start time — don't vote unfinished
       const startMs = new Date(st).getTime();
       if (startMs > now) return true; // future — hasn't started
       if ((now - startMs) < 4 * 3600 * 1000) return true; // started < 4h ago — likely in progress
       return false;
     });
-    if (anyUnfinished) {
-      log.warn('Orders', `Reverting bogus settlement: ${o.parlayId} (was ${o.status}, pnl=${o.pnl})`);
+    if (allUnfinished) {
+      log.warn('Orders', `Reverting bogus settlement: ${o.parlayId} (was ${o.status}, pnl=${o.pnl}) — ALL legs still unfinished`);
       // Reverse stats
       if (o.pnl != null) stats.runningPnL -= o.pnl;
       if (o.pnl > 0) stats.totalWins--;
@@ -2092,6 +2101,215 @@ async function checkLegResults() {
 }
 
 /**
+ * Full reconcile against PX REST: pull the ENTIRE order history from PX,
+ * import/update each order in local state, and rebuild stats from scratch.
+ *
+ * This is the authoritative recovery path when local state has drifted
+ * from PX (e.g. from the revertBogusSettlements bug that was silently
+ * destroying legitimate settlements every 2 minutes).
+ *
+ * Flow:
+ *   1. Fetch all PX orders via fetchOrders with a large cap
+ *   2. For each PX order:
+ *      a. If we already have it locally, update status/stake/odds to match PX
+ *      b. If we don't have it, reconstruct a skeleton order from PX data
+ *      c. If PX has it settled, call recordLegSettlement per leg then
+ *         recordSettlement for the parlay (so leg context is preserved)
+ *   3. After upserting everything, reset stats counters and rebuild them
+ *      from the current in-memory `orders` map (ground truth)
+ *
+ * Returns a summary object with before/after counts and P&L.
+ */
+async function fullPxReconcile(px) {
+  const before = {
+    totalQuotes: stats.totalQuotes,
+    totalConfirmations: stats.totalConfirmations,
+    totalSettlements: stats.totalSettlements,
+    totalWins: stats.totalWins,
+    totalLosses: stats.totalLosses,
+    runningPnL: stats.runningPnL,
+    ordersInMemory: Object.keys(orders).length,
+  };
+
+  log.info('Reconcile', 'Starting full PX reconcile — fetching all PX orders...');
+  const pxOrders = await px.fetchOrders(10000); // exhaust PX history
+  log.info('Reconcile', `Fetched ${pxOrders.length} PX orders`);
+
+  let imported = 0;
+  let updated = 0;
+  let settled = 0;
+
+  const lineManager = require('./line-manager');
+
+  for (const pxOrder of pxOrders) {
+    const uuid = pxOrder.order_uuid;
+    if (!uuid) continue;
+    const pxParlayId = pxOrder.p_id || pxOrder.parlay_id;
+    if (!pxParlayId) continue;
+
+    // Locate or construct the local order
+    let order = orders[pxParlayId] || (ordersByUuid[uuid] ? orders[ordersByUuid[uuid]] : null);
+    const wasNew = !order;
+
+    if (!order) {
+      // Reconstruct skeleton from PX data (mirrors pollOrderSettlements logic).
+      const enrichedLegs = (pxOrder.legs || []).map(l => {
+        const info = lineManager.lookupLine(l.line_id);
+        const eventName = l.sport_event_id ? lineManager.getEventName(l.sport_event_id) : null;
+        let team = info?.teamName || '?';
+        if (!info && eventName) team = eventName;
+        if (info?.marketType === 'total' && info?.homeTeam && info?.awayTeam) {
+          team = `${team} (${info.awayTeam} @ ${info.homeTeam})`;
+        }
+        return {
+          lineId: l.line_id,
+          sport: info?.sport || 'unknown',
+          team,
+          teamName: info?.teamName || team,
+          market: info?.marketType || null,
+          marketType: info?.marketType || null,
+          line: l.line,
+          selection: info?.selection || null,
+          homeTeam: info?.homeTeam || null,
+          awayTeam: info?.awayTeam || null,
+          pxEventId: l.sport_event_id,
+          pxEventName: eventName || null,
+          startTime: info?.startTime || null,
+          settlementStatus: l.settlement_status,
+          settlement_status: l.settlement_status,
+        };
+      });
+      order = {
+        parlayId: pxParlayId,
+        status: 'confirmed',
+        legs: enrichedLegs,
+        offeredOdds: pxOrder.confirmed_odds != null ? -pxOrder.confirmed_odds : null,
+        fairParlayProb: null,
+        maxRisk: null,
+        vig: null,
+        confirmedOdds: pxOrder.confirmed_odds != null ? Number(pxOrder.confirmed_odds) : null,
+        confirmedStake: pxOrder.confirmed_stake != null ? Number(pxOrder.confirmed_stake) : null,
+        orderUuid: uuid,
+        quotedAt: null,
+        confirmedAt: new Date((pxOrder.updated_at || 0) * 1000).toISOString(),
+        settledAt: null,
+        pnl: null,
+        settlementResult: null,
+        meta: { reconstructed: true, legs: enrichedLegs },
+      };
+      orders[pxParlayId] = order;
+      ordersByUuid[uuid] = pxParlayId;
+      imported++;
+    } else {
+      // Update stake/odds/uuid from PX if missing
+      if (!order.orderUuid && uuid) {
+        order.orderUuid = uuid;
+        ordersByUuid[uuid] = pxParlayId;
+      }
+      if (!order.confirmedStake && pxOrder.confirmed_stake != null) {
+        order.confirmedStake = Number(pxOrder.confirmed_stake);
+      }
+      if (!order.confirmedOdds && pxOrder.confirmed_odds != null) {
+        order.confirmedOdds = Number(pxOrder.confirmed_odds);
+      }
+      updated++;
+    }
+
+    // Apply settlement if PX says this order is settled
+    const pxStatus = pxOrder.settlement_status;
+    const isSettledOnPx = pxStatus && ['won', 'lost', 'push', 'void'].includes(pxStatus);
+    if (!isSettledOnPx) {
+      // PX has it confirmed/pending — just ensure our status is 'confirmed'
+      if (!order.status?.startsWith('settled_')) {
+        order.status = order.status || 'confirmed';
+      }
+      continue;
+    }
+
+    // Backfill leg settlement data from PX before calling recordSettlement
+    // so loadFromDb's revert heuristic (which looks at leg statuses) has
+    // complete data and won't re-revert on next reload.
+    if (pxOrder.legs && Array.isArray(pxOrder.legs)) {
+      for (const pxLeg of pxOrder.legs) {
+        if (pxLeg.line_id && pxLeg.settlement_status) {
+          recordLegSettlement(uuid, pxLeg);
+        }
+      }
+    }
+
+    // If already marked settled with matching status, fix pnl if PX disagrees
+    if (order.status === `settled_${pxStatus}`) {
+      const pxProfit = pxOrder.profit != null ? Number(pxOrder.profit) : null;
+      if (pxProfit != null && order.pnl != null && Math.abs(pxProfit - order.pnl) > 0.01) {
+        log.info('Reconcile', `Fixing stale pnl for ${pxParlayId}: was ${order.pnl}, PX says ${pxProfit}`);
+        order.pnl = pxProfit;
+        order.pxProfit = pxProfit;
+        db.saveOrder(order).catch(() => {});
+      }
+      continue;
+    }
+
+    // Clear any stale settled_* status so recordSettlement re-runs cleanly
+    if (order.status?.startsWith('settled_')) {
+      order.status = 'confirmed';
+      order.pnl = null;
+    }
+
+    // Record the settlement. recordSettlement will update status, pnl,
+    // stats counters, and persist to DB.
+    recordSettlement(uuid, pxStatus, pxOrder.profit || 0);
+    settled++;
+  }
+
+  // After all upserts, REBUILD stats counters from scratch to eliminate drift.
+  // The recordSettlement path has been incrementing stats throughout the loop,
+  // but those increments were on top of whatever drifted stats existed before.
+  // Resetting + rebuilding guarantees stats match what's actually in `orders`.
+  log.info('Reconcile', 'Rebuilding stats from in-memory orders...');
+  stats.totalQuotes = 0;
+  stats.totalConfirmations = 0;
+  stats.totalRejections = 0;
+  stats.totalSettlements = 0;
+  stats.totalWins = 0;
+  stats.totalLosses = 0;
+  stats.runningPnL = 0;
+  for (const o of Object.values(orders)) {
+    stats.totalQuotes++;
+    if (o.status === 'confirmed') stats.totalConfirmations++;
+    else if (o.status === 'rejected') stats.totalRejections++;
+    else if (o.status?.startsWith('settled_')) {
+      stats.totalSettlements++;
+      if (o.pnl != null) {
+        stats.runningPnL += o.pnl;
+        if (o.pnl > 0) stats.totalWins++;
+        else if (o.pnl < 0) stats.totalLosses++;
+      }
+    }
+  }
+
+  const after = {
+    totalQuotes: stats.totalQuotes,
+    totalConfirmations: stats.totalConfirmations,
+    totalSettlements: stats.totalSettlements,
+    totalWins: stats.totalWins,
+    totalLosses: stats.totalLosses,
+    runningPnL: Math.round(stats.runningPnL * 100) / 100,
+    ordersInMemory: Object.keys(orders).length,
+  };
+
+  log.info('Reconcile', `Done: ${imported} imported, ${updated} updated, ${settled} settled. New P&L: $${after.runningPnL}`);
+
+  return {
+    pxOrdersFetched: pxOrders.length,
+    imported,
+    updated,
+    settled,
+    before,
+    after,
+  };
+}
+
+/**
  * Delete settled orders whose legs are all unresolved ('?' team names).
  * Removes from in-memory store, reverses P&L stats, and deletes from DB.
  */
@@ -2147,6 +2365,7 @@ module.exports = {
   checkLegResults,
   revertBogusSettlements,
   reconcileSettlements,
+  fullPxReconcile,
   deleteUnknownSettledOrders,
   findByParlayId,
   findByOrderUuid,

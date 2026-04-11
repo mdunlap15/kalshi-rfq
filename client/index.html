@@ -575,6 +575,7 @@
 
       <!-- ===================== SECTION: PORTFOLIO ===================== -->
       <div id="section-portfolio" class="section" style="display:none;">
+        <div id="portfolio-summary-tab" style="margin-bottom:12px;"></div>
         <div id="portfolio-perf-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
 
         <!-- Positions: Open / Settled tabs (collapsed by default) -->
@@ -4715,8 +4716,14 @@
   }
 
   function renderPortfolioSummary(orderStats, allOrders, portfolio) {
-    const el = document.getElementById('portfolio-summary');
-    if (!el) return;
+    // Write the same stats bar into both the Orders tab header AND the
+    // Portfolio tab header. The two elements are independent so they can
+    // coexist without affecting layout on either tab.
+    const els = [
+      document.getElementById('portfolio-summary'),
+      document.getElementById('portfolio-summary-tab'),
+    ].filter(Boolean);
+    if (els.length === 0) return;
 
     const pnl = orderStats.runningPnL || 0;
     const wins = orderStats.totalWins || 0;
@@ -4766,17 +4773,34 @@
       return '<span class="stat-item"' + t + '><span class="stat-label">' + label + ':</span> <span class="stat-val ' + (cls || '') + '">' + value + '</span></span>';
     }
 
-    el.innerHTML = `<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">
+    // Balance from /balance endpoint. window._pxBalance may be a bare
+    // number OR a shape like {balance, available, ...}. Fall back to '-'
+    // when we haven't successfully fetched it yet (it's loaded async).
+    let balanceNum = null;
+    if (window._pxBalance != null) {
+      if (typeof window._pxBalance === 'number') balanceNum = window._pxBalance;
+      else if (typeof window._pxBalance === 'object') {
+        balanceNum = window._pxBalance.balance != null ? Number(window._pxBalance.balance)
+                   : window._pxBalance.available != null ? Number(window._pxBalance.available)
+                   : null;
+      }
+    }
+    const balanceStr = balanceNum != null && !isNaN(balanceNum) ? fmtDollar(balanceNum) : '-';
+    const balanceCls = balanceNum != null && balanceNum < 500 ? 'negative'
+                     : balanceNum != null && balanceNum < 2000 ? '' : 'positive';
+
+    const html = `<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">
       <div class="stat-bar" style="gap:6px 18px;">
         ${stat('P&L', pnlStr, pnlCls)}
         ${stat('ROI', roiStr, roiCls, 'Settled P&L / settled risk')}
         ${stat('Active', active)}
         ${stat('Deployed', portStr, portCls)}
         ${stat('To Win', fmtDollar(totalToWin), 'positive')}
-        ${window._pxBalance != null ? stat('Balance', fmtDollar(window._pxBalance.balance || window._pxBalance.available || window._pxBalance)) : ''}
+        ${stat('Balance', balanceStr, balanceCls, 'Live PX account balance')}
         ${stat('Filled', confirmed)}
       </div>
     </div>`;
+    for (const el of els) el.innerHTML = html;
   }
 
   function renderPnLBySport(pnl) {

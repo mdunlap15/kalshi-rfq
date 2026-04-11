@@ -1301,6 +1301,19 @@ function startStatusServer() {
     }
   });
 
+  // Full reconcile against PX REST: exhaust PX order history, import/update
+  // all orders locally, then rebuild stats from scratch. Recovery path for
+  // in-memory drift against PX ground truth.
+  app.post('/full-px-reconcile', async (req, res) => {
+    try {
+      const result = await orderTracker.fullPxReconcile(px);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      log.error('Reconcile', `full-px-reconcile failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Fill-rate breakdown: how often does a submitted quote become a
   // confirmed order, sliced by sport / leg count / odds tier. Low fill
   // rate = we're too tight (outbid) or not competitive. High fill rate
