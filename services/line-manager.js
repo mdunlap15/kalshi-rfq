@@ -801,22 +801,29 @@ async function resolveUnknownLine(rfqLeg) {
         // Reject sub-game/prop totals and spreads by sport-aware bounds.
         // F5 markets must be exempt — detect by NAME, not type, because PX
         // uses type='spread' / 'total' for F5 (only name distinguishes).
-        // Using F5_MARKET_TYPES against market.type was always false, causing
-        // MLB F5 total line 3.5 to be rejected against the MLB total bounds
-        // [4, 15] and preventing any F5 parlay from being quoted.
+        // IMPORTANT: Previously we checked parsed[0].line and rejected the
+        // ENTIRE market if that one line was out of bounds. PX bundles alt
+        // lines inside market_lines, so a single spread market can contain
+        // lines from -6.5 to +6.5. The first-line check would silently drop
+        // the whole bundle — including the in-range alt we were trying to
+        // resolve — causing thousands of spurious "line_not_in_markets"
+        // failures per day. Fixed: defer the bound check to the specific
+        // selection whose lineId matches. The matching branch below checks
+        // sel.line against the sport bounds and rejects only that one.
         const isF5Market = f5NamePat.test(market.name || '');
-        if ((market.type === 'total' || market.type === 'spread') && !isF5Market) {
-          const parsedAll = px.parseMarketSelections(market);
-          const firstLine = parsedAll[0]?.line;
-          if (!isValidFullGameLine(sportKey, market.type, firstLine)) {
-            log.debug('Lines', `resolveUnknownLine: rejecting out-of-bounds ${market.type} ${firstLine} for ${sportKey}: ${market.name}`);
-            resolveUnknownLine._lastFailure = { lineId, reason: 'out_of_bounds_line', sport: sportKey, marketType: market.type, line: firstLine, marketName: market.name };
-            continue;
-          }
-        }
         const parsed = px.parseMarketSelections(market);
         for (const sel of parsed) {
           if (sel.lineId !== lineId) continue;
+          // Per-selection bound check: rejects the specific out-of-range
+          // alt line the RFQ asked about (e.g. Rangers -6.5) while leaving
+          // siblings like Rangers -1.5 intact for future resolves.
+          if ((sel.marketType === 'total' || sel.marketType === 'spread') && !isF5Market) {
+            if (!isValidFullGameLine(sportKey, sel.marketType, sel.line)) {
+              log.debug('Lines', `resolveUnknownLine: rejecting out-of-bounds selection ${sel.marketType} ${sel.line} for ${sportKey}: ${market.name}`);
+              resolveUnknownLine._lastFailure = { lineId, reason: 'out_of_bounds_line', sport: sportKey, marketType: sel.marketType, line: sel.line, marketName: market.name };
+              continue;
+            }
+          }
           // Determine oddsApiSelection
           let oddsApiSelection = null;
           const oddsApiMarket = MARKET_TYPE_MAP[sel.marketType];
