@@ -576,7 +576,6 @@
       <!-- ===================== SECTION: PORTFOLIO ===================== -->
       <div id="section-portfolio" class="section" style="display:none;">
         <div id="portfolio-summary-tab" style="margin-bottom:12px;"></div>
-        <div id="portfolio-perf-summary" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; margin-bottom:12px;"></div>
 
         <!-- Positions: Open / Settled tabs (collapsed by default) -->
         <div class="card">
@@ -3678,10 +3677,11 @@
     const settled = allOrders.filter(o => o.status && o.status.startsWith('settled_'));
     const active = allOrders.filter(o => o.status === 'confirmed');
 
-    // --- Section 1: Performance Summary Cards ---
-    renderPortfolioPerfSummary(stats, settled, allOrders);
-
     // --- Section 2: Open Exposure ---
+    // (Note: the previous "Section 1: Performance Summary Cards" was
+    // removed — it duplicated the main stats bar shown at the top of the
+    // Portfolio tab via renderPortfolioSummary. That bar already covers
+    // P&L / ROI / Active / Deployed / To Win / Balance / Filled.)
     renderPortfolioOpen(active);
 
     // --- Section 4: Settled Positions Log ---
@@ -3930,57 +3930,10 @@
     el.innerHTML = html;
   }
 
-  function renderPortfolioPerfSummary(stats, settled, allOrders) {
-    const el = document.getElementById('portfolio-perf-summary');
-    if (!el) return;
-
-    const pnl = stats.runningPnL || 0;
-    const wins = stats.totalWins || 0;
-    const losses = stats.totalLosses || 0;
-    const totalSettled = wins + losses;
-    const winRate = totalSettled > 0 ? Math.round(wins / totalSettled * 100) : null;
-
-    // Active position totals
-    const activeOrders = (allOrders || []).filter(o => o.status === 'confirmed');
-    let totalRisk = 0, totalToWin = 0;
-    for (const o of activeOrders) {
-      // Risk = our SP stake (= confirmedStake directly)
-      totalRisk += (o.confirmedStake || 0);
-      // To Win = our profit if SP wins (= bettor's original stake)
-      if (o.confirmedStake && o.offeredOdds) totalToWin += calcSpProfit(o.confirmedStake, o.offeredOdds);
-    }
-
-    // ROI = sum of settled P&L / sum of settled risk
-    let settledPnl = 0;
-    let settledRisk = 0;
-    for (const o of (settled || [])) {
-      settledPnl += (o.pnl || 0);
-      if (o.confirmedStake && o.offeredOdds) settledRisk += calcBettorWager(o.confirmedStake, o.offeredOdds);
-      else if (o.confirmedStake) settledRisk += o.confirmedStake;
-    }
-    const roi = settledRisk > 0 ? (settledPnl / settledRisk) * 100 : null;
-
-    const pnlCls = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral';
-    const pnlStr = totalSettled > 0 ? fmtPnl(pnl) : '-';
-    const wrCls = winRate != null ? (winRate >= 50 ? 'positive' : 'negative') : 'neutral';
-    const roiCls = roi != null ? (roi >= 0 ? 'positive' : 'negative') : 'neutral';
-    const roiStr = roi != null ? (roi >= 0 ? '+' : '') + roi.toFixed(2) + '%' : '-';
-
-    function stat(label, value, cls, title) {
-      const t = title ? ' title="' + title + '"' : '';
-      return '<span class="stat-item"' + t + '><span class="stat-label">' + label + ':</span> <span class="stat-val ' + (cls || '') + '">' + value + '</span></span>';
-    }
-
-    el.innerHTML = '<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">' +
-      '<div class="stat-bar" style="gap:6px 18px;">' +
-        stat('P&L', pnlStr, pnlCls) +
-        stat('ROI', roiStr, roiCls, 'Settled P&L / settled risk') +
-        stat('Active', activeOrders.length) +
-        stat('Total Risk', fmtDollar(totalRisk)) +
-        stat('Total To Win', fmtDollar(totalToWin), 'positive') +
-        stat('Settled', totalSettled) +
-      '</div></div>';
-  }
+  // renderPortfolioPerfSummary was removed — it produced a redundant stats
+  // row on the Portfolio tab that duplicated renderPortfolioSummary (which
+  // includes Balance). The latter is now the single source for the header
+  // stats bar across both Orders and Portfolio tabs.
 
   function renderPortfolioBySport(settled) {
     const el = document.getElementById('portfolio-by-sport');
