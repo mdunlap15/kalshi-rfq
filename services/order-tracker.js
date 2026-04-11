@@ -2219,10 +2219,18 @@ async function fullPxReconcile(px) {
     const pxStatus = pxOrder.settlement_status;
     const isSettledOnPx = pxStatus && ['won', 'lost', 'push', 'void'].includes(pxStatus);
     if (!isSettledOnPx) {
-      // PX has it confirmed/pending — just ensure our status is 'confirmed'
+      // PX has it confirmed/pending — ensure our status is 'confirmed' and
+      // PERSIST to DB. Without this, reconstructed confirmed orders only
+      // exist in memory and vanish on next restart, recreating the drift.
       if (!order.status?.startsWith('settled_')) {
         order.status = order.status || 'confirmed';
       }
+      if (wasNew) {
+        // Register exposure for newly-reconstructed confirmed orders so the
+        // exposure tracker includes them in portfolio calculations.
+        addExposure(order);
+      }
+      db.saveOrder(order).catch(err => log.error('Reconcile', `saveOrder(unsettled) failed for ${pxParlayId}: ${err.message}`));
       continue;
     }
 
