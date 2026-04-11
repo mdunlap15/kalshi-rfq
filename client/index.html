@@ -4271,6 +4271,19 @@
         case 'time': va = a.confirmedAt || ''; vb = b.confirmedAt || ''; return popenState.sortDir * va.localeCompare(vb);
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'fair': {
+          const fairCalc = (o) => {
+            const ls = o.meta?.legs || o.legs || [];
+            let p = null;
+            if (ls.length > 0 && ls.some(l => l.displayFairProb)) {
+              p = 1;
+              for (const l of ls) p *= (l.displayFairProb || l.fairProb || 0.5);
+            }
+            const prob = p || o.fairParlayProb;
+            return prob ? decimalToAmerican(1 / prob) : 0;
+          };
+          va = fairCalc(a); vb = fairCalc(b); break;
+        }
         case 'pin': va = compoundParlayOdds(a.meta?.legs || a.legs || [], 'pinnacleOdds') || 0; vb = compoundParlayOdds(b.meta?.legs || b.legs || [], 'pinnacleOdds') || 0; break;
         case 'fd': va = compoundParlayOdds(a.meta?.legs || a.legs || [], 'fanduelOdds') || 0; vb = compoundParlayOdds(b.meta?.legs || b.legs || [], 'fanduelOdds') || 0; break;
         case 'kalshi': va = compoundParlayOdds(a.meta?.legs || a.legs || [], 'kalshiOdds') || 0; vb = compoundParlayOdds(b.meta?.legs || b.legs || [], 'kalshiOdds') || 0; break;
@@ -4334,7 +4347,7 @@
     }
 
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">My Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('pin') + ' style="text-align:right; color:var(--purple);">Pinnacle' + poSortArrow('pin') + '</th><th ' + poSortClick('fd') + ' style="text-align:right; color:var(--blue);">FanDuel' + poSortArrow('fd') + '</th><th ' + poSortClick('kalshi') + ' style="text-align:right; color:var(--amber);">Kalshi' + poSortArrow('kalshi') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th ' + poSortClick('winprob') + ' style="text-align:right" title="Probability you win (at least one bettor leg fails)">Win Prob' + poSortArrow('winprob') + '</th><th ' + poSortClick('status') + '>Status' + poSortArrow('status') + '</th></tr>';
+    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">My Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('fair') + ' style="text-align:right" title="Fair American odds compounded from per-leg displayFairProb (de-vigged consensus)">Fair' + poSortArrow('fair') + '</th><th ' + poSortClick('pin') + ' style="text-align:right; color:var(--purple);">Pinnacle' + poSortArrow('pin') + '</th><th ' + poSortClick('fd') + ' style="text-align:right; color:var(--blue);">FanDuel' + poSortArrow('fd') + '</th><th ' + poSortClick('kalshi') + ' style="text-align:right; color:var(--amber);">Kalshi' + poSortArrow('kalshi') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th ' + poSortClick('winprob') + ' style="text-align:right" title="Probability you win (at least one bettor leg fails)">Win Prob' + poSortArrow('winprob') + '</th><th ' + poSortClick('status') + '>Status' + poSortArrow('status') + '</th></tr>';
 
     const isPopenFiltering = popenState.search || popenState.dateFrom || popenState.dateTo;
     const popenLimit = (popenState.showAll || isPopenFiltering) ? filtered.length : popenState.pageSize;
@@ -4354,6 +4367,17 @@
       const pinFmt = pinParlay != null ? pinParlay : '-';
       const fdFmt = fdParlay != null ? fdParlay : '-';
       const klFmt = klParlay != null ? klParlay : '-';
+      // Fair American odds compounded from per-leg displayFairProb
+      // (de-vigged consensus). Matches the formula used in the All Quotes
+      // table so the same number appears across views.
+      let qDisplayFairProb = null;
+      if (legs.length > 0 && legs.some(l => l.displayFairProb)) {
+        qDisplayFairProb = 1;
+        for (const l of legs) qDisplayFairProb *= (l.displayFairProb || l.fairProb || 0.5);
+      }
+      const fairFmt = (qDisplayFairProb || o.fairParlayProb)
+        ? decimalToAmerican(1 / (qDisplayFairProb || o.fairParlayProb))
+        : '-';
       // confirmedStake = OUR SP stake = max payout liability = My Risk
       // calcSpProfit = stake × 100/|odds| = bettor's wager = To Win
       const myRisk = o.confirmedStake ? fmtDollar(o.confirmedStake) : '-';
@@ -4397,6 +4421,7 @@
         '<td style="font-size:12px; max-width:290px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + '</td>' +
         '<td>' + legs.length + '</td>' +
         '<td style="text-align:right; font-weight:600;">' + oddsStr + '</td>' +
+        '<td style="text-align:right;">' + fairFmt + '</td>' +
         '<td style="text-align:right; color:var(--purple);">' + pinFmt + '</td>' +
         '<td style="text-align:right; color:var(--blue);">' + fdFmt + '</td>' +
         '<td style="text-align:right; color:var(--amber);">' + klFmt + '</td>' +
@@ -4495,6 +4520,19 @@
           vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'fair': {
+          const fairCalc2 = (o) => {
+            const ls = o.meta?.legs || o.legs || [];
+            let p = null;
+            if (ls.length > 0 && ls.some(l => l.displayFairProb)) {
+              p = 1;
+              for (const l of ls) p *= (l.displayFairProb || l.fairProb || 0.5);
+            }
+            const prob = p || o.fairParlayProb;
+            return prob ? decimalToAmerican(1 / prob) : 0;
+          };
+          va = fairCalc2(a); vb = fairCalc2(b); break;
+        }
         case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
         case 'fanduel': {
           const fdCalc2 = (o) => { const ls = o.meta?.legs || o.legs || []; const fds = ls.filter(l => l.fanduelOdds != null); if (fds.length !== ls.length) return 0; let p = 1; for (const l of fds) p *= americanToProb(l.fanduelOdds); return p > 0 && p < 1 ? decimalToAmerican(1/p) : 0; };
@@ -4578,6 +4616,7 @@
     html += '<th>Selections</th>';
     html += '<th ' + pSortClick('legs') + '>Legs' + pSortArrow('legs') + '</th>';
     html += '<th ' + pSortClick('odds') + '>Odds' + pSortArrow('odds') + '</th>';
+    html += '<th ' + pSortClick('fair', 'right') + ' title="Fair American odds compounded from per-leg displayFairProb (de-vigged consensus)">Fair' + pSortArrow('fair') + '</th>';
     html += '<th ' + pSortClick('pinnacle', 'right') + ' style="color:var(--purple);">Pinnacle' + pSortArrow('pinnacle') + '</th>';
     html += '<th ' + pSortClick('fanduel', 'right') + ' style="color:var(--blue);">FanDuel' + pSortArrow('fanduel') + '</th>';
     html += '<th ' + pSortClick('kalshi', 'right') + ' style="color:var(--amber);">Kalshi' + pSortArrow('kalshi') + '</th>';
@@ -4608,6 +4647,15 @@
       const psFdFmt = psFdParlay != null ? psFdParlay : '-';
       const psKlFmt = psKlParlay != null ? psKlParlay : '-';
       const psDkFmt = psDkParlay != null ? psDkParlay : '-';
+      // Fair American odds compounded from per-leg displayFairProb
+      let psFairProb = null;
+      if (psLegs.length > 0 && psLegs.some(l => l.displayFairProb)) {
+        psFairProb = 1;
+        for (const l of psLegs) psFairProb *= (l.displayFairProb || l.fairProb || 0.5);
+      }
+      const psFairFmt = (psFairProb || order.fairParlayProb)
+        ? decimalToAmerican(1 / (psFairProb || order.fairParlayProb))
+        : '-';
       const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
       // settlementResult is stored as SP-perspective (normalized at input)
@@ -4630,6 +4678,7 @@
       html += '<td style="font-size:12px; max-width:260px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:220px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + '</td>';
       html += '<td>' + legs.length + '</td>';
       html += '<td style="font-weight:600;">' + oddsStr + '</td>';
+      html += '<td style="text-align:right;">' + psFairFmt + '</td>';
       html += '<td style="text-align:right; color:var(--purple);">' + psPinFmt + '</td>';
       html += '<td style="text-align:right; color:var(--blue);">' + psFdFmt + '</td>';
       html += '<td style="text-align:right; color:var(--amber);">' + psKlFmt + '</td>';
@@ -4642,7 +4691,7 @@
 
       // Expandable leg detail row
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="12" style="padding:12px 16px;">';
+      html += '<td colspan="13" style="padding:12px 16px;">';
       html += buildLegTable(psLegs.length > 0 ? psLegs : legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
