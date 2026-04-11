@@ -2552,6 +2552,62 @@ function startStatusServer() {
     }
   });
 
+  // Return all PX sport events grouped by sport_name so we can see exactly
+  // which sport labels PX uses (e.g. "Mixed Martial Arts" vs "MMA") and what
+  // the competitor shape looks like for non-team sports.
+  app.get('/debug-px-events-by-sport', async (req, res) => {
+    try {
+      const pxSvc = require('./services/prophetx');
+      const all = await pxSvc.fetchSportEvents();
+      const groups = {};
+      for (const e of all) {
+        const key = e.sport_name || 'UNKNOWN';
+        if (!groups[key]) groups[key] = { count: 0, sample: [] };
+        groups[key].count++;
+        if (groups[key].sample.length < 3) {
+          groups[key].sample.push({
+            event_id: e.event_id,
+            name: e.name,
+            status: e.status,
+            scheduled: e.scheduled,
+            competitors: (e.competitors || []).map(c => ({
+              side: c.side, name: c.name, display_name: c.display_name,
+            })),
+          });
+        }
+      }
+      res.json({ ok: true, total: all.length, sports: groups });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Dump PX markets for one MMA event so we can see what market.type and
+  // market.name strings it actually uses.
+  app.get('/debug-px-mma-markets', async (req, res) => {
+    try {
+      const pxSvc = require('./services/prophetx');
+      const all = await pxSvc.fetchSportEvents();
+      const mmaEvents = all.filter(e => /martial|mma/i.test(e.sport_name || ''));
+      if (mmaEvents.length === 0) return res.json({ ok: false, error: 'no MMA events in PX feed', total: all.length });
+      const pick = mmaEvents[0];
+      const markets = await pxSvc.fetchMarkets(pick.event_id);
+      const parsed = markets.map(m => {
+        let p;
+        try { p = pxSvc.parseMarketSelections(m); } catch (e) { p = [{ err: e.message }]; }
+        return { type: m.type, name: m.name, parsedCount: p.length, parsedSample: p.slice(0, 4) };
+      });
+      res.json({
+        ok: true,
+        mmaEventCount: mmaEvents.length,
+        picked: { event_id: pick.event_id, name: pick.name, scheduled: pick.scheduled, sport_name: pick.sport_name, competitors: pick.competitors },
+        markets: parsed,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   app.get('/debug-px-markets', async (req, res) => {
     const q = (req.query.q || '').toLowerCase();
     const sportFilter = req.query.sport || 'Hockey';
