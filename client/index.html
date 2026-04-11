@@ -773,6 +773,17 @@
           </div>
         </div>
 
+        <!-- CLV (Closing Line Value) -->
+        <div class="card">
+          <div class="card-header">
+            <span>Closing Line Value (CLV)</span>
+            <span id="clv-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="chart-clv">
+            <div class="empty-state"><div class="icon">-</div><div>Need settled orders with closing-line data</div></div>
+          </div>
+        </div>
+
         <!-- Fill Rate vs Vig -->
         <div class="card">
           <div class="card-header"><span>Fill Rate vs Vig</span></div>
@@ -5240,6 +5251,118 @@
     renderChartFillVig(allQuoted, settled);
     renderChartExposure(confirmed);
     renderChartPricingEdge(allQuoted);
+    renderChartClv(settled);
+  }
+
+  // Closing Line Value summary — measures how our offered implied probability
+  // compared to the closing (event-start) Pinnacle implied probability.
+  // clvDelta = offeredImplied - closingImplied (SP perspective):
+  //   < 0 = we priced TIGHTER than close (SP sharp, captured edge)
+  //   > 0 = we priced LOOSER than close (sharps picked us off)
+  function renderChartClv(settled) {
+    const el = document.getElementById('chart-clv');
+    const summaryEl = document.getElementById('clv-summary');
+    if (!el) return;
+    const withClv = settled.filter(o => o.clvDelta != null);
+    if (withClv.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div>'
+        + '<div>No CLV data yet — closing lines start capturing after deploy</div>'
+        + '<div style="font-size:11px; color:var(--text3); margin-top:8px;">' + settled.length + ' settled orders, 0 with CLV coverage</div>'
+        + '</div>';
+      if (summaryEl) summaryEl.textContent = '';
+      return;
+    }
+
+    // Overall stats
+    const deltas = withClv.map(o => o.clvDelta).sort((a, b) => a - b);
+    const sum = deltas.reduce((s, d) => s + d, 0);
+    const avg = sum / deltas.length;
+    const median = deltas[Math.floor(deltas.length / 2)];
+    const spSharp = withClv.filter(o => o.clvDelta < 0).length;
+    const spSharpPct = Math.round(spSharp / withClv.length * 1000) / 10;
+    const coveragePct = Math.round(withClv.length / settled.length * 1000) / 10;
+    const sumPnl = withClv.reduce((s, o) => s + (o.pnl || 0), 0);
+
+    // Per-sport breakdown
+    const bySport = {};
+    for (const o of withClv) {
+      const legs = o.meta?.legs || o.legs || [];
+      const sports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
+      const k = sports.length === 1 ? sports[0] : 'multi';
+      if (!bySport[k]) bySport[k] = { count: 0, deltas: [], pnl: 0 };
+      bySport[k].count++;
+      bySport[k].deltas.push(o.clvDelta);
+      bySport[k].pnl += (o.pnl || 0);
+    }
+    const sportRows = Object.entries(bySport)
+      .map(([k, v]) => {
+        const sortedD = v.deltas.slice().sort((a, b) => a - b);
+        const avgD = sortedD.reduce((s, d) => s + d, 0) / sortedD.length;
+        const medianD = sortedD[Math.floor(sortedD.length / 2)];
+        const sharpPct = v.deltas.filter(d => d < 0).length / v.deltas.length * 100;
+        return { sport: k, count: v.count, avg: avgD, median: medianD, sharpPct, pnl: v.pnl };
+      })
+      .sort((a, b) => b.count - a.count);
+
+    // Format helpers
+    const fmtPct = (n) => (n > 0 ? '+' : '') + (n * 100).toFixed(2) + '%';
+    const fmtCurrency = (n) => (n >= 0 ? '+$' : '-$') + Math.abs(n).toFixed(2);
+    const deltaColor = (n) => n < 0 ? 'var(--green)' : n > 0 ? 'var(--red)' : 'var(--text3)';
+
+    // Headline card
+    let html = '<div style="display:flex; flex-wrap:wrap; gap:12px; padding:4px 8px; margin-bottom:12px;">'
+      + '<div style="flex:1 1 140px; padding:10px 12px; background:var(--surface2); border-radius:6px; border:1px solid var(--border);">'
+      +   '<div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Avg CLV Δ</div>'
+      +   '<div style="font-size:20px; font-weight:600; color:' + deltaColor(avg) + ';">' + fmtPct(avg) + '</div>'
+      +   '<div style="font-size:10px; color:var(--text3);">' + (avg < 0 ? 'SP captured edge' : avg > 0 ? 'sharps ahead' : '') + '</div>'
+      + '</div>'
+      + '<div style="flex:1 1 140px; padding:10px 12px; background:var(--surface2); border-radius:6px; border:1px solid var(--border);">'
+      +   '<div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Median CLV Δ</div>'
+      +   '<div style="font-size:20px; font-weight:600; color:' + deltaColor(median) + ';">' + fmtPct(median) + '</div>'
+      + '</div>'
+      + '<div style="flex:1 1 140px; padding:10px 12px; background:var(--surface2); border-radius:6px; border:1px solid var(--border);">'
+      +   '<div style="color:var(--text3); font-size:10px; text-transform:uppercase;">SP Sharp Rate</div>'
+      +   '<div style="font-size:20px; font-weight:600; color:' + (spSharpPct > 50 ? 'var(--green)' : 'var(--amber)') + ';">' + spSharpPct.toFixed(1) + '%</div>'
+      +   '<div style="font-size:10px; color:var(--text3);">priced tighter than close</div>'
+      + '</div>'
+      + '<div style="flex:1 1 140px; padding:10px 12px; background:var(--surface2); border-radius:6px; border:1px solid var(--border);">'
+      +   '<div style="color:var(--text3); font-size:10px; text-transform:uppercase;">P&L (CLV Sample)</div>'
+      +   '<div style="font-size:20px; font-weight:600; color:' + (sumPnl > 0 ? 'var(--green)' : sumPnl < 0 ? 'var(--red)' : 'var(--text3)') + ';">' + fmtCurrency(sumPnl) + '</div>'
+      +   '<div style="font-size:10px; color:var(--text3);">' + withClv.length + ' parlays</div>'
+      + '</div>'
+      + '</div>';
+
+    // Per-sport table
+    html += '<div style="padding:4px 8px;">'
+      + '<div style="font-size:10px; color:var(--text3); text-transform:uppercase; margin-bottom:4px;">Per-sport breakdown</div>'
+      + '<table style="width:100%; font-size:11px;">'
+      + '<tr style="color:var(--text3); border-bottom:1px solid var(--border);">'
+      + '<th style="text-align:left; padding:4px 6px;">Sport</th>'
+      + '<th style="text-align:right; padding:4px 6px;">Count</th>'
+      + '<th style="text-align:right; padding:4px 6px;" title="Average CLV delta (offered - closing)">Avg CLV</th>'
+      + '<th style="text-align:right; padding:4px 6px;">Median CLV</th>'
+      + '<th style="text-align:right; padding:4px 6px;" title="% of parlays where we priced tighter than close">Sharp %</th>'
+      + '<th style="text-align:right; padding:4px 6px;">P&L</th>'
+      + '</tr>';
+    for (const r of sportRows) {
+      html += '<tr style="border-bottom:1px solid var(--border);">'
+        + '<td style="padding:5px 6px;">' + sportLabel(r.sport) + '</td>'
+        + '<td style="padding:5px 6px; text-align:right; color:var(--text2);">' + r.count + '</td>'
+        + '<td style="padding:5px 6px; text-align:right; color:' + deltaColor(r.avg) + '; font-weight:500;">' + fmtPct(r.avg) + '</td>'
+        + '<td style="padding:5px 6px; text-align:right; color:' + deltaColor(r.median) + ';">' + fmtPct(r.median) + '</td>'
+        + '<td style="padding:5px 6px; text-align:right; color:' + (r.sharpPct > 50 ? 'var(--green)' : 'var(--amber)') + ';">' + r.sharpPct.toFixed(0) + '%</td>'
+        + '<td style="padding:5px 6px; text-align:right; color:' + (r.pnl > 0 ? 'var(--green)' : r.pnl < 0 ? 'var(--red)' : 'var(--text3)') + ';">' + fmtCurrency(r.pnl) + '</td>'
+        + '</tr>';
+    }
+    html += '</table>'
+      + '<div style="font-size:10px; color:var(--text3); margin-top:8px;">'
+      + 'Coverage: ' + withClv.length + ' of ' + settled.length + ' settled (' + coveragePct + '%). '
+      + 'CLV Δ &lt; 0 means we priced tighter than Pinnacle\'s closing line — good for SP.'
+      + '</div>'
+      + '</div>';
+
+    el.innerHTML = html;
+    if (summaryEl) summaryEl.textContent = withClv.length + ' parlays · coverage ' + coveragePct + '%';
   }
 
   // --- SVG helpers ---
