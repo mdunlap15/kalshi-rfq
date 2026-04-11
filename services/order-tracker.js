@@ -2774,8 +2774,17 @@ async function loadFromDb() {
 
   log.info('DB', 'Loading historical data from Supabase...');
 
-  // Load orders (very high limit to pull ALL history; loadOrders paginates)
-  const dbOrders = await db.loadOrders(20000);
+  // Load orders (very high cap to pull ALL history; loadOrders paginates).
+  // Bumped from 20,000 to 200,000 after observing the original cap drop
+  // reconstructed orders added by fullPxReconcile: those orders have
+  // null quoted_at and sort to the end with nullsFirst:false, so any
+  // growth beyond 20k was silently lost on restart. 200k covers weeks of
+  // production scale.
+  const LOAD_CAP = 200000;
+  const dbOrders = await db.loadOrders(LOAD_CAP);
+  if (dbOrders.length >= LOAD_CAP) {
+    log.warn('DB', `loadFromDb hit cap ${LOAD_CAP} — may be truncating history. Raise LOAD_CAP.`);
+  }
   for (const o of dbOrders) {
     // Hoist winning-quote info out of meta (stored there to avoid DB schema change)
     if (o.meta) {
