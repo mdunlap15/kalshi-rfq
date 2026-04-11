@@ -790,14 +790,6 @@
           </div>
         </div>
 
-        <!-- Fill Rate vs Vig -->
-        <div class="card">
-          <div class="card-header"><span>Fill Rate vs Vig</span></div>
-          <div class="card-body" id="chart-fill-vig">
-            <div class="empty-state"><div class="icon">-</div><div>Need more quote data</div></div>
-          </div>
-        </div>
-
         <!-- Exposure Concentration -->
         <div class="card">
           <div class="card-header"><span>Exposure Concentration</span></div>
@@ -5449,7 +5441,6 @@
     renderChartPnlLegs(settled);
     renderChartCalibration(settled);
     renderChartCompGap(data);
-    renderChartFillVig(allQuoted, settled);
     renderChartExposure(confirmed);
     renderChartPricingEdge(allQuoted);
     renderChartClv(settled);
@@ -6227,55 +6218,6 @@
       '<span style="color:var(--green);">&#9679; Matched</span> &nbsp; ' +
       '<span style="color:var(--red);">&#9679; Outbid</span> &nbsp; ' +
       'Above zero = too tight. Below = too generous.</div>';
-    el.innerHTML = svg;
-  }
-
-  // 6. Fill Rate vs Vig — what % of quotes get filled at different vig levels?
-  function renderChartFillVig(allQuoted, settled) {
-    const el = document.getElementById('chart-fill-vig');
-    const withVig = allQuoted.filter(o => o.meta?.vig != null || o.vig != null);
-    if (withVig.length < 10) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 10+ quotes to analyze fill rate</div></div>'; return; }
-
-    // Group by vig bucket
-    const vigBuckets = {};
-    for (const o of withVig) {
-      const vig = ((o.meta?.vig || o.vig || 0) * 100).toFixed(1);
-      if (!vigBuckets[vig]) vigBuckets[vig] = { quoted: 0, filled: 0 };
-      vigBuckets[vig].quoted++;
-      if (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_'))) vigBuckets[vig].filled++;
-    }
-
-    const data = Object.entries(vigBuckets).map(([vig, d]) => ({
-      vig: parseFloat(vig), fillRate: d.quoted > 0 ? d.filled / d.quoted * 100 : 0,
-      quoted: d.quoted, filled: d.filled
-    })).sort((a, b) => a.vig - b.vig);
-
-    if (data.length < 1) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Insufficient vig diversity</div></div>'; return; }
-
-    const W = 700, H = 180, pad = { l: 50, r: 20, t: 20, b: 40 };
-    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
-    const barW = Math.min(50, chartW / data.length - 8);
-
-    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:220px;">`;
-
-    for (let pct = 0; pct <= 100; pct += 25) {
-      const y = pad.t + chartH - (pct / 100) * chartH;
-      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5);
-      if (pct % 50 === 0) svg += svgText(pad.l - 6, y + 3, pct + '%', { anchor: 'end', size: 9 });
-    }
-
-    for (let i = 0; i < data.length; i++) {
-      const d = data[i];
-      const cx = pad.l + (i + 0.5) * (chartW / data.length);
-      const barHeight = (d.fillRate / 100) * chartH;
-      svg += svgRect(cx - barW / 2, pad.t + chartH - barHeight, barW, barHeight, 'var(--accent)', 2);
-      svg += svgText(cx, H - pad.b + 14, d.vig + '%', { size: 10 });
-      svg += svgText(cx, H - pad.b + 26, d.quoted + ' quotes', { size: 8, fill: 'var(--text3)' });
-      svg += svgText(cx, pad.t + chartH - barHeight - 6, d.fillRate.toFixed(0) + '%', { size: 9, fill: 'var(--accent)' });
-    }
-    svg += svgText(W / 2, H - 2, 'Vig Level', { size: 10 });
-
-    svg += '</svg>';
     el.innerHTML = svg;
   }
 
