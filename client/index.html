@@ -951,6 +951,7 @@
       fetchJSON('/drift-status').then(d => renderDriftBanner(d)).catch(() => {});
 
       renderStatus(status);
+      updateNotificationBadge(orders);
       renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
       renderPortfolio(orders);
       renderOrders(orders);
@@ -966,6 +967,59 @@
     } finally {
       indicator.style.display = 'none';
     }
+  }
+
+  // -----------------------------------------------------------------------
+  // NOTIFICATION BADGE
+  // -----------------------------------------------------------------------
+
+  /**
+   * Update the Orders tab notification badge + browser tab title based on
+   * newly-confirmed parlayIds in the /orders response. Tracks by parlayId
+   * (Set) so service restarts don't inject phantom counts. On first load
+   * (notificationInitialized=false), ALL currently-confirmed/settled IDs
+   * are marked as seen and the badge stays hidden. After that, the badge
+   * lights up for IDs that appear fresh.
+   *
+   * Must receive the /orders response (not /status) because /status has
+   * no recentOrders field. This was the bug fixed after ab187a3 placed
+   * the logic in renderStatus.
+   */
+  function updateNotificationBadge(ordersData) {
+    const currentOrders = ordersData?.recentOrders || [];
+    const confirmedIds = currentOrders
+      .filter(x => x && (x.status === 'confirmed' || (x.status && x.status.startsWith('settled_'))))
+      .map(x => x.parlayId)
+      .filter(Boolean);
+    if (!notificationInitialized) {
+      for (const id of confirmedIds) seenConfirmedParlayIds.add(id);
+      notificationInitialized = true;
+    } else {
+      for (const id of confirmedIds) {
+        if (!seenConfirmedParlayIds.has(id)) {
+          if (activeSection === 'orders') {
+            seenConfirmedParlayIds.add(id); // viewing → auto-mark seen
+          } else {
+            unseenConfirmations++;
+            seenConfirmedParlayIds.add(id);
+          }
+        }
+      }
+    }
+    const ordersBadge = document.getElementById('orders-badge');
+    if (ordersBadge) {
+      if (unseenConfirmations > 0 && activeSection !== 'orders') {
+        ordersBadge.textContent = unseenConfirmations;
+        ordersBadge.style.display = 'inline';
+      } else {
+        ordersBadge.style.display = 'none';
+        unseenConfirmations = 0;
+      }
+    }
+    // Update browser tab title with unseen confirmation count
+    document.title = unseenConfirmations > 0
+      ? `(${unseenConfirmations}) PARLAY SP`
+      : 'PARLAY SP';
   }
 
   // -----------------------------------------------------------------------
@@ -1020,45 +1074,9 @@
     document.getElementById('stat-confirmed').textContent = (o.totalConfirmations || 0).toLocaleString();
     document.getElementById('stat-settled').textContent = (o.totalSettlements || 0).toLocaleString();
 
-    // Update Orders tab notification badge for new confirmations.
-    // Track by parlayId (not count) so service restarts don't inject
-    // phantom notifications. On first load, ALL currently-confirmed
-    // parlayIds are marked as seen — the badge only lights up for
-    // parlays that confirm AFTER this tab was opened.
-    const currentOrders = data.recentOrders || [];
-    const confirmedIds = currentOrders
-      .filter(x => x && (x.status === 'confirmed' || (x.status && x.status.startsWith('settled_'))))
-      .map(x => x.parlayId)
-      .filter(Boolean);
-    if (!notificationInitialized) {
-      for (const id of confirmedIds) seenConfirmedParlayIds.add(id);
-      notificationInitialized = true;
-    } else {
-      for (const id of confirmedIds) {
-        if (!seenConfirmedParlayIds.has(id)) {
-          if (activeSection === 'orders') {
-            seenConfirmedParlayIds.add(id); // viewing → auto-mark seen
-          } else {
-            unseenConfirmations++;
-            seenConfirmedParlayIds.add(id);
-          }
-        }
-      }
-    }
-    const ordersBadge = document.getElementById('orders-badge');
-    if (ordersBadge) {
-      if (unseenConfirmations > 0 && activeSection !== 'orders') {
-        ordersBadge.textContent = unseenConfirmations;
-        ordersBadge.style.display = 'inline';
-      } else {
-        ordersBadge.style.display = 'none';
-        unseenConfirmations = 0;
-      }
-    }
-    // Update browser tab title with unseen confirmation count
-    document.title = unseenConfirmations > 0
-      ? `(${unseenConfirmations}) PARLAY SP`
-      : 'PARLAY SP';
+    // Notification badge update moved out of renderStatus — it needs
+    // data.recentOrders which only exists on the /orders response, not
+    // /status. See updateNotificationBadge() called from refresh().
 
     const pnl = o.runningPnL || 0;
     const pnlEl = document.getElementById('stat-pnl');
