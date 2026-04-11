@@ -1323,6 +1323,27 @@ function startStatusServer() {
     }
   });
 
+  // Force a fresh rebuild of the in-memory exposure tables from the current
+  // orders map. Use this when Team Exposure / Game Exposure look stale or
+  // empty after a reload path that mutated legs without re-running exposure.
+  app.post('/rebuild-exposure', (req, res) => {
+    try {
+      const before = {
+        teams: orderTracker.getExposureSnapshot().length,
+        games: orderTracker.getGameExposureSnapshot().length,
+      };
+      const diag = orderTracker.rebuildAllExposure();
+      const after = {
+        teams: orderTracker.getExposureSnapshot().length,
+        games: orderTracker.getGameExposureSnapshot().length,
+      };
+      res.json({ ok: true, before, after, diag });
+    } catch (err) {
+      log.error('Exposure', `rebuild-exposure failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Full reconcile against PX REST: exhaust PX order history, import/update
   // all orders locally, then rebuild stats from scratch. Recovery path for
   // in-memory drift against PX ground truth.

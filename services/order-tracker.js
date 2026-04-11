@@ -1341,12 +1341,45 @@ function rebuildAllExposure() {
   // Clear state
   for (const k of Object.keys(exposure)) delete exposure[k];
   for (const k of Object.keys(gameExposure)) delete gameExposure[k];
+  // Diagnostic counters so we can tell WHY exposure comes out small.
+  const diag = {
+    totalOrders: 0,
+    confirmedOrders: 0,
+    confirmedWithLegs: 0,
+    legsTotal: 0,
+    legsWithTeamKey: 0,
+    legsSkippedNoTeam: 0,
+    legsSkippedNoPayout: 0,
+    uniqueTeamKeys: new Set(),
+  };
   // Re-add all confirmed orders
   for (const order of Object.values(orders)) {
-    if (order.status === 'confirmed') {
-      addExposure(order);
+    diag.totalOrders++;
+    if (order.status !== 'confirmed') continue;
+    diag.confirmedOrders++;
+    const legs = order.legs || order.meta?.legs || [];
+    if (legs.length === 0) continue;
+    diag.confirmedWithLegs++;
+    const payout = getOrderPayout(order);
+    for (const leg of legs) {
+      diag.legsTotal++;
+      const name = leg.team || leg.teamName || 'unknown';
+      const teamKey = normalizeExposureKey(name);
+      if (!teamKey) { diag.legsSkippedNoTeam++; continue; }
+      if (!payout) diag.legsSkippedNoPayout++;
+      diag.legsWithTeamKey++;
+      diag.uniqueTeamKeys.add(teamKey);
     }
+    addExposure(order);
   }
+  const result = {
+    ...diag,
+    uniqueTeamKeys: diag.uniqueTeamKeys.size,
+    exposureKeysAfter: Object.keys(exposure).length,
+    gameKeysAfter: Object.keys(gameExposure).length,
+  };
+  log.info('Exposure', `rebuildAllExposure: ${JSON.stringify(result)}`);
+  return result;
 }
 
 /**
