@@ -5013,6 +5013,20 @@
   function formatParlaySelections(legs) {
     try {
       if (!legs || legs.length === 0) return '-';
+      // If EVERY leg is unresolved (reconstructed from PX order list where
+      // neither lineManager nor PX fetchMarkets could provide team data),
+      // show a human-readable fallback that includes leg count and event IDs
+      // instead of "?, ?". Preserves user's ability to identify/audit the
+      // parlay without cluttering the table with placeholder chars.
+      const allUnknown = legs.every(l => {
+        const n = l.team || l.teamName || '';
+        return !n || n === '?' || n === 'unknown';
+      });
+      if (allUnknown) {
+        const eventIds = [...new Set(legs.map(l => l.pxEventId || l.sport_event_id).filter(Boolean))];
+        const eventTag = eventIds.length > 0 ? ' · event ' + eventIds.slice(0, 2).join(',') + (eventIds.length > 2 ? '+' : '') : '';
+        return 'Historical parlay (' + legs.length + ' legs)' + eventTag;
+      }
       return legs.map(l => {
         const name = l.team || l.teamName || '?';
         const mkt = l.market || l.marketType || '';
