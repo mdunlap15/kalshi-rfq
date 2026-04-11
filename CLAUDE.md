@@ -128,4 +128,4 @@ PX and odds APIs use different team names. Matching strategies (in order):
 - No TypeScript, no build step
 - `node-fetch@2` (CommonJS compatible)
 - Logging: `log.info('Category', 'message', optionalData)`
-- Commit and push without asking — auto-deploys to Railway
+- **NEVER `git push` without explicit user approval.** Push auto-deploys to Railway production. Commit freely, but the push must always be gated on the user typing "push" (or equivalent) in chat. Do NOT push after completing work, do NOT push as part of a batched command, do NOT assume earlier approval carries over to a new commit. Every single push requires a fresh green-light.
