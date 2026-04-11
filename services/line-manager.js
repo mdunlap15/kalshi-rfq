@@ -123,7 +123,18 @@ const TEAM_NAME_OVERRIDES = {
 };
 
 function normalizeTeamName(name) {
-  return (name || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+  // Strip diacritics first (Godínez → Godinez, São Paulo → Sao Paulo) so
+  // ASCII-only feeds can match international/combat-sport names. Without
+  // NFD-decomposition + combining-mark removal, every accented fighter name
+  // silently drops through the matcher (the í character is not in
+  // [a-z0-9 ] so the previous regex would just delete it, corrupting the
+  // name to "godnez").
+  return (name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, '')
+    .trim();
 }
 
 /**
@@ -489,8 +500,16 @@ async function seedAllLines() {
     // distinguishes via market.name). Allow these through the filter.
     const f5NamePattern = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings/i;
 
+    // Combat sports (MMA, Boxing) only have moneyline in our odds feed —
+    // SharpAPI/TheOddsAPI don't publish Total Rounds lines. Restrict to
+    // moneyline so we don't register a flood of "Total Rounds" lines that
+    // would always decline at price time with 'no odds data'.
+    const isCombatSport = sportKey === 'mma_mixed_martial_arts' || sportKey === 'boxing_boxing';
+
     const mainMarkets = markets.filter(m => {
-      const supportedBase = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
+      const supportedBase = isCombatSport
+        ? ['moneyline']
+        : ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
       if (!supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type)) return false;
       // Exclude anything matching half/quarter/prop patterns
       if (excludePatterns.test(m.name)) return false;

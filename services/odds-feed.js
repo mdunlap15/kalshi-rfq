@@ -2709,7 +2709,17 @@ function normalizeEventKey(homeTeam, awayTeam) {
 }
 
 function normalizeTeamName(name) {
-  return (name || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+  // NFD-decompose + strip combining marks so diacritics (São, Godínez, Peña)
+  // collapse to their ASCII equivalents. Without this, accented characters
+  // are deleted outright by the [^a-z0-9 ] filter, corrupting names like
+  // "Godínez" → "godnez" and silently breaking every MMA/Soccer matcher
+  // that compares against an ASCII-only SharpAPI or TheOddsAPI feed.
+  return (name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, '')
+    .trim();
 }
 
 /**

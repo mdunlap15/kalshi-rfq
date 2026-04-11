@@ -57,7 +57,10 @@ const config = {
     'soccer_usa_nwsl': 'Soccer',
     'golf_pga_championship': 'Golf',
     'golf_matchups': 'Golf',
-    'mma_mixed_martial_arts': 'Mixed Martial Arts',
+    // PX uses 'MMA' (short form) as sport_name, not 'Mixed Martial Arts'.
+    // Getting this wrong silently blocks every MMA event in seedAllLines
+    // because pxSportNames.includes(event.sport_name) returns false.
+    'mma_mixed_martial_arts': 'MMA',
     'boxing_boxing': 'Boxing',
   },
   server: {
