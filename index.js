@@ -1336,6 +1336,73 @@ function startStatusServer() {
     }
   });
 
+  // Backfill team/sport from a user-uploaded parlay export CSV. The CSV
+  // has parlayId + Selections (comma-separated team names) + Sports per
+  // row. This is the most reliable source for historical orders whose
+  // events PX no longer serves via fetchMarkets.
+  //
+  // Expects body = raw CSV text (Content-Type: text/plain). Parses the
+  // first row as headers, finds Parlay ID / Selections / Sports / Legs
+  // columns, and builds a row array to hand to backfillFromExport.
+  app.post('/backfill-from-csv', express.text({ limit: '10mb', type: ['text/*', 'application/octet-stream'] }), (req, res) => {
+    try {
+      const csv = req.body;
+      if (!csv || typeof csv !== 'string') {
+        return res.status(400).json({ ok: false, error: 'expected text/plain body with CSV content' });
+      }
+      // Simple CSV parser that handles quoted fields with commas.
+      function parseLine(line) {
+        const out = [];
+        let cur = '';
+        let inQ = false;
+        for (let i = 0; i < line.length; i++) {
+          const c = line[i];
+          if (c === '"') {
+            if (inQ && line[i + 1] === '"') { cur += '"'; i++; } // escaped quote
+            else inQ = !inQ;
+          } else if (c === ',' && !inQ) {
+            out.push(cur);
+            cur = '';
+          } else {
+            cur += c;
+          }
+        }
+        out.push(cur);
+        return out;
+      }
+      const lines = csv.split(/\r?\n/).filter(l => l.trim().length > 0);
+      if (lines.length < 2) return res.status(400).json({ ok: false, error: 'CSV has no data rows' });
+      const headers = parseLine(lines[0]).map(h => h.trim());
+      const idxParlay = headers.findIndex(h => /parlay.*id/i.test(h));
+      const idxLegs = headers.findIndex(h => /^legs$/i.test(h));
+      const idxSelections = headers.findIndex(h => /selections/i.test(h));
+      const idxSports = headers.findIndex(h => /sports/i.test(h));
+      if (idxParlay < 0 || idxSelections < 0) {
+        return res.status(400).json({ ok: false, error: 'CSV missing required columns (Parlay ID, Selections)', foundHeaders: headers });
+      }
+      const rows = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cells = parseLine(lines[i]);
+        const parlayId = cells[idxParlay]?.trim();
+        if (!parlayId) continue;
+        const selectionsStr = cells[idxSelections]?.trim() || '';
+        const sportsStr = idxSports >= 0 ? (cells[idxSports]?.trim() || '') : '';
+        // Selections field is a comma-joined string that was already parsed
+        // by the quote-aware parser, so it arrives as a single cell. Split
+        // on ", " to recover the individual team labels.
+        const selections = selectionsStr.split(',').map(s => s.trim()).filter(Boolean);
+        const sports = sportsStr ? sportsStr.split(/\s*\/\s*/).map(s => s.trim()).filter(Boolean) : [];
+        const legCount = idxLegs >= 0 ? parseInt(cells[idxLegs], 10) : null;
+        rows.push({ parlayId, legCount, selections, sports });
+      }
+      const result = orderTracker.backfillFromExport(rows);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      log.error('Backfill', `backfill-from-csv failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Backfill sport metadata on orders currently tagged as 'unknown' sport.
   // Uses three-tier inference: pxEventId→eventIndex, team→self-built sport
   // map, else leave as unknown. Only mutates leg.sport fields; does not

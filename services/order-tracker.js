@@ -2498,6 +2498,115 @@ function backfillUnknownSports() {
 }
 
 /**
+ * Backfill team/sport/market data on reconstructed orders using a user-
+ * provided export CSV. The export was generated earlier when the orders
+ * had full metadata; we parse rows, match by parlayId, and populate the
+ * otherwise-unresolvable `?` legs.
+ *
+ * Input: array of { parlayId, legCount, selections: string[], sports: string[] }
+ * (pre-parsed from the CSV by the caller).
+ *
+ * Returns { matched, updated, skipped, selectionMismatch } counts.
+ */
+function backfillFromExport(rows) {
+  // Sport display label → our internal sport key
+  const SPORT_LABEL_MAP = {
+    'MLB': 'baseball_mlb',
+    'NBA': 'basketball_nba',
+    'NHL': 'icehockey_nhl',
+    'NCAAB': 'basketball_ncaab',
+    'Tennis': 'tennis',
+    'EPL': 'soccer_epl',
+    'MLS': 'soccer_usa_mls',
+    'La Liga': 'soccer_spain_la_liga',
+    'Bundesliga': 'soccer_germany_bundesliga',
+    'Serie A': 'soccer_italy_serie_a',
+    'Ligue 1': 'soccer_france_ligue_one',
+    'UCL': 'soccer_uefa_champs_league',
+    'Europa': 'soccer_uefa_europa_league',
+    'UEFA Europa': 'soccer_uefa_europa_league',
+    'NWSL': 'soccer_usa_nwsl',
+    'WNBA': 'basketball_wnba',
+    'Boxing': 'boxing_boxing',
+    'MMA': 'mma_mixed_martial_arts',
+    'Golf': 'golf_matchups',
+    'PGA': 'golf_matchups',
+  };
+  function labelToSport(label) {
+    if (!label) return null;
+    const trimmed = String(label).trim();
+    if (SPORT_LABEL_MAP[trimmed]) return SPORT_LABEL_MAP[trimmed];
+    // Try case-insensitive fallback
+    for (const [k, v] of Object.entries(SPORT_LABEL_MAP)) {
+      if (k.toLowerCase() === trimmed.toLowerCase()) return v;
+    }
+    return null;
+  }
+
+  let matched = 0;
+  let updated = 0;
+  let skipped = 0;
+  let selectionMismatch = 0;
+
+  for (const row of rows) {
+    const order = orders[row.parlayId];
+    if (!order) { skipped++; continue; }
+    matched++;
+
+    const legs = order.legs || order.meta?.legs || [];
+    if (legs.length === 0) { skipped++; continue; }
+
+    // CSV selections array must match the leg count to safely position-map.
+    if (!Array.isArray(row.selections) || row.selections.length !== legs.length) {
+      selectionMismatch++;
+      continue;
+    }
+
+    // Build per-leg sport assignment. If the CSV has a single sport for the
+    // row, apply it to every leg. If it has as many sports as legs, zip in
+    // order. Otherwise, leave sport untouched.
+    let perLegSport = null;
+    if (Array.isArray(row.sports)) {
+      if (row.sports.length === 1 && row.sports[0]) {
+        const s = labelToSport(row.sports[0]);
+        if (s) perLegSport = legs.map(() => s);
+      } else if (row.sports.length === legs.length) {
+        perLegSport = row.sports.map(label => labelToSport(label));
+      }
+    }
+
+    let changed = false;
+    const updateLegs = (legSource) => {
+      for (let i = 0; i < legSource.length; i++) {
+        const leg = legSource[i];
+        const prevTeam = leg.team;
+        const newTeam = row.selections[i];
+        if (newTeam && newTeam !== '?' && newTeam !== prevTeam) {
+          leg.team = newTeam;
+          if (!leg.teamName || leg.teamName === '?') leg.teamName = newTeam;
+          changed = true;
+        }
+        if (perLegSport && perLegSport[i] && (!leg.sport || leg.sport === 'unknown')) {
+          leg.sport = perLegSport[i];
+          changed = true;
+        }
+      }
+    };
+    updateLegs(legs);
+    // Mirror onto both o.legs and o.meta.legs for consistency with display
+    if (order.meta?.legs && order.meta.legs !== legs) updateLegs(order.meta.legs);
+
+    if (changed) {
+      updated++;
+      db.saveOrder(order).catch(err => log.warn('Backfill', `saveOrder failed for ${order.parlayId}: ${err.message}`));
+    }
+  }
+
+  log.info('Backfill', `CSV backfill: matched ${matched}, updated ${updated}, skipped ${skipped}, selectionMismatch ${selectionMismatch}`);
+  return { matched, updated, skipped, selectionMismatch, rowsReceived: rows.length };
+}
+
+/**
  * Delete settled orders whose legs are all unresolved ('?' team names).
  * Removes from in-memory store, reverses P&L stats, and deletes from DB.
  */
@@ -2555,6 +2664,7 @@ module.exports = {
   reconcileSettlements,
   fullPxReconcile,
   backfillUnknownSports,
+  backfillFromExport,
   deleteUnknownSettledOrders,
   findByParlayId,
   findByOrderUuid,
