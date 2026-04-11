@@ -1336,6 +1336,26 @@ function startStatusServer() {
     }
   });
 
+  // Dump the FULL raw PX order response, no field filtering. Reveals
+  // every field PX actually sends per order and per leg, so we can see
+  // whether team names or other useful metadata exist that we've been
+  // silently dropping.
+  app.get('/debug-px-raw-dump', async (req, res) => {
+    try {
+      const pxSvc = require('./services/prophetx');
+      const limit = parseInt(req.query.limit) || 3;
+      const orders = await pxSvc.fetchOrders(limit);
+      // Also include the full Object.keys so even nested structures are visible
+      const keyStructure = orders.slice(0, 1).map(o => ({
+        topKeys: Object.keys(o),
+        firstLegKeys: Array.isArray(o.legs) && o.legs[0] ? Object.keys(o.legs[0]) : [],
+      }));
+      res.json({ ok: true, count: orders.length, keyStructure, samples: orders.slice(0, limit) });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Backfill team/sport from a user-uploaded parlay export CSV. The CSV
   // has parlayId + Selections (comma-separated team names) + Sports per
   // row. This is the most reliable source for historical orders whose
