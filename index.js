@@ -2024,6 +2024,35 @@ function startStatusServer() {
   // sportsbook present (pinnacle, fanduel, draftkings, kalshi). Answers
   // "why don't my quotes show Kalshi odds?" — it's almost always because
   // SharpAPI returned zero Kalshi rows for that sport/event.
+  // Inspect line index entries matching a query. Shows exactly what the
+  // line index has registered for an event + market type.
+  app.get('/debug-line-index', (req, res) => {
+    const q = (req.query.q || '').toLowerCase();
+    const market = req.query.market || null;
+    const sport = req.query.sport || null;
+    const idx = lineManager.__debugGetLineIndex ? lineManager.__debugGetLineIndex() : {};
+    const hits = [];
+    for (const [lineId, info] of Object.entries(idx)) {
+      if (sport && info.sport !== sport) continue;
+      if (market && info.marketType !== market) continue;
+      const haystack = ((info.pxEventName || '') + ' ' + (info.homeTeam || '') + ' ' + (info.awayTeam || '') + ' ' + (info.teamName || '')).toLowerCase();
+      if (q && !haystack.includes(q)) continue;
+      hits.push({
+        lineId,
+        sport: info.sport,
+        marketType: info.marketType,
+        marketName: info.marketName,
+        team: info.teamName,
+        selection: info.oddsApiSelection,
+        line: info.line,
+        event: info.pxEventName,
+        home: info.homeTeam,
+        away: info.awayTeam,
+      });
+    }
+    res.json({ count: hits.length, hits: hits.slice(0, 50) });
+  });
+
   // Dump raw PX markets for a specific event by team substring match.
   // Used to see whether PX is even returning alt puck lines / alt spread
   // markets for NHL / MLB so we can tell coverage from parsing bugs.
