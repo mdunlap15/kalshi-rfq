@@ -91,6 +91,25 @@ async function priceParlay(legs) {
       return null;
     }
 
+    // Lineup-change guard: if the MLB starting pitcher or NHL starting goalie
+    // has swapped within the last few minutes, the sportsbooks are still
+    // re-pricing and our cached odds are likely stale even if the cache
+    // timestamp is fresh. Decline briefly to avoid getting picked off on
+    // lineup news. Only MLB/NHL — other sports return null from this check.
+    const lineupStatus = oddsFeed.checkLineupFreshness(
+      lineInfo.sport, lineInfo.homeTeam, lineInfo.awayTeam, lineInfo.startTime
+    );
+    if (lineupStatus) {
+      const ageSec = Math.round(lineupStatus.ageMs / 1000);
+      log.info('Pricing', `Declined: lineup change ${ageSec}s ago for ${legLabel} — ${lineupStatus.detail}`);
+      priceParlay._lastFailure = {
+        reason: 'lineup change',
+        detail: `${legLabel}: ${lineupStatus.detail} (${ageSec}s ago, grace window active)`,
+        blockerLeg: legDescriptor,
+      };
+      return null;
+    }
+
     // Get fair probability — tries cache first, then on-demand alt lines fetch.
     // For Draw No Bet (2-way soccer moneyline), derive from 3-way h2h by
     // removing the draw probability and renormalizing.

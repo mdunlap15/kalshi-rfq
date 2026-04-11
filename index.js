@@ -1978,6 +1978,39 @@ function startStatusServer() {
     });
   });
 
+  // Lineup tracker — MLB pitchers + NHL goalies, including recent changes.
+  // Shows grace-window activity so we can audit declines labeled "lineup change".
+  app.get('/lineups', (req, res) => {
+    const cache = oddsFeed.getLineupCache();
+    const now = Date.now();
+    const GRACE_MS = 3 * 60 * 1000;
+    const out = { sports: {}, recentChanges: [] };
+    for (const [sport, bucket] of Object.entries(cache)) {
+      out.sports[sport] = { total: 0, withStarters: 0, recentlyChanged: 0, entries: [] };
+      for (const [key, entry] of Object.entries(bucket)) {
+        out.sports[sport].total++;
+        if (entry.homeStarter || entry.awayStarter) out.sports[sport].withStarters++;
+        const changeAgeMs = entry.lastChangeAt ? (now - entry.lastChangeAt) : null;
+        const inGrace = changeAgeMs != null && changeAgeMs < GRACE_MS;
+        if (inGrace) out.sports[sport].recentlyChanged++;
+        const rec = {
+          key,
+          homeStarter: entry.homeStarter,
+          awayStarter: entry.awayStarter,
+          lastChangeAt: entry.lastChangeAt ? new Date(entry.lastChangeAt).toISOString() : null,
+          lastChangeDetail: entry.lastChangeDetail,
+          changeAgeSec: changeAgeMs != null ? Math.round(changeAgeMs / 1000) : null,
+          inGrace,
+        };
+        out.sports[sport].entries.push(rec);
+        if (entry.lastChangeAt) out.recentChanges.push({ sport, ...rec });
+      }
+    }
+    out.recentChanges.sort((a, b) => (b.lastChangeAt || '').localeCompare(a.lastChangeAt || ''));
+    out.recentChanges = out.recentChanges.slice(0, 50);
+    res.json(out);
+  });
+
   // SPA fallback
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'client', 'index.html'));

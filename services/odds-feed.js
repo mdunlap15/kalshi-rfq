@@ -20,6 +20,25 @@ const KALSHI_BUFFER = 0.02;
 // { [sport]: { fetchedAt, events: [{ eventId, homeTeam, awayTeam, startTime }] } }
 const sharpEventsIndex = {};
 
+// Lineup tracking — MLB starting pitchers, NHL starting goalies.
+// SharpAPI appends starter name in parens to team_name: "New York Yankees (Gerrit Cole)"
+// We capture these per refresh and diff against the prior refresh to detect
+// lineup changes (scratches, late swaps). When a change is detected, the
+// event's odds are considered "in motion" for a grace window so the pricer
+// can decline until the books re-stabilize.
+//
+// Structure:
+//   lineupCache[sport][lineupKey] = {
+//     homeStarter: string|null,
+//     awayStarter: string|null,
+//     seenAt: timestamp,
+//     lastChangeAt: timestamp|null,
+//     lastChangeDetail: string|null,
+//   }
+// lineupKey = `${normalizedEventKey}|${YYYY-MM-DD}` to handle doubleheaders.
+const lineupCache = {};
+const LINEUP_GRACE_MS = 3 * 60 * 1000; // decline for 3 minutes after a change
+
 // Closing line snapshots. Keyed by normalized event key (home|away). Captured
 // once per event when the event's commenceTime crosses into the past. Stores
 // the final Pinnacle + consensus per-market fair probs as a snapshot for CLV
@@ -228,12 +247,27 @@ async function fetchOddsForSport(sport, opts) {
       eventMap[eventId] = {
         homeTeam: cleanTeamName(row.home_team),
         awayTeam: cleanTeamName(row.away_team),
+        // Capture raw names for lineup tracking (SharpAPI appends starter
+        // info in parens: "New York Yankees (Gerrit Cole)"). First non-null
+        // raw name wins — SharpAPI is consistent within a single fetch.
+        rawHomeTeam: row.home_team,
+        rawAwayTeam: row.away_team,
         commenceTime: row.event_start_time,
         eventId,
         odds: [], // collect all odds rows
       };
     }
     eventMap[eventId].odds.push(row);
+  }
+
+  // Update lineup cache for MLB (pitchers) / NHL (goalies). Runs before
+  // consensus building so downstream log output includes any detected change.
+  if (!liveMode && (sport === 'baseball_mlb' || sport === 'icehockey_nhl')) {
+    for (const ev of Object.values(eventMap)) {
+      const homeStarter = extractStarter(ev.rawHomeTeam);
+      const awayStarter = extractStarter(ev.rawAwayTeam);
+      updateLineupState(sport, ev.homeTeam, ev.awayTeam, ev.commenceTime, homeStarter, awayStarter);
+    }
   }
 
   // Merge single-book events (e.g. Kalshi) into matching multi-book events.
@@ -2445,6 +2479,109 @@ function cleanTeamName(name) {
   return (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
 }
 
+/**
+ * Extract starter name (MLB pitcher / NHL goalie) from a SharpAPI team name.
+ * SharpAPI format: "New York Yankees (Gerrit Cole)" → "Gerrit Cole"
+ * Returns null if no starter listed or if the starter is "TBD" / blank.
+ */
+function extractStarter(name) {
+  if (!name) return null;
+  const m = name.match(/\(([^)]+)\)\s*$/);
+  if (!m) return null;
+  const s = m[1].trim();
+  if (!s || /^tbd$/i.test(s) || /^tba$/i.test(s)) return null;
+  return s;
+}
+
+/**
+ * Build the lineup cache key for a sport + event.
+ * Uses normalized team key + date so same-day doubleheaders stay distinct.
+ */
+function makeLineupKey(homeTeam, awayTeam, commenceTime) {
+  const eventKey = normalizeEventKey(homeTeam, awayTeam);
+  const date = commenceTime ? new Date(commenceTime).toISOString().substring(0, 10) : '';
+  return `${eventKey}|${date}`;
+}
+
+/**
+ * Update lineup cache for a single event. Detects changes in starting
+ * pitcher/goalie and stamps lastChangeAt when one is seen. Called during
+ * the odds refresh flow for MLB and NHL only.
+ *
+ * homeStarter/awayStarter come from extractStarter() on the raw team names.
+ * If a starter was previously known and now null (or different), it's
+ * treated as a change. Null→null is a no-op.
+ */
+function updateLineupState(sport, homeTeam, awayTeam, commenceTime, homeStarter, awayStarter) {
+  if (!lineupCache[sport]) lineupCache[sport] = {};
+  const key = makeLineupKey(homeTeam, awayTeam, commenceTime);
+  const now = Date.now();
+  const prior = lineupCache[sport][key];
+
+  if (!prior) {
+    // First time seeing this event — just stash the baseline (no change event)
+    lineupCache[sport][key] = {
+      homeStarter,
+      awayStarter,
+      seenAt: now,
+      lastChangeAt: null,
+      lastChangeDetail: null,
+    };
+    return;
+  }
+
+  const homeDiff = prior.homeStarter !== homeStarter && (prior.homeStarter || homeStarter);
+  const awayDiff = prior.awayStarter !== awayStarter && (prior.awayStarter || awayStarter);
+
+  if (homeDiff || awayDiff) {
+    const parts = [];
+    if (homeDiff) parts.push(`${homeTeam}: ${prior.homeStarter || 'TBD'} → ${homeStarter || 'TBD'}`);
+    if (awayDiff) parts.push(`${awayTeam}: ${prior.awayStarter || 'TBD'} → ${awayStarter || 'TBD'}`);
+    const detail = parts.join('; ');
+    log.info('Lineup', `${sport} lineup change detected — ${detail}`);
+    lineupCache[sport][key] = {
+      homeStarter,
+      awayStarter,
+      seenAt: now,
+      lastChangeAt: now,
+      lastChangeDetail: detail,
+    };
+  } else {
+    // No change — refresh seenAt but preserve lastChangeAt so the grace
+    // window continues to count from the original change time.
+    prior.homeStarter = homeStarter;
+    prior.awayStarter = awayStarter;
+    prior.seenAt = now;
+  }
+}
+
+/**
+ * Check whether an event's lineup recently changed (within grace window).
+ * Returns { changed: true, ageMs, detail } if within grace, else null.
+ * Used by the pricer to decline MLB/NHL legs for a few minutes after a
+ * starter swap so the books have time to re-price.
+ *
+ * Non-MLB/NHL sports always return null (not tracked).
+ */
+function checkLineupFreshness(sport, homeTeam, awayTeam, commenceTime) {
+  if (sport !== 'baseball_mlb' && sport !== 'icehockey_nhl') return null;
+  const bucket = lineupCache[sport];
+  if (!bucket) return null;
+  const key = makeLineupKey(homeTeam, awayTeam, commenceTime);
+  const entry = bucket[key];
+  if (!entry || !entry.lastChangeAt) return null;
+  const ageMs = Date.now() - entry.lastChangeAt;
+  if (ageMs >= LINEUP_GRACE_MS) return null;
+  return { changed: true, ageMs, detail: entry.lastChangeDetail };
+}
+
+/**
+ * Debug accessor — return the full lineup cache for /lineups endpoint.
+ */
+function getLineupCache() {
+  return lineupCache;
+}
+
 // ---------------------------------------------------------------------------
 // SCORES — fetch game results from The Odds API for early win detection
 // ---------------------------------------------------------------------------
@@ -2608,4 +2745,6 @@ module.exports = {
   americanToImpliedProb,
   fetchScores,
   getGameResult,
+  checkLineupFreshness,
+  getLineupCache,
 };
