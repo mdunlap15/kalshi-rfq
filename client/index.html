@@ -4969,13 +4969,38 @@
     'vancouver canucks':'VAN','vegas golden knights':'VGK','washington capitals':'WSH','winnipeg jets':'WPG',
     // NCAAB / other
     'baylor bears':'BAY','auburn tigers':'AUB','west virginia mountaineers':'WVU','tulsa golden hurricane':'TLSA',
-    'utah mammoth':'UTAH','creighton bluejays':'CREI','oklahoma sooners':'OU','orlando magic':'ORL',
+    'utah mammoth':'UTAH','creighton bluejays':'CREI','oklahoma sooners':'OU',
+    // MLS (essential — teams all end in FC/SC/CF/United/City which breaks the last-word fallback)
+    'atlanta united fc':'ATL','austin fc':'ATX','charlotte fc':'CLT','chicago fire fc':'CHI',
+    'fc cincinnati':'CIN','colorado rapids':'COL','columbus crew':'CLB','d.c. united':'DC','dc united':'DC',
+    'fc dallas':'DAL','houston dynamo fc':'HOU','inter miami cf':'MIA','la galaxy':'LAG','los angeles fc':'LAFC',
+    'minnesota united fc':'MIN','cf montréal':'MTL','cf montreal':'MTL','nashville sc':'NSH',
+    'new england revolution':'NE','new york city fc':'NYC','new york red bulls':'NYRB',
+    'orlando city sc':'ORL','philadelphia union':'PHI','portland timbers':'POR','real salt lake':'RSL',
+    'san diego fc':'SD','san jose earthquakes':'SJE','seattle sounders fc':'SEA','sporting kansas city':'SKC',
+    'st. louis city sc':'STL','st louis city sc':'STL','toronto fc':'TOR','vancouver whitecaps fc':'VAN',
   };
+
+  // Generic club suffixes/prefixes used across world soccer. Strip these
+  // BEFORE falling back to the last word, otherwise "Vancouver Whitecaps FC"
+  // collapses to just "FC" and any same-market MLS parlay visually looks
+  // like a duplicate leg ("FC @ FC O 2.5").
+  const CLUB_SUFFIX_RE = /\s+(fc|sc|cf|afc|ac|uc|cd|rc|fk|sk|bk|united|city|club)$/i;
+  const CLUB_PREFIX_RE = /^(fc|cf|afc|ac|uc|cd|rc|fk|sk|bk|real|inter|atletico|atlético|deportivo)\s+/i;
 
   function teamAbbr(name) {
     if (!name) return '?';
     const lower = name.toLowerCase().trim();
-    return TEAM_ABBR[lower] || name.split(' ').pop(); // fallback to last word
+    if (TEAM_ABBR[lower]) return TEAM_ABBR[lower];
+    // Strip generic club prefixes/suffixes so "Inter Miami CF" → "Miami",
+    // "New York City FC" → "New York City" → "City", etc.
+    let stripped = name.replace(CLUB_SUFFIX_RE, '').replace(CLUB_PREFIX_RE, '').trim();
+    if (!stripped) stripped = name;
+    const last = stripped.split(' ').pop();
+    // If the last word alone is too short or still generic, prefer the
+    // whole stripped name (handles short city names + single-word clubs).
+    if (last.length < 3 || /^(fc|sc|cf|ac|uc|cd|rc|fk|sk|bk)$/i.test(last)) return stripped;
+    return last;
   }
 
   /**
