@@ -207,14 +207,17 @@ async function fetchMarkets(eventId) {
  * it's shorter; fall back handled in caller if that doesn't parse.
  */
 async function fetchAffiliateSportEvents({ eventIds = null, tournamentId = null } = {}) {
+  // NOTE: Our API key has /partner/mm/* access only — /partner/affiliate/*
+  // returns 401. The mm namespace exposes the same reference endpoints but
+  // only for CURRENT (live/upcoming) events; historical events return 404.
   const params = [];
   if (eventIds && eventIds.length > 0) {
     params.push(`event_ids=${eventIds.join(',')}`);
   }
   if (tournamentId) params.push(`tournament_id=${tournamentId}`);
   const qs = params.length ? `?${params.join('&')}` : '';
-  const data = await pxFetch(`/partner/affiliate/get_sport_events${qs}`);
-  return data.data?.sport_events || data.sport_events || data.data || [];
+  const data = await pxFetch(`/partner/mm/get_sport_events${qs}`);
+  return data.data?.sport_events || data.sport_events || [];
 }
 
 /**
@@ -226,7 +229,7 @@ async function fetchAffiliateMultipleMarkets(eventIds, opts = {}) {
   if (!eventIds || eventIds.length === 0) return {};
   const params = [`event_ids=${eventIds.join(',')}`];
   if (opts.getAllMarket !== false) params.push('get_all_market=true');
-  const data = await pxFetch(`/partner/affiliate/get_multiple_markets?${params.join('&')}`);
+  const data = await pxFetch(`/partner/mm/get_multiple_markets?${params.join('&')}`);
   // Shape: { data: { <event_id>: [markets] } } OR { <event_id>: [markets] }
   return data.data || data;
 }
@@ -237,7 +240,7 @@ async function fetchAffiliateMultipleMarkets(eventIds, opts = {}) {
  * and look up tournament_id → sport_name across the whole session.
  */
 async function fetchAffiliateTournaments() {
-  const data = await pxFetch('/partner/affiliate/get_tournaments');
+  const data = await pxFetch('/partner/mm/get_tournaments');
   return data.data?.tournaments || data.tournaments || [];
 }
 
