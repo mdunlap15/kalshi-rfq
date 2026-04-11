@@ -2075,6 +2075,99 @@ function startStatusServer() {
     res.json({ count: hits.length, hits: hits.slice(0, 50) });
   });
 
+  // Query PX API directly for ALL orders and return settled ones with full data.
+  // Used to reconcile our in-memory P&L counter against ground truth from PX REST.
+  // Pure read: no DB writes, no in-memory mutations, no pause/unpause.
+  app.get('/debug-px-settled-full', async (req, res) => {
+    try {
+      const pxSvc = require('./services/prophetx');
+      const startMs = Date.now();
+      // PX paginates via cursor tokens; 10000 limit ensures we traverse the
+      // full history (fetchOrders stops early when PX returns no next token).
+      const all = await pxSvc.fetchOrders(10000);
+      const fetchedMs = Date.now() - startMs;
+
+      const SETTLED_STATUSES = new Set(['won', 'lost', 'push', 'void']);
+      const settled = all.filter(o => o.settlement_status && SETTLED_STATUSES.has(o.settlement_status));
+
+      // Aggregate stats directly from PX's `profit` field (authoritative)
+      let sumProfit = 0;
+      let wins = 0, losses = 0, pushes = 0, voids = 0;
+      let missingProfit = 0;
+      const byStatus = {};
+      const byMonth = {};
+      // Also group by inferred sport from first leg's event metadata if available
+      const bySportGuess = {};
+
+      for (const o of settled) {
+        const status = o.settlement_status;
+        byStatus[status] = (byStatus[status] || 0) + 1;
+
+        const profit = o.profit != null ? Number(o.profit) : null;
+        if (profit == null) missingProfit++;
+        else sumProfit += profit;
+
+        if (status === 'won') wins++;
+        else if (status === 'lost') losses++;
+        else if (status === 'push') pushes++;
+        else if (status === 'void') voids++;
+
+        const updatedAt = o.updated_at || o.settled_at || 0;
+        const date = updatedAt ? new Date(Number(updatedAt) * 1000).toISOString().substring(0, 7) : 'unknown';
+        byMonth[date] = (byMonth[date] || 0) + (profit || 0);
+      }
+
+      // Also compute from stake/odds where profit is missing, as a sanity check
+      function americanToProfit(odds, stake) {
+        const o = Number(odds);
+        if (!o || !stake) return 0;
+        if (o >= 100) return stake * o / 100;
+        return stake * 100 / Math.abs(o);
+      }
+      let computedProfit = 0;
+      for (const o of settled) {
+        const stake = Number(o.confirmed_stake || o.stake || 0);
+        const odds = Number(o.confirmed_odds || o.odds || 0);
+        const status = o.settlement_status;
+        if (status === 'won') {
+          // SP won — bettor's parlay missed. SP keeps bettor's wager (= their stake × 100/|odds|).
+          computedProfit += americanToProfit(odds, stake);
+        } else if (status === 'lost') {
+          // SP lost — pays out confirmedStake.
+          computedProfit -= stake;
+        }
+        // push/void: 0
+      }
+
+      res.json({
+        ok: true,
+        fetchedMs,
+        totalOrdersFromPx: all.length,
+        settledCount: settled.length,
+        byStatus,
+        wins, losses, pushes, voids,
+        missingProfit,
+        sumProfitFromPxField: Math.round(sumProfit * 100) / 100,
+        computedProfitFromStakeOdds: Math.round(computedProfit * 100) / 100,
+        pnlByMonth: Object.fromEntries(
+          Object.entries(byMonth).sort().map(([k, v]) => [k, Math.round(v * 100) / 100])
+        ),
+        // Include first 5 settled as samples for verification
+        samples: settled.slice(0, 5).map(o => ({
+          uuid: o.order_uuid,
+          parlayId: o.p_id || o.parlay_id,
+          status: o.settlement_status,
+          stake: o.confirmed_stake || o.stake,
+          odds: o.confirmed_odds || o.odds,
+          profit: o.profit,
+          updatedAt: o.updated_at,
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Dump raw PX markets for a specific event by team substring match.
   // Used to see whether PX is even returning alt puck lines / alt spread
   // markets for NHL / MLB so we can tell coverage from parsing bugs.
