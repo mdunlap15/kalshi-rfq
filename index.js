@@ -1969,6 +1969,43 @@ function startStatusServer() {
     res.json({ events: oddsFeed.getAllCachedEvents() });
   });
 
+  // Book coverage diagnostic — counts how many events per sport have each
+  // sportsbook present (pinnacle, fanduel, draftkings, kalshi). Answers
+  // "why don't my quotes show Kalshi odds?" — it's almost always because
+  // SharpAPI returned zero Kalshi rows for that sport/event.
+  app.get('/book-coverage', (req, res) => {
+    const all = oddsFeed.getAllCachedEvents();
+    const out = { sports: {} };
+    for (const [sport, events] of Object.entries(all)) {
+      const sportStats = {
+        totalEvents: 0,
+        eventsWithH2H: 0,
+        bookCounts: { pinnacle: 0, fanduel: 0, draftkings: 0, kalshi: 0 },
+        rawBookKeys: {}, // tracks every distinct sportsbook string seen in raw rows
+      };
+      const evList = Array.isArray(events) ? events : Object.values(events).flatMap(v => Array.isArray(v) ? v : [v]);
+      for (const ev of evList) {
+        sportStats.totalEvents++;
+        if (ev.markets?.h2h) {
+          sportStats.eventsWithH2H++;
+          if (ev.markets.h2h.pinnacle) sportStats.bookCounts.pinnacle++;
+          if (ev.markets.h2h.fanduel) sportStats.bookCounts.fanduel++;
+          if (ev.markets.h2h.draftkings) sportStats.bookCounts.draftkings++;
+          if (ev.markets.h2h.kalshi) sportStats.bookCounts.kalshi++;
+        }
+        // Inspect raw rows so we can see what sportsbook strings SharpAPI is
+        // actually returning (catches cases where Kalshi shows up under a
+        // different identifier like "kalshi_sports" or "kalshi_usa").
+        for (const r of (ev._rawOdds || [])) {
+          const sb = r.sportsbook || '(none)';
+          sportStats.rawBookKeys[sb] = (sportStats.rawBookKeys[sb] || 0) + 1;
+        }
+      }
+      out.sports[sport] = sportStats;
+    }
+    res.json(out);
+  });
+
   // List line index (debugging)
   app.get('/lines', (req, res) => {
     const summary = lineManager.getLineSummary();
