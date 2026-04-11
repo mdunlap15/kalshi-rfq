@@ -2432,7 +2432,21 @@ function startStatusServer() {
         for (const p of mmPaths) {
           try {
             const raw = await pxSvc.pxFetch(p);
-            out.multipleMarketsProbes.push({ path: p, ok: true, topKeys: Object.keys(raw || {}), sample: JSON.stringify(raw).slice(0, 4000) });
+            // Extract the market list for the first event and print each
+            // market's outer keys so we can see if 'type' is actually set.
+            const inner = raw?.data || {};
+            const firstKey = Object.keys(inner)[0];
+            const list = firstKey ? inner[firstKey] : [];
+            const marketSummary = Array.isArray(list) ? list.map(m => ({
+              outerKeys: Object.keys(m || {}),
+              type: m?.type,
+              name: m?.name,
+              hasSelections: Array.isArray(m?.selections),
+              selectionsCount: Array.isArray(m?.selections) ? m.selections.length : 0,
+              hasMarketLines: Array.isArray(m?.market_lines),
+              marketLinesCount: Array.isArray(m?.market_lines) ? m.market_lines.length : 0,
+            })) : [];
+            out.multipleMarketsProbes.push({ path: p, ok: true, topKeys: Object.keys(raw || {}), firstEventId: firstKey, marketSummary });
           } catch (err) {
             out.multipleMarketsProbes.push({ path: p, ok: false, error: err.message });
           }
