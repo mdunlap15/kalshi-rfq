@@ -151,15 +151,39 @@ function resolveTeamTotalSide(hint, homeTeam, awayTeam) {
   if (normHint === normHome) return 'home';
   if (normHint === normAway) return 'away';
 
+  // Check TEAM_NAME_OVERRIDES forward and reverse (handles things like
+  // "MTL Canadiens" ↔ "Montreal Canadiens").
+  for (const [k, v] of Object.entries(TEAM_NAME_OVERRIDES)) {
+    const normK = normalizeTeamName(k);
+    const normV = normalizeTeamName(v);
+    if (normHome === normK || normHome === normV) {
+      if (normHint === normK || normHint === normV) return 'home';
+      if (normV.includes(normHint) || normK.includes(normHint)) return 'home';
+    }
+    if (normAway === normK || normAway === normV) {
+      if (normHint === normK || normHint === normV) return 'away';
+      if (normV.includes(normHint) || normK.includes(normHint)) return 'away';
+    }
+  }
+
   // Substring: full team name contains the hint (or vice versa)
   if (normHome.includes(normHint) || normHint.includes(normHome)) return 'home';
   if (normAway.includes(normHint) || normHint.includes(normAway)) return 'away';
 
-  // Abbreviation / initials match. Many sports hint with initials like
-  // "SJ" (San Jose), "VAN" (Vancouver), "NYR" (New York Rangers).
-  // Build initial-letter strings for both full team names and compare.
-  function initials(name) {
+  // Abbreviation / initials matching. Sports use three different
+  // abbreviation conventions and we need to handle all of them:
+  //
+  //   1. All-word initials: "SJS" (San Jose Sharks), "CBJ" (Columbus
+  //      Blue Jackets), "NYY" (New York Yankees)
+  //   2. First-N-word prefix initials: "SJ" (San Jose), "LA" (Los
+  //      Angeles), "NY" (New York), "GS" (Golden State)
+  //   3. First-N-char chunk: "VAN" (Vancouver), "MON"/"MTL" (Montreal),
+  //      "PHI" (Philadelphia)
+  function allWordInitials(name) {
     return normalizeTeamName(name).split(/\s+/).map(w => w[0] || '').join('');
+  }
+  function firstNWordInitials(name, n) {
+    return normalizeTeamName(name).split(/\s+/).slice(0, n).map(w => w[0] || '').join('');
   }
   function firstWordChunk(name, n) {
     const norm = normalizeTeamName(name);
@@ -167,12 +191,17 @@ function resolveTeamTotalSide(hint, homeTeam, awayTeam) {
   }
   const hintCompact = normHint.replace(/\s/g, '');
 
-  const homeInitials = initials(homeTeam);
-  const awayInitials = initials(awayTeam);
-  if (hintCompact === homeInitials) return 'home';
-  if (hintCompact === awayInitials) return 'away';
+  // Strategy 1: all-word initials
+  if (hintCompact === allWordInitials(homeTeam)) return 'home';
+  if (hintCompact === allWordInitials(awayTeam)) return 'away';
 
-  // First-N-characters match (handles "VAN" vs "vancouver canucks")
+  // Strategy 2: first-N-word prefix initials where N = hint length
+  if (hintCompact.length >= 2 && hintCompact.length <= 4) {
+    if (firstNWordInitials(homeTeam, hintCompact.length) === hintCompact) return 'home';
+    if (firstNWordInitials(awayTeam, hintCompact.length) === hintCompact) return 'away';
+  }
+
+  // Strategy 3: first-N-chars of first word
   for (const n of [5, 4, 3]) {
     if (hintCompact.length !== n) continue;
     if (firstWordChunk(homeTeam, n) === hintCompact) return 'home';
