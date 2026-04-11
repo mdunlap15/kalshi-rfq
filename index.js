@@ -2037,19 +2037,34 @@ function startStatusServer() {
       const hit = allEvents.find(e => (e.name || '').toLowerCase().includes(q) && (e.sport_name || '') === sportFilter);
       if (!hit) return res.json({ ok: false, error: 'no event matched', searched: allEvents.length });
       const markets = await pxSvc.fetchMarkets(hit.event_id);
-      const filtered = markets.map(m => ({
-        type: m.type,
-        name: m.name,
-        hasMarketLines: !!m.market_lines,
-        marketLineCount: (m.market_lines || []).length,
-        marketLineSample: (m.market_lines || []).slice(0, 3).map(ml => ({
-          line: ml.line,
-          favourite: ml.favourite,
-          selCount: (ml.selections || []).length,
-        })),
-        hasSelections: !!m.selections,
-        selCount: (m.selections || []).length,
-      }));
+      const filtered = markets.map(m => {
+        const parsed = (() => {
+          try { return pxSvc.parseMarketSelections(m); }
+          catch (e) { return [{ error: e.message }]; }
+        })();
+        return {
+          type: m.type,
+          name: m.name,
+          hasMarketLines: !!m.market_lines,
+          marketLineCount: (m.market_lines || []).length,
+          marketLineSample: (m.market_lines || []).slice(0, 3).map(ml => ({
+            line: ml.line,
+            favourite: ml.favourite,
+            selCount: (ml.selections || []).length,
+          })),
+          hasSelections: !!m.selections,
+          selCount: (m.selections || []).length,
+          parsedCount: parsed.length,
+          parsedMarketType: parsed[0]?.marketType,
+          parsedSample: parsed.slice(0, 3).map(p => ({
+            lineId: p.lineId,
+            marketType: p.marketType,
+            selection: p.selection,
+            teamName: p.teamName,
+            line: p.line,
+          })),
+        };
+      });
       res.json({
         ok: true,
         event: { id: hit.event_id, name: hit.name, sport: hit.sport_name },
