@@ -2318,7 +2318,7 @@
       const expanded = expandedRows.has(rowKey);
       html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
         <td style="white-space:nowrap; font-size:12px;">${time}</td>
-        <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis;" title="${teams}">${teamsShort}</td>
+        <td style="max-width:320px; white-space:nowrap;" title="${teams}"><span style="display:inline-block; max-width:280px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">${teamsShort}</span>${sgpBadge(legs)}</td>
         <td>${legs.length}</td>
         <td style="font-weight:600;">${offeredAm}</td>
         <td style="text-align:right; color:var(--purple);">${posPinFmt}</td>
@@ -2567,7 +2567,7 @@
       const expanded = expandedRows.has(rowKey);
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">';
       html += '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>';
-      html += '<td style="max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>';
+      html += '<td style="max-width:290px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + '</td>';
       html += '<td>' + legs.length + '</td>';
       html += '<td style="font-weight:600;">' + offeredAm + '</td>';
       html += '<td style="text-align:right; color:var(--purple);">' + sPinFmt + '</td>';
@@ -4420,7 +4420,7 @@
 
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">' +
         '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>' +
-        '<td style="font-size:12px; max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>' +
+        '<td style="font-size:12px; max-width:290px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + '</td>' +
         '<td>' + legs.length + '</td>' +
         '<td style="text-align:right; font-weight:600;">' + oddsStr + '</td>' +
         '<td style="text-align:right; color:var(--purple);">' + pinFmt + '</td>' +
@@ -4653,7 +4653,7 @@
       const expanded = expandedRows.has(rowKey);
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">';
       html += '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>';
-      html += '<td style="font-size:12px; max-width:220px; overflow:hidden; text-overflow:ellipsis;" title="' + teams + '">' + teamsShort + '</td>';
+      html += '<td style="font-size:12px; max-width:260px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:220px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + '</td>';
       html += '<td>' + legs.length + '</td>';
       html += '<td style="font-weight:600;">' + oddsStr + '</td>';
       html += '<td style="text-align:right; color:var(--purple);">' + psPinFmt + '</td>';
@@ -4977,6 +4977,34 @@
       // Fallback if formatting fails
       return (legs || []).map(l => l.team || l.teamName || '?').join(', ');
     }
+  }
+
+  /** Returns true when 2+ legs share the same pxEventId — a same-game parlay. */
+  function isSameGameParlay(legs) {
+    if (!legs || legs.length < 2) return false;
+    const seen = new Set();
+    for (const l of legs) {
+      const eid = l.pxEventId;
+      if (!eid) continue;
+      if (seen.has(eid)) return true;
+      seen.add(eid);
+    }
+    return false;
+  }
+
+  /** Render an SGP badge (empty string for non-SGPs).
+   *  SGPs are important to flag because the dashboard's Pin/FD/DK
+   *  parlay columns compound per-leg implied probs as if legs were
+   *  independent — which systematically overstates competitor parlay
+   *  value for SGPs since sportsbooks apply correlation penalties on
+   *  real SGP products. Our own offer DOES apply a correlation penalty
+   *  (see a8363ac), so our parlay looks much tighter than the raw
+   *  Pin/DK compound — not because we're mispriced, but because the
+   *  comparison baseline is misleading. The badge tells the operator
+   *  "the Pin/DK numbers here are not apples-to-apples." */
+  function sgpBadge(legs) {
+    if (!isSameGameParlay(legs)) return '';
+    return ' <span title="Same-Game Parlay — competitor (Pin/FD/DK) parlay columns compound per-leg implied probs as if independent and are NOT a fair benchmark. Our offer applies a correlation penalty for SGPs." style="display:inline-block; background:rgba(139,92,246,0.15); color:#a78bfa; border:1px solid rgba(139,92,246,0.4); font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;">SGP</span>';
   }
 
   function sportLabel(sport) {
@@ -6987,7 +7015,7 @@
       const expanded = expandedRows.has(rowKey);
       html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
         <td style="white-space:nowrap;">${time}</td>
-        <td style="max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="${teams}">${teamsShort}</td>
+        <td style="max-width:290px; white-space:nowrap;" title="${teams}"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">${teamsShort}</span>${sgpBadge(legs)}</td>
         <td>${legs.length}</td>
         <td>${fairAm}</td>
         <td style="color:var(--purple);">${pinAm}</td>
