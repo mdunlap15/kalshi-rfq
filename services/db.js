@@ -69,12 +69,17 @@ async function saveOrder(order) {
 
 async function loadOrders(limit = 100) {
   const db = getClient();
-  if (!db) return [];
+  if (!db) {
+    log.warn('DB', 'loadOrders: no Supabase client available');
+    return [];
+  }
 
   // Supabase caps single queries at 1000 rows by default. Paginate via .range()
   // to fetch all requested orders beyond that cap.
   const PAGE_SIZE = 1000;
   const all = [];
+  const startMs = Date.now();
+  let pagesFetched = 0;
   try {
     let offset = 0;
     while (offset < limit) {
@@ -89,14 +94,21 @@ async function loadOrders(limit = 100) {
         .order('parlay_id', { ascending: true })
         .range(offset, offset + pageSize - 1);
       if (error) {
-        log.error('DB', `Failed to load orders (page at offset ${offset}): ${error.message}`);
+        log.error('DB', `loadOrders page ${pagesFetched} at offset ${offset} failed: ${error.message} (code=${error.code} details=${error.details})`);
         break;
       }
-      if (!data || data.length === 0) break;
+      if (!data || data.length === 0) {
+        if (pagesFetched === 0) {
+          log.warn('DB', `loadOrders first page returned empty — table may be empty or the query returned no rows`);
+        }
+        break;
+      }
       all.push(...data);
+      pagesFetched++;
       if (data.length < pageSize) break; // reached end
       offset += pageSize;
     }
+    log.info('DB', `loadOrders: ${all.length} rows in ${pagesFetched} pages (${Date.now() - startMs}ms)`);
 
     // Convert DB rows back to order format
     return all.map(row => ({

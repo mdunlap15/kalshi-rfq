@@ -84,11 +84,33 @@ async function startup() {
     log.warn('Startup', 'Continuing without PX auth — click Reconnect when ready');
   }
 
-  // Step 1b: Load historical data from Supabase
+  // Step 1b: Load historical data from Supabase, then fall back to PX REST
+  // reconcile if Supabase returned nothing (intermittent DB errors have been
+  // observed where loadFromDb silently returns 0 orders). PX REST is the
+  // authoritative source of truth, so if Supabase is unavailable we can
+  // still bootstrap state from PX directly.
   try {
     await orderTracker.loadFromDb();
+    const stats = orderTracker.getStats();
+    if (stats.totalQuotes < 100 && authOk) {
+      log.warn('Startup', `    ⚠ Supabase loaded only ${stats.totalQuotes} orders — falling back to PX reconcile`);
+      try {
+        const result = await orderTracker.fullPxReconcile(px);
+        log.info('Startup', `    ✓ PX reconcile bootstrap: imported ${result.imported}, settled ${result.settled}, P&L $${result.after.runningPnL.toFixed(2)}`);
+      } catch (err) {
+        log.warn('Startup', `    ✗ PX reconcile bootstrap failed: ${err.message}`);
+      }
+    }
   } catch (err) {
-    log.warn('Startup', `    ⚠ DB load failed: ${err.message} — continuing with empty state`);
+    log.warn('Startup', `    ⚠ DB load failed: ${err.message} — attempting PX reconcile fallback`);
+    if (authOk) {
+      try {
+        const result = await orderTracker.fullPxReconcile(px);
+        log.info('Startup', `    ✓ PX reconcile fallback: imported ${result.imported}, settled ${result.settled}, P&L $${result.after.runningPnL.toFixed(2)}`);
+      } catch (err2) {
+        log.warn('Startup', `    ✗ PX reconcile fallback also failed: ${err2.message} — continuing with empty state`);
+      }
+    }
   }
 
   // Step 2: Fetch odds from The Odds API
