@@ -704,8 +704,24 @@ function handleLegSettled(data) {
 
 /**
  * Handle full parlay settlement.
+ *
+ * PX WebSocket parlay.settled payload is just {order_uuid, result, payout}
+ * — NO leg-level settlement data. If we call recordSettlement directly
+ * from this event, the order is persisted with empty leg_status fields,
+ * and on the next service restart loadFromDb's revert heuristic may flip
+ * it back to 'confirmed' (destroying the settlement record).
+ *
+ * Fix: backfill leg data from PX REST BEFORE recording the settlement.
+ * We fetch the order's full details (which include per-leg settlement_status)
+ * via fetchOrderByUuid, call recordLegSettlement for each leg, then call
+ * recordSettlement. The legs are now populated on the stored order, so
+ * future reloads see legStatuses.length > 0 and use the unambiguous
+ * pattern-match branch instead of the risky "unfinished heuristic".
+ *
+ * If the REST fetch fails, we still call recordSettlement as a fallback
+ * — better to have the settlement with a partial record than lose it.
  */
-function handleParlaySettled(data) {
+async function handleParlaySettled(data) {
   const payload = data.payload || data;
   const orderUuid = payload.order_uuid || payload.orderUuid;
   const result = payload.result || payload.status;
@@ -715,6 +731,31 @@ function handleParlaySettled(data) {
   // Evidence: 64/64 settlements inverted when flipping, all showing as SP losses despite
   // score data confirming legs failed. Removing flip — PX result is used directly.
   log.info('Settle', `Parlay settled: order=${orderUuid}, pxResult=${result}, payout=${payout}`);
+
+  if (!orderUuid) {
+    log.warn('Settle', 'parlay.settled event missing order_uuid — skipping');
+    return;
+  }
+
+  // Backfill leg settlement data from PX REST before recording the parlay settlement.
+  // This makes the stored order self-describing: any future reload can determine
+  // the correct SP result from leg_status alone without needing start-time heuristics.
+  try {
+    const pxOrder = await px.fetchOrderByUuid(orderUuid);
+    if (pxOrder && Array.isArray(pxOrder.legs)) {
+      for (const pxLeg of pxOrder.legs) {
+        if (pxLeg.line_id && pxLeg.settlement_status) {
+          orderTracker.recordLegSettlement(orderUuid, pxLeg);
+        }
+      }
+      log.info('Settle', `Backfilled ${pxOrder.legs.length} legs from PX REST for ${orderUuid}`);
+    } else {
+      log.debug('Settle', `Could not fetch order details from PX REST for ${orderUuid}`);
+    }
+  } catch (err) {
+    log.warn('Settle', `Leg backfill failed for ${orderUuid}: ${err.message}`);
+  }
+
   orderTracker.recordSettlement(orderUuid, result, payout);
 }
 

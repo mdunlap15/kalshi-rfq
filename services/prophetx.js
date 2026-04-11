@@ -272,6 +272,29 @@ async function fetchBalance() {
  * base64 `token` for the next page. When limit > 100, we paginate using
  * that token until we reach the limit or exhaust all orders.
  */
+/**
+ * Fetch a single order by order_uuid from PX REST. Returns the order object
+ * with full leg-level settlement data, or null if not found.
+ *
+ * Used by the WebSocket parlay.settled handler to backfill leg status data
+ * before persisting a settlement — without this, orders settled via WebSocket
+ * have no leg_status fields, which triggers the loadFromDb revert heuristic
+ * on restart and silently destroys settlement records.
+ *
+ * Implementation: scans the most recent 50 orders for the matching UUID.
+ * The just-settled order is nearly always at the top of that window.
+ */
+async function fetchOrderByUuid(uuid) {
+  if (!uuid) return null;
+  try {
+    const orders = await fetchOrders(50);
+    return orders.find(o => o.order_uuid === uuid) || null;
+  } catch (err) {
+    log.warn('PX-Orders', `fetchOrderByUuid(${uuid}) failed: ${err.message}`);
+    return null;
+  }
+}
+
 async function fetchOrders(limit = 50, status = null) {
   const PAGE_SIZE = 100;
   const all = [];
@@ -508,5 +531,6 @@ module.exports = {
   confirmOrder,
   fetchBalance,
   fetchOrders,
+  fetchOrderByUuid,
   parseMarketSelections,
 };

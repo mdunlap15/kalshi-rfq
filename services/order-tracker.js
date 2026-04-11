@@ -2527,18 +2527,34 @@ async function loadFromDb() {
         }
       } else {
         // No leg data — check if games have actually started.
-        // If ALL legs have future start times, this settlement is bogus — revert to confirmed.
+        //
+        // CRITICAL: revert only if ALL legs are unfinished, NOT if any.
+        //
+        // The previous logic used `legs.some(unfinished)` which destroyed
+        // legitimate early settlements. A parlay can correctly settle as
+        // SP-won the moment ANY leg busts bettor-side, even if other legs
+        // are still in the future. Example: 3-leg parlay with Leg A (Friday
+        // 7pm, bettor's pick loses) + Leg B (Saturday 1pm) + Leg C (Saturday
+        // 4pm). PX fires parlay.settled(won) as soon as Leg A loses. On the
+        // next restart, the old heuristic saw Leg B/C still in the future
+        // and reverted the whole parlay back to confirmed — destroying the
+        // valid settlement and persisting the revert to the DB.
+        //
+        // Fix: only revert when NO leg could possibly have resolved yet —
+        // i.e. EVERY leg is still in the future or within 4h of start.
+        // Covers the true bogus case (settlement recorded before any game
+        // played) while preserving legitimate early-win settlements.
         const now = Date.now();
-        const anyUnfinished = legs.some(l => {
+        const allUnfinished = legs.length > 0 && legs.every(l => {
           const st = l.startTime || l.start_time;
-          if (!st) return false;
+          if (!st) return false; // unknown start time — don't vote unfinished
           const startMs = new Date(st).getTime();
           if (startMs > now) return true;
           if ((now - startMs) < 4 * 3600 * 1000) return true;
           return false;
         });
-        if (anyUnfinished) {
-          log.warn('DB', `Reverting bogus settlement for ${o.parlayId}: leg(s) not yet finished`);
+        if (allUnfinished) {
+          log.warn('DB', `Reverting bogus settlement for ${o.parlayId}: ALL legs still unfinished`);
           o.status = 'confirmed';
           o.settlementResult = null;
           o.pnl = null;
@@ -2549,7 +2565,10 @@ async function loadFromDb() {
           db.saveOrder(o).catch(() => {});
           continue; // skip settlement processing
         }
-        // Games have started but no leg resolution data — keep stored status
+        // At least one leg has finished (or start times unknown) — keep stored status.
+        // New WebSocket handler backfills leg data from PX REST so future
+        // settled orders should always take the `legStatuses.length > 0`
+        // branch above. This fall-through is for legacy orders only.
         spResult = o.status.replace('settled_', '');
       }
 
