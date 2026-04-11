@@ -2734,6 +2734,7 @@ module.exports = {
   rebuildAllExposure,
   enrichReconstructedOrders,
   enrichReconstructedFromPx,
+  enrichOpenPositionsFromAffiliate,
   loadFromDb,
   backfillGolfMetadata,
 };
@@ -2796,6 +2797,207 @@ async function enrichReconstructedOrders() {
   if (pending.length > 0) await Promise.all(pending);
   log.info('Orders', `Enrichment: scanned ${scanned} orders with unresolved legs, enriched ${enriched}, persisted ${pending.length}`);
   return { scanned, enriched, persisted: pending.length };
+}
+
+/**
+ * Resolve open/in-progress orders via PX's /partner/affiliate/* endpoints.
+ *
+ * This is the PRIMARY enrichment path for confirmed orders. It replaces the
+ * per-event enrichReconstructedFromPx loop with two bulk calls:
+ *
+ *   1) GET /partner/affiliate/get_tournaments              (cached dictionary)
+ *   2) GET /partner/affiliate/get_sport_events?event_ids=… (home/away teams,
+ *      start time, sport/tournament names — all keyed by sport_event_id)
+ *   3) GET /partner/affiliate/get_multiple_markets?event_ids=…
+ *      (market display_name + selections[] with line_id → team/selection
+ *      mapping)
+ *
+ * For each confirmed order whose legs have team='?', it:
+ *   • Resolves pxEventId → home/away team + start time + sport
+ *   • Resolves lineId → team + market type + selection + line via
+ *     parseMarketSelections
+ *   • Awaits the DB save so the enrichment survives restarts
+ *   • Calls rebuildAllExposure() so the Team/Game Exposure tables reflect
+ *     the newly-resolved data without requiring a separate manual step
+ *
+ * Returns counters for visibility into how well the affiliate endpoints
+ * cover the current order book.
+ */
+async function enrichOpenPositionsFromAffiliate() {
+  const px = require('./prophetx');
+
+  // ---- 1) collect work set ----
+  const eventIds = new Set();
+  const targetOrders = [];
+  for (const order of Object.values(orders)) {
+    const legs = order.legs || order.meta?.legs || [];
+    const needsEnrichment = legs.some(
+      l => !l.team || l.team === '?' || l.team === 'unknown' || !l.homeTeam || !l.startTime
+    );
+    if (!needsEnrichment) continue;
+    targetOrders.push(order);
+    for (const l of legs) {
+      const eid = l.pxEventId || l.sport_event_id;
+      if (eid) eventIds.add(eid);
+    }
+  }
+  if (eventIds.size === 0) {
+    return { targetOrders: 0, eventsRequested: 0, eventsResolved: 0, lineIdsResolved: 0, enriched: 0 };
+  }
+
+  // ---- 2) load tournament dictionary (small, one call) ----
+  const tournaments = {}; // tournament_id → { name, sportName }
+  try {
+    const list = await px.fetchAffiliateTournaments();
+    for (const t of list || []) {
+      tournaments[t.id] = { name: t.name, sportName: t.sport?.name };
+    }
+    log.info('Affiliate', `Loaded ${Object.keys(tournaments).length} tournaments`);
+  } catch (err) {
+    log.warn('Affiliate', `get_tournaments failed: ${err.message} — continuing without tournament dict`);
+  }
+
+  // ---- 3) bulk-fetch sport events (home/away, start time, sport/tournament) ----
+  const idList = [...eventIds];
+  const CHUNK = 100; // generous — URL length for 100 ids is ~900 bytes
+  const eventInfo = {}; // eventId → { name, homeTeam, awayTeam, scheduled, sportName, tournamentName, tournamentId }
+  let sportEventsFetched = 0;
+  for (let i = 0; i < idList.length; i += CHUNK) {
+    const chunk = idList.slice(i, i + CHUNK);
+    try {
+      const seList = await px.fetchAffiliateSportEvents({ eventIds: chunk });
+      for (const se of seList || []) {
+        const home = (se.competitors || []).find(c => c.side === 'home');
+        const away = (se.competitors || []).find(c => c.side === 'away');
+        eventInfo[se.event_id] = {
+          name: se.name || se.display_name,
+          homeTeam: home?.display_name || home?.name || null,
+          awayTeam: away?.display_name || away?.name || null,
+          scheduled: se.scheduled,
+          sportName: se.sport_name,
+          tournamentName: se.tournament_name,
+          tournamentId: se.tournament_id,
+        };
+        sportEventsFetched++;
+      }
+    } catch (err) {
+      log.warn('Affiliate', `get_sport_events chunk ${i}-${i + chunk.length} failed: ${err.message}`);
+    }
+  }
+  log.info('Affiliate', `Resolved ${sportEventsFetched}/${idList.length} sport events`);
+
+  // ---- 4) bulk-fetch markets (line_id → team/selection/market type) ----
+  const lineIdInfo = {}; // lineId → { teamName, marketType, selection, line }
+  let marketsChunks = 0;
+  for (let i = 0; i < idList.length; i += CHUNK) {
+    const chunk = idList.slice(i, i + CHUNK);
+    try {
+      const bulk = await px.fetchAffiliateMultipleMarkets(chunk);
+      // Shape is { event_id: [market, ...] }. Keys are stringified ids.
+      for (const [eid, marketList] of Object.entries(bulk || {})) {
+        if (!Array.isArray(marketList)) continue;
+        for (const market of marketList) {
+          if (!['moneyline', 'spread', 'total', 'team_total'].includes(market.type)) continue;
+          let parsed;
+          try { parsed = px.parseMarketSelections(market); }
+          catch (e) { continue; }
+          for (const sel of parsed || []) {
+            if (!sel.lineId) continue;
+            lineIdInfo[sel.lineId] = {
+              teamName: sel.teamName,
+              marketType: sel.marketType,
+              selection: sel.selection,
+              line: sel.line,
+              competitorId: sel.competitorId,
+            };
+          }
+        }
+      }
+      marketsChunks++;
+    } catch (err) {
+      log.warn('Affiliate', `get_multiple_markets chunk ${i}-${i + chunk.length} failed: ${err.message}`);
+    }
+  }
+  log.info('Affiliate', `Resolved ${Object.keys(lineIdInfo).length} line_ids across ${marketsChunks} chunks`);
+
+  // ---- 5) apply enrichment to target orders + persist ----
+  let enriched = 0;
+  const pending = [];
+  for (const order of targetOrders) {
+    const legs = order.legs || order.meta?.legs || [];
+    let changed = false;
+    const newLegs = legs.map(l => {
+      const lineInfo = l.lineId ? lineIdInfo[l.lineId] : null;
+      const eid = l.pxEventId || l.sport_event_id;
+      const ev = eid ? eventInfo[eid] : null;
+      if (!lineInfo && !ev) return l;
+
+      // Team precedence: explicit line match → existing → home/away from event
+      let team = lineInfo?.teamName || l.team;
+      if ((!team || team === '?' || team === 'unknown') && ev) {
+        // For moneyline/spread we can't pick home vs away without the lineInfo,
+        // but for total markets we can label as "Over/Under (Away @ Home)".
+        if (lineInfo?.marketType === 'total' && ev.awayTeam && ev.homeTeam) {
+          team = `${lineInfo.selection || 'Total'} (${ev.awayTeam} @ ${ev.homeTeam})`;
+        } else {
+          // Fallback to the event display name so the row at least says
+          // "Yankees @ Red Sox" instead of "Event 10077494".
+          team = ev.name || `${ev.awayTeam || '?'} @ ${ev.homeTeam || '?'}`;
+        }
+      }
+
+      const sportName = ev?.sportName
+        || tournaments[l.tournamentId || l.tournament_id]?.sportName
+        || l.sport;
+
+      if ((team && team !== l.team) || (ev && !l.homeTeam) || (sportName && sportName !== l.sport)) {
+        changed = true;
+      }
+
+      return {
+        ...l,
+        team: team || l.team,
+        teamName: lineInfo?.teamName || l.teamName || team,
+        market: lineInfo?.marketType || l.market,
+        marketType: lineInfo?.marketType || l.marketType,
+        selection: lineInfo?.selection || l.selection,
+        line: lineInfo?.line != null ? lineInfo.line : l.line,
+        homeTeam: ev?.homeTeam || l.homeTeam,
+        awayTeam: ev?.awayTeam || l.awayTeam,
+        startTime: ev?.scheduled || l.startTime,
+        sport: sportName || 'unknown',
+        pxEventName: ev?.name || l.pxEventName,
+        tournamentName: ev?.tournamentName || l.tournamentName,
+      };
+    });
+
+    if (changed) {
+      order.legs = newLegs;
+      if (order.meta) order.meta.legs = newLegs;
+      enriched++;
+      pending.push(db.saveOrder(order).catch(err => {
+        log.warn('Affiliate', `saveOrder failed for ${order.parlayId}: ${err.message}`);
+      }));
+    }
+  }
+
+  if (pending.length > 0) await Promise.all(pending);
+
+  // Rebuild exposure so the Team/Game Exposure tables reflect the new names
+  // without the caller having to know to trigger it separately.
+  rebuildAllExposure();
+
+  const result = {
+    targetOrders: targetOrders.length,
+    eventsRequested: idList.length,
+    eventsResolved: sportEventsFetched,
+    lineIdsResolved: Object.keys(lineIdInfo).length,
+    tournamentsLoaded: Object.keys(tournaments).length,
+    enriched,
+    persisted: pending.length,
+  };
+  log.info('Affiliate', `enrichOpenPositionsFromAffiliate done: ${JSON.stringify(result)}`);
+  return result;
 }
 
 /**

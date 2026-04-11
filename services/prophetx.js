@@ -180,6 +180,68 @@ async function fetchMarkets(eventId) {
 }
 
 // ---------------------------------------------------------------------------
+// AFFILIATE API — richer reference endpoints that return team/market names
+//
+// PX exposes a separate /partner/affiliate/* namespace with three read-only
+// endpoints that the /partner/mm/* ones don't match feature-for-feature:
+//
+//   • get_sport_events?event_ids[]&tournament_id= — bulk event lookup with
+//     competitors[] (home/away team names + abbreviations), scheduled start
+//     time, tournament_name, sport_name
+//   • get_multiple_markets?event_ids[]&get_all_market=true — bulk markets
+//     keyed by event_id, same schema as single-event get_markets
+//   • get_tournaments — tournament_id → sport/league dictionary
+//
+// These replace the per-event enrichment loop entirely: 217 serial fetches
+// become two bulk calls. They also expose home/away team names (via
+// competitors[].side) which the MM namespace does not.
+// ---------------------------------------------------------------------------
+
+/**
+ * Bulk fetch sport event metadata. Accepts { eventIds?, tournamentId? }.
+ * Returns an array of sport-event objects with competitors, scheduled,
+ * tournament_name, sport_name, etc.
+ *
+ * PX appears to accept either `event_ids=1,2,3` (comma-separated) or
+ * repeated `event_ids=1&event_ids=2` syntax. We use comma-separated since
+ * it's shorter; fall back handled in caller if that doesn't parse.
+ */
+async function fetchAffiliateSportEvents({ eventIds = null, tournamentId = null } = {}) {
+  const params = [];
+  if (eventIds && eventIds.length > 0) {
+    params.push(`event_ids=${eventIds.join(',')}`);
+  }
+  if (tournamentId) params.push(`tournament_id=${tournamentId}`);
+  const qs = params.length ? `?${params.join('&')}` : '';
+  const data = await pxFetch(`/partner/affiliate/get_sport_events${qs}`);
+  return data.data?.sport_events || data.sport_events || data.data || [];
+}
+
+/**
+ * Bulk fetch markets for many events at once. Returns an object keyed by
+ * eventId → markets array. Pass `getAllMarket: false` to trim the response
+ * to primary markets only (moneyline/spread/total/team_total).
+ */
+async function fetchAffiliateMultipleMarkets(eventIds, opts = {}) {
+  if (!eventIds || eventIds.length === 0) return {};
+  const params = [`event_ids=${eventIds.join(',')}`];
+  if (opts.getAllMarket !== false) params.push('get_all_market=true');
+  const data = await pxFetch(`/partner/affiliate/get_multiple_markets?${params.join('&')}`);
+  // Shape: { data: { <event_id>: [markets] } } OR { <event_id>: [markets] }
+  return data.data || data;
+}
+
+/**
+ * One-shot tournament dictionary. Returns an array of tournaments, each with
+ * { id, name, sport: { id, name } }. Small response — cache it on startup
+ * and look up tournament_id → sport_name across the whole session.
+ */
+async function fetchAffiliateTournaments() {
+  const data = await pxFetch('/partner/affiliate/get_tournaments');
+  return data.data?.tournaments || data.tournaments || [];
+}
+
+// ---------------------------------------------------------------------------
 // SUPPORTED LINES
 // ---------------------------------------------------------------------------
 
@@ -522,6 +584,9 @@ module.exports = {
   pxFetch,
   fetchSportEvents,
   fetchMarkets,
+  fetchAffiliateSportEvents,
+  fetchAffiliateMultipleMarkets,
+  fetchAffiliateTournaments,
   registerSupportedLines,
   removeSupportedLines,
   getSupportedLines,

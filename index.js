@@ -156,6 +156,17 @@ async function startup() {
     log.warn('Startup', `    ✗ Post-seed enrichment/exposure rebuild failed: ${err.message}`);
   }
 
+  // Step 3c: For any orders still unresolved (legs not in the current lineIndex
+  // because the event has already started or aged out), resolve them via PX's
+  // /partner/affiliate/* bulk endpoints. This is how we recover real team names
+  // for confirmed historical parlays instead of showing "Event 10077494".
+  try {
+    const affil = await orderTracker.enrichOpenPositionsFromAffiliate();
+    log.info('Startup', `    ✓ Affiliate enrichment: ${JSON.stringify(affil)}`);
+  } catch (err) {
+    log.warn('Startup', `    ✗ Affiliate enrichment failed: ${err.message}`);
+  }
+
   // Step 4: Connect WebSocket
   log.info('Startup', '4/5 Connecting to ProphetX WebSocket...');
   try {
@@ -1362,6 +1373,27 @@ function startStatusServer() {
       res.json({ ok: true, before, after, diag });
     } catch (err) {
       log.error('Exposure', `rebuild-exposure failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
+  // Resolve open/unresolved orders using PX /partner/affiliate/* endpoints.
+  // This is the bulk path for recovering team names on confirmed historical
+  // parlays whose line_ids have aged out of the current lineIndex.
+  app.post('/enrich-from-affiliate', async (req, res) => {
+    try {
+      const before = {
+        teams: orderTracker.getExposureSnapshot().length,
+        games: orderTracker.getGameExposureSnapshot().length,
+      };
+      const result = await orderTracker.enrichOpenPositionsFromAffiliate();
+      const after = {
+        teams: orderTracker.getExposureSnapshot().length,
+        games: orderTracker.getGameExposureSnapshot().length,
+      };
+      res.json({ ok: true, before, after, result });
+    } catch (err) {
+      log.error('Affiliate', `enrich-from-affiliate failed: ${err.message}`);
       res.status(500).json({ ok: false, error: err.message, stack: err.stack });
     }
   });
