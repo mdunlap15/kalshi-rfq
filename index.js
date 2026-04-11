@@ -2386,6 +2386,64 @@ function startStatusServer() {
   // names for events we can't currently resolve. Pass ?tournament_id=234 to
   // try the tournament-scoped sport_events call, or ?event_ids=1,2,3 to
   // try get_multiple_markets.
+  // Probe PX /partner/affiliate/* directly and return the raw response shape
+  // so we can see what parseable fields the endpoints actually expose.
+  app.get('/debug-affiliate-probe', async (req, res) => {
+    try {
+      const pxSvc = require('./services/prophetx');
+      const out = {};
+      const paths = [
+        '/partner/affiliate/get_tournaments',
+        '/partner/v2/affiliate/get_tournaments',
+        '/partner/affiliate/tournaments',
+        '/partner/mm/get_tournaments',
+      ];
+      out.tournamentProbes = [];
+      for (const p of paths) {
+        try {
+          const raw = await pxSvc.pxFetch(p);
+          out.tournamentProbes.push({ path: p, ok: true, topKeys: Object.keys(raw || {}), sample: JSON.stringify(raw).slice(0, 600) });
+        } catch (err) {
+          out.tournamentProbes.push({ path: p, ok: false, error: err.message });
+        }
+      }
+      if (req.query.event_ids) {
+        const ids = req.query.event_ids;
+        const sePaths = [
+          `/partner/affiliate/get_sport_events?event_ids=${ids}`,
+          `/partner/v2/affiliate/get_sport_events?event_ids=${ids}`,
+          `/partner/mm/get_sport_events?event_ids=${ids}`,
+        ];
+        out.sportEventProbes = [];
+        for (const p of sePaths) {
+          try {
+            const raw = await pxSvc.pxFetch(p);
+            out.sportEventProbes.push({ path: p, ok: true, topKeys: Object.keys(raw || {}), sample: JSON.stringify(raw).slice(0, 800) });
+          } catch (err) {
+            out.sportEventProbes.push({ path: p, ok: false, error: err.message });
+          }
+        }
+        const mmPaths = [
+          `/partner/affiliate/get_multiple_markets?event_ids=${ids}`,
+          `/partner/v2/affiliate/get_multiple_markets?event_ids=${ids}`,
+          `/partner/mm/get_multiple_markets?event_ids=${ids}`,
+        ];
+        out.multipleMarketsProbes = [];
+        for (const p of mmPaths) {
+          try {
+            const raw = await pxSvc.pxFetch(p);
+            out.multipleMarketsProbes.push({ path: p, ok: true, topKeys: Object.keys(raw || {}), sample: JSON.stringify(raw).slice(0, 800) });
+          } catch (err) {
+            out.multipleMarketsProbes.push({ path: p, ok: false, error: err.message });
+          }
+        }
+      }
+      res.json({ ok: true, ...out });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/debug-px-probe', async (req, res) => {
     try {
       const pxSvc = require('./services/prophetx');
