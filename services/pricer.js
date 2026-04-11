@@ -311,6 +311,56 @@ async function priceParlay(legs) {
     offeredImpliedProb *= applyOddsVig(leg.fairProb);
   }
 
+  // -------------------------------------------------------------------
+  // PRICING SAFETY NET: cross-check fair against Pinnacle raw compound.
+  //
+  // Sign-flip bugs on alt spreads have historically been the most dangerous
+  // pricing error (see altSpreads signed-home_point fix). If our fair prob
+  // diverges too far optimistically from Pinnacle's raw compound on a
+  // non-SGP parlay, decline rather than price. Pinnacle raw is looser than
+  // our consensus on average (it includes vig) so OUR fair should almost
+  // always be SLIGHTLY LOWER (tighter) than Pin raw compound. A 25%+ gap
+  // in the bettor-favorable direction is a strong signal that our
+  // consensus was corrupted (wrong line side, wrong book, wrong direction).
+  //
+  // Only runs when Pinnacle has all legs and for non-SGP cross-game
+  // parlays (SGPs have valid correlation-driven deltas and are handled
+  // via the Pin-match path below).
+  // -------------------------------------------------------------------
+  {
+    const pinLegs = pricedLegs.filter(l => l.pinnacleOdds != null);
+    const havePinAll = pinLegs.length === pricedLegs.length && pinLegs.length > 0;
+    // Detect cross-game (no two legs share a pxEventId)
+    const eventIds = pricedLegs.map(l => l.lineInfo.pxEventId).filter(Boolean);
+    const uniqueEventIds = new Set(eventIds);
+    const isCrossGame = uniqueEventIds.size === eventIds.length && eventIds.length > 0;
+    if (havePinAll && isCrossGame) {
+      let pinRawCross = 1;
+      for (const l of pricedLegs) {
+        const legImpl = l.lineInfo.isDNB && l.pinnacleDNBProb != null
+          ? l.pinnacleDNBProb
+          : oddsFeed.americanToImpliedProb(l.pinnacleOdds);
+        pinRawCross *= legImpl;
+      }
+      if (pinRawCross > 0 && pinRawCross < 1) {
+        // Our fair should be at or below Pin raw (we use de-vigged consensus
+        // which is typically tighter). Guard against wildly optimistic fair
+        // that would produce bettor-favorable prices way above Pin.
+        const pinToOurs = fairParlayProb / pinRawCross;
+        const SAFETY_THRESHOLD = 0.75; // block if our fair is < 75% of Pin raw
+        if (pinToOurs < SAFETY_THRESHOLD) {
+          log.warn('Pricing', `SAFETY: fair ${(fairParlayProb*100).toFixed(2)}% vs Pin raw ${(pinRawCross*100).toFixed(2)}% ratio=${pinToOurs.toFixed(3)} — declining to avoid sign-flip / wrong-line mispricing`);
+          priceParlay._lastFailure = {
+            reason: 'pricing safety guard',
+            detail: `our fair ${(fairParlayProb*100).toFixed(2)}% is ${((1-pinToOurs)*100).toFixed(0)}% below Pinnacle raw ${(pinRawCross*100).toFixed(2)}% — possible sign-flip / wrong-line corruption`,
+            blockerLeg: null,
+          };
+          return null;
+        }
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------
   // SGP correlation handling — PIN-MATCH approach
   //

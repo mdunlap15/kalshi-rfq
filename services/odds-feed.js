@@ -1567,13 +1567,28 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
     for (const book of (data.bookmakers || [])) {
       for (const market of (book.markets || [])) {
         if (market.key === 'alternate_spreads') {
-          // Group by point value, collect home/away with book attribution
+          // CRITICAL: key by SIGNED home point, not abs. Otherwise both
+          // "home -1.5 / away +1.5" and "home +1.5 / away -1.5" (two
+          // distinct bets) collapse into the same bucket[1.5], letting
+          // the last-written byBook price overwrite the other direction.
+          //
+          // The observed-in-production bug: FanDuel's "Bournemouth -1.5"
+          // (heavy underdog winning by 2+, +1500) overwrote its
+          // "Bournemouth +1.5" (underdog getting 1.5, should be ~-140)
+          // in the abs-keyed bucket, dragging consensus fair ~15pp below
+          // Pinnacle and producing a +461 quote where the true parlay
+          // price was +287. Sign flips on spread alts are dangerous —
+          // keep the two directions strictly separate.
           for (const o of (market.outcomes || [])) {
-            const lineKey = Math.abs(o.point);
-            if (!result.altSpreads[lineKey]) {
-              result.altSpreads[lineKey] = { probs: [], books: new Set(), byBook: {} };
-            }
             const isHome = o.name === homeTeam || o.name === data.home_team;
+            // Compute home_point: the signed spread from the HOME team's
+            // perspective. For a home outcome it's just o.point; for an
+            // away outcome it's the negation (same bet, opposite side).
+            const homePoint = isHome ? o.point : -o.point;
+            const lineKey = String(homePoint); // signed string key: "-1.5", "1.5", "0", etc.
+            if (!result.altSpreads[lineKey]) {
+              result.altSpreads[lineKey] = { probs: [], books: new Set(), byBook: {}, homePoint };
+            }
             const prob = americanToImpliedProb(o.price);
             result.altSpreads[lineKey].probs.push({ isHome, prob, point: o.point });
             result.altSpreads[lineKey].books.add(book.key);
@@ -1675,9 +1690,11 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
     const absLine = Math.abs(line);
     const lineDiff = Math.abs(Math.abs(market.line) - absLine);
     if (lineDiff > 0.01) {
-      // Line magnitude doesn't match primary — check alt lines
+      // Line magnitude doesn't match primary — check alt lines.
+      // Pass the SIGNED line so getAltLineFairProb can route to the correct
+      // signed home_point bucket (critical: sign flips on alt spreads).
       const key = normalizeEventKey(homeTeam, awayTeam);
-      const altProb = getAltLineFairProb(key, marketType, selection, absLine);
+      const altProb = getAltLineFairProb(key, marketType, selection, line);
       if (altProb != null) return altProb;
       return null;
     }
@@ -1693,7 +1710,7 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
         // Treat as alt line, not primary
         log.info('OddsFeed', `Spread direction mismatch: ${selection} cached ${cachedPoint} vs requested ${line} for ${homeTeam} vs ${awayTeam}`);
         const key = normalizeEventKey(homeTeam, awayTeam);
-        const altProb = getAltLineFairProb(key, marketType, selection, absLine);
+        const altProb = getAltLineFairProb(key, marketType, selection, line);
         if (altProb != null) return altProb;
         return null; // no alt line data — decline
       }
@@ -1786,11 +1803,28 @@ function getDisplayFairProb(sport, homeTeam, awayTeam, marketType, selection, li
  *
  * h2h (moneyline) and team_totals have no line — always match.
  */
-function lineMatchesPrimary(market, marketType, requestedLine) {
+function lineMatchesPrimary(market, marketType, requestedLine, selection) {
   if (marketType !== 'spreads' && marketType !== 'totals') return true;
   if (requestedLine == null) return true; // legacy callers without line info
   if (market.line == null) return false;
-  return Math.abs(Math.abs(market.line) - Math.abs(requestedLine)) < 0.01;
+
+  // Magnitude match first
+  const magMatch = Math.abs(Math.abs(market.line) - Math.abs(requestedLine)) < 0.01;
+  if (!magMatch) return false;
+
+  // For spreads, also verify DIRECTION. Two spreads with the same magnitude
+  // but different signs are different markets (e.g. Arsenal -1.5 vs Arsenal +1.5
+  // is the same event but two distinct bets — home at point=-1.5 vs home at
+  // point=+1.5). The primary cache holds a specific direction; if the RFQ
+  // wants the other one, the per-book odds stored on the primary are for the
+  // WRONG side and must not be returned. Route to alt-line cache instead.
+  if (marketType === 'spreads' && requestedLine !== 0 && selection) {
+    const cachedPoint = selection === 'home' ? market.home?.point : market.away?.point;
+    if (cachedPoint != null && Math.sign(cachedPoint) !== Math.sign(requestedLine)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targetTime, line) {
@@ -1809,7 +1843,7 @@ function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targe
     return null;
   }
 
-  if (!lineMatchesPrimary(market, marketType, line)) {
+  if (!lineMatchesPrimary(market, marketType, line, selection)) {
     // Primary line doesn't match — try the alt-line per-book cache.
     return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'pinnacle');
   }
@@ -1857,7 +1891,7 @@ function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, target
     return null;
   }
 
-  if (!lineMatchesPrimary(market, marketType, line)) {
+  if (!lineMatchesPrimary(market, marketType, line, selection)) {
     return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'fanduel');
   }
   if (!market.fanduel) return null;
@@ -1880,7 +1914,7 @@ function getKalshiOdds(sport, homeTeam, awayTeam, marketType, selection, targetT
 
   if (marketType === 'team_totals') return null;
 
-  if (!lineMatchesPrimary(market, marketType, line)) {
+  if (!lineMatchesPrimary(market, marketType, line, selection)) {
     return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'kalshi');
   }
   if (!market.kalshi) return null;
@@ -1903,7 +1937,7 @@ function getDraftKingsOdds(sport, homeTeam, awayTeam, marketType, selection, tar
 
   if (marketType === 'team_totals') return null;
 
-  if (!lineMatchesPrimary(market, marketType, line)) {
+  if (!lineMatchesPrimary(market, marketType, line, selection)) {
     return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'draftkings');
   }
   if (!market.draftkings) return null;
@@ -1983,7 +2017,9 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
     if (event) {
       await fetchAltLines(sport, homeTeam, awayTeam);
       const key = normalizeEventKey(homeTeam, awayTeam);
-      return getAltLineFairProb(key, marketType, selection, Math.abs(line));
+      // Pass SIGNED line (not abs) so alt-line lookup routes to the correct
+      // signed home_point bucket.
+      return getAltLineFairProb(key, marketType, selection, line);
     }
   }
 
@@ -1991,19 +2027,44 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
 }
 
 /**
+ * Compute the signed home_point for a spread leg given the bettor's
+ * team-perspective line and selection.
+ *
+ *   Leg: "Arsenal -1.5" (home favored)         → selection=home, line=-1.5 → home_point = -1.5
+ *   Leg: "Bournemouth +1.5" (away getting 1.5) → selection=away, line=+1.5 → home_point = -1.5
+ *   Leg: "Arsenal +1.5" (home getting 1.5)     → selection=home, line=+1.5 → home_point = +1.5
+ *   Leg: "Bournemouth -1.5" (away by 2+)       → selection=away, line=-1.5 → home_point = +1.5
+ *
+ * The first two legs are opposite sides of the same market and share home_point=-1.5.
+ * The last two are opposite sides of a different market at home_point=+1.5. Keying
+ * altSpreads by signed home_point keeps these two bets strictly separated.
+ */
+function spreadHomePoint(line, selection) {
+  if (line == null) return null;
+  if (selection === 'home') return line;
+  if (selection === 'away') return -line;
+  return null;
+}
+
+/**
  * Look up a fair prob from the alt lines cache.
+ * For spreads, `line` MUST be the signed team-perspective line (not abs) so
+ * we can route to the correct signed home_point bucket.
  */
 function getAltLineFairProb(eventKey, marketType, selection, line) {
   const alt = altLinesCache[eventKey];
   if (!alt) return null;
 
   if (marketType === 'spreads') {
-    const lineData = alt.altSpreads[Math.abs(line)];
+    const homePoint = spreadHomePoint(line, selection);
+    if (homePoint == null) return null;
+    const lineData = alt.altSpreads[String(homePoint)];
     if (!lineData) return null;
     if (selection === 'home') return lineData.home || null;
     if (selection === 'away') return lineData.away || null;
   } else if (marketType === 'totals') {
-    const lineData = alt.altTotals[line];
+    // Totals have no sign — over/under don't swap direction.
+    const lineData = alt.altTotals[Math.abs(line)];
     if (!lineData) return null;
     if (selection === 'over') return lineData.over || null;
     if (selection === 'under') return lineData.under || null;
@@ -2018,6 +2079,8 @@ function getAltLineFairProb(eventKey, marketType, selection, line) {
  * or the requested selection wasn't covered. Used by getPinnacleOdds
  * and siblings to supply accurate competitor comparison values when
  * the PX RFQ line differs from the primary cached line.
+ *
+ * For spreads, `line` MUST be the signed team-perspective line.
  */
 function getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, book) {
   if (!homeTeam || !awayTeam || line == null || !book) return null;
@@ -2026,9 +2089,15 @@ function getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, boo
   if (!alt) return null;
 
   let lineData;
-  if (marketType === 'spreads') lineData = alt.altSpreads[Math.abs(line)];
-  else if (marketType === 'totals') lineData = alt.altTotals[line];
-  else return null;
+  if (marketType === 'spreads') {
+    const homePoint = spreadHomePoint(line, selection);
+    if (homePoint == null) return null;
+    lineData = alt.altSpreads[String(homePoint)];
+  } else if (marketType === 'totals') {
+    lineData = alt.altTotals[Math.abs(line)];
+  } else {
+    return null;
+  }
 
   if (!lineData || !lineData.byBook) return null;
   const bookOdds = lineData.byBook[book];
