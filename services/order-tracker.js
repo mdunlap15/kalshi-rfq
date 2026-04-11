@@ -992,7 +992,21 @@ function addExposure(order) {
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
     const eventId = leg.pxEventId;
-    const name = leg.team || leg.teamName || 'unknown';
+    // Prefer explicit team/teamName. If missing (reconstructed-from-PX legs
+    // that never got enriched), fall back progressively so the leg still
+    // shows up in Team Exposure rather than being silently dropped:
+    //   1) homeTeam or awayTeam if known
+    //   2) "Event {pxEventId}" as a last-resort placeholder
+    //   3) 'unknown'
+    // Without this fallback, `normalizeExposureKey('?')` returns '' and the
+    // whole leg is skipped, collapsing the entire Team Exposure table after
+    // every restart (reconstructed orders come back from DB with team='?').
+    let name = leg.team || leg.teamName;
+    if (!name || name === '?' || name === 'unknown') {
+      name = leg.homeTeam || leg.awayTeam
+        || (eventId ? `Event ${eventId}` : null)
+        || 'unknown';
+    }
     const teamKey = normalizeExposureKey(name);
     // Composite key: team + event + date so the same team on different games
     // is tracked as separate rows. Appends game date even when pxEventId exists,
@@ -2729,10 +2743,11 @@ module.exports = {
  * missing team names, and enrich them from the current lineManager index.
  * Persists enriched versions back to DB.
  */
-function enrichReconstructedOrders() {
+async function enrichReconstructedOrders() {
   const lineManager = require('./line-manager');
   let enriched = 0;
   let scanned = 0;
+  const pending = []; // awaited saves so callers know the DB has actually been updated
   for (const order of Object.values(orders)) {
     const legs = order.legs || order.meta?.legs || [];
     // Check if any leg has '?' or null team (reconstructed signature)
@@ -2768,11 +2783,19 @@ function enrichReconstructedOrders() {
       order.legs = newLegs;
       if (order.meta) order.meta.legs = newLegs;
       enriched++;
-      db.saveOrder(order).catch(() => {});
+      // Queue the save and actually await it later. Using fire-and-forget
+      // here meant restarts could discard enrichment before it hit Supabase,
+      // which is exactly how the Team Exposure table kept ending up empty.
+      pending.push(db.saveOrder(order).catch(err => {
+        log.warn('Orders', `enrichReconstructedOrders: saveOrder failed for ${order.parlayId}: ${err.message}`);
+      }));
     }
   }
-  log.info('Orders', `Enrichment: scanned ${scanned} orders with unresolved legs, enriched ${enriched}`);
-  return { scanned, enriched };
+  // Wait for every queued save to settle before returning so callers
+  // (e.g. startup) can trust the DB reflects the enriched in-memory state.
+  if (pending.length > 0) await Promise.all(pending);
+  log.info('Orders', `Enrichment: scanned ${scanned} orders with unresolved legs, enriched ${enriched}, persisted ${pending.length}`);
+  return { scanned, enriched, persisted: pending.length };
 }
 
 /**

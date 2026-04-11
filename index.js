@@ -138,6 +138,24 @@ async function startup() {
     log.warn('Startup', `    ✗ Line seeding failed: ${err.message}`);
   }
 
+  // Step 3b: Now that the line index is populated, enrich any reconstructed
+  // orders whose legs still have team='?' by looking up their line_id in the
+  // fresh lineIndex. Persists enriched legs to Supabase so the data survives
+  // the next restart. Then rebuild exposure so Team / Game Exposure tables
+  // reflect the newly-enriched legs. Without this step, every deploy wiped
+  // the Team Exposure table because loadFromDb ran addExposure BEFORE the
+  // line index existed, dropping every leg whose team resolved to '?'.
+  try {
+    const enrich = await orderTracker.enrichReconstructedOrders();
+    if (enrich.enriched > 0) {
+      log.info('Startup', `    ✓ Enriched ${enrich.enriched}/${enrich.scanned} reconstructed orders from lineIndex (persisted ${enrich.persisted})`);
+    }
+    const diag = orderTracker.rebuildAllExposure();
+    log.info('Startup', `    ✓ Exposure rebuilt: ${diag.exposureKeysAfter} team keys, ${diag.gameKeysAfter} games (${diag.legsWithTeamKey}/${diag.legsTotal} legs contributed)`);
+  } catch (err) {
+    log.warn('Startup', `    ✗ Post-seed enrichment/exposure rebuild failed: ${err.message}`);
+  }
+
   // Step 4: Connect WebSocket
   log.info('Startup', '4/5 Connecting to ProphetX WebSocket...');
   try {
@@ -382,9 +400,13 @@ function startStatusServer() {
   // Enrich reconstructed orders by looking up lineIds in the current lineManager.
   // Reconstructed orders are ones rebuilt from PX settlement data when we missed
   // the WS confirmation event — their legs initially have team='?' etc.
-  app.post('/enrich-reconstructed', (req, res) => {
+  app.post('/enrich-reconstructed', async (req, res) => {
     try {
-      const result = orderTracker.enrichReconstructedOrders();
+      const result = await orderTracker.enrichReconstructedOrders();
+      // Rebuild exposure now that legs have team data — restores Team
+      // Exposure rows that were collapsed because the reconstructed legs
+      // had team='?'.
+      orderTracker.rebuildAllExposure();
       res.json({ ok: true, ...result });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
