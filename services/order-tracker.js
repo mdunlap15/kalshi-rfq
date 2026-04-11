@@ -2885,130 +2885,34 @@ async function loadFromDb() {
     orders[o.parlayId] = o;
     if (o.orderUuid) ordersByUuid[o.orderUuid] = o.parlayId;
 
-    // Restore stats
+    // PURE HYDRATION: trust what's stored in the DB. No pattern matching,
+    // no revert heuristics, no pnl recomputation.
+    //
+    // Prior versions of this code recomputed spResult from leg data and
+    // recomputed pnl from stake/odds on every restart. The re-derivation
+    // was brittle (nullable leg.settlement_status caused allWon → lost
+    // flips; nullable confirmedStake caused SP losses to recompute to $0)
+    // and was the primary source of in-memory ↔ DB drift observed all day.
+    //
+    // Correct settlement logic lives in exactly ONE place: recordSettlement,
+    // which runs when a WebSocket parlay.settled event arrives or during
+    // pollOrderSettlements / fullPxReconcile. That code path persists
+    // status + pnl + pxProfit to the DB. On reload we just read those
+    // fields. If the DB is wrong, run /full-px-reconcile to fix it —
+    // don't let the reload path silently mutate data.
     stats.totalQuotes++;
-    if (o.status === 'confirmed') stats.totalConfirmations++;
-    if (o.status === 'rejected') stats.totalRejections++;
-    if (o.status?.startsWith('settled_')) {
+    if (o.status === 'confirmed') {
+      stats.totalConfirmations++;
+      addExposure(o);
+    } else if (o.status === 'rejected') {
+      stats.totalRejections++;
+    } else if (o.status?.startsWith('settled_')) {
       stats.totalSettlements++;
-
-      // Determine correct SP result from LEG-LEVEL settlement data.
-      // Leg settlement_status is bettor-perspective:
-      //   'won' = bettor's selection hit, 'lost' = bettor's selection missed
-      // If ANY leg has 'lost' → bettor's parlay lost → SP WON
-      // If ALL legs have 'won' → bettor's parlay hit → SP LOST
-      // This is idempotent — doesn't depend on how status was previously stored.
-      // Check BOTH leg sources — status may be on meta.legs but not o.legs
-      const legsA = o.legs || [];
-      const legsB = o.meta?.legs || [];
-      const legs = legsA.length >= legsB.length ? legsA : legsB;
-      const maxLen = Math.max(legsA.length, legsB.length);
-      const legStatuses = [];
-      for (let li = 0; li < maxLen; li++) {
-        const a = legsA[li];
-        const b = legsB[li];
-        // Pass 1: prefer PX settlementStatus from either source
-        let st = (a?.settlementStatus || a?.settlement_status)
-              || (b?.settlementStatus || b?.settlement_status)
-              || null;
-        // Pass 2: fall back to inferredResult only if no PX status anywhere
-        if (!st) st = a?.inferredResult || b?.inferredResult || null;
-        if (st) legStatuses.push(st);
-      }
-
-      let spResult;
-      if (legStatuses.length > 0) {
-        // Only derive when leg pattern is unambiguous. PX treats won+push
-        // mixed parlays inconsistently — leave those alone and let
-        // pollOrderSettlements fetch the authoritative status from PX.
-        const anyLegLost = legStatuses.some(s => s === 'lost');
-        const allWon = legStatuses.every(s => s === 'won');
-        const allPushed = legStatuses.every(s => s === 'push' || s === 'void');
-        if (anyLegLost) {
-          spResult = 'won';
-        } else if (allWon) {
-          spResult = 'lost';
-        } else if (allPushed) {
-          spResult = 'push';
-        } else {
-          // Mixed won+push — keep stored value
-          spResult = o.status.replace('settled_', '');
-        }
-      } else {
-        // No leg data — check if games have actually started.
-        //
-        // CRITICAL: revert only if ALL legs are unfinished, NOT if any.
-        //
-        // The previous logic used `legs.some(unfinished)` which destroyed
-        // legitimate early settlements. A parlay can correctly settle as
-        // SP-won the moment ANY leg busts bettor-side, even if other legs
-        // are still in the future. Example: 3-leg parlay with Leg A (Friday
-        // 7pm, bettor's pick loses) + Leg B (Saturday 1pm) + Leg C (Saturday
-        // 4pm). PX fires parlay.settled(won) as soon as Leg A loses. On the
-        // next restart, the old heuristic saw Leg B/C still in the future
-        // and reverted the whole parlay back to confirmed — destroying the
-        // valid settlement and persisting the revert to the DB.
-        //
-        // Fix: only revert when NO leg could possibly have resolved yet —
-        // i.e. EVERY leg is still in the future or within 4h of start.
-        // Covers the true bogus case (settlement recorded before any game
-        // played) while preserving legitimate early-win settlements.
-        const now = Date.now();
-        const allUnfinished = legs.length > 0 && legs.every(l => {
-          const st = l.startTime || l.start_time;
-          if (!st) return false; // unknown start time — don't vote unfinished
-          const startMs = new Date(st).getTime();
-          if (startMs > now) return true;
-          if ((now - startMs) < 4 * 3600 * 1000) return true;
-          return false;
-        });
-        if (allUnfinished) {
-          log.warn('DB', `Reverting bogus settlement for ${o.parlayId}: ALL legs still unfinished`);
-          o.status = 'confirmed';
-          o.settlementResult = null;
-          o.pnl = null;
-          o.settledAt = null;
-          stats.totalSettlements--;
-          stats.totalConfirmations++;
-          addExposure(o);
-          db.saveOrder(o).catch(() => {});
-          continue; // skip settlement processing
-        }
-        // At least one leg has finished (or start times unknown) — keep stored status.
-        // New WebSocket handler backfills leg data from PX REST so future
-        // settled orders should always take the `legStatuses.length > 0`
-        // branch above. This fall-through is for legacy orders only.
-        spResult = o.status.replace('settled_', '');
-      }
-
-      o.status = `settled_${spResult}`;
-      o.settlementResult = spResult;
-
-      // Recalculate P&L on load. Status is SP-perspective:
-      //   settled_won  = SP won (bettor's parlay lost) → +bettor's wager
-      //   settled_lost = SP lost (bettor's parlay won) → -confirmedStake
-      // Prefer stored pxProfit when present — it's PX's authoritative amount
-      // and correctly handles push-reduced parlays.
-      const bettorWager = americanOddsToProfit(o.confirmedOdds, o.confirmedStake);
-      const pxProfit = o.pxProfit != null ? Number(o.pxProfit) : null;
-      if (spResult === 'won') {
-        o.pnl = pxProfit != null && pxProfit > 0 ? pxProfit : bettorWager;
-      } else if (spResult === 'lost') {
-        o.pnl = pxProfit != null && pxProfit < 0 ? pxProfit : -(o.confirmedStake || 0);
-      } else {
-        o.pnl = 0;
-      }
-      db.saveOrder(o).catch(() => {}); // persist corrected status + P&L
       if (o.pnl != null) {
         stats.runningPnL += o.pnl;
         if (o.pnl > 0) stats.totalWins++;
         else if (o.pnl < 0) stats.totalLosses++;
       }
-    }
-
-    // Restore exposure for confirmed (unsettled) orders
-    if (o.status === 'confirmed') {
-      addExposure(o);
     }
   }
   log.info('DB', `Loaded ${dbOrders.length} orders (P&L: $${stats.runningPnL.toFixed(2)})`);
