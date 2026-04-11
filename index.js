@@ -1314,6 +1314,20 @@ function startStatusServer() {
     }
   });
 
+  // Backfill sport metadata on orders currently tagged as 'unknown' sport.
+  // Uses three-tier inference: pxEventId→eventIndex, team→self-built sport
+  // map, else leave as unknown. Only mutates leg.sport fields; does not
+  // touch P&L or stats counters.
+  app.post('/backfill-sports', async (req, res) => {
+    try {
+      const result = orderTracker.backfillUnknownSports();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      log.error('Backfill', `backfill-sports failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Fill-rate breakdown: how often does a submitted quote become a
   // confirmed order, sliced by sport / leg count / odds tier. Low fill
   // rate = we're too tight (outbid) or not competitive. High fill rate

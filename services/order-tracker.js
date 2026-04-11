@@ -2310,6 +2310,136 @@ async function fullPxReconcile(px) {
 }
 
 /**
+ * Backfill `sport` on orders whose legs are tagged as 'unknown'.
+ *
+ * When fullPxReconcile reconstructs orders from PX REST, old line_ids
+ * aren't in the current lineManager index, so `lineManager.lookupLine`
+ * returns null and sport defaults to 'unknown'. This bunches otherwise-
+ * categorizable P&L into an "Unknown" pnlBySport bucket — hiding actual
+ * sport-level performance.
+ *
+ * Three-tier inference (first success wins):
+ *   1. pxEventId → line_manager.eventIndex[id].sport (or sportName mapped
+ *      to our sport key). This is the most reliable signal.
+ *   2. Team name lookup against a self-built map constructed from THIS
+ *      run's orders that already have a non-'unknown' sport. The same
+ *      team on PX (e.g. "New York Yankees") should always map to the
+ *      same sport key ("baseball_mlb") — we just need one known example.
+ *   3. If neither works, leave the leg tagged 'unknown' and count it
+ *      in the unresolved bucket of the return value.
+ *
+ * Also updates the top-level o.legs and o.meta.legs in place so the
+ * pnlBySport aggregation (which iterates both leg sources) picks up
+ * the corrected sport on the next render.
+ *
+ * Persists each mutated order via db.saveOrder. Does NOT touch stats
+ * counters (pnl is unchanged, only sport tagging changes).
+ */
+function backfillUnknownSports() {
+  const lineManager = require('./line-manager');
+
+  // STEP 1: Build a team-name → sport map from orders that already have
+  // a known sport. Lowercased keys so matching is case-insensitive.
+  const teamToSport = {};
+  for (const o of Object.values(orders)) {
+    const legSources = [o.legs, o.meta?.legs].filter(Boolean);
+    for (const legs of legSources) {
+      for (const leg of legs) {
+        const sport = leg.sport;
+        if (!sport || sport === 'unknown') continue;
+        const team = (leg.team || leg.teamName || '').toLowerCase().trim();
+        if (!team || team === '?' || team === 'unknown') continue;
+        // Strip common prefixes like "Over (..." and "Under (..." for totals
+        const cleaned = team.replace(/^(over|under)\s*\(/i, '').replace(/\)$/, '').trim();
+        if (cleaned.length >= 3) teamToSport[cleaned] = sport;
+        if (team.length >= 3) teamToSport[team] = sport;
+      }
+    }
+  }
+  log.info('Backfill', `Built team→sport map with ${Object.keys(teamToSport).length} entries`);
+
+  // STEP 2: Walk all orders and try to resolve any 'unknown' legs.
+  let ordersScanned = 0;
+  let ordersUpdated = 0;
+  let legsResolvedByEvent = 0;
+  let legsResolvedByTeam = 0;
+  let legsStillUnresolved = 0;
+
+  for (const o of Object.values(orders)) {
+    ordersScanned++;
+    let mutated = false;
+    const legSources = [o.legs, o.meta?.legs].filter(Boolean);
+    for (const legs of legSources) {
+      for (const leg of legs) {
+        if (leg.sport && leg.sport !== 'unknown') continue;
+
+        // Tier 1: pxEventId → eventIndex
+        const eid = leg.pxEventId || leg.sport_event_id;
+        if (eid) {
+          const info = lineManager.getEventInfo ? lineManager.getEventInfo(eid) : null;
+          if (info && info.sport) {
+            leg.sport = info.sport;
+            legsResolvedByEvent++;
+            mutated = true;
+            continue;
+          }
+          // eventIndex entries built from fetchSportEvents only have sportName
+          // (PX's string like "Baseball"), not our sport key. Map sportName to
+          // our sport keys via config.sportNameMap if possible.
+          if (info && info.sportName) {
+            // Reverse lookup: find our sport key from sportName
+            try {
+              const { config } = require('../config');
+              for (const [sportKey, pxName] of Object.entries(config.sportNameMap || {})) {
+                if (pxName === info.sportName) {
+                  leg.sport = sportKey;
+                  legsResolvedByEvent++;
+                  mutated = true;
+                  break;
+                }
+              }
+              if (leg.sport && leg.sport !== 'unknown') continue;
+            } catch (err) { /* fall through to team match */ }
+          }
+        }
+
+        // Tier 2: team name lookup in self-built map
+        const team = (leg.team || leg.teamName || '').toLowerCase().trim();
+        if (team && team !== '?' && team !== 'unknown') {
+          const cleaned = team.replace(/^(over|under)\s*\(/i, '').replace(/\)$/, '').trim();
+          const match = teamToSport[team] || teamToSport[cleaned] || null;
+          if (match) {
+            leg.sport = match;
+            legsResolvedByTeam++;
+            mutated = true;
+            continue;
+          }
+        }
+
+        legsStillUnresolved++;
+      }
+    }
+    if (mutated) {
+      ordersUpdated++;
+      db.saveOrder(o).catch(() => {});
+    }
+  }
+
+  log.info('Backfill', `Scanned ${ordersScanned} orders, updated ${ordersUpdated}. ` +
+    `Resolved ${legsResolvedByEvent} by eventIndex + ${legsResolvedByTeam} by team map. ` +
+    `${legsStillUnresolved} legs still unresolved.`);
+
+  return {
+    ordersScanned,
+    ordersUpdated,
+    legsResolvedByEvent,
+    legsResolvedByTeam,
+    legsStillUnresolved,
+    teamMapSize: Object.keys(teamToSport).length,
+  };
+}
+
+/**
  * Delete settled orders whose legs are all unresolved ('?' team names).
  * Removes from in-memory store, reverses P&L stats, and deletes from DB.
  */
@@ -2366,6 +2496,7 @@ module.exports = {
   revertBogusSettlements,
   reconcileSettlements,
   fullPxReconcile,
+  backfillUnknownSports,
   deleteUnknownSettledOrders,
   findByParlayId,
   findByOrderUuid,
