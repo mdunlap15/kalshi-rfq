@@ -40,7 +40,13 @@ const declineStats = {
   // bettors are trying to price that we're declining wholesale.
   // key = marketType + '|' + marketName
   unsupportedMarkets: {},
+  // Rolling log of full decline events with timestamps so /decline-audit can
+  // filter by time window (last 5 min, last hour, etc) rather than only
+  // returning all-session cumulative stats. Max 5000 entries keeps memory
+  // bounded at ~2.5 MB.
+  recentDeclineEvents: [],
 };
+const MAX_DECLINE_EVENTS = 5000;
 
 function recordUnsupportedMarket(info) {
   if (!info || !info.marketType) return;
@@ -582,7 +588,7 @@ function recordDecline(reason, detail) {
   const declinedAt = new Date().toISOString();
   const isLimit = LIMIT_REASONS.has(bucket);
 
-  // Rolling log (keep last 200, newest first)
+  // Rolling log (keep last 200, newest first) — used by the limit-alert banner
   declineStats.recent.unshift({
     reason: bucket,
     detail: detail?.declineDetail || null,
@@ -591,6 +597,21 @@ function recordDecline(reason, detail) {
     isLimit,
   });
   if (declineStats.recent.length > 200) declineStats.recent.pop();
+
+  // Full-event rolling log with timestamps for /decline-audit windowing.
+  // Capture enough context per entry so time-filtered stats can be recomputed
+  // on demand without re-summarizing all-session counters.
+  declineStats.recentDeclineEvents.push({
+    time: declinedAt,
+    reason: bucket,
+    parlayId: detail?.parlayId || null,
+    legCount,
+    knownLegs: (detail?.knownLegs || []).map(l => ({ sport: l.sport, market: l.market })),
+    unknownCategories: detail?.unknownCategories || [],
+  });
+  if (declineStats.recentDeclineEvents.length > MAX_DECLINE_EVENTS) {
+    declineStats.recentDeclineEvents.shift();
+  }
 
   // Index by parlayId so matched-parlay "No quote" rows can explain which leg caused the miss
   if (detail?.parlayId) {
@@ -697,6 +718,9 @@ function getMarketIntel(limit = 50) {
       unsupportedMarkets: declineStats.unsupportedMarkets || {},
       nearMissCount: declineStats.nearMisses.length,
       recentNearMisses: declineStats.nearMisses.slice(0, 500),
+      // Rolling event log for /decline-audit?window= time filtering.
+      // Reference (not a copy) — consumers should treat as read-only.
+      recentDeclineEvents: declineStats.recentDeclineEvents || [],
     },
     // Volume analysis: matched parlays we missed, with real stake data
     missedVolume: (() => {

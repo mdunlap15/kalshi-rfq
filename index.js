@@ -942,11 +942,95 @@ function startStatusServer() {
     }
   });
 
-  // Decline audit: rank unknown events/sports by how often they're declining parlays
+  // Decline audit: rank unknown events/sports by how often they're declining parlays.
+  // Optional ?window=5m|15m|30m|1h|2h|6h|24h — when provided, stats are computed from
+  // the rolling event log filtered to the window rather than all-session cumulative.
   app.get('/decline-audit', (req, res) => {
     try {
       const intel = orderTracker.getMarketIntel(1000);
       const declines = intel.declines || {};
+
+      // Parse the window parameter into milliseconds. Accepts e.g. '5m', '1h', '24h'.
+      function parseWindow(w) {
+        if (!w) return null;
+        const m = /^(\d+)\s*(s|m|h|d)?$/i.exec(w);
+        if (!m) return null;
+        const n = Number(m[1]);
+        const unit = (m[2] || 'm').toLowerCase();
+        const mult = unit === 's' ? 1000
+                   : unit === 'm' ? 60 * 1000
+                   : unit === 'h' ? 60 * 60 * 1000
+                   : unit === 'd' ? 24 * 60 * 60 * 1000
+                   : 60 * 1000;
+        return n * mult;
+      }
+      const windowMs = parseWindow(req.query.window);
+
+      // If a window is requested, compute stats by filtering the rolling event log.
+      if (windowMs != null) {
+        const events = declines.recentDeclineEvents || [];
+        const cutoff = Date.now() - windowMs;
+        const inWindow = events.filter(e => new Date(e.time).getTime() >= cutoff);
+
+        const byReason = {};
+        const categoryAgg = {}; // category -> { count, bySport: {} }
+        let quotableCount = 0;
+        let unquotableCount = 0;
+        const QUOTABLE_CATS = new Set(['alt_line', 'alt_spread', 'alt_total', 'team_total']);
+        // Derive per-sport decline counts from leg data in the window
+        const bySport = {};
+        // Per-event counts for ranking
+        const byEvent = {};
+
+        for (const ev of inWindow) {
+          byReason[ev.reason] = (byReason[ev.reason] || 0) + 1;
+          // Count sports from known legs
+          for (const l of (ev.knownLegs || [])) {
+            if (l.sport) bySport[l.sport] = (bySport[l.sport] || 0) + 1;
+          }
+          // Count unknown categories
+          for (const uc of (ev.unknownCategories || [])) {
+            const cat = uc.category || 'unknown';
+            if (!categoryAgg[cat]) categoryAgg[cat] = { count: 0, bySport: {}, sampleLegs: [] };
+            categoryAgg[cat].count++;
+            if (uc.sport) categoryAgg[cat].bySport[uc.sport] = (categoryAgg[cat].bySport[uc.sport] || 0) + 1;
+            if (categoryAgg[cat].sampleLegs.length < 5) categoryAgg[cat].sampleLegs.push(uc);
+            if (QUOTABLE_CATS.has(cat)) quotableCount++;
+            else unquotableCount++;
+            if (uc.eventName) {
+              const key = uc.eventName + (uc.isKnownEvent ? ' [unregistered market]' : ' [unsupported event]');
+              byEvent[key] = (byEvent[key] || 0) + 1;
+            }
+          }
+        }
+        // Build topUnknowns ranked by count
+        const topUnknowns = Object.entries(byEvent)
+          .map(([raw, count]) => {
+            const tagMatch = raw.match(/\[([^\]]+)\]/);
+            return { eventName: raw.split('[')[0].trim(), tag: tagMatch ? tagMatch[1] : 'unknown', count };
+          })
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 50);
+
+        return res.json({
+          ok: true,
+          window: req.query.window,
+          windowMs,
+          cutoff: new Date(cutoff).toISOString(),
+          totalDeclines: inWindow.length,
+          byReason,
+          bySport,
+          topUnknowns,
+          unknownLegDrillDown: {
+            totalUnknownLegs: quotableCount + unquotableCount,
+            quotable: quotableCount,
+            unquotable: unquotableCount,
+            categories: categoryAgg,
+          },
+          note: 'Windowed stats from rolling event log (max 5000 events retained). Omit ?window to get all-session cumulative stats.',
+        });
+      }
+
       // Group the unknownSports entries by the inferred sport/league
       const byKey = {};
       for (const [raw, val] of Object.entries(declines.unknownSports || {})) {
