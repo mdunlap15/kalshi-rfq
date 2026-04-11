@@ -5873,66 +5873,183 @@
   }
 
   // 4. Calibration chart — actual vs expected win rate by probability bucket
+  // Wilson score 95% CI for a binomial proportion. Robust at small n.
+  function wilsonCI(k, n) {
+    if (n === 0) return { lo: 0, hi: 0 };
+    const z = 1.96;
+    const p = k / n;
+    const denom = 1 + z * z / n;
+    const centre = (p + z * z / (2 * n)) / denom;
+    const half = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom;
+    return { lo: Math.max(0, centre - half), hi: Math.min(1, centre + half) };
+  }
+
+  // Proper calibration chart: scatter of (expected, actual) with y=x
+  // diagonal reference and Wilson 95% CI error bars. Below the plot:
+  // summary stats (count, Brier score, mean bias) + per-sport breakdown.
+  // Works at both parlay level and per-sport.
   function renderChartCalibration(settled) {
     const el = document.getElementById('chart-calibration');
-    const withProb = settled.filter(o => o.fairParlayProb && o.fairParlayProb > 0);
-    if (withProb.length < 5) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 5+ settled orders with fair probability data</div></div>'; return; }
+    const withProb = settled.filter(o => o.fairParlayProb && o.fairParlayProb > 0 && o.fairParlayProb < 1 && o.settlementResult && (o.settlementResult === 'won' || o.settlementResult === 'lost'));
+    if (withProb.length < 5) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 5+ settled parlays with fair prob data (current: ' + withProb.length + ')</div></div>';
+      return;
+    }
 
-    // Bucket by fair probability ranges
+    // Finer buckets than before (10 instead of 5)
     const buckets = [
-      { min: 0, max: 0.1, label: '0-10%' }, { min: 0.1, max: 0.2, label: '10-20%' },
-      { min: 0.2, max: 0.3, label: '20-30%' }, { min: 0.3, max: 0.5, label: '30-50%' },
-      { min: 0.5, max: 1, label: '50%+' },
+      { lo: 0.00, hi: 0.05, label: '0-5' },
+      { lo: 0.05, hi: 0.10, label: '5-10' },
+      { lo: 0.10, hi: 0.15, label: '10-15' },
+      { lo: 0.15, hi: 0.20, label: '15-20' },
+      { lo: 0.20, hi: 0.25, label: '20-25' },
+      { lo: 0.25, hi: 0.30, label: '25-30' },
+      { lo: 0.30, hi: 0.40, label: '30-40' },
+      { lo: 0.40, hi: 0.50, label: '40-50' },
+      { lo: 0.50, hi: 0.70, label: '50-70' },
+      { lo: 0.70, hi: 1.01, label: '70+' },
     ];
-    const data = buckets.map(b => {
-      const inBucket = withProb.filter(o => o.fairParlayProb >= b.min && o.fairParlayProb < b.max);
-      const bettorWins = inBucket.filter(o => o.settlementResult === 'lost').length; // settled_lost = SP lost = bettor won
-      const expected = inBucket.reduce((s, o) => s + o.fairParlayProb, 0);
-      return { ...b, count: inBucket.length, bettorWins, expectedWins: expected,
-        actualRate: inBucket.length > 0 ? bettorWins / inBucket.length : 0,
-        expectedRate: inBucket.length > 0 ? expected / inBucket.length : 0 };
-    }).filter(d => d.count > 0);
 
-    if (data.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No data in probability buckets</div></div>'; return; }
+    let totalBrier = 0, sumExpected = 0, sumActual = 0;
+    const data = buckets.map(b => ({ ...b, n: 0, hit: 0, expSum: 0 }));
+    for (const o of withProb) {
+      const p = o.fairParlayProb;
+      const hit = o.settlementResult === 'lost' ? 1 : 0; // bettor side hit the parlay
+      totalBrier += (hit - p) * (hit - p);
+      sumExpected += p;
+      sumActual += hit;
+      const b = data.find(x => p >= x.lo && p < x.hi);
+      if (b) { b.n++; b.hit += hit; b.expSum += p; }
+    }
+    const points = data.filter(b => b.n > 0).map(b => {
+      const actual = b.hit / b.n;
+      const expected = b.expSum / b.n;
+      const ci = wilsonCI(b.hit, b.n);
+      return { ...b, actual, expected, ciLo: ci.lo, ciHi: ci.hi };
+    });
+    const n = withProb.length;
+    const brier = totalBrier / n;
+    const meanExp = sumExpected / n;
+    const meanAct = sumActual / n;
+    const bias = meanAct - meanExp;
 
-    const W = 700, H = 220, pad = { l: 50, r: 20, t: 20, b: 50 };
+    // ─── Scatter plot: x=expected, y=actual, with y=x diagonal ───
+    const W = 700, H = 280, pad = { l: 50, r: 20, t: 20, b: 45 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
-    const barW = Math.min(60, chartW / data.length - 10);
+    const sx = v => pad.l + v * chartW;
+    const sy = v => pad.t + chartH - v * chartH;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:320px;">`;
 
-    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:280px;">`;
-
-    // Y axis
-    for (let pct = 0; pct <= 100; pct += 25) {
-      const y = pad.t + chartH - (pct / 100) * chartH;
-      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5);
-      svg += svgText(pad.l - 6, y + 3, pct + '%', { anchor: 'end', size: 9 });
+    // Grid lines every 10%
+    for (let pct = 0; pct <= 100; pct += 10) {
+      const y = sy(pct / 100);
+      const x = sx(pct / 100);
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.3);
+      svg += svgLine(x, pad.t, x, pad.t + chartH, 'var(--border)', 0.3);
     }
-
-    for (let i = 0; i < data.length; i++) {
-      const d = data[i];
-      const cx = pad.l + (i + 0.5) * (chartW / data.length);
-      const expectedH = d.expectedRate * chartH;
-      const actualH = d.actualRate * chartH;
-
-      // Expected bar (blue, semi-transparent)
-      svg += svgRect(cx - barW / 2, pad.t + chartH - expectedH, barW / 2 - 1, expectedH, 'rgba(88,166,255,0.3)', 2);
-      // Actual bar (green or red)
-      const actualColor = d.actualRate <= d.expectedRate * 1.1 ? 'var(--green)' : 'var(--red)';
-      svg += svgRect(cx + 1, pad.t + chartH - actualH, barW / 2 - 1, actualH, actualColor, 2);
-
-      // Labels
-      svg += svgText(cx, H - pad.b + 14, d.label, { size: 10 });
-      svg += svgText(cx, H - pad.b + 26, 'n=' + d.count, { size: 8, fill: 'var(--text3)' });
+    // Axis labels
+    for (let pct = 0; pct <= 100; pct += 20) {
+      svg += svgText(pad.l - 6, sy(pct / 100) + 3, pct + '%', { anchor: 'end', size: 9 });
+      svg += svgText(sx(pct / 100), H - pad.b + 14, pct + '%', { size: 9 });
     }
+    // y=x diagonal (perfect calibration)
+    svg += svgLine(sx(0), sy(0), sx(1), sy(1), 'var(--text3)', 1);
 
-    // Legend
-    svg += svgRect(pad.l, H - 12, 8, 8, 'rgba(88,166,255,0.3)', 1);
-    svg += svgText(pad.l + 12, H - 5, 'Expected', { anchor: 'start', size: 9 });
-    svg += svgRect(pad.l + 70, H - 12, 8, 8, 'var(--green)', 1);
-    svg += svgText(pad.l + 82, H - 5, 'Actual', { anchor: 'start', size: 9 });
-
+    // Points with CI error bars
+    for (const p of points) {
+      const cx = sx(p.expected);
+      const cy = sy(p.actual);
+      const yHi = sy(p.ciHi);
+      const yLo = sy(p.ciLo);
+      // Error bar (vertical)
+      svg += svgLine(cx, yLo, cx, yHi, 'var(--text3)', 1);
+      svg += svgLine(cx - 3, yHi, cx + 3, yHi, 'var(--text3)', 1);
+      svg += svgLine(cx - 3, yLo, cx + 3, yLo, 'var(--text3)', 1);
+      // Point, sized by sqrt(n)
+      const r = Math.min(8, Math.max(3, Math.sqrt(p.n)));
+      // Colour by whether actual is within CI of expected
+      const color = (p.expected >= p.ciLo && p.expected <= p.ciHi) ? 'var(--green)'
+                  : (p.actual > p.expected) ? 'var(--red)' // underestimated bettor
+                  : 'var(--amber)'; // overestimated bettor
+      svg += svgCircle(cx, cy, r, color);
+      // Label n inside point
+      if (r >= 6) {
+        svg += svgText(cx, cy + 3, p.n, { size: 8, fill: 'white' });
+      }
+    }
+    // Axis titles
+    svg += svgText(pad.l + chartW / 2, H - 6, 'Predicted bettor win prob', { size: 10, fill: 'var(--text3)' });
+    svg += svgText(12, pad.t + chartH / 2, 'Actual bettor win rate', { size: 10, fill: 'var(--text3)', anchor: 'middle', transform: 'rotate(-90 12 ' + (pad.t + chartH / 2) + ')' });
     svg += '</svg>';
-    el.innerHTML = svg;
+
+    // ─── Summary stats ───
+    const fmtPct = x => (x * 100).toFixed(2) + '%';
+    const fmtBias = x => (x > 0 ? '+' : '') + (x * 100).toFixed(2) + 'pp';
+    const biasColor = Math.abs(bias) < 0.01 ? 'var(--green)' : Math.abs(bias) < 0.03 ? 'var(--amber)' : 'var(--red)';
+    let html = svg;
+    html += '<div style="display:flex; gap:12px; flex-wrap:wrap; padding:8px 4px 4px; border-top:1px solid var(--border); margin-top:8px;">'
+      + '<div style="flex:1 1 120px;"><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Sample</div><div style="font-size:16px; font-weight:600;">' + n + ' parlays</div></div>'
+      + '<div style="flex:1 1 120px;"><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Mean Expected</div><div style="font-size:16px; font-weight:600;">' + fmtPct(meanExp) + '</div></div>'
+      + '<div style="flex:1 1 120px;"><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Mean Actual</div><div style="font-size:16px; font-weight:600;">' + fmtPct(meanAct) + '</div></div>'
+      + '<div style="flex:1 1 120px;"><div style="color:var(--text3); font-size:10px; text-transform:uppercase;" title="actual - expected. Positive = we underestimate bettor wins (too generous). Negative = we overestimate (too tight).">Mean Bias</div><div style="font-size:16px; font-weight:600; color:' + biasColor + ';">' + fmtBias(bias) + '</div></div>'
+      + '<div style="flex:1 1 120px;"><div style="color:var(--text3); font-size:10px; text-transform:uppercase;" title="Brier score: mean squared error. Lower is better. 0 = perfect, 0.25 = coin flip.">Brier Score</div><div style="font-size:16px; font-weight:600;">' + brier.toFixed(4) + '</div></div>'
+      + '</div>';
+
+    // ─── Per-sport breakdown table ───
+    const bySport = {};
+    for (const o of withProb) {
+      const legs = o.meta?.legs || o.legs || [];
+      const sports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
+      const k = sports.length === 1 ? sports[0] : 'multi';
+      if (!bySport[k]) bySport[k] = { n: 0, hit: 0, expSum: 0, brier: 0 };
+      const p = o.fairParlayProb;
+      const hit = o.settlementResult === 'lost' ? 1 : 0;
+      bySport[k].n++;
+      bySport[k].hit += hit;
+      bySport[k].expSum += p;
+      bySport[k].brier += (hit - p) * (hit - p);
+    }
+    const sportRows = Object.entries(bySport)
+      .filter(([, v]) => v.n >= 5)
+      .map(([k, v]) => ({
+        sport: k, n: v.n,
+        expected: v.expSum / v.n,
+        actual: v.hit / v.n,
+        bias: v.hit / v.n - v.expSum / v.n,
+        brier: v.brier / v.n,
+      }))
+      .sort((a, b) => b.n - a.n);
+    if (sportRows.length > 0) {
+      html += '<div style="padding:8px 4px; font-size:11px;">'
+        + '<div style="color:var(--text3); font-size:10px; text-transform:uppercase; margin-bottom:4px;">Per-sport breakdown (n ≥ 5)</div>'
+        + '<table style="width:100%;">'
+        + '<tr style="color:var(--text3); border-bottom:1px solid var(--border);">'
+        + '<th style="text-align:left; padding:4px 6px;">Sport</th>'
+        + '<th style="text-align:right; padding:4px 6px;">n</th>'
+        + '<th style="text-align:right; padding:4px 6px;">Expected</th>'
+        + '<th style="text-align:right; padding:4px 6px;">Actual</th>'
+        + '<th style="text-align:right; padding:4px 6px;" title="actual - expected (percentage points)">Bias</th>'
+        + '<th style="text-align:right; padding:4px 6px;">Brier</th>'
+        + '</tr>';
+      for (const r of sportRows) {
+        const bc = Math.abs(r.bias) < 0.02 ? 'var(--green)' : Math.abs(r.bias) < 0.05 ? 'var(--amber)' : 'var(--red)';
+        html += '<tr style="border-bottom:1px solid var(--border);">'
+          + '<td style="padding:5px 6px;">' + sportLabel(r.sport) + '</td>'
+          + '<td style="padding:5px 6px; text-align:right; color:var(--text2);">' + r.n + '</td>'
+          + '<td style="padding:5px 6px; text-align:right;">' + fmtPct(r.expected) + '</td>'
+          + '<td style="padding:5px 6px; text-align:right;">' + fmtPct(r.actual) + '</td>'
+          + '<td style="padding:5px 6px; text-align:right; color:' + bc + '; font-weight:500;">' + fmtBias(r.bias) + '</td>'
+          + '<td style="padding:5px 6px; text-align:right;">' + r.brier.toFixed(4) + '</td>'
+          + '</tr>';
+      }
+      html += '</table></div>';
+    }
+    html += '<div style="font-size:10px; color:var(--text3); padding:4px 8px;">'
+      + 'Each dot is a bucket of parlays at a predicted win-prob range. Green dot = expected is within the actual\'s 95% CI (well-calibrated). '
+      + 'Red = we underestimated bettor wins (offered too generously). Amber = we overestimated (too tight). Error bars = Wilson 95% CI.'
+      + '</div>';
+
+    el.innerHTML = html;
   }
 
   // 5. Competitive Gap — scatter of our odds vs winning odds on lost quotes

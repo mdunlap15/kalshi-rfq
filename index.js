@@ -1359,6 +1359,188 @@ function startStatusServer() {
     }
   });
 
+  // Calibration report — are our fair probabilities accurate?
+  //
+  // Bucketizes settled parlays (and individually settled legs) by our
+  // predicted probability and compares to the realized frequency the bettor
+  // side actually hit. Also reports Brier score (lower = better), mean bias
+  // (actual − expected; positive means we underestimate bettor wins),
+  // sample count, and Wilson 95% confidence intervals for each bucket.
+  app.get('/calibration-report', (req, res) => {
+    try {
+      const all = orderTracker.getRecentOrders(20000);
+      const settled = all.filter(o => o.status && o.status.startsWith('settled_'));
+
+      // Wilson score interval for a proportion (95% CI)
+      function wilson(k, n) {
+        if (n === 0) return { lo: 0, hi: 0 };
+        const z = 1.96;
+        const p = k / n;
+        const denom = 1 + z * z / n;
+        const centre = (p + z * z / (2 * n)) / denom;
+        const half = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom;
+        return { lo: Math.max(0, centre - half), hi: Math.min(1, centre + half) };
+      }
+
+      // Finer buckets than the existing client chart (10 instead of 5)
+      const parlayBuckets = [
+        { lo: 0.00, hi: 0.05, label: '0-5%' },
+        { lo: 0.05, hi: 0.10, label: '5-10%' },
+        { lo: 0.10, hi: 0.15, label: '10-15%' },
+        { lo: 0.15, hi: 0.20, label: '15-20%' },
+        { lo: 0.20, hi: 0.25, label: '20-25%' },
+        { lo: 0.25, hi: 0.30, label: '25-30%' },
+        { lo: 0.30, hi: 0.40, label: '30-40%' },
+        { lo: 0.40, hi: 0.50, label: '40-50%' },
+        { lo: 0.50, hi: 0.70, label: '50-70%' },
+        { lo: 0.70, hi: 1.01, label: '70%+' },
+      ];
+
+      // Settled-lost = SP lost = bettor's parlay HIT
+      function computeParlayBuckets(orders) {
+        let totalBrier = 0;
+        let brierCount = 0;
+        let totalExpected = 0;
+        let totalActual = 0;
+        const bins = parlayBuckets.map(b => ({ ...b, n: 0, bettorHit: 0, expectedSum: 0 }));
+        for (const o of orders) {
+          const p = o.fairParlayProb;
+          if (p == null || p <= 0 || p >= 1) continue;
+          const hit = o.settlementResult === 'lost' ? 1 : (o.settlementResult === 'won' ? 0 : null);
+          if (hit == null) continue; // skip pushes/voids — no calibration signal
+          totalBrier += (hit - p) * (hit - p);
+          brierCount++;
+          totalExpected += p;
+          totalActual += hit;
+          const bin = bins.find(b => p >= b.lo && p < b.hi);
+          if (bin) { bin.n++; bin.bettorHit += hit; bin.expectedSum += p; }
+        }
+        const detail = bins.filter(b => b.n > 0).map(b => {
+          const actual = b.bettorHit / b.n;
+          const expected = b.expectedSum / b.n;
+          const ci = wilson(b.bettorHit, b.n);
+          return {
+            label: b.label, n: b.n,
+            expected: Math.round(expected * 10000) / 10000,
+            actual: Math.round(actual * 10000) / 10000,
+            bias: Math.round((actual - expected) * 10000) / 10000,
+            ci95Lo: Math.round(ci.lo * 10000) / 10000,
+            ci95Hi: Math.round(ci.hi * 10000) / 10000,
+          };
+        });
+        return {
+          n: brierCount,
+          brierScore: brierCount > 0 ? Math.round(totalBrier / brierCount * 100000) / 100000 : null,
+          meanExpected: brierCount > 0 ? Math.round(totalExpected / brierCount * 10000) / 10000 : null,
+          meanActual: brierCount > 0 ? Math.round(totalActual / brierCount * 10000) / 10000 : null,
+          meanBias: brierCount > 0 ? Math.round((totalActual - totalExpected) / brierCount * 10000) / 10000 : null,
+          buckets: detail,
+        };
+      }
+
+      const overall = computeParlayBuckets(settled);
+
+      // Per-sport parlay calibration
+      const bySport = {};
+      for (const o of settled) {
+        const legs = o.meta?.legs || o.legs || [];
+        const sports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
+        const k = sports.length === 1 ? sports[0] : 'multi';
+        if (!bySport[k]) bySport[k] = [];
+        bySport[k].push(o);
+      }
+      const bySportSummary = {};
+      for (const [k, orders] of Object.entries(bySport)) {
+        bySportSummary[k] = computeParlayBuckets(orders);
+      }
+
+      // Leg-level calibration — vastly more data (avg 3 legs per parlay)
+      // A leg is a "hit" when settlementStatus === 'won' (bettor's side hit).
+      const legBuckets = [
+        { lo: 0.30, hi: 0.40, label: '30-40%' },
+        { lo: 0.40, hi: 0.45, label: '40-45%' },
+        { lo: 0.45, hi: 0.50, label: '45-50%' },
+        { lo: 0.50, hi: 0.55, label: '50-55%' },
+        { lo: 0.55, hi: 0.60, label: '55-60%' },
+        { lo: 0.60, hi: 0.65, label: '60-65%' },
+        { lo: 0.65, hi: 0.70, label: '65-70%' },
+        { lo: 0.70, hi: 0.80, label: '70-80%' },
+        { lo: 0.80, hi: 1.01, label: '80%+' },
+      ];
+      let legBrier = 0, legN = 0, legExpected = 0, legActual = 0;
+      const legBins = legBuckets.map(b => ({ ...b, n: 0, hit: 0, expectedSum: 0 }));
+      const legBySport = {};
+      for (const o of settled) {
+        const legs = o.legs || o.meta?.legs || [];
+        for (const l of legs) {
+          const p = l.fairProb;
+          if (p == null || p <= 0 || p >= 1) continue;
+          const ss = l.settlementStatus || l.settlement_status;
+          const hit = ss === 'won' ? 1 : ss === 'lost' ? 0 : null;
+          if (hit == null) continue;
+          legBrier += (hit - p) * (hit - p);
+          legN++;
+          legExpected += p;
+          legActual += hit;
+          const bin = legBins.find(b => p >= b.lo && p < b.hi);
+          if (bin) { bin.n++; bin.hit += hit; bin.expectedSum += p; }
+          if (l.sport) {
+            if (!legBySport[l.sport]) legBySport[l.sport] = { n: 0, hit: 0, expSum: 0, brier: 0 };
+            legBySport[l.sport].n++;
+            legBySport[l.sport].hit += hit;
+            legBySport[l.sport].expSum += p;
+            legBySport[l.sport].brier += (hit - p) * (hit - p);
+          }
+        }
+      }
+      const legDetail = legBins.filter(b => b.n > 0).map(b => {
+        const actual = b.hit / b.n;
+        const expected = b.expectedSum / b.n;
+        const ci = wilson(b.hit, b.n);
+        return {
+          label: b.label, n: b.n,
+          expected: Math.round(expected * 10000) / 10000,
+          actual: Math.round(actual * 10000) / 10000,
+          bias: Math.round((actual - expected) * 10000) / 10000,
+          ci95Lo: Math.round(ci.lo * 10000) / 10000,
+          ci95Hi: Math.round(ci.hi * 10000) / 10000,
+        };
+      });
+      const legBySportSummary = {};
+      for (const [k, v] of Object.entries(legBySport)) {
+        legBySportSummary[k] = {
+          n: v.n,
+          meanExpected: Math.round(v.expSum / v.n * 10000) / 10000,
+          meanActual: Math.round(v.hit / v.n * 10000) / 10000,
+          meanBias: Math.round((v.hit / v.n - v.expSum / v.n) * 10000) / 10000,
+          brierScore: Math.round(v.brier / v.n * 100000) / 100000,
+        };
+      }
+
+      res.json({
+        ok: true,
+        note: 'bias = actual - expected (positive = we UNDERestimate bettor win rate; negative = we OVERestimate). Brier score: lower is better (0 = perfect, 0.25 = coin flip).',
+        parlay: {
+          overall,
+          bySport: bySportSummary,
+        },
+        leg: {
+          overall: {
+            n: legN,
+            brierScore: legN > 0 ? Math.round(legBrier / legN * 100000) / 100000 : null,
+            meanExpected: legN > 0 ? Math.round(legExpected / legN * 10000) / 10000 : null,
+            meanActual: legN > 0 ? Math.round(legActual / legN * 10000) / 10000 : null,
+            meanBias: legN > 0 ? Math.round((legActual - legExpected) / legN * 10000) / 10000 : null,
+            buckets: legDetail,
+          },
+          bySport: legBySportSummary,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // CLV (Closing Line Value) report — aggregates clvDelta across settled
   // parlays that had closing-line snapshots captured at event start. This
   // is the definitive "are we sharper than the market" metric.
