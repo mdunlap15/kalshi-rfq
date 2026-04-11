@@ -750,28 +750,39 @@ function shouldDecline(legs) {
       log.info('Pricing', `Declined: F5 total + full-game total on ${gameLabel}`);
       return { declined: true, reason: 'correlated legs', detail: `F5 + full-game total on same game: ${gameLabel}` };
     }
-    // Block: team_total combined with any other leg FOR THE SAME TEAM on the
-    // same game. team_total for the home team is highly correlated with home
-    // moneyline, home spread cover, and total goes over. A team_total leg
-    // standalone (no other legs on this game) OR combined with legs for the
-    // OPPOSING team is allowed.
+    // ---- TEAM TOTAL CORRELATION BLOCKS (same game) ----
+    // team_total is a quantity bet on ONE team's scoring in a game. It's
+    // strongly correlated with many other markets on the same game:
+    //
+    //   team_total + full-game total  → both depend on the same pool of goals
+    //   team_total + game spread      → team scoring rate drives cover margin
+    //   team_total + game moneyline   → team scoring drives win prob
+    //   team_total (home) + team_total (away) → both tied to game pace
+    //
+    // Rules (in order of strictness):
+    //   1. team_total + ANY game-level total → BLOCK unconditionally
+    //      (the user-requested rule: "team totals and game totals cannot
+    //      be combined"). Applies even if the team_total is the OPPOSING
+    //      team — the joint distribution is still highly correlated.
+    //   2. team_total + any other leg for the SAME TEAM → BLOCK
+    //      (e.g. home team_total + home moneyline).
+    //   3. Two team_total legs (home + away same game) → already caught
+    //      upstream by the duplicate-market-type rule.
     const teamTotalEntries = entries.filter(e => e.market === 'team_total');
     if (teamTotalEntries.length > 0 && entries.length > 1) {
-      // Figure out which team each leg is for: team_total's .team is the team
-      // side; other legs' .team is also the team (for ML/spread) or uses home
-      // for totals (which are event-level). Block if ANY other leg is for the
-      // SAME team as a team_total leg.
+      // Rule 1 (unconditional): team_total + full-game total on same game
+      const hasGameTotal = entries.some(e => e.market === 'total');
+      if (hasGameTotal) {
+        log.info('Pricing', `Declined: team_total + game total on ${gameLabel}`);
+        return { declined: true, reason: 'correlated legs', detail: `team_total + game total on same game: ${gameLabel}` };
+      }
+      // Rule 2: team_total + any other leg for the SAME team
       for (const tt of teamTotalEntries) {
         const ttTeam = tt.team;
         const sameTeamOther = entries.find(e => e !== tt && e.team === ttTeam);
         if (sameTeamOther) {
           log.info('Pricing', `Declined: team_total + ${sameTeamOther.market} on ${ttTeam} (same game ${gameLabel})`);
           return { declined: true, reason: 'correlated legs', detail: `team_total + ${sameTeamOther.market} for ${ttTeam}: ${gameLabel}` };
-        }
-        // Also block team_total + full-game total (both depend on same goals)
-        if (entries.some(e => e !== tt && e.market === 'total')) {
-          log.info('Pricing', `Declined: team_total + full-game total on ${gameLabel}`);
-          return { declined: true, reason: 'correlated legs', detail: `team_total + full-game total on same game: ${gameLabel}` };
         }
       }
     }
