@@ -2024,6 +2024,43 @@ function startStatusServer() {
   // sportsbook present (pinnacle, fanduel, draftkings, kalshi). Answers
   // "why don't my quotes show Kalshi odds?" — it's almost always because
   // SharpAPI returned zero Kalshi rows for that sport/event.
+  // Dump raw PX markets for a specific event by team substring match.
+  // Used to see whether PX is even returning alt puck lines / alt spread
+  // markets for NHL / MLB so we can tell coverage from parsing bugs.
+  app.get('/debug-px-markets', async (req, res) => {
+    const q = (req.query.q || '').toLowerCase();
+    const sportFilter = req.query.sport || 'Hockey';
+    if (!q) return res.status(400).json({ ok: false, error: 'missing q param' });
+    try {
+      const pxSvc = require('./services/prophetx');
+      const allEvents = await pxSvc.fetchSportEvents();
+      const hit = allEvents.find(e => (e.name || '').toLowerCase().includes(q) && (e.sport_name || '') === sportFilter);
+      if (!hit) return res.json({ ok: false, error: 'no event matched', searched: allEvents.length });
+      const markets = await pxSvc.fetchMarkets(hit.event_id);
+      const filtered = markets.map(m => ({
+        type: m.type,
+        name: m.name,
+        hasMarketLines: !!m.market_lines,
+        marketLineCount: (m.market_lines || []).length,
+        marketLineSample: (m.market_lines || []).slice(0, 3).map(ml => ({
+          line: ml.line,
+          favourite: ml.favourite,
+          selCount: (ml.selections || []).length,
+        })),
+        hasSelections: !!m.selections,
+        selCount: (m.selections || []).length,
+      }));
+      res.json({
+        ok: true,
+        event: { id: hit.event_id, name: hit.name, sport: hit.sport_name },
+        marketCount: markets.length,
+        markets: filtered.filter(m => /spread|puck|line|run/i.test(m.name || '') || m.type === 'spread'),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Direct Odds API probe — fetches a sport's Pinnacle supplement feed
   // and returns a book count / sample so we can tell whether zero Pinnacle
   // rows indicate API coverage gap or a merge bug on our side.
