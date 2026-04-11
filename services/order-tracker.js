@@ -2338,31 +2338,65 @@ async function fullPxReconcile(px) {
 function backfillUnknownSports() {
   const lineManager = require('./line-manager');
 
-  // STEP 1: Build a team-name → sport map from orders that already have
+  // STEP 1a: Build a team-name → sport map from orders that already have
   // a known sport. Lowercased keys so matching is case-insensitive.
   const teamToSport = {};
+  // STEP 1b: Build a pxEventId-prefix → sport map. PX namespaces event IDs
+  // by sport (MLB 10077xxx, NHL 30025xxx, etc). For reconstructed orders
+  // with no team/event name at all, the pxEventId is the only signal left.
+  const prefixToSport = {};  // '10077' → 'baseball_mlb'
+  const prefixCounts = {};   // for debug logging: how many hits per prefix
+
   for (const o of Object.values(orders)) {
     const legSources = [o.legs, o.meta?.legs].filter(Boolean);
     for (const legs of legSources) {
       for (const leg of legs) {
         const sport = leg.sport;
         if (!sport || sport === 'unknown') continue;
+
+        // Team name → sport
         const team = (leg.team || leg.teamName || '').toLowerCase().trim();
-        if (!team || team === '?' || team === 'unknown') continue;
-        // Strip common prefixes like "Over (..." and "Under (..." for totals
-        const cleaned = team.replace(/^(over|under)\s*\(/i, '').replace(/\)$/, '').trim();
-        if (cleaned.length >= 3) teamToSport[cleaned] = sport;
-        if (team.length >= 3) teamToSport[team] = sport;
+        if (team && team !== '?' && team !== 'unknown') {
+          const cleaned = team.replace(/^(over|under)\s*\(/i, '').replace(/\)$/, '').trim();
+          if (cleaned.length >= 3) teamToSport[cleaned] = sport;
+          if (team.length >= 3) teamToSport[team] = sport;
+        }
+
+        // pxEventId prefix → sport (first 5 chars captures the sport namespace)
+        const eid = leg.pxEventId || leg.sport_event_id;
+        if (eid != null) {
+          const prefix = String(eid).substring(0, 5);
+          if (prefix.length >= 4) {
+            // Only set the prefix if there's no conflict (different sports
+            // sharing the same prefix would make this inference unsafe).
+            if (!prefixToSport[prefix]) {
+              prefixToSport[prefix] = sport;
+              prefixCounts[prefix] = (prefixCounts[prefix] || 0) + 1;
+            } else if (prefixToSport[prefix] === sport) {
+              prefixCounts[prefix]++;
+            } else {
+              // Conflict — mark this prefix unsafe
+              prefixToSport[prefix] = '__CONFLICT__';
+            }
+          }
+        }
       }
     }
   }
-  log.info('Backfill', `Built team→sport map with ${Object.keys(teamToSport).length} entries`);
+  // Drop conflicted prefixes
+  for (const [p, s] of Object.entries(prefixToSport)) {
+    if (s === '__CONFLICT__') delete prefixToSport[p];
+  }
+  log.info('Backfill', `Built team→sport map (${Object.keys(teamToSport).length} entries) and ` +
+    `prefix→sport map (${Object.keys(prefixToSport).length} entries): ` +
+    Object.entries(prefixToSport).map(([p, s]) => `${p}→${s}(${prefixCounts[p] || 0})`).join(', '));
 
   // STEP 2: Walk all orders and try to resolve any 'unknown' legs.
   let ordersScanned = 0;
   let ordersUpdated = 0;
   let legsResolvedByEvent = 0;
   let legsResolvedByTeam = 0;
+  let legsResolvedByPrefix = 0;
   let legsStillUnresolved = 0;
 
   for (const o of Object.values(orders)) {
@@ -2416,6 +2450,19 @@ function backfillUnknownSports() {
           }
         }
 
+        // Tier 3: pxEventId prefix → sport. PX namespaces event IDs by
+        // sport, so '10077xxx' is always MLB and '30025xxx' is always NHL.
+        // This catches reconstructed orders that have zero team/event data.
+        if (eid != null) {
+          const prefix = String(eid).substring(0, 5);
+          if (prefix.length >= 4 && prefixToSport[prefix]) {
+            leg.sport = prefixToSport[prefix];
+            legsResolvedByPrefix++;
+            mutated = true;
+            continue;
+          }
+        }
+
         legsStillUnresolved++;
       }
     }
@@ -2426,7 +2473,7 @@ function backfillUnknownSports() {
   }
 
   log.info('Backfill', `Scanned ${ordersScanned} orders, updated ${ordersUpdated}. ` +
-    `Resolved ${legsResolvedByEvent} by eventIndex + ${legsResolvedByTeam} by team map. ` +
+    `Resolved ${legsResolvedByEvent} by eventIndex + ${legsResolvedByTeam} by team map + ${legsResolvedByPrefix} by prefix. ` +
     `${legsStillUnresolved} legs still unresolved.`);
 
   return {
@@ -2434,8 +2481,11 @@ function backfillUnknownSports() {
     ordersUpdated,
     legsResolvedByEvent,
     legsResolvedByTeam,
+    legsResolvedByPrefix,
     legsStillUnresolved,
     teamMapSize: Object.keys(teamToSport).length,
+    prefixMapSize: Object.keys(prefixToSport).length,
+    prefixMap: prefixToSport,
   };
 }
 
