@@ -1253,9 +1253,23 @@ function buildConsensusTeamTotals(bookPairs) {
 }
 
 function buildConsensusMoneyline(bookPairs) {
-  // Compute de-vigged consensus across ALL books (for display as "Fair")
+  // Preserve ALL books for display attribution (pinnacle/fd/dk/kalshi fields
+  // are always populated from the full list so the dashboard can show every
+  // book's raw odds regardless of its vig).
+  const allBooks = bookPairs;
+
+  // Filter high-vig books out of the averaging input. Prevents Saba-class
+  // Asian bookmaking feeds from corrupting the de-vigged consensus mean
+  // via unweighted averaging. See filterSharpBooks for rationale.
+  const sharpBooks = filterSharpBooks(
+    bookPairs,
+    bp => [bp.home.odds_probability, bp.away.odds_probability],
+    'moneyline'
+  );
+
+  // Compute de-vigged consensus across FILTERED books (for display as "Fair")
   const devigged = { home: [], away: [] };
-  for (const { home, away } of bookPairs) {
+  for (const { home, away } of sharpBooks) {
     const [fh, fa] = deVig2Way(home.odds_probability, away.odds_probability);
     devigged.home.push(fh);
     devigged.away.push(fa);
@@ -1264,19 +1278,22 @@ function buildConsensusMoneyline(bookPairs) {
   const dvAway = avg(devigged.away);
 
   // For PRICING: use de-vigged consensus as fair value for normal legs.
-  // On heavy favorites (>=65%), floor at Pinnacle's DE-VIGGED fair prob to catch
-  // de-vig over-correction, NOT raw implied (which contains Pinnacle's own vig —
-  // using raw would double-vig when we apply our own vig on top, making heavy-
-  // favorite parlays significantly worse than Pinnacle's direct parlay price).
-  const pinBook = bookPairs.find(bp => bp.book === 'pinnacle');
-  const fdBook = bookPairs.find(bp => bp.book === 'fanduel');
-  const klBook = bookPairs.find(bp => bp.book === 'kalshi');
+  // On ANY favorite side (fairProb >= 0.50), floor at Pinnacle's DE-VIGGED
+  // fair prob (not raw implied — raw contains Pin's vig, which would double-
+  // vig when we apply ours on top). Threshold lowered from 0.65 to 0.50
+  // after observing Padres (~60% fair) get dragged to 54% by Saba pollution
+  // — the old threshold meant any favorite between 50-65% had no floor
+  // protection at all. Extending to all favorites makes Pin an effective
+  // lower bound whenever Pin is present in the event.
+  const pinBook = allBooks.find(bp => bp.book === 'pinnacle');
+  const fdBook = allBooks.find(bp => bp.book === 'fanduel');
+  const klBook = allBooks.find(bp => bp.book === 'kalshi');
   const pinFairHome = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[0] : 0;
   const pinFairAway = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[1] : 0;
   const floorHome = pinBook ? pinFairHome : (klBook ? Math.min(klBook.home.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
   const floorAway = pinBook ? pinFairAway : (klBook ? Math.min(klBook.away.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-  const pricingHome = dvHome >= 0.65 ? Math.max(dvHome, floorHome) : dvHome;
-  const pricingAway = dvAway >= 0.65 ? Math.max(dvAway, floorAway) : dvAway;
+  const pricingHome = dvHome >= 0.50 ? Math.max(dvHome, floorHome) : dvHome;
+  const pricingAway = dvAway >= 0.50 ? Math.max(dvAway, floorAway) : dvAway;
 
   const pinnacle = pinBook ? {
     home: pinBook.home.odds_american,
@@ -1328,9 +1345,17 @@ function buildConsensusSpread(bookPairs) {
   const matching = bookPairs.filter(bp => bp.home.line === pLine);
   if (matching.length === 0) return null;
 
+  // Filter high-vig books out of the averaging input (see
+  // filterSharpBooks rationale in buildConsensusMoneyline).
+  const sharpMatching = filterSharpBooks(
+    matching,
+    bp => [bp.home.odds_probability, bp.away.odds_probability],
+    'spread'
+  );
+
   // De-vigged consensus for display
   const devigged = { home: [], away: [] };
-  for (const { home, away } of matching) {
+  for (const { home, away } of sharpMatching) {
     const [fh, fa] = deVig2Way(home.odds_probability, away.odds_probability);
     devigged.home.push(fh);
     devigged.away.push(fa);
@@ -1343,12 +1368,14 @@ function buildConsensusSpread(bookPairs) {
   const klBookS = matching.find(bp => bp.book === 'kalshi');
   // Floor at Pinnacle's DE-VIGGED fair prob (not raw implied) — raw would
   // include Pinnacle's vig and cause double-vig when we apply ours on top.
+  // Threshold lowered from 0.65 to 0.50 so any favorite side gets floored
+  // against Pin's de-vigged prob whenever Pin is present.
   const pinFairHomeS = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[0] : 0;
   const pinFairAwayS = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[1] : 0;
   const floorHomeS = pinBook ? pinFairHomeS : (klBookS ? klBookS.home.odds_probability : 0);
   const floorAwayS = pinBook ? pinFairAwayS : (klBookS ? klBookS.away.odds_probability : 0);
-  const pricingHome = dvHome >= 0.65 ? Math.max(dvHome, floorHomeS) : dvHome;
-  const pricingAway = dvAway >= 0.65 ? Math.max(dvAway, floorAwayS) : dvAway;
+  const pricingHome = dvHome >= 0.50 ? Math.max(dvHome, floorHomeS) : dvHome;
+  const pricingAway = dvAway >= 0.50 ? Math.max(dvAway, floorAwayS) : dvAway;
 
   const pinnacle = pinBook ? {
     home: pinBook.home.odds_american,
@@ -1405,9 +1432,17 @@ function buildConsensusTotals(bookPairs) {
   const matching = bookPairs.filter(bp => bp.over.line === pLine);
   if (matching.length === 0) return null;
 
+  // Filter high-vig books out of the averaging input (see
+  // filterSharpBooks rationale in buildConsensusMoneyline).
+  const sharpMatching = filterSharpBooks(
+    matching,
+    bp => [bp.over.odds_probability, bp.under.odds_probability],
+    'total'
+  );
+
   // De-vigged consensus for display
   const devigged = { over: [], under: [] };
-  for (const { over, under } of matching) {
+  for (const { over, under } of sharpMatching) {
     const [fo, fu] = deVig2Way(over.odds_probability, under.odds_probability);
     devigged.over.push(fo);
     devigged.under.push(fu);
@@ -1419,12 +1454,13 @@ function buildConsensusTotals(bookPairs) {
   const fdBook2 = matching.find(bp => bp.book === 'fanduel');
   const klBookT = matching.find(bp => bp.book === 'kalshi');
   // Floor at Pinnacle's DE-VIGGED fair prob (not raw implied) to avoid double-vig.
+  // Threshold lowered from 0.65 to 0.50 — see buildConsensusMoneyline.
   const pinFairOver = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[0] : 0;
   const pinFairUnder = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[1] : 0;
   const floorOver = pinBook ? pinFairOver : (klBookT ? Math.min(klBookT.over.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
   const floorUnder = pinBook ? pinFairUnder : (klBookT ? Math.min(klBookT.under.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-  const pricingOver = dvOver >= 0.65 ? Math.max(dvOver, floorOver) : dvOver;
-  const pricingUnder = dvUnder >= 0.65 ? Math.max(dvUnder, floorUnder) : dvUnder;
+  const pricingOver = dvOver >= 0.50 ? Math.max(dvOver, floorOver) : dvOver;
+  const pricingUnder = dvUnder >= 0.50 ? Math.max(dvUnder, floorUnder) : dvUnder;
 
   return {
     over: {
@@ -1470,6 +1506,51 @@ function deVig2Way(prob1, prob2) {
   const total = prob1 + prob2;
   if (total === 0) return [0.5, 0.5];
   return [prob1 / total, prob2 / total];
+}
+
+// Max per-book 2-way vig tolerated in the consensus average. Books above
+// this threshold (Asian square-bookmaking feeds like Saba, some retail
+// outliers) systematically drag averaged fair probs away from sharp values.
+// Pinnacle runs ~2%, FD/DK run 4-5%, anything > 6% is in a different class
+// of bookmaking and shouldn't be weighted equally with majors.
+const MAX_BOOK_VIG = 0.06;
+
+/**
+ * Filter bookPairs to keep only books whose 2-way implied prob sum is
+ * within the MAX_BOOK_VIG threshold. The shape of each entry depends on
+ * the caller: `getFields` returns `[sideA, sideB]` probability values.
+ *
+ * If filtering would leave zero books, falls back to the original list
+ * (never return an empty set — better to have a noisy fair than no fair
+ * at all). Logs dropped books for auditability.
+ */
+function filterSharpBooks(bookPairs, getFields, label) {
+  if (!bookPairs || bookPairs.length === 0) return bookPairs;
+  const kept = [];
+  const dropped = [];
+  for (const bp of bookPairs) {
+    const [a, b] = getFields(bp);
+    if (a == null || b == null) { kept.push(bp); continue; }
+    const vig = (a + b) - 1;
+    if (vig > MAX_BOOK_VIG) {
+      dropped.push({ book: bp.book, vig: +(vig * 100).toFixed(1) });
+    } else {
+      kept.push(bp);
+    }
+  }
+  if (kept.length === 0) {
+    // All books failed the vig cap — last resort, keep everything rather
+    // than fabricate a null. The Pin-floor below will still protect us
+    // if Pinnacle is present with any vig level.
+    if (dropped.length > 0) {
+      log.debug('OddsFeed', `filterSharpBooks(${label}): all ${dropped.length} books exceeded ${(MAX_BOOK_VIG*100).toFixed(0)}% vig — keeping all as fallback`);
+    }
+    return bookPairs;
+  }
+  if (dropped.length > 0) {
+    log.debug('OddsFeed', `filterSharpBooks(${label}): dropped ${dropped.length} high-vig books: ${dropped.map(d => d.book + '(' + d.vig + '%)').join(', ')}`);
+  }
+  return kept;
 }
 
 /**
