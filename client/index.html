@@ -544,6 +544,7 @@
 
       <!-- Settlement drift banner — shows when /drift-status reports PX vs local disagreement -->
       <div id="drift-banner" style="display:none; margin-bottom:12px; padding:10px 14px; background:rgba(248,81,73,0.08); border:1px solid var(--red); border-left:4px solid var(--red); border-radius:6px; font-size:13px; position:relative;">
+        <button id="drift-banner-close" onclick="dismissDriftBanner()" title="Dismiss (re-appears if new drift or severity rises)" style="position:absolute; top:6px; right:8px; background:transparent; border:none; color:var(--text3); font-size:18px; cursor:pointer; padding:2px 6px; line-height:1;">&times;</button>
         <div id="drift-banner-content" style="padding-right:22px;"></div>
       </div>
 
@@ -1108,10 +1109,64 @@
     if (banner) banner.style.display = 'none';
   };
 
+  // Dismissed drift fingerprint (in-memory per session). Banner re-appears
+  // if drift counts rise above the dismissed snapshot, or after 15 min.
+  window._dismissedDrift = null;
+  window.dismissDriftBanner = function() {
+    const banner = document.getElementById('drift-banner');
+    const data = window._lastDriftData;
+    if (data) {
+      window._dismissedDrift = {
+        mm: data.mm, ml: data.ml, mp: data.mp,
+        dismissedAt: Date.now(),
+      };
+    }
+    if (banner) banner.style.display = 'none';
+  };
+
+  // Action handlers invoked from buttons inside the drift banner
+  window.runPollSettlements = async function(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Running...'; }
+    try {
+      const r = await postJSON('/poll-settlements');
+      addLog('system', 'Poll settlements: ' + JSON.stringify(r));
+      // Force a drift re-check so the banner updates
+      try { await postJSON('/check-drift'); } catch (e) {}
+      setTimeout(() => refreshDashboard(), 500);
+    } catch (err) {
+      addLog('error', 'Poll settlements failed: ' + err.message);
+      if (btn) { btn.disabled = false; btn.textContent = 'Retry Poll'; }
+    }
+  };
+  window.runForceReconcile = async function(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Running...'; }
+    try {
+      const r = await postJSON('/force-reconcile');
+      addLog('system', 'Force reconcile: ' + JSON.stringify(r));
+      try { await postJSON('/check-drift'); } catch (e) {}
+      setTimeout(() => refreshDashboard(), 500);
+    } catch (err) {
+      addLog('error', 'Force reconcile failed: ' + err.message);
+      if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+    }
+  };
+  window.runCheckDrift = async function(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking...'; }
+    try {
+      await postJSON('/check-drift');
+      const d = await fetchJSON('/drift-status');
+      renderDriftBanner(d);
+    } catch (err) {
+      addLog('error', 'Drift check failed: ' + err.message);
+      if (btn) { btn.disabled = false; btn.textContent = 'Re-check'; }
+    }
+  };
+
   // Settlement drift banner — rendered from /drift-status data. Shows when
   // the periodic PX vs local comparison finds divergence (mismatched status,
   // missing local settlements, or local orders PX doesn't see). Silent when
-  // drift counts are all zero.
+  // drift counts are all zero. Dismissible via X button; respects the
+  // dismissed fingerprint unless severity rises or 15 min pass.
   function renderDriftBanner(d) {
     const banner = document.getElementById('drift-banner');
     const content = document.getElementById('drift-banner-content');
@@ -1124,8 +1179,25 @@
     const mp = d.missingPxCount || 0;
     if (mm + ml + mp === 0) {
       banner.style.display = 'none';
+      // Clear dismissal when all-clear, so next incident triggers fresh alert
+      window._dismissedDrift = null;
       return;
     }
+    window._lastDriftData = { mm, ml, mp };
+
+    // Respect dismissal unless severity has risen
+    const dismissed = window._dismissedDrift;
+    if (dismissed) {
+      const ageMs = Date.now() - dismissed.dismissedAt;
+      const rose = mm > dismissed.mm || ml > dismissed.ml || mp > dismissed.mp;
+      if (!rose && ageMs < 15 * 60 * 1000) {
+        banner.style.display = 'none';
+        return;
+      }
+      // Severity rose or dismissal expired — clear and re-show
+      window._dismissedDrift = null;
+    }
+
     const parts = [];
     if (mm > 0) parts.push('<span style="color:var(--red); font-weight:600;">' + mm + ' mismatch' + (mm > 1 ? 'es' : '') + '</span>');
     if (ml > 0) parts.push('<span style="color:var(--red); font-weight:600;">' + ml + ' missing local</span>');
@@ -1142,12 +1214,31 @@
     for (const m of (d.missingLocal || []).slice(0, 3)) {
       sampleLines.push(m.parlayId?.substring(0, 8) + ': MISSING LOCAL — PX says ' + m.pxStatus + ' profit ' + m.pxProfit);
     }
-    content.innerHTML = '<div style="display:flex; gap:12px; align-items:center;">'
-      + '<span style="font-size:16px;">&#9888;</span>'
-      + '<div style="flex:1;">'
+
+    // Recommended action based on drift type
+    let advice = '';
+    if (ml > 0) {
+      advice = '<div style="font-size:11px; color:var(--text2); margin-top:6px;"><strong>Recommended:</strong> Run "Poll Settlements" — it will reconstruct the missing local orders from PX data.</div>';
+    } else if (mm > 0) {
+      advice = '<div style="font-size:11px; color:var(--text2); margin-top:6px;"><strong>Recommended:</strong> Run "Poll Settlements" to re-process the divergent orders. Usually self-heals within ~10 min via the scheduled poll.</div>';
+    } else if (mp > 0) {
+      advice = '<div style="font-size:11px; color:var(--text2); margin-top:6px;"><strong>Recommended:</strong> Locally-settled orders PX doesn\'t know about. Run "Force Reconcile" to re-check against PX\'s per-leg settlement data.</div>';
+    }
+
+    const btnStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer; margin-right:6px;';
+
+    content.innerHTML = '<div style="display:flex; gap:12px; align-items:flex-start;">'
+      + '<span style="font-size:16px; line-height:1;">&#9888;</span>'
+      + '<div style="flex:1; min-width:0;">'
       +   '<div style="font-weight:600; margin-bottom:2px;">Settlement drift detected: ' + parts.join(' · ') + '</div>'
       +   '<div style="font-size:11px; color:var(--text3);">PX has ' + (d.pxSettledTotal || 0) + ' settled orders, ' + (d.matched || 0) + ' matched. Last check: ' + lastCheck + '.</div>'
-      +   (sampleLines.length > 0 ? '<div style="font-size:11px; color:var(--text2); margin-top:6px; font-family:monospace;">' + sampleLines.join('<br>') + '</div>' : '')
+      +   (sampleLines.length > 0 ? '<div style="font-size:11px; color:var(--text2); margin-top:6px; font-family:monospace; word-break:break-all;">' + sampleLines.join('<br>') + '</div>' : '')
+      +   advice
+      +   '<div style="margin-top:8px;">'
+      +     '<button onclick="runPollSettlements(this)" style="' + btnStyle + '">Poll Settlements</button>'
+      +     '<button onclick="runForceReconcile(this)" style="' + btnStyle + '">Force Reconcile</button>'
+      +     '<button onclick="runCheckDrift(this)" style="' + btnStyle + '">Re-check</button>'
+      +   '</div>'
       + '</div>'
       + '</div>';
     banner.style.display = 'block';
