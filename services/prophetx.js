@@ -330,6 +330,18 @@ function parseMarketSelections(market) {
     else if (marketType === 'total') marketType = 'first_5_innings_total';
   }
 
+  // Team totals are also typed as 'total' by PX. The only way to distinguish
+  // from full-game totals is the market NAME (e.g. "SJ: Team Total Goals",
+  // "Philadelphia Phillies Team Total Runs", "Home Team Total"). Without this
+  // override, the line-manager applies full-game total bounds ([4, 9] for NHL)
+  // which reject all team totals as sub-game — silently losing hundreds of
+  // RFQs per day to mislabeled 'alt_spread' declines. Detect by name and
+  // upgrade the marketType so downstream routing uses team_total semantics.
+  const isTeamTotalByName = /\bteam\s*total\b|^(home|away|[A-Z]{2,4}):\s*team/i.test(marketName);
+  if (!isF5ByName && isTeamTotalByName && marketType === 'total') {
+    marketType = 'team_total';
+  }
+
   // F5 moneyline uses same structure as full-game moneyline (selections array)
   const isF5Moneyline = /first_5_innings_moneyline|first_five_innings_moneyline/.test(marketType);
   // F5 spread/total uses same structure as full-game spread/total (market_lines)
@@ -355,6 +367,21 @@ function parseMarketSelections(market) {
   } else if ((marketType === 'spread' || marketType === 'total' || marketType === 'team_total' || isF5Spread || isF5Total) && market.market_lines) {
     // Spread/Total: market_lines array, each with selections
     // Include ALL alternate lines so we can respond to any RFQ
+    //
+    // For team_total markets, the selection display_name is "Over N" / "Under N"
+    // and doesn't identify which team. Extract the team hint from the market
+    // name (e.g. "SJ: Team Total Goals" → "SJ"). The line-manager matches
+    // this hint against home/away team names (via abbreviation maps) to
+    // determine the side.
+    let teamHint = null;
+    if (marketType === 'team_total') {
+      // Pattern 1: "ABC: Team Total ..." or "ABC Team Total ..."
+      const m1 = marketName.match(/^([^:]+?)(?::|\s+)\s*Team\s*Total/i);
+      // Pattern 2: "Team Name Team Total ..." (team name before "Team Total")
+      const m2 = marketName.match(/^(.+?)\s+Team\s+Total/i);
+      teamHint = (m1 && m1[1].trim()) || (m2 && m2[1].trim()) || null;
+    }
+
     for (const marketLine of market.market_lines) {
       for (const selGroup of (marketLine.selections || [])) {
         for (const sel of selGroup) {
@@ -368,11 +395,18 @@ function parseMarketSelections(market) {
             selection = nameLC.includes('over') ? 'over' : nameLC.includes('under') ? 'under' : 'unknown';
           }
 
+          // For team_total legs, pass the extracted team hint as teamName so
+          // line-manager's home/away matching can work. Fall back to the
+          // selection display name for non-team-total legs.
+          const teamForLeg = marketType === 'team_total' && teamHint
+            ? teamHint
+            : cleanSelectionName(sel.display_name || sel.name || '');
+
           results.push({
             lineId: sel.line_id,
             marketType, // preserves F5 market type name
             selection,
-            teamName: cleanSelectionName(sel.display_name || sel.name || ''),
+            teamName: teamForLeg,
             line: sel.line != null ? sel.line : marketLine.line,
             competitorId: sel.competitor_id,
             outcomeName: sel.name,

@@ -75,12 +75,23 @@ const MAX_SPREAD_BY_SPORT = {
 /**
  * Returns true if `line` is within the plausible full-game range for the
  * given sport+markettype. Returns true (accept) for markets/sports without
- * defined bounds. `marketType` = 'total' or 'spread'. F5 markets should be
- * excluded by the caller.
+ * defined bounds. `marketType` = 'total', 'spread', or 'team_total'.
+ * F5 markets should be excluded by the caller.
+ *
+ * team_total lines are always much lower than full-game totals (e.g. MLB
+ * team total 3.5-4.5 runs vs full-game 8.5-10) so they get their own
+ * lenient bounds. Bypass the check entirely with a permissive range —
+ * parseMarketSelections already distinguishes them by name.
  */
 function isValidFullGameLine(sport, marketType, line) {
   if (line == null) return true;
   const absLine = Math.abs(line);
+  if (marketType === 'team_total') {
+    // Team totals are naturally low. Accept 0 to 15 (covers everything from
+    // hockey 0.5-goal team totals to NBA 130-point team totals ... wait,
+    // NBA team totals are 100+, so widen). Use a very permissive range.
+    return absLine >= 0 && absLine <= 200;
+  }
   if (marketType === 'total') {
     const bounds = TOTAL_BOUNDS_BY_SPORT[sport];
     if (bounds) return absLine >= bounds[0] && absLine <= bounds[1];
@@ -113,6 +124,68 @@ const TEAM_NAME_OVERRIDES = {
 
 function normalizeTeamName(name) {
   return (name || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+}
+
+/**
+ * Resolve a team_total "hint" (extracted from market name) to home/away side.
+ * Team total markets on PX are named things like "SJ: Team Total Goals" or
+ * "Philadelphia Phillies Team Total Runs". The prefix before "Team Total" is
+ * the team, but it may be an abbreviation, initials, or full name. This
+ * function tries several strategies in order of confidence.
+ *
+ * Returns 'home', 'away', or null.
+ */
+function resolveTeamTotalSide(hint, homeTeam, awayTeam) {
+  if (!hint) return null;
+  const normHint = normalizeTeamName(hint);
+  if (!normHint) return null;
+
+  // Explicit side labels
+  if (normHint === 'home') return 'home';
+  if (normHint === 'away') return 'away';
+
+  const normHome = normalizeTeamName(homeTeam);
+  const normAway = normalizeTeamName(awayTeam);
+
+  // Exact normalized match
+  if (normHint === normHome) return 'home';
+  if (normHint === normAway) return 'away';
+
+  // Substring: full team name contains the hint (or vice versa)
+  if (normHome.includes(normHint) || normHint.includes(normHome)) return 'home';
+  if (normAway.includes(normHint) || normHint.includes(normAway)) return 'away';
+
+  // Abbreviation / initials match. Many sports hint with initials like
+  // "SJ" (San Jose), "VAN" (Vancouver), "NYR" (New York Rangers).
+  // Build initial-letter strings for both full team names and compare.
+  function initials(name) {
+    return normalizeTeamName(name).split(/\s+/).map(w => w[0] || '').join('');
+  }
+  function firstWordChunk(name, n) {
+    const norm = normalizeTeamName(name);
+    return norm.replace(/\s/g, '').slice(0, n);
+  }
+  const hintCompact = normHint.replace(/\s/g, '');
+
+  const homeInitials = initials(homeTeam);
+  const awayInitials = initials(awayTeam);
+  if (hintCompact === homeInitials) return 'home';
+  if (hintCompact === awayInitials) return 'away';
+
+  // First-N-characters match (handles "VAN" vs "vancouver canucks")
+  for (const n of [5, 4, 3]) {
+    if (hintCompact.length !== n) continue;
+    if (firstWordChunk(homeTeam, n) === hintCompact) return 'home';
+    if (firstWordChunk(awayTeam, n) === hintCompact) return 'away';
+  }
+
+  // Last-word match (e.g., "Phillies" vs "Philadelphia Phillies")
+  const homeLast = normHome.split(/\s+/).pop();
+  const awayLast = normAway.split(/\s+/).pop();
+  if (normHint === homeLast) return 'home';
+  if (normHint === awayLast) return 'away';
+
+  return null;
 }
 
 /**
@@ -421,10 +494,14 @@ async function seedAllLines() {
       // market if ANY selection has a line inside the sport's bounds. The
       // individual selection-level bound check (below, inside the
       // registration loop) filters out the out-of-range alt lines one-by-one.
+      //
+      // Use parsed sel.marketType (not raw m.type) so team_total markets
+      // (which PX types as 'total' but parser upgrades to 'team_total') get
+      // the correct permissive bounds.
       if ((m.type === 'total' || m.type === 'spread') && !isF5) {
         const parsed = px.parseMarketSelections(m);
         if (parsed.length === 0) return false;
-        const anyInBounds = parsed.some(p => isValidFullGameLine(sportKey, m.type, p.line));
+        const anyInBounds = parsed.some(p => isValidFullGameLine(sportKey, p.marketType || m.type, p.line));
         if (!anyInBounds) {
           log.debug('Lines', `Rejecting ${m.type} market (no lines in bounds) for ${sportKey}: ${m.name}`);
           return false;
@@ -452,13 +529,13 @@ async function seedAllLines() {
       for (const sel of parsed) {
         totalLines++;
 
-        // Per-selection bounds check for spread/total alt lines. The market-
-        // level filter above accepts the market if ANY selection is in
-        // bounds; this check rejects the individual out-of-range ones
+        // Per-selection bounds check for spread/total/team_total alt lines.
+        // The market-level filter above accepts the market if ANY selection
+        // is in bounds; this check rejects the individual out-of-range ones
         // (e.g. Rangers -6.5 puck line) while keeping sibling in-range
-        // alts (Rangers -1.5, -2.5, -3.5) registered. Non-spread/total
-        // selections always pass (line is null or doesn't apply).
-        const selMarketType = (sel.marketType === 'spread' || sel.marketType === 'total') ? sel.marketType : null;
+        // alts registered. team_total uses permissive bounds (see
+        // isValidFullGameLine) since their lines are naturally low.
+        const selMarketType = ['spread', 'total', 'team_total'].includes(sel.marketType) ? sel.marketType : null;
         if (selMarketType && !isValidFullGameLine(sportKey, selMarketType, sel.line)) {
           continue;
         }
@@ -489,9 +566,13 @@ async function seedAllLines() {
         } else if (sel.marketType === 'total') {
           oddsApiSelection = sel.selection; // 'over' or 'under'
         } else if (sel.marketType === 'team_total') {
-          // Determine home/away from team name, combine with over/under
-          const isHome = matchTeamName(sel.teamName, [matchedHome]);
-          const teamSide = isHome ? 'home' : 'away';
+          // Determine home/away from team hint extracted from market name.
+          // parseMarketSelections populates sel.teamName with the parsed
+          // prefix (e.g. "SJ" from "SJ: Team Total Goals") — not the
+          // selection's over/under text. resolveTeamTotalSide handles
+          // exact, substring, initials, and first-N-char matching.
+          const teamSide = resolveTeamTotalSide(sel.teamName, matchedHome, matchedAway);
+          if (!teamSide) continue; // Skip if we can't determine the side
           oddsApiSelection = teamSide + '_' + (sel.selection || 'over'); // "home_over", "away_under", etc.
         } else if (sel.marketType === 'btts' || sel.marketType === 'both_teams_to_score') {
           // Yes/No selection from parseMarketSelections
@@ -840,8 +921,8 @@ async function resolveUnknownLine(rfqLeg) {
           } else if (sel.marketType === 'total') {
             oddsApiSelection = sel.selection;
           } else if (sel.marketType === 'team_total') {
-            const isHome = matchTeamName(sel.teamName, [matchedHome]);
-            const teamSide = isHome ? 'home' : 'away';
+            const teamSide = resolveTeamTotalSide(sel.teamName, matchedHome, matchedAway);
+            if (!teamSide) continue;
             oddsApiSelection = teamSide + '_' + (sel.selection || 'over');
           } else if (sel.marketType === 'btts' || sel.marketType === 'both_teams_to_score') {
             oddsApiSelection = (sel.selection || '').toLowerCase();
