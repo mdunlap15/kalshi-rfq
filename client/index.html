@@ -898,8 +898,14 @@
   let autoRefreshCountdown = 10;
   let countdownTimer = null;
 
-  // Track new confirmations for Orders tab notification badge
-  let lastSeenConfirmations = 0;
+  // Track new confirmations for Orders tab notification badge.
+  // Uses a Set of parlayIds the user has already "seen" (any refresh that
+  // happened while the Orders tab was active). Count-based tracking was
+  // buggy: on service restart stats.totalConfirmations resets to 0 then
+  // jumps to the historical total via loadFromDb, producing phantom
+  // notifications for hundreds of already-seen parlays.
+  const seenConfirmedParlayIds = new Set();
+  let notificationInitialized = false;
   let unseenConfirmations = 0;
 
   // Track expanded/collapsed state across refreshes (sub-sections + individual rows)
@@ -1013,16 +1019,29 @@
     document.getElementById('stat-confirmed').textContent = (o.totalConfirmations || 0).toLocaleString();
     document.getElementById('stat-settled').textContent = (o.totalSettlements || 0).toLocaleString();
 
-    // Update Orders tab notification badge for new confirmations
-    const currentConfirmations = o.totalConfirmations || 0;
-    if (lastSeenConfirmations === 0) {
-      lastSeenConfirmations = currentConfirmations; // initialize on first load
-    } else if (currentConfirmations > lastSeenConfirmations) {
-      if (activeSection === 'orders') {
-        lastSeenConfirmations = currentConfirmations; // viewing Orders, stay current
-      } else {
-        unseenConfirmations += (currentConfirmations - lastSeenConfirmations);
-        lastSeenConfirmations = currentConfirmations;
+    // Update Orders tab notification badge for new confirmations.
+    // Track by parlayId (not count) so service restarts don't inject
+    // phantom notifications. On first load, ALL currently-confirmed
+    // parlayIds are marked as seen — the badge only lights up for
+    // parlays that confirm AFTER this tab was opened.
+    const currentOrders = data.recentOrders || [];
+    const confirmedIds = currentOrders
+      .filter(x => x && (x.status === 'confirmed' || (x.status && x.status.startsWith('settled_'))))
+      .map(x => x.parlayId)
+      .filter(Boolean);
+    if (!notificationInitialized) {
+      for (const id of confirmedIds) seenConfirmedParlayIds.add(id);
+      notificationInitialized = true;
+    } else {
+      for (const id of confirmedIds) {
+        if (!seenConfirmedParlayIds.has(id)) {
+          if (activeSection === 'orders') {
+            seenConfirmedParlayIds.add(id); // viewing → auto-mark seen
+          } else {
+            unseenConfirmations++;
+            seenConfirmedParlayIds.add(id);
+          }
+        }
       }
     }
     const ordersBadge = document.getElementById('orders-badge');
