@@ -2024,6 +2024,47 @@ function startStatusServer() {
   // sportsbook present (pinnacle, fanduel, draftkings, kalshi). Answers
   // "why don't my quotes show Kalshi odds?" — it's almost always because
   // SharpAPI returned zero Kalshi rows for that sport/event.
+  // Direct Odds API probe — fetches a sport's Pinnacle supplement feed
+  // and returns a book count / sample so we can tell whether zero Pinnacle
+  // rows indicate API coverage gap or a merge bug on our side.
+  app.get('/probe-odds-api', async (req, res) => {
+    const sport = req.query.sport || 'basketball_nba';
+    const apiKey = process.env.THE_ODDS_API_KEY;
+    if (!apiKey) return res.status(400).json({ ok: false, error: 'THE_ODDS_API_KEY not set' });
+    const fetch = require('node-fetch');
+    const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds`
+      + `?apiKey=${apiKey}&regions=us,eu&markets=h2h,spreads,totals`
+      + `&bookmakers=pinnacle,draftkings,fanduel&oddsFormat=american`;
+    try {
+      const resp = await fetch(url);
+      const status = resp.status;
+      const remaining = resp.headers.get('x-requests-remaining');
+      if (!resp.ok) {
+        const text = await resp.text();
+        return res.json({ ok: false, status, remaining, errorBody: text.substring(0, 500) });
+      }
+      const events = await resp.json();
+      const bookCounts = {};
+      const sampleEvents = [];
+      for (const ev of events) {
+        for (const bm of (ev.bookmakers || [])) {
+          bookCounts[bm.key] = (bookCounts[bm.key] || 0) + 1;
+        }
+        if (sampleEvents.length < 5) {
+          sampleEvents.push({
+            home: ev.home_team,
+            away: ev.away_team,
+            commence: ev.commence_time,
+            books: (ev.bookmakers || []).map(b => b.key),
+          });
+        }
+      }
+      res.json({ ok: true, status, remaining, eventCount: events.length, bookCounts, sampleEvents });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/book-coverage', (req, res) => {
     const sports = ['basketball_nba', 'baseball_mlb', 'icehockey_nhl', 'tennis', 'soccer', 'soccer_epl', 'soccer_usa_mls', 'soccer_uefa_champs_league', 'basketball_wnba'];
     const out = { sports: {} };
