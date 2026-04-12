@@ -264,6 +264,13 @@ function subscribeAndBind() {
 /**
  * Handle incoming RFQ (price.ask.new).
  */
+// Fast parlay-ID dedup — Pusher sometimes delivers the same price.ask.new
+// event twice within milliseconds. Without this guard we process, price,
+// and submit two identical offers for every RFQ, wasting latency and
+// potentially confusing PX's matching engine.
+const recentRfqIds = new Map(); // parlayId → timestamp
+const RFQ_DEDUP_MS = 2000;     // ignore same parlayId within 2 seconds
+
 async function handleRFQ(data) {
   const startTime = Date.now();
 
@@ -278,6 +285,23 @@ async function handleRFQ(data) {
     const parlayId = payload.parlay_id || payload.parlayId;
     const legs = payload.market_lines || payload.legs || [];
     const callbackUrl = payload.callback_url || payload.callbackUrl;
+
+    // Fast dedup: skip if we already saw this exact parlayId in the last 2s.
+    // Pusher delivers duplicate events ~2-30ms apart; processing both doubles
+    // our latency footprint and submits redundant offers to PX.
+    const lastSeen = recentRfqIds.get(parlayId);
+    if (lastSeen && startTime - lastSeen < RFQ_DEDUP_MS) {
+      log.debug('RFQ', `Duplicate delivery skipped: parlay=${parlayId} (${startTime - lastSeen}ms after first)`);
+      return;
+    }
+    recentRfqIds.set(parlayId, startTime);
+    // Opportunistic cleanup — keep map from growing unbounded
+    if (recentRfqIds.size > 5000) {
+      for (const [id, ts] of recentRfqIds) {
+        if (startTime - ts > RFQ_DEDUP_MS) recentRfqIds.delete(id);
+        if (recentRfqIds.size <= 2500) break;
+      }
+    }
 
     // Record raw receipt IMMEDIATELY so we can positively confirm this RFQ
     // was broadcast to us, regardless of whether we decline/error/quote.
