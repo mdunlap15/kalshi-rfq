@@ -1811,6 +1811,25 @@ async function pollOrderSettlements(px) {
     const pxOrders = await px.fetchOrders(500);
     let settled = 0;
 
+    // Pre-fetch orders from Supabase so reconstructed orders preserve pricing data
+    const dbFallback = {};
+    try {
+      const missingIds = [];
+      for (const pxOrder of pxOrders) {
+        const pid = pxOrder.p_id || pxOrder.parlay_id;
+        if (!pid) continue;
+        const existing = orders[pid] || (pxOrder.order_uuid && ordersByUuid[pxOrder.order_uuid] ? orders[ordersByUuid[pxOrder.order_uuid]] : null);
+        if (!existing) missingIds.push(pid);
+      }
+      if (missingIds.length > 0) {
+        const dbRows = await db.loadOrdersByParlayIds(missingIds);
+        Object.assign(dbFallback, dbRows);
+        log.info('Poll', `Pre-fetched ${Object.keys(dbRows).length}/${missingIds.length} orders from Supabase for pricing preservation`);
+      }
+    } catch (err) {
+      log.warn('Poll', `Supabase pricing pre-fetch failed: ${err.message}`);
+    }
+
     for (const pxOrder of pxOrders) {
       const uuid = pxOrder.order_uuid;
       if (!uuid) continue;
@@ -1872,23 +1891,28 @@ async function pollOrderSettlements(px) {
               settlement_status: l.settlement_status,
             };
           });
+          const dbOrder = dbFallback[pxParlayId];
+          const pxOdds = pxOrder.confirmed_odds != null ? Number(pxOrder.confirmed_odds) : null;
+          const pxStake = pxOrder.confirmed_stake != null ? Number(pxOrder.confirmed_stake) : null;
           order = {
             parlayId: pxParlayId,
-            status: 'confirmed', // will be set to settled_* below by recordSettlement
+            status: dbOrder?.status || 'confirmed', // will be set to settled_* below by recordSettlement
             legs: enrichedLegs,
-            offeredOdds: pxOrder.confirmed_odds != null ? -pxOrder.confirmed_odds : null,
-            fairParlayProb: null,
-            maxRisk: null,
-            vig: null,
-            confirmedOdds: pxOrder.confirmed_odds != null ? Number(pxOrder.confirmed_odds) : null,
-            confirmedStake: pxOrder.confirmed_stake != null ? Number(pxOrder.confirmed_stake) : null,
-            orderUuid: uuid,
-            quotedAt: null,
-            confirmedAt: new Date((pxOrder.updated_at || 0) * 1000).toISOString(),
-            settledAt: null,
-            pnl: null,
-            settlementResult: null,
-            meta: { reconstructed: true, legs: enrichedLegs },
+            offeredOdds: dbOrder?.offeredOdds ?? (pxOdds != null ? -pxOdds : null),
+            fairParlayProb: dbOrder?.fairParlayProb ?? null,
+            maxRisk: dbOrder?.maxRisk ?? null,
+            vig: dbOrder?.vig ?? null,
+            confirmedOdds: dbOrder?.confirmedOdds ?? pxOdds,
+            confirmedStake: dbOrder?.confirmedStake ?? pxStake,
+            orderUuid: dbOrder?.orderUuid || uuid,
+            quotedAt: dbOrder?.quotedAt || null,
+            confirmedAt: dbOrder?.confirmedAt || new Date((pxOrder.updated_at || 0) * 1000).toISOString(),
+            settledAt: dbOrder?.settledAt || null,
+            pnl: dbOrder?.pnl ?? null,
+            settlementResult: dbOrder?.settlementResult || null,
+            meta: dbOrder?.meta && Object.keys(dbOrder.meta).length > 1
+              ? { ...dbOrder.meta, legs: enrichedLegs }
+              : { reconstructed: true, legs: enrichedLegs },
           };
           orders[pxParlayId] = order;
           ordersByUuid[uuid] = pxParlayId;
@@ -2364,6 +2388,28 @@ async function fullPxReconcile(px) {
     log.warn('Reconcile', `line_cache pre-fetch failed: ${err.message}`);
   }
 
+  // Pre-fetch orders from Supabase for PX orders not in memory.
+  // This preserves pricing data (offeredOdds, fairParlayProb, vig, etc.)
+  // that was saved at quote time but lost from memory on restart.
+  // Without this, reconstructed orders overwrite Supabase rows with nulls.
+  const dbFallback = {};
+  try {
+    const missingIds = [];
+    for (const pxOrder of pxOrders) {
+      const pid = pxOrder.p_id || pxOrder.parlay_id;
+      if (!pid) continue;
+      const existing = orders[pid] || (pxOrder.order_uuid && ordersByUuid[pxOrder.order_uuid] ? orders[ordersByUuid[pxOrder.order_uuid]] : null);
+      if (!existing) missingIds.push(pid);
+    }
+    if (missingIds.length > 0) {
+      const dbRows = await db.loadOrdersByParlayIds(missingIds);
+      Object.assign(dbFallback, dbRows);
+      log.info('Reconcile', `Pre-fetched ${Object.keys(dbRows).length}/${missingIds.length} orders from Supabase for pricing preservation`);
+    }
+  } catch (err) {
+    log.warn('Reconcile', `Supabase pricing pre-fetch failed: ${err.message}`);
+  }
+
   for (const pxOrder of pxOrders) {
     const uuid = pxOrder.order_uuid;
     if (!uuid) continue;
@@ -2375,6 +2421,10 @@ async function fullPxReconcile(px) {
     const wasNew = !order;
 
     if (!order) {
+      // Check Supabase for a previously-saved version with pricing data.
+      // If found, use it as the base and only backfill missing fields from PX.
+      const dbOrder = dbFallback[pxParlayId];
+
       // Reconstruct skeleton from PX data (mirrors pollOrderSettlements logic).
       // Uses lineManager (live index) first, then lineCacheFallback (Supabase)
       // for expired events no longer in the live index.
@@ -2404,23 +2454,30 @@ async function fullPxReconcile(px) {
           settlement_status: l.settlement_status,
         };
       });
+
+      // Merge: Supabase pricing data takes priority (saved at quote time),
+      // PX REST fills in confirmation fields if Supabase is missing them.
+      const pxOdds = pxOrder.confirmed_odds != null ? Number(pxOrder.confirmed_odds) : null;
+      const pxStake = pxOrder.confirmed_stake != null ? Number(pxOrder.confirmed_stake) : null;
       order = {
         parlayId: pxParlayId,
-        status: 'confirmed',
+        status: dbOrder?.status || 'confirmed',
         legs: enrichedLegs,
-        offeredOdds: pxOrder.confirmed_odds != null ? -pxOrder.confirmed_odds : null,
-        fairParlayProb: null,
-        maxRisk: null,
-        vig: null,
-        confirmedOdds: pxOrder.confirmed_odds != null ? Number(pxOrder.confirmed_odds) : null,
-        confirmedStake: pxOrder.confirmed_stake != null ? Number(pxOrder.confirmed_stake) : null,
-        orderUuid: uuid,
-        quotedAt: null,
-        confirmedAt: new Date((pxOrder.updated_at || 0) * 1000).toISOString(),
-        settledAt: null,
-        pnl: null,
-        settlementResult: null,
-        meta: { reconstructed: true, legs: enrichedLegs },
+        offeredOdds: dbOrder?.offeredOdds ?? (pxOdds != null ? -pxOdds : null),
+        fairParlayProb: dbOrder?.fairParlayProb ?? null,
+        maxRisk: dbOrder?.maxRisk ?? null,
+        vig: dbOrder?.vig ?? null,
+        confirmedOdds: dbOrder?.confirmedOdds ?? pxOdds,
+        confirmedStake: dbOrder?.confirmedStake ?? pxStake,
+        orderUuid: dbOrder?.orderUuid || uuid,
+        quotedAt: dbOrder?.quotedAt || null,
+        confirmedAt: dbOrder?.confirmedAt || new Date((pxOrder.updated_at || 0) * 1000).toISOString(),
+        settledAt: dbOrder?.settledAt || null,
+        pnl: dbOrder?.pnl ?? null,
+        settlementResult: dbOrder?.settlementResult || null,
+        meta: dbOrder?.meta && Object.keys(dbOrder.meta).length > 1
+          ? { ...dbOrder.meta, legs: enrichedLegs }
+          : { reconstructed: true, legs: enrichedLegs },
       };
       orders[pxParlayId] = order;
       ordersByUuid[uuid] = pxParlayId;

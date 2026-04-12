@@ -135,6 +135,57 @@ async function loadOrders(limit = 100) {
   }
 }
 
+/**
+ * Load specific orders by parlay_id from Supabase.
+ * Returns a map { parlayId: orderObject } for orders that exist in the DB.
+ * Used by fullPxReconcile to preserve pricing data (offeredOdds, fairParlayProb,
+ * etc.) that would otherwise be lost when reconstructing from PX REST.
+ */
+async function loadOrdersByParlayIds(parlayIds) {
+  const client = getClient();
+  if (!client || !parlayIds || parlayIds.length === 0) return {};
+
+  const result = {};
+  // Supabase IN filter has practical limits; chunk to 500
+  const CHUNK = 500;
+  try {
+    for (let i = 0; i < parlayIds.length; i += CHUNK) {
+      const chunk = parlayIds.slice(i, i + CHUNK);
+      const { data, error } = await client
+        .from('parlay_orders')
+        .select('*')
+        .in('parlay_id', chunk);
+      if (error) {
+        log.warn('DB', `loadOrdersByParlayIds chunk failed: ${error.message}`);
+        continue;
+      }
+      for (const row of (data || [])) {
+        result[row.parlay_id] = {
+          parlayId: row.parlay_id,
+          status: row.status,
+          legs: row.legs,
+          offeredOdds: row.offered_odds,
+          fairParlayProb: row.fair_parlay_prob ? Number(row.fair_parlay_prob) : null,
+          maxRisk: row.max_risk ? Number(row.max_risk) : null,
+          vig: row.vig ? Number(row.vig) : null,
+          confirmedOdds: row.confirmed_odds ? Number(row.confirmed_odds) : null,
+          confirmedStake: row.confirmed_stake ? Number(row.confirmed_stake) : null,
+          orderUuid: row.order_uuid,
+          pnl: row.pnl != null ? Number(row.pnl) : null,
+          settlementResult: row.settlement_result,
+          quotedAt: row.quoted_at,
+          confirmedAt: row.confirmed_at,
+          settledAt: row.settled_at,
+          meta: row.meta || {},
+        };
+      }
+    }
+  } catch (err) {
+    log.warn('DB', `loadOrdersByParlayIds error: ${err.message}`);
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // MATCHED PARLAYS
 // ---------------------------------------------------------------------------
@@ -541,6 +592,7 @@ module.exports = {
   isEnabled,
   saveOrder,
   loadOrders,
+  loadOrdersByParlayIds,
   countOrders,
   saveMatchedParlay,
   loadMatchedParlays,
