@@ -402,15 +402,23 @@ function recordLegSettlement(orderUuid, legPayload) {
 
   // Update ALL matching legs in BOTH sources (o.legs and o.meta.legs) —
   // previously we broke after finding the first match in order.legs, leaving
-  // stale settlementStatus on meta.legs. Also overwrite any stale
-  // inferredResult (from our scraper) with PX's authoritative status so the
-  // dashboard never shows contradictory leg icons vs parlay-level result.
+  // stale settlementStatus on meta.legs.
+  //
+  // IMPORTANT: Do NOT overwrite inferredResult with PX's settlement_status.
+  // PX leg settlement_status is bettor-perspective and can be premature or
+  // wrong for alt-line legs (e.g., PX said "won" for Over 4.5 when the game
+  // total was 1). Our scraper's inferredResult uses actual game scores and
+  // is more reliable. Keep both fields so the dashboard can compare.
   const sources = [order.legs, order.meta?.legs].filter(Boolean);
   for (const src of sources) {
     for (const leg of src) {
       if (leg.lineId === lineId || leg.line_id === lineId) {
         leg.settlementStatus = status;
-        leg.inferredResult = status; // sync so any stale UI component sees PX truth
+        leg.settlement_status = status;
+        // Only set inferredResult from PX if scraper hasn't resolved this leg yet
+        if (!leg.inferredResult) {
+          leg.inferredResult = status;
+        }
       }
     }
   }

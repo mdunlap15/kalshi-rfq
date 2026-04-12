@@ -1172,18 +1172,14 @@
     }
   };
 
-  // Settlement drift banner — rendered from /drift-status data. Shows when
-  // the periodic PX vs local comparison finds divergence (mismatched status,
-  // missing local settlements, or local orders PX doesn't see). Silent when
-  // drift counts are all zero. Dismissible via X button; respects the
-  // dismissed fingerprint unless severity rises or 15 min pass.
+  // Settlement drift banner — DISABLED. The banner fires frequently but
+  // isn't actionable until the Open/Settled tables are cleaned up. The
+  // backend drift monitor still runs (logs + /drift-status endpoint) so
+  // the data is available when we're ready to act on it.
   function renderDriftBanner(d) {
     const banner = document.getElementById('drift-banner');
-    const content = document.getElementById('drift-banner-content');
-    if (!banner || !content || !d || !d.ok) {
-      if (banner) banner.style.display = 'none';
-      return;
-    }
+    if (banner) banner.style.display = 'none';
+    return; // short-circuit — suppress all drift notifications for now
     const mm = d.mismatchCount || 0;
     const ml = d.missingLocalCount || 0;
     const mp = d.missingPxCount || 0;
@@ -7249,7 +7245,15 @@
    * actually settled as 'won', producing false contradictions with the parlay-
    * level SP Result. */
   function getLegResult(l) {
-    return l.settlementStatus || l.settlement_status || l.inferredResult || null;
+    const pxStatus = l.settlementStatus || l.settlement_status || null;
+    const inferred = l.inferredResult || null;
+    // If PX and our scraper disagree, trust the scraper — it uses actual
+    // game scores. PX's settlement_status can be premature or wrong for
+    // alt-line legs. Only trust PX when the scraper hasn't resolved yet.
+    if (pxStatus && inferred && pxStatus !== inferred) {
+      return inferred; // our score-based result is more reliable
+    }
+    return pxStatus || inferred || null;
   }
 
   /** Compound per-leg sportsbook odds into parlay American odds.
