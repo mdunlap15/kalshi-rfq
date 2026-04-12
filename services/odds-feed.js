@@ -1588,29 +1588,23 @@ const ALT_LINES_TTL_MS = 10 * 60 * 1000; // 10 minute cache
  * Fetch alternate spreads and totals for a specific event from The Odds API.
  * Uses the event-specific endpoint which supports alt markets from Pinnacle.
  */
-async function fetchAltLines(sport, homeTeam, awayTeam) {
+// Cache for The Odds API event ID lookups (sport → { fetchedAt, events: [{id, home, away}] })
+const oddsApiEventIdCache = {};
+const ODDS_API_EVENT_ID_TTL_MS = 30 * 60 * 1000; // 30 min
+
+/**
+ * Resolve The Odds API event ID for a given home/away pair.
+ * SharpAPI event IDs are NOT The Odds API event IDs, so we must look up
+ * the event list from The Odds API and match by team name.
+ */
+async function resolveOddsApiEventId(sport, homeTeam, awayTeam) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   if (!theOddsApiKey) return null;
 
-  const key = normalizeEventKey(homeTeam, awayTeam);
-
-  // Check cache
-  const cached = altLinesCache[key];
-  if (cached && (Date.now() - cached.fetchedAt) < ALT_LINES_TTL_MS) {
-    return cached;
-  }
-
-  // Need to find the Odds API event ID — look it up from the main cache
-  const sportCache = oddsCache[sport];
-  if (!sportCache) return null;
-  const entry = sportCache.events[key];
-  const event = Array.isArray(entry) ? entry[0] : entry;
-  if (!event?.eventId) return null;
-
-  // Map our sport key to The Odds API sport key
   const oddsApiSportMap = {
     'basketball_nba': 'basketball_nba',
     'basketball_ncaab': 'basketball_ncaab',
+    'basketball_wnba': 'basketball_wnba',
     'baseball_mlb': 'baseball_mlb',
     'icehockey_nhl': 'icehockey_nhl',
     'soccer_usa_mls': 'soccer_usa_mls',
@@ -1625,7 +1619,71 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
   const oddsApiSport = oddsApiSportMap[sport];
   if (!oddsApiSport) return null;
 
-  const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events/${event.eventId}/odds`
+  // Check cache
+  const cached = oddsApiEventIdCache[sport];
+  if (!cached || (Date.now() - cached.fetchedAt) > ODDS_API_EVENT_ID_TTL_MS) {
+    // Fetch events list (lightweight — no odds, just event metadata)
+    const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events?apiKey=${theOddsApiKey}`;
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        log.warn('OddsFeed', `Odds API events list failed (${resp.status}) for ${sport}`);
+        return null;
+      }
+      const data = await resp.json();
+      oddsApiEventIdCache[sport] = {
+        fetchedAt: Date.now(),
+        events: (data || []).map(e => ({
+          id: e.id,
+          home: e.home_team,
+          away: e.away_team,
+          commence: e.commence_time,
+        })),
+      };
+      log.debug('OddsFeed', `Cached ${data.length} Odds API event IDs for ${sport}`);
+    } catch (err) {
+      log.warn('OddsFeed', `Odds API events list error for ${sport}: ${err.message}`);
+      return null;
+    }
+  }
+
+  // Match by team name (normalized)
+  const normHome = homeTeam.toLowerCase().trim();
+  const normAway = awayTeam.toLowerCase().trim();
+  const events = oddsApiEventIdCache[sport]?.events || [];
+  for (const e of events) {
+    const eHome = e.home.toLowerCase().trim();
+    const eAway = e.away.toLowerCase().trim();
+    if ((eHome === normHome || eHome.includes(normHome) || normHome.includes(eHome))
+        && (eAway === normAway || eAway.includes(normAway) || normAway.includes(eAway))) {
+      return { eventId: e.id, oddsApiSport };
+    }
+  }
+  log.debug('OddsFeed', `No Odds API event match for ${homeTeam} vs ${awayTeam} in ${sport}`);
+  return null;
+}
+
+async function fetchAltLines(sport, homeTeam, awayTeam) {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return null;
+
+  const key = normalizeEventKey(homeTeam, awayTeam);
+
+  // Check cache
+  const cached = altLinesCache[key];
+  if (cached && (Date.now() - cached.fetchedAt) < ALT_LINES_TTL_MS) {
+    return cached;
+  }
+
+  // Resolve The Odds API event ID (SharpAPI IDs are different)
+  const resolved = await resolveOddsApiEventId(sport, homeTeam, awayTeam);
+  if (!resolved) {
+    log.debug('OddsFeed', `Cannot fetch alt lines for ${homeTeam} vs ${awayTeam}: no Odds API event ID`);
+    return null;
+  }
+  const { eventId, oddsApiSport } = resolved;
+
+  const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events/${eventId}/odds`
     + `?apiKey=${theOddsApiKey}`
     + `&regions=us,eu`
     + `&markets=alternate_spreads,alternate_totals`
