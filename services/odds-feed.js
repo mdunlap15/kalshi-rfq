@@ -2298,7 +2298,14 @@ function getCacheAge(sport) {
 }
 
 function isStale(sport) {
-  return getCacheAge(sport) > config.pricing.stalePriceMinutes;
+  const perSport = config.pricing.stalePriceMinutesBySport || {};
+  const threshold = perSport[sport] != null ? perSport[sport] : config.pricing.stalePriceMinutes;
+  return getCacheAge(sport) > threshold;
+}
+
+function getStaleThreshold(sport) {
+  const perSport = config.pricing.stalePriceMinutesBySport || {};
+  return perSport[sport] != null ? perSport[sport] : config.pricing.stalePriceMinutes;
 }
 
 // ---------------------------------------------------------------------------
@@ -2982,6 +2989,7 @@ module.exports = {
   getLiveCacheStatus,
   getCacheAge,
   isStale,
+  getStaleThreshold,
   getCacheStatus,
   getAllCachedEvents,
   __debugGetCache,

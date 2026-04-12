@@ -197,6 +197,23 @@ async function startup() {
     }
   }, 30 * 1000);
 
+  // Fast refresh for combat sports (MMA/boxing) and NFL — these use the Odds
+  // API fallback (not SharpAPI), so the delta loop above doesn't cover them.
+  // Combat sports move fast on news; full re-fetch every ~2.5 min keeps the
+  // per-sport stale threshold (3-4 min) honest. Cost: ~3 extra Odds-API calls
+  // per cycle, negligible against the daily quota.
+  const FAST_REFRESH_SPORTS = ['mma_mixed_martial_arts', 'boxing_boxing', 'americanfootball_nfl'];
+  setInterval(async () => {
+    for (const sport of FAST_REFRESH_SPORTS) {
+      if (!config.supportedSports.includes(sport)) continue;
+      try {
+        await oddsFeed.fetchOddsForSport(sport);
+      } catch (err) {
+        log.debug('Refresh', `Fast refresh ${sport} failed: ${err.message}`);
+      }
+    }
+  }, 150 * 1000);
+
   // Closing line capture for CLV analysis — runs every 60s, snapshots
   // Pinnacle + consensus fair probs for events whose commenceTime has just
   // crossed into the past. Idempotent.

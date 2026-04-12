@@ -20,7 +20,22 @@ const config = {
     defaultVig: parseFloat(process.env.DEFAULT_VIG) || 0.001,
     maxRiskPerParlay: parseFloat(process.env.MAX_RISK_PER_PARLAY) || 500,
     maxLegs: parseInt(process.env.MAX_LEGS) || 8,
-    stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 15,
+    stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 5,
+    // Per-sport override for stale threshold (minutes). Tighter for fast-moving
+    // markets (MMA/boxing move on news; NFL moves on injury reports), looser
+    // for slow Odds-API fallback sports that refresh less often.
+    // Falls back to stalePriceMinutes if sport not listed.
+    stalePriceMinutesBySport: {
+      'mma_mixed_martial_arts': 3,
+      'boxing_boxing': 3,
+      'americanfootball_nfl': 4,
+      'americanfootball_ncaaf': 4,
+      'basketball_ncaab': 10,
+      'tennis': 10,
+    },
+    // Confirmation-time re-price drift threshold. If current fair prob drifts
+    // by more than this fraction from the original quote, reject the confirm.
+    confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
     offerValidSeconds: 120,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
     bankroll: parseFloat(process.env.BANKROLL) || 0,

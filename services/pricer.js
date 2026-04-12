@@ -83,11 +83,18 @@ async function priceParlay(legs) {
       return null;
     }
 
-    // Check if prices are stale for this sport
+    // Check if prices are stale for this sport. Uses per-sport threshold:
+    // MMA/boxing/NFL have tighter windows because they move on news;
+    // NCAAB/tennis have looser windows because they only refresh on full cycles.
     if (oddsFeed.isStale(lineInfo.sport)) {
-      const ageMin = Math.round(oddsFeed.getCacheAge(lineInfo.sport));
-      log.debug('Pricing', `Declined: stale prices for ${lineInfo.sport} (${ageMin}min old)`);
-      priceParlay._lastFailure = { reason: 'stale odds', detail: `${lineInfo.sport} odds ${ageMin}m old`, blockerLeg: legDescriptor };
+      const ageMin = Math.round(oddsFeed.getCacheAge(lineInfo.sport) * 10) / 10;
+      const threshold = oddsFeed.getStaleThreshold(lineInfo.sport);
+      log.debug('Pricing', `Declined: stale prices for ${lineInfo.sport} (${ageMin}min old, threshold ${threshold}m)`);
+      priceParlay._lastFailure = {
+        reason: 'stale odds',
+        detail: `${lineInfo.sport} odds ${ageMin}m old (threshold ${threshold}m)`,
+        blockerLeg: legDescriptor,
+      };
       return null;
     }
 
@@ -895,14 +902,16 @@ async function validateForConfirmation(parlayId, originalMeta) {
   const currentPricing = await priceParlay(legs);
   if (!currentPricing) return { valid: false, reason: 'cannot reprice — missing data' };
 
-  // Check if fair value has moved more than 5% against us
+  // Check if fair value has moved significantly against us since quote.
+  // Threshold configurable via CONFIRMATION_DRIFT_THRESHOLD env var (default 3%).
   const originalProb = originalMeta.fairParlayProb;
   const currentProb = currentPricing.meta.fairParlayProb;
   const drift = Math.abs(currentProb - originalProb) / originalProb;
+  const driftThreshold = config.pricing.confirmationDriftThreshold;
 
-  if (drift > 0.05) {
-    log.warn('Pricing', `Price drift of ${(drift * 100).toFixed(1)}% since quote — rejecting confirmation`);
-    return { valid: false, reason: `price drift ${(drift * 100).toFixed(1)}%`, currentPricing };
+  if (drift > driftThreshold) {
+    log.warn('Pricing', `Price drift of ${(drift * 100).toFixed(1)}% since quote (threshold ${(driftThreshold * 100).toFixed(1)}%) — rejecting confirmation`);
+    return { valid: false, reason: `price drift ${(drift * 100).toFixed(1)}% > ${(driftThreshold * 100).toFixed(1)}%`, currentPricing };
   }
 
   return { valid: true, currentPricing };
