@@ -157,6 +157,10 @@ const stats = {
   totalLosses: 0,
   runningPnL: 0,
   startedAt: new Date().toISOString(),
+  // Session-only counters: only incremented by live WS events, never by
+  // reconciliation or DB rebuild.  Gives an accurate fill rate for this uptime window.
+  sessionQuotes: 0,
+  sessionFills: 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -253,6 +257,7 @@ function getPendingGameRisk(gameKey) {
 
 function recordQuote(parlayId, legs, offeredOdds, maxRisk, fairParlayProb, meta) {
   stats.totalQuotes++;
+  stats.sessionQuotes++;
 
   orders[parlayId] = {
     parlayId,
@@ -290,6 +295,7 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
     // Don't double-count confirmations for the same parlay
     if (order.status !== 'confirmed') {
       stats.totalConfirmations++;
+      stats.sessionFills++;
     }
 
     order.status = 'confirmed';
@@ -1035,6 +1041,9 @@ function getStats() {
     activeOrders: Object.values(orders).filter(o => o.status === 'confirmed').length,
     openQuotes: Object.values(orders).filter(o => o.status === 'quoted').length,
     totalOrders: Object.keys(orders).length,
+    sessionFillRate: stats.sessionQuotes > 0
+      ? Number((stats.sessionFills / stats.sessionQuotes * 100).toFixed(1))
+      : null,
   };
 }
 
