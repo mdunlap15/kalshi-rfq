@@ -6377,8 +6377,19 @@
         if (!l.fairProb || l.fairProb <= 0 || l.fairProb >= 1) continue;
         const myProb = applyOddsVig(l.fairProb, vig);
         const myOddsAm = decimalToAmerican(1 / myProb);
-        const pinProb = l.pinnacleOdds != null ? americanToProb(l.pinnacleOdds) : null;
-        const fdProb = l.fanduelOdds != null ? americanToProb(l.fanduelOdds) : null;
+        // For soccer DNB (2-way moneyline) legs, Pinnacle/FanDuel raw American
+        // odds are from a 3-way market (home/draw/away). The raw implied prob
+        // for home is ~82% but our fair prob is ~95% because we stripped the
+        // draw. Comparing raw 3-way implied to our 2-way DNB fair creates a
+        // phantom +13pp edge. Fix: use the DNB-adjusted per-book probs that
+        // pricer.js already computes (pinnacleDNBProb, fanduelDNBProb, etc.)
+        // which normalize as P(home)/(P(home)+P(away)), making it apples-to-apples.
+        const pinProb = l.isDNB && l.pinnacleDNBProb != null
+          ? l.pinnacleDNBProb
+          : (l.pinnacleOdds != null ? americanToProb(l.pinnacleOdds) : null);
+        const fdProb = l.isDNB && l.fanduelDNBProb != null
+          ? l.fanduelDNBProb
+          : (l.fanduelOdds != null ? americanToProb(l.fanduelOdds) : null);
         const gameDate = l.startTime ? new Date(l.startTime).toLocaleDateString([], { month: 'numeric', day: 'numeric' }) : '';
         const matchup = l.homeTeam && l.awayTeam ? (l.awayTeam + ' @ ' + l.homeTeam) : '';
         legData.push({
