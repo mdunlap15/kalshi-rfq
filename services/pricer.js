@@ -456,7 +456,7 @@ async function priceParlay(legs) {
       const fallbackBoost = 1.05;
       const adjustedFair = Math.min(fairParlayProb * fallbackBoost, 0.99);
       const adjustedFairDecimal = 1 / adjustedFair;
-      const corrVig = Math.max(baseVig, 0.03);
+      const corrVig = Math.max(config.pricing.defaultVig, 0.03);
       const adjustedPayout = (adjustedFairDecimal - 1) * (1 - corrVig);
       const fallbackOfferedProb = 1 / (1 + adjustedPayout);
       if (fallbackOfferedProb > offeredImpliedProb) {
