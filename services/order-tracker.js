@@ -2335,6 +2335,35 @@ async function fullPxReconcile(px) {
 
   const lineManager = require('./line-manager');
 
+  // Pre-fetch line_cache for any line_ids not in the live lineIndex.
+  // Historical events get purged from the in-memory index, but line_cache
+  // in Supabase retains team names/sport/homeTeam/awayTeam from when the
+  // line was last registered. Without this, reconstructed orders for expired
+  // events get team='?' and show "Event XXXXXXX" in the exposure table.
+  const lineCacheFallback = {};
+  try {
+    const allLineIds = new Set();
+    for (const pxOrder of pxOrders) {
+      const pid = pxOrder.p_id || pxOrder.parlay_id;
+      if (!pid) continue;
+      // Only need line_cache for NEW orders (not already in memory)
+      const existing = orders[pid] || (pxOrder.order_uuid && ordersByUuid[pxOrder.order_uuid] ? orders[ordersByUuid[pxOrder.order_uuid]] : null);
+      if (existing) continue;
+      for (const l of pxOrder.legs || []) {
+        if (l.line_id && !lineManager.lookupLine(l.line_id)) {
+          allLineIds.add(l.line_id);
+        }
+      }
+    }
+    if (allLineIds.size > 0) {
+      const cached = await db.loadLineCacheBulk([...allLineIds]);
+      Object.assign(lineCacheFallback, cached);
+      log.info('Reconcile', `Pre-fetched ${Object.keys(cached).length}/${allLineIds.size} unresolved line_ids from line_cache`);
+    }
+  } catch (err) {
+    log.warn('Reconcile', `line_cache pre-fetch failed: ${err.message}`);
+  }
+
   for (const pxOrder of pxOrders) {
     const uuid = pxOrder.order_uuid;
     if (!uuid) continue;
@@ -2347,8 +2376,10 @@ async function fullPxReconcile(px) {
 
     if (!order) {
       // Reconstruct skeleton from PX data (mirrors pollOrderSettlements logic).
+      // Uses lineManager (live index) first, then lineCacheFallback (Supabase)
+      // for expired events no longer in the live index.
       const enrichedLegs = (pxOrder.legs || []).map(l => {
-        const info = lineManager.lookupLine(l.line_id);
+        const info = lineManager.lookupLine(l.line_id) || lineCacheFallback[l.line_id] || null;
         const eventName = l.sport_event_id ? lineManager.getEventName(l.sport_event_id) : null;
         let team = info?.teamName || '?';
         if (!info && eventName) team = eventName;
@@ -2357,17 +2388,17 @@ async function fullPxReconcile(px) {
         }
         return {
           lineId: l.line_id,
-          sport: info?.sport || 'unknown',
+          sport: info?.sport || info?.oddsApiSport || 'unknown',
           team,
           teamName: info?.teamName || team,
           market: info?.marketType || null,
           marketType: info?.marketType || null,
           line: l.line,
-          selection: info?.selection || null,
+          selection: info?.selection || info?.oddsApiSelection || null,
           homeTeam: info?.homeTeam || null,
           awayTeam: info?.awayTeam || null,
           pxEventId: l.sport_event_id,
-          pxEventName: eventName || null,
+          pxEventName: eventName || info?.pxEventName || null,
           startTime: info?.startTime || null,
           settlementStatus: l.settlement_status,
           settlement_status: l.settlement_status,
@@ -2903,6 +2934,30 @@ async function enrichReconstructedOrders() {
   let enriched = 0;
   let scanned = 0;
   const pending = []; // awaited saves so callers know the DB has actually been updated
+
+  // Pre-fetch line_cache for unresolved lineIds (same pattern as fullPxReconcile).
+  // The lineManager only has CURRENT lines; line_cache has historical data.
+  const unresolvedLineIds = new Set();
+  for (const order of Object.values(orders)) {
+    const legs = order.legs || order.meta?.legs || [];
+    const needsEnrichment = legs.some(l => !l.team || l.team === '?' || l.team === 'unknown');
+    if (!needsEnrichment) continue;
+    for (const l of legs) {
+      if (l.lineId && !lineManager.lookupLine(l.lineId)) unresolvedLineIds.add(l.lineId);
+    }
+  }
+  let lineCacheFallback = {};
+  if (unresolvedLineIds.size > 0) {
+    try {
+      lineCacheFallback = await db.loadLineCacheBulk([...unresolvedLineIds]);
+      if (Object.keys(lineCacheFallback).length > 0) {
+        log.info('Orders', `enrichReconstructedOrders: pre-fetched ${Object.keys(lineCacheFallback).length}/${unresolvedLineIds.size} from line_cache`);
+      }
+    } catch (err) {
+      log.warn('Orders', `enrichReconstructedOrders: line_cache pre-fetch failed: ${err.message}`);
+    }
+  }
+
   for (const order of Object.values(orders)) {
     const legs = order.legs || order.meta?.legs || [];
     // Check if any leg has '?' or null team (reconstructed signature)
@@ -2911,7 +2966,7 @@ async function enrichReconstructedOrders() {
     scanned++;
     let changed = false;
     const newLegs = legs.map(l => {
-      const info = l.lineId ? lineManager.lookupLine(l.lineId) : null;
+      const info = (l.lineId ? lineManager.lookupLine(l.lineId) : null) || lineCacheFallback[l.lineId] || null;
       const eventName = l.pxEventId ? lineManager.getEventName(l.pxEventId) : null;
       if (!info && !eventName) return l; // nothing new to add
       let team = info?.teamName || l.team;
@@ -2924,13 +2979,13 @@ async function enrichReconstructedOrders() {
         ...l,
         team: team || l.team,
         teamName: info?.teamName || l.teamName || team,
-        sport: info?.sport || l.sport || 'unknown',
+        sport: info?.sport || info?.oddsApiSport || l.sport || 'unknown',
         market: info?.marketType || l.market,
         marketType: info?.marketType || l.marketType,
-        selection: info?.selection || l.selection,
+        selection: info?.selection || info?.oddsApiSelection || l.selection,
         homeTeam: info?.homeTeam || l.homeTeam,
         awayTeam: info?.awayTeam || l.awayTeam,
-        pxEventName: eventName || l.pxEventName,
+        pxEventName: eventName || info?.pxEventName || l.pxEventName,
         startTime: info?.startTime || l.startTime,
       };
     });
@@ -3095,12 +3150,48 @@ async function enrichOpenPositionsFromAffiliate() {
             selection: info.selection || info.oddsApiSelection,
             line: info.line,
             competitorId: info.competitorId,
+            // Carry homeTeam/awayTeam/sport/startTime from line_cache so
+            // step 5 can use them when the PX affiliate endpoint doesn't
+            // return data for expired/historical events (the primary cause
+            // of "? @ ?" and "Event XXXXXXX" in the exposure tables).
+            homeTeam: info.homeTeam || null,
+            awayTeam: info.awayTeam || null,
+            sport: info.sport || info.oddsApiSport || null,
+            startTime: info.startTime || null,
+            pxEventName: info.pxEventName || null,
           };
         }
         log.info('Affiliate', `Resolved ${cacheHits}/${unique.length} additional line_ids from Supabase line_cache`);
       }
     } catch (err) {
       log.warn('Affiliate', `loadLineCacheBulk failed: ${err.message}`);
+    }
+  }
+
+  // ---- 4c) backfill eventInfo from line_cache hits ----
+  // When the PX affiliate endpoint doesn't return data for historical events
+  // (returns 404 for expired events), the eventInfo map has gaps. Line_cache
+  // stores homeTeam/awayTeam/startTime per line, so we can reconstruct event
+  // info from any resolved line that references the event.
+  for (const [, info] of Object.entries(lineIdInfo)) {
+    if (!info.homeTeam && !info.awayTeam) continue;
+    // Find which event(s) this line belongs to and backfill eventInfo
+    for (const order of targetOrders) {
+      const legs = order.legs || order.meta?.legs || [];
+      for (const l of legs) {
+        if (l.lineId !== undefined && lineIdInfo[l.lineId] === info) {
+          const eid = l.pxEventId || l.sport_event_id;
+          if (eid && !eventInfo[eid] && (info.homeTeam || info.awayTeam)) {
+            eventInfo[eid] = {
+              name: info.pxEventName || `${info.awayTeam || '?'} @ ${info.homeTeam || '?'}`,
+              homeTeam: info.homeTeam,
+              awayTeam: info.awayTeam,
+              scheduled: info.startTime,
+              sportName: info.sport,
+            };
+          }
+        }
+      }
     }
   }
 
@@ -3117,24 +3208,35 @@ async function enrichOpenPositionsFromAffiliate() {
       if (!lineInfo && !ev) return l;
 
       // Team precedence: explicit line match → existing → home/away from event
+      // Use lineInfo (which may come from line_cache) as fallback for event
+      // data when the PX affiliate endpoint doesn't cover historical events.
+      const resolvedHome = ev?.homeTeam || lineInfo?.homeTeam || l.homeTeam;
+      const resolvedAway = ev?.awayTeam || lineInfo?.awayTeam || l.awayTeam;
+
       let team = lineInfo?.teamName || l.team;
-      if ((!team || team === '?' || team === 'unknown') && ev) {
-        // For moneyline/spread we can't pick home vs away without the lineInfo,
-        // but for total markets we can label as "Over/Under (Away @ Home)".
-        if (lineInfo?.marketType === 'total' && ev.awayTeam && ev.homeTeam) {
-          team = `${lineInfo.selection || 'Total'} (${ev.awayTeam} @ ${ev.homeTeam})`;
-        } else {
-          // Fallback to the event display name so the row at least says
-          // "Yankees @ Red Sox" instead of "Event 10077494".
-          team = ev.name || `${ev.awayTeam || '?'} @ ${ev.homeTeam || '?'}`;
+      if (!team || team === '?' || team === 'unknown') {
+        if (ev) {
+          // For moneyline/spread we can't pick home vs away without the lineInfo,
+          // but for total markets we can label as "Over/Under (Away @ Home)".
+          if (lineInfo?.marketType === 'total' && resolvedAway && resolvedHome) {
+            team = `${lineInfo.selection || 'Total'} (${resolvedAway} @ ${resolvedHome})`;
+          } else {
+            // Fallback to the event display name so the row at least says
+            // "Yankees @ Red Sox" instead of "Event 10077494".
+            team = ev.name || `${resolvedAway || '?'} @ ${resolvedHome || '?'}`;
+          }
+        } else if (resolvedHome || resolvedAway) {
+          // No event info from PX, but line_cache gave us team names
+          team = `${resolvedAway || '?'} @ ${resolvedHome || '?'}`;
         }
       }
 
       const sportName = ev?.sportName
+        || lineInfo?.sport
         || tournaments[l.tournamentId || l.tournament_id]?.sportName
         || l.sport;
 
-      if ((team && team !== l.team) || (ev && !l.homeTeam) || (sportName && sportName !== l.sport)) {
+      if ((team && team !== l.team) || (resolvedHome && !l.homeTeam) || (sportName && sportName !== l.sport)) {
         changed = true;
       }
 
@@ -3146,11 +3248,11 @@ async function enrichOpenPositionsFromAffiliate() {
         marketType: lineInfo?.marketType || l.marketType,
         selection: lineInfo?.selection || l.selection,
         line: lineInfo?.line != null ? lineInfo.line : l.line,
-        homeTeam: ev?.homeTeam || l.homeTeam,
-        awayTeam: ev?.awayTeam || l.awayTeam,
-        startTime: ev?.scheduled || l.startTime,
+        homeTeam: resolvedHome || null,
+        awayTeam: resolvedAway || null,
+        startTime: ev?.scheduled || lineInfo?.startTime || l.startTime,
         sport: sportName || 'unknown',
-        pxEventName: ev?.name || l.pxEventName,
+        pxEventName: ev?.name || lineInfo?.pxEventName || l.pxEventName,
         tournamentName: ev?.tournamentName || l.tournamentName,
       };
     });
