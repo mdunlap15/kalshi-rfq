@@ -1017,7 +1017,7 @@ function startStatusServer() {
   // Quote coverage: real-time breakdown of why RFQs are being declined or failing to price.
   app.get('/quote-coverage', (req, res) => {
     try {
-      const coverage = ws.getQuoteCoverageStats();
+      const coverage = websocket.getQuoteCoverageStats();
       const total = coverage.rfqStages.received || 1;
       res.json({
         ok: true,
