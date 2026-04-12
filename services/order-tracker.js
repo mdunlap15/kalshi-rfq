@@ -117,7 +117,7 @@ const pendingExposure = {};
 // Shape: { [sigKey]: lastSeenMs }
 // ---------------------------------------------------------------------------
 const recentParlaySignatures = {};
-const DEDUP_WINDOW_MS = 60 * 1000; // 60s: same leg-set → decline
+const DEDUP_WINDOW_MS = 5 * 1000; // 5s: catch rapid re-submits only; pending exposure handles race window
 
 function parlayLegSignature(legs) {
   if (!legs || legs.length === 0) return null;

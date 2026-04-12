@@ -1119,6 +1119,92 @@ function getLineSummary() {
 // ---------------------------------------------------------------------------
 
 /**
+ * Diagnostic: trace golf matchup matching step by step.
+ * Returns a report showing exactly where each PX golf event matches or fails.
+ */
+async function debugGolfMatching() {
+  const allEvents = await px.fetchSportEvents();
+  const golfEvents = allEvents.filter(e =>
+    e.sport_name === 'Golf' &&
+    e.competitors && e.competitors.length >= 2 &&
+    (!e.status || e.status !== 'settled')
+  );
+
+  const oddsApiEvents = oddsFeed.getAllCachedEvents();
+  const golfOddsEvents = oddsApiEvents.filter(e => e.sport === 'golf_matchups');
+
+  const possibleSportKeys = Object.entries(config.sportNameMap)
+    .filter(([k, v]) => v === 'Golf')
+    .map(([k]) => k);
+
+  const report = {
+    pxGolfEventsTotal: golfEvents.length,
+    dataGolfEventsInCache: golfOddsEvents.length,
+    possibleSportKeys,
+    uniqueDataGolfPlayers: [...new Set(golfOddsEvents.flatMap(e => [e.homeTeam, e.awayTeam]))].sort(),
+    eventResults: [],
+  };
+
+  for (const event of golfEvents.slice(0, 10)) {
+    let homeComp = event.competitors.find(c => c.side === 'home');
+    let awayComp = event.competitors.find(c => c.side === 'away');
+    if (!homeComp && !awayComp && event.competitors.length >= 2) {
+      homeComp = event.competitors[0];
+      awayComp = event.competitors[1];
+    }
+
+    const result = {
+      pxEvent: event.name,
+      pxHome: homeComp?.name,
+      pxAway: awayComp?.name,
+      scheduled: event.scheduled,
+      steps: {},
+    };
+
+    for (const tryKey of possibleSportKeys) {
+      const allOddsTeams = oddsApiEvents
+        .filter(e => e.sport === tryKey)
+        .flatMap(e => [e.homeTeam, e.awayTeam]);
+      const uniqueTeams = [...new Set(allOddsTeams)];
+
+      result.steps[tryKey] = {
+        oddsTeamCount: uniqueTeams.length,
+        homeMatch: matchTeamName(homeComp?.name, uniqueTeams),
+        awayMatch: matchTeamName(awayComp?.name, uniqueTeams),
+      };
+
+      const tryHome = result.steps[tryKey].homeMatch;
+      const tryAway = result.steps[tryKey].awayMatch;
+
+      if (tryHome && tryAway) {
+        const pxTime = event.scheduled || null;
+        const oddsEvt = oddsFeed.getEventMarkets(tryKey, tryHome, tryAway, pxTime);
+        const oddsEvtRev = oddsFeed.getEventMarkets(tryKey, tryAway, tryHome, pxTime);
+        result.steps[tryKey].getEventMarkets = {
+          forward: oddsEvt ? { homeTeam: oddsEvt.homeTeam, awayTeam: oddsEvt.awayTeam, markets: Object.keys(oddsEvt.markets || {}) } : null,
+          reverse: oddsEvtRev ? { homeTeam: oddsEvtRev.homeTeam, awayTeam: oddsEvtRev.awayTeam, markets: Object.keys(oddsEvtRev.markets || {}) } : null,
+        };
+        result.steps[tryKey].matched = !!(oddsEvt || oddsEvtRev);
+      } else {
+        result.steps[tryKey].matched = false;
+      }
+    }
+
+    // Also try fetching PX markets for this event
+    try {
+      const markets = await px.fetchMarkets(event.event_id);
+      result.pxMarkets = markets.map(m => ({ type: m.type, name: m.name, lineCount: (m.market_lines || []).length }));
+    } catch (err) {
+      result.pxMarkets = `Error: ${err.message}`;
+    }
+
+    report.eventResults.push(result);
+  }
+
+  return report;
+}
+
+/**
  * Re-seed lines. Clears old index and re-fetches everything.
  */
 async function refreshLines() {
@@ -1169,4 +1255,5 @@ module.exports = {
   getTournamentName,
   getEventName,
   getEventInfo,
+  debugGolfMatching,
 };

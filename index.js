@@ -924,6 +924,16 @@ function startStatusServer() {
     }
   });
 
+  // Debug: trace golf matchup matching step by step
+  app.get('/debug/golf-matching', async (req, res) => {
+    try {
+      const report = await lineManager.debugGolfMatching();
+      res.json({ ok: true, ...report });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Debug: show DataGolf matchup cache
   app.get('/debug/golf-matchups', async (req, res) => {
     try {
