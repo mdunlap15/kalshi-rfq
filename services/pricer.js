@@ -310,19 +310,27 @@ async function priceParlay(legs) {
   //   Fair -700 (decimal 1.143): payout = 0.143, vigged = 0.143 × 0.97 = 0.139 → decimal 1.139 → -718
   //   Fair +150 (decimal 2.50):  payout = 1.50,  vigged = 1.50  × 0.97 = 1.455 → decimal 2.455 → +146
   //   Consistent % reduction in payout regardless of odds level.
-  const baseVig = config.pricing.defaultVig;
+  const globalBaseVig = config.pricing.defaultVig;
+  const vigBySport = config.pricing.vigBySport || {};
+
+  // Per-sport base vig: uses sport-specific override if set, else global default.
+  function getBaseVigForSport(sport) {
+    if (sport && vigBySport[sport] != null) return vigBySport[sport];
+    return globalBaseVig;
+  }
 
   // Tiered vig: scaled proportionally above base.
   // Gentle bumps on heavy favorites to prevent compounding leaks
   // without killing competitiveness on normal parlays.
-  function getEffectiveVig(fairProb) {
+  function getEffectiveVig(fairProb, sport) {
+    const baseVig = getBaseVigForSport(sport);
     if (fairProb >= 0.80) return Math.max(baseVig, 0.03);  // extreme favorites (-400+)
     if (fairProb >= 0.70) return Math.max(baseVig, 0.025); // heavy favorites (-230+)
     return baseVig;                                         // everything else keeps base vig
   }
 
-  function applyOddsVig(fairProb) {
-    const vig = getEffectiveVig(fairProb);
+  function applyOddsVig(fairProb, sport) {
+    const vig = getEffectiveVig(fairProb, sport);
     const fairDecimal = 1 / fairProb;
     const payout = fairDecimal - 1; // the profit portion
     const viggedPayout = payout * (1 - vig); // reduce payout by vig %
@@ -331,7 +339,7 @@ async function priceParlay(legs) {
 
   let offeredImpliedProb = 1;
   for (const leg of pricedLegs) {
-    offeredImpliedProb *= applyOddsVig(leg.fairProb);
+    offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport);
   }
 
   // -------------------------------------------------------------------
@@ -525,7 +533,7 @@ async function priceParlay(legs) {
   // Apply same odds-based vig so PX's recomputed parlay matches our intended price.
   const estimatedPrice = pricedLegs.map(leg => ({
     line_id: leg.lineId,
-    odds: decimalToAmerican(1 / applyOddsVig(leg.fairProb)),
+    odds: decimalToAmerican(1 / applyOddsVig(leg.fairProb, leg.lineInfo.sport)),
   }));
 
   // valid_until in nanoseconds
@@ -557,7 +565,7 @@ async function priceParlay(legs) {
           selection: l.lineInfo.oddsApiSelection,
           line: l.lineInfo.line,
           fairProb: Math.round(l.fairProb * 10000) / 10000,
-          legVig: Math.round(getEffectiveVig(l.fairProb) * 10000) / 10000,
+          legVig: Math.round(getEffectiveVig(l.fairProb, l.lineInfo.sport) * 10000) / 10000,
           displayFairProb: l.displayFairProb ? Math.round(l.displayFairProb * 10000) / 10000 : null,
           pinnacleOdds: l.pinnacleOdds || null,
           fanduelOdds: l.fanduelOdds || null,
@@ -581,7 +589,7 @@ async function priceParlay(legs) {
           roundNum: l.lineInfo.roundNum || null,
         };
       }),
-      vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb), 0) / pricedLegs.length * 10000) / 10000,
+      vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport), 0) / pricedLegs.length * 10000) / 10000,
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
       pricingMethod,
       isSGP,

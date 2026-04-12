@@ -332,6 +332,7 @@ function startStatusServer() {
       },
       config: {
         vig: config.pricing.defaultVig,
+        vigBySport: config.pricing.vigBySport || {},
         maxRisk: config.pricing.maxRiskPerParlay,
         maxLegs: config.pricing.maxLegs,
         maxExposurePerTeam: config.pricing.maxExposurePerTeam,
@@ -2205,6 +2206,83 @@ function startStatusServer() {
   app.post('/resume', (req, res) => {
     websocket.resume();
     res.json({ ok: true, paused: false });
+  });
+
+  // ---------------------------------------------------------------------------
+  // VIG CONFIGURATION — per-sport vig overrides
+  // ---------------------------------------------------------------------------
+
+  // GET current vig settings
+  app.get('/config/vig', (req, res) => {
+    const vigBySport = config.pricing.vigBySport || {};
+    const defaultVig = config.pricing.defaultVig;
+    // Build a display map showing effective vig per known sport
+    const sports = [
+      'basketball_nba', 'basketball_ncaab', 'basketball_wnba',
+      'baseball_mlb', 'icehockey_nhl', 'tennis',
+      'soccer', 'soccer_usa_mls', 'soccer_epl',
+      'soccer_uefa_champs_league', 'soccer_uefa_europa_league',
+      'soccer_spain_la_liga', 'soccer_italy_serie_a',
+      'soccer_germany_bundesliga', 'soccer_france_ligue_one',
+      'golf_matchups', 'mma_mixed_martial_arts', 'boxing_boxing',
+    ];
+    const effective = {};
+    for (const s of sports) {
+      effective[s] = {
+        vig: vigBySport[s] != null ? vigBySport[s] : defaultVig,
+        isOverride: vigBySport[s] != null,
+        pct: ((vigBySport[s] != null ? vigBySport[s] : defaultVig) * 100).toFixed(2) + '%',
+      };
+    }
+    res.json({
+      defaultVig,
+      defaultVigPct: (defaultVig * 100).toFixed(2) + '%',
+      overrides: vigBySport,
+      effective,
+    });
+  });
+
+  // POST update vig — body: { sport: "basketball_nba", vig: 0.005 }
+  // or { sport: "basketball_nba", vigPct: 0.5 } (0.5%)
+  // or { defaultVig: 0.002 } to change the global default
+  // or { sport: "basketball_nba", reset: true } to remove override
+  app.post('/config/vig', (req, res) => {
+    const body = req.body || {};
+
+    // Update global default
+    if (body.defaultVig != null) {
+      const val = parseFloat(body.defaultVig);
+      if (isNaN(val) || val < 0 || val > 0.20) {
+        return res.status(400).json({ ok: false, error: 'defaultVig must be 0-0.20 (0-20%)' });
+      }
+      config.pricing.defaultVig = val;
+      log.info('Config', `Default vig updated to ${(val * 100).toFixed(2)}%`);
+    }
+
+    // Update per-sport vig
+    if (body.sport) {
+      if (!config.pricing.vigBySport) config.pricing.vigBySport = {};
+
+      if (body.reset) {
+        delete config.pricing.vigBySport[body.sport];
+        log.info('Config', `Vig override removed for ${body.sport} — falls back to default ${(config.pricing.defaultVig * 100).toFixed(2)}%`);
+      } else {
+        let val = body.vig != null ? parseFloat(body.vig) : null;
+        if (val == null && body.vigPct != null) val = parseFloat(body.vigPct) / 100;
+        if (val == null || isNaN(val) || val < 0 || val > 0.20) {
+          return res.status(400).json({ ok: false, error: 'vig must be 0-0.20, or vigPct must be 0-20' });
+        }
+        config.pricing.vigBySport[body.sport] = val;
+        log.info('Config', `Vig for ${body.sport} set to ${(val * 100).toFixed(2)}%`);
+      }
+    }
+
+    res.json({
+      ok: true,
+      defaultVig: config.pricing.defaultVig,
+      defaultVigPct: (config.pricing.defaultVig * 100).toFixed(2) + '%',
+      overrides: config.pricing.vigBySport,
+    });
   });
 
   // Force WebSocket reconnect

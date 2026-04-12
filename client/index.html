@@ -1407,7 +1407,7 @@
   function renderConfig(cfg) {
     const el = document.getElementById('config-display');
     const items = [
-      ['Vig', (cfg.vig * 100).toFixed(1) + '%'],
+      ['Default Vig', (cfg.vig * 100).toFixed(2) + '%'],
       ['Max Risk / Parlay', '$' + (cfg.maxRisk || 0)],
       ['Max Exposure / Team', '$' + (cfg.maxExposurePerTeam || 0)],
       ['Max Legs', cfg.maxLegs || '-'],
@@ -1416,10 +1416,82 @@
       ['PX Base URL', cfg.baseUrl || '-'],
     ];
 
-    el.innerHTML = items.map(([k, v]) =>
+    let html = items.map(([k, v]) =>
       `<div class="config-item"><span class="config-key">${k}</span><span class="config-val">${v}</span></div>`
     ).join('');
+
+    // Per-sport vig controls
+    const vigBySport = cfg.vigBySport || {};
+    const defaultVig = cfg.vig || 0;
+    const sportKeys = [
+      'basketball_nba', 'baseball_mlb', 'icehockey_nhl',
+      'basketball_ncaab', 'basketball_wnba', 'tennis',
+      'soccer', 'soccer_usa_mls', 'soccer_epl',
+      'soccer_spain_la_liga', 'soccer_italy_serie_a',
+      'soccer_germany_bundesliga', 'soccer_france_ligue_one',
+      'soccer_uefa_champs_league', 'soccer_uefa_europa_league',
+      'golf_matchups', 'mma_mixed_martial_arts', 'boxing_boxing',
+    ];
+
+    html += `<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:12px;">
+      <div style="font-weight:600; margin-bottom:8px; font-size:13px;">Vig by Sport</div>
+      <div style="font-size:11px; color:var(--text3); margin-bottom:8px;">
+        Click a value to edit. Sports without an override use the default (${(defaultVig * 100).toFixed(2)}%).
+      </div>
+      <table style="width:100%; font-size:12px; border-collapse:collapse;">
+        <tr style="border-bottom:1px solid var(--border); font-weight:600; color:var(--text2);">
+          <td style="padding:3px 8px;">Sport</td>
+          <td style="padding:3px 8px; text-align:right;">Vig %</td>
+          <td style="padding:3px 8px; text-align:center; width:60px;"></td>
+        </tr>`;
+
+    for (const sport of sportKeys) {
+      const override = vigBySport[sport];
+      const effective = override != null ? override : defaultVig;
+      const isOverride = override != null;
+      const color = isOverride ? 'var(--blue)' : 'var(--text3)';
+      const label = sportLabel(sport);
+      html += `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:3px 8px; white-space:nowrap;">${label}</td>
+        <td style="padding:3px 8px; text-align:right; color:${color}; font-weight:${isOverride ? 600 : 400};">
+          <span class="vig-val" data-sport="${sport}" style="cursor:pointer; border-bottom:1px dashed ${color};"
+            onclick="promptVigChange('${sport}', ${effective})">${(effective * 100).toFixed(2)}%</span>
+        </td>
+        <td style="padding:3px 8px; text-align:center;">
+          ${isOverride ? `<span style="cursor:pointer; color:var(--red); font-size:10px;" onclick="resetVig('${sport}')">reset</span>` : ''}
+        </td>
+      </tr>`;
+    }
+    html += `</table></div>`;
+
+    el.innerHTML = html;
   }
+
+  // Vig adjustment functions
+  window.promptVigChange = function(sport, currentVig) {
+    const pct = prompt(`Set vig for ${sportLabel(sport)}:\nCurrent: ${(currentVig * 100).toFixed(2)}%\nEnter new vig as percentage (e.g. 0.5 for 0.5%):`, (currentVig * 100).toFixed(2));
+    if (pct === null) return;
+    const val = parseFloat(pct);
+    if (isNaN(val) || val < 0 || val > 20) { alert('Invalid: enter 0-20'); return; }
+    fetch('/config/vig', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sport, vigPct: val }),
+    }).then(r => r.json()).then(d => {
+      if (d.ok) refreshDashboard();
+      else alert('Error: ' + (d.error || 'unknown'));
+    });
+  };
+
+  window.resetVig = function(sport) {
+    fetch('/config/vig', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sport, reset: true }),
+    }).then(r => r.json()).then(d => {
+      if (d.ok) refreshDashboard();
+    });
+  };
 
   function renderMarketIntel(intel) {
     window._lastIntelData = intel;
