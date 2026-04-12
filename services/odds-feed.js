@@ -2382,9 +2382,9 @@ function isEventStalePreGame(sport, startTime) {
   const startMs = new Date(startTime).getTime();
   if (isNaN(startMs)) return false;
   const minsToStart = (startMs - Date.now()) / 60000;
-  if (minsToStart < 0 || minsToStart > 30) return false; // not in window
-  // Within 30 min of tip-off — tighten to 2 min cache age
-  return getCacheAge(sport) > 2;
+  if (minsToStart < 0 || minsToStart > 10) return false; // not in window
+  // Within 10 min of tip-off — tighten to 3 min cache age
+  return getCacheAge(sport) > 3;
 }
 
 // ---------------------------------------------------------------------------

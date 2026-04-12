@@ -877,18 +877,12 @@ function shouldDecline(legs) {
   }
 
   // Check team-level exposure limits.
-  // Use the SAME worst-case max_risk that handleConfirm uses to gate the
-  // actual confirmation — otherwise shouldDecline systematically underestimates
-  // exposure (the bug that let 5 identical $1,124 parlays stack on Rockies
-  // while the per-team check thought each was only adding $500 × other_prob).
-  const bankroll = getBankroll();
-  const maxRiskFromPct = config.pricing.maxRiskPerParlayPct > 0
-    ? bankroll * config.pricing.maxRiskPerParlayPct / 100
-    : Infinity;
-  const estPayout = Math.min(
-    config.pricing.maxRiskPerParlay || Infinity,
-    maxRiskFromPct
-  );
+  // Use maxRiskPerParlay as the estimate. The confirm-time re-check in
+  // handleConfirm is the real safety net (checks actual stake against both
+  // per-team and per-game caps with pending reservations). Keeping
+  // shouldDecline lightweight here avoids over-restricting quotes — the
+  // original 3x estPayout inflation was declining too many RFQs.
+  const estPayout = config.pricing.maxRiskPerParlay || 500;
   // Pass legs with fairProb info for weighted calculation
   const legsWithProb = resolvedLegs.map(l => {
     const fp = oddsFeed.getFairProb(

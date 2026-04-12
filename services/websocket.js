@@ -539,31 +539,9 @@ async function handleRFQ(data) {
       result.meta
     );
 
-    // Reserve pending exposure for this quote so concurrent RFQs on the
-    // same teams see this risk in their shouldDecline check. Uses the SAME
-    // worst-case max_risk that handleConfirm enforces. Expires automatically
-    // when the quote window closes (offerValidSeconds).
-    const confirmMaxFromPct = config.pricing.maxRiskPerParlayPct > 0
-      ? getBankroll() * config.pricing.maxRiskPerParlayPct / 100
-      : Infinity;
-    const worstCaseRisk = Math.min(
-      config.pricing.maxRiskPerParlay || Infinity,
-      confirmMaxFromPct
-    );
-    const legsWithInfo = result.meta.legs.map(l => ({
-      ...l,
-      lineInfo: l, // match shape expected by buildPendingReservation
-      fairProb: l.fairProb,
-    }));
-    const reservation = orderTracker.buildPendingReservation(
-      legsWithInfo, worstCaseRisk, config.pricing.offerValidSeconds
-    );
-    orderTracker.reservePending(parlayId, reservation);
-    // Mark this leg-set in the dedup window — subsequent identical RFQs
-    // within 60s will short-circuit in shouldDecline.
-    orderTracker.recordParlaySignature(result.meta.legs);
-
-    // Submit offer to PX (skip when paused — paper-trade mode)
+    // Submit offer to PX FIRST — speed is critical in the RFQ auction.
+    // Bookkeeping (pending exposure, signature) happens AFTER the HTTP call
+    // so it doesn't add latency before our offer reaches PX.
     if (isPausedNow) {
       log.debug('RFQ', `[PAUSED] Would offer: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}`);
       updateRfqOutcome(parlayId, 'paused_skip', `would offer ${result.meta.americanOdds}`);
@@ -580,6 +558,21 @@ async function handleRFQ(data) {
       updateRfqOutcome(parlayId, 'no_callback');
       log.warn('RFQ', `No callback URL for parlay ${parlayId}`);
     }
+
+    // Bookkeeping AFTER submission — reserve pending exposure so concurrent
+    // RFQs on the same teams see this risk in shouldDecline. Also record
+    // leg signature for the 5s dedup window.
+    const worstCaseRisk = config.pricing.maxRiskPerParlay || 500;
+    const legsWithInfo = result.meta.legs.map(l => ({
+      ...l,
+      lineInfo: l,
+      fairProb: l.fairProb,
+    }));
+    const reservation = orderTracker.buildPendingReservation(
+      legsWithInfo, worstCaseRisk, config.pricing.offerValidSeconds
+    );
+    orderTracker.reservePending(parlayId, reservation);
+    orderTracker.recordParlaySignature(result.meta.legs);
   } catch (err) {
     const pid = typeof parlayId !== 'undefined' ? parlayId : 'unknown';
     log.error('RFQ', `Error handling RFQ for ${pid}: ${err.message}`);
