@@ -3195,6 +3195,42 @@ async function enrichOpenPositionsFromAffiliate() {
     }
   }
 
+  // ---- 4d) direct event-ID lookup in line_cache ----
+  // For events STILL unresolved (lineId not in line_cache either — e.g.
+  // the specific line was never registered but another line for the same
+  // event was), look up by px_event_id directly.
+  const stillUnresolvedEventIds = [];
+  for (const order of targetOrders) {
+    const legs = order.legs || order.meta?.legs || [];
+    for (const l of legs) {
+      const eid = l.pxEventId || l.sport_event_id;
+      if (eid && !eventInfo[eid]) stillUnresolvedEventIds.push(eid);
+    }
+  }
+  if (stillUnresolvedEventIds.length > 0) {
+    const uniqueEids = [...new Set(stillUnresolvedEventIds)];
+    try {
+      const evByEid = await db.loadLineCacheByEventIds(uniqueEids);
+      const hits = Object.keys(evByEid).length;
+      if (hits > 0) {
+        for (const [eid, info] of Object.entries(evByEid)) {
+          if (!eventInfo[eid]) {
+            eventInfo[eid] = {
+              name: info.pxEventName || `${info.awayTeam || '?'} @ ${info.homeTeam || '?'}`,
+              homeTeam: info.homeTeam,
+              awayTeam: info.awayTeam,
+              scheduled: info.startTime,
+              sportName: info.sport || info.oddsApiSport,
+            };
+          }
+        }
+        log.info('Affiliate', `Resolved ${hits}/${uniqueEids.length} events from line_cache by px_event_id`);
+      }
+    } catch (err) {
+      log.warn('Affiliate', `loadLineCacheByEventIds failed: ${err.message}`);
+    }
+  }
+
   // ---- 5) apply enrichment to target orders + persist ----
   let enriched = 0;
   const pending = [];

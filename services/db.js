@@ -488,6 +488,54 @@ async function loadLineCacheBulk(lineIds) {
   return result;
 }
 
+/**
+ * Look up line_cache entries by px_event_id. Returns one representative
+ * entry per event (any line for that event — we just need homeTeam/awayTeam).
+ * Returns { eventId: info }.
+ */
+async function loadLineCacheByEventIds(eventIds) {
+  const db = getClient();
+  if (!db) return {};
+  if (!eventIds || eventIds.length === 0) return {};
+
+  const result = {};
+  const CHUNK = 200;
+  try {
+    // Convert to strings since px_event_id may be stored as text
+    const ids = eventIds.map(String);
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      const { data, error } = await db
+        .from('line_cache')
+        .select('*')
+        .in('px_event_id', chunk);
+      if (error) {
+        log.warn('DB', `loadLineCacheByEventIds failed: ${error.message}`);
+        break;
+      }
+      for (const row of data || []) {
+        const eid = row.px_event_id;
+        // Keep first match per event (we just need home/away team)
+        if (result[eid]) continue;
+        result[eid] = {
+          sport: row.sport,
+          pxEventId: row.px_event_id,
+          pxEventName: row.px_event_name,
+          marketType: row.market_type,
+          teamName: row.team_name,
+          homeTeam: row.home_team,
+          awayTeam: row.away_team,
+          startTime: row.start_time,
+          oddsApiSport: row.odds_api_sport,
+        };
+      }
+    }
+  } catch (err) {
+    log.warn('DB', `loadLineCacheByEventIds error: ${err.message}`);
+  }
+  return result;
+}
+
 module.exports = {
   getClient,
   isEnabled,
@@ -502,4 +550,5 @@ module.exports = {
   saveLineCache,
   loadLineCacheEntry,
   loadLineCacheBulk,
+  loadLineCacheByEventIds,
 };
