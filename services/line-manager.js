@@ -776,6 +776,13 @@ async function resolveUnknownLine(rfqLeg) {
   if (!lineId) return null;
   if (lineIndex[lineId]) return lineIndex[lineId]; // already resolved
 
+  // Sample log: capture RFQ leg shape (first 20 unknown legs only)
+  if (!resolveUnknownLine._sampleCount) resolveUnknownLine._sampleCount = 0;
+  if (resolveUnknownLine._sampleCount < 20 && typeof rfqLeg === 'object') {
+    resolveUnknownLine._sampleCount++;
+    log.debug('Lines', `RFQ leg sample #${resolveUnknownLine._sampleCount}: keys=${Object.keys(rfqLeg).join(',')} line=${rfqLeg.line} origin=${rfqLeg.origin_market_line}`);
+  }
+
   // Reuse in-flight resolution
   if (inFlightResolutions.has(lineId)) {
     return inFlightResolutions.get(lineId);
@@ -1065,9 +1072,130 @@ async function resolveUnknownLine(rfqLeg) {
         // Log what market types we DID find for this event (helps diagnose player props etc.)
         const foundTypes = (markets || []).map(m => m.type).filter(Boolean);
         const marketNames = (markets || []).map(m => m.name).filter(Boolean).slice(0, 5);
-        log.debug('Lines', `Could not locate line ${lineId} in event ${eventId} markets (types found: ${foundTypes.join(',')}; names: ${marketNames.join(', ')})`);
-        resolveUnknownLine._lastFailure = { lineId, reason: 'line_not_in_markets', eventName: event.name, sport: sportKey, marketTypesFound: foundTypes, marketNamesFound: marketNames };
-        return null;
+
+        // --- Virtual registration fallback ---
+        // PX fetchMarkets often omits the specific alt-line the RFQ referenced.
+        // If we have the event matched (home/away teams + sport) AND the RFQ leg
+        // carries a numeric line, we can infer market type from context and
+        // register a "virtual" entry so the pricer can fetch alt-line odds on
+        // demand from The Odds API.
+        const rfqLine = rfqLeg.line != null ? Number(rfqLeg.line) : null;
+        if (matchedHome && matchedAway && rfqLine != null && !isNaN(rfqLine)) {
+          // Determine market type from what we know about the event and the
+          // line value. Strategy: look at existing registered lines for this
+          // event to decide if this is a spread or total.
+          const existingForEvent = Object.values(lineIndex).filter(
+            li => li.pxEventId === eventId
+          );
+          const hasSpread = existingForEvent.some(li => li.marketType === 'spread');
+          const hasTotal = existingForEvent.some(li => li.marketType === 'total');
+          const primarySpread = existingForEvent.find(li => li.marketType === 'spread');
+          const primaryTotal = existingForEvent.find(li => li.marketType === 'total');
+
+          // Heuristic: totals have large abs values (e.g. 8.5 runs, 220.5 pts),
+          // spreads have small abs values. Use sport-aware thresholds.
+          const absLine = Math.abs(rfqLine);
+          let inferredType = null;
+          let inferredSelection = null;
+          let inferredTeam = null;
+          let inferredOddsMarket = null;
+
+          // If we have a primary spread registered, compare magnitude
+          if (hasSpread && primarySpread) {
+            const primaryAbsSpread = Math.abs(primarySpread.line || 0);
+            // If the line is in the same magnitude range as the primary spread,
+            // it's likely an alt spread. Allow up to 3x the primary or MAX_SPREAD bounds.
+            const maxSpread = MAX_SPREAD_BY_SPORT[sportKey] || 15;
+            if (absLine <= maxSpread) {
+              inferredType = 'spread';
+              // For spreads: negative line = favorite, positive = underdog.
+              // Map to home/away using the primary spread's polarity.
+              if (rfqLine < 0) {
+                // Favorite side — same team as whoever has negative primary spread
+                inferredSelection = primarySpread.oddsApiSelection || 'home';
+                inferredTeam = primarySpread.teamName;
+              } else {
+                // Underdog side — opposite of the favorite
+                const oppSel = primarySpread.oddsApiSelection === 'home' ? 'away' : 'home';
+                inferredSelection = oppSel;
+                inferredTeam = oppSel === 'home' ? matchedHome : matchedAway;
+              }
+              inferredOddsMarket = 'spreads';
+            }
+          }
+
+          // If we didn't infer spread, check if it's a total
+          if (!inferredType && hasTotal && primaryTotal) {
+            const primaryAbsTotal = Math.abs(primaryTotal.line || 0);
+            // Totals are typically within a few points of the primary total
+            if (absLine >= primaryAbsTotal * 0.3 && absLine <= primaryAbsTotal * 2.0) {
+              inferredType = 'total';
+              // For totals we can't determine over/under from the line alone —
+              // PX doesn't tell us. We'll register as 'over' by default and
+              // let the pricer try both. Actually, without knowing, skip this.
+              // Virtual registration for alt totals requires knowing over/under.
+            }
+          }
+
+          // Fallback: if no primary data, use sport-specific line ranges
+          if (!inferredType && !hasSpread && !hasTotal) {
+            const maxSpread = MAX_SPREAD_BY_SPORT[sportKey] || 15;
+            if (absLine <= maxSpread) {
+              inferredType = 'spread';
+              // Without a primary spread, we can try to determine favorite from
+              // the odds feed's primary consensus
+              const pxTime = event.scheduled || null;
+              const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxTime);
+              if (oddsEvt?.markets?.spreads) {
+                const primaryHomePoint = oddsEvt.markets.spreads.home?.point;
+                if (primaryHomePoint != null) {
+                  // Negative rfqLine = favorite, positive = underdog
+                  const homeIsFav = primaryHomePoint < 0;
+                  if (rfqLine < 0) {
+                    inferredSelection = homeIsFav ? 'home' : 'away';
+                    inferredTeam = homeIsFav ? matchedHome : matchedAway;
+                  } else {
+                    inferredSelection = homeIsFav ? 'away' : 'home';
+                    inferredTeam = homeIsFav ? matchedAway : matchedHome;
+                  }
+                  inferredOddsMarket = 'spreads';
+                }
+              }
+            }
+          }
+
+          if (inferredType === 'spread' && inferredSelection && inferredTeam) {
+            const pxTime = event.scheduled || null;
+            const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxTime);
+            const startTime = event.scheduled || oddsEvt?.commenceTime || null;
+
+            foundInfo = {
+              sport: sportKey,
+              pxEventId: eventId,
+              pxEventName: event.name,
+              marketType: 'spread',
+              marketName: `Virtual Alt Spread ${rfqLine}`,
+              selection: inferredSelection,
+              teamName: inferredTeam,
+              line: rfqLine,
+              homeTeam: matchedHome,
+              awayTeam: matchedAway,
+              oddsApiSport: sportKey,
+              oddsApiMarket: 'spreads',
+              oddsApiSelection: inferredSelection,
+              startTime,
+              onDemand: true,
+              virtualRegistration: true,
+            };
+            log.info('Lines', `Virtual registration: ${sportKey} spread ${inferredTeam} ${rfqLine} for ${event.name} (line_id ${lineId} not in PX markets)`);
+          }
+        }
+
+        if (!foundInfo) {
+          log.debug('Lines', `Could not locate line ${lineId} in event ${eventId} markets (types found: ${foundTypes.join(',')}; names: ${marketNames.join(', ')}). RFQ leg: line=${rfqLeg.line}, keys=${Object.keys(rfqLeg).join(',')}`);
+          resolveUnknownLine._lastFailure = { lineId, reason: 'line_not_in_markets', eventName: event.name, sport: sportKey, marketTypesFound: foundTypes, marketNamesFound: marketNames };
+          return null;
+        }
       }
 
       // Add to index locally

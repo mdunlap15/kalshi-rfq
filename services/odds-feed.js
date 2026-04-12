@@ -1719,7 +1719,27 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
           // price was +287. Sign flips on spread alts are dangerous —
           // keep the two directions strictly separate.
           for (const o of (market.outcomes || [])) {
-            const isHome = o.name === homeTeam || o.name === data.home_team;
+            // Use fuzzy matching for team names — exact match fails when
+            // The Odds API returns a slightly different name (e.g.,
+            // "LA Clippers" vs "Los Angeles Clippers"). A silent mismatch
+            // would flip EVERY home_point sign in the cache, catastrophically
+            // swapping home/away probs for all alt spreads in this game.
+            const normOutcome = normalizeTeamName(o.name);
+            const normHome = normalizeTeamName(homeTeam);
+            const normAway = normalizeTeamName(awayTeam);
+            const normDataHome = data.home_team ? normalizeTeamName(data.home_team) : '';
+            const homeMatch = normOutcome === normHome || normOutcome === normDataHome
+              || normHome.includes(normOutcome) || normOutcome.includes(normHome)
+              || (normDataHome && (normDataHome.includes(normOutcome) || normOutcome.includes(normDataHome)));
+            const awayMatch = normOutcome === normAway
+              || normAway.includes(normOutcome) || normOutcome.includes(normAway);
+            // If both or neither side matches, skip — ambiguous classification
+            // would silently flip signs on every alt spread for this game.
+            if (homeMatch === awayMatch) {
+              if (homeMatch) log.warn('OddsFeed', `Alt spread ambiguous team: "${o.name}" matches both home "${homeTeam}" and away "${awayTeam}" — skipping outcome`);
+              continue;
+            }
+            const isHome = homeMatch;
             // Compute home_point: the signed spread from the HOME team's
             // perspective. For a home outcome it's just o.point; for an
             // away outcome it's the negation (same bet, opposite side).
@@ -1855,6 +1875,29 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
             if (expectHigh && altProb < 0.55) {
               log.warn('OddsFeed', `Alt total sanity FAIL: ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} — expected heavy favorite, got underdog. Declining.`);
               return null;
+            }
+          }
+          // Sanity: for alt spreads far from primary, verify direction makes sense.
+          // If primary home spread is -5.5 and we're pricing home -0.5 (easier to
+          // cover), the fair prob should be HIGHER than the primary. If it's lower,
+          // the alt line data may have sign-flipped home/away probs.
+          if (marketType === 'spreads' && lineDiff >= 2.0) {
+            const primaryProb = selection === 'home' ? market.home?.fairProb : market.away?.fairProb;
+            if (primaryProb != null) {
+              // "Easier to cover" = smaller absolute handicap for the team
+              const absAlt = Math.abs(line);
+              const absPrimary = Math.abs(market.line);
+              const easierToCover = (selection === 'home')
+                ? (line > market.line) // home -0.5 is easier than home -5.5
+                : (line < market.line); // away +0.5 is easier than away +5.5
+              if (easierToCover && altProb < primaryProb - 0.05) {
+                log.warn('OddsFeed', `Alt spread sanity FAIL: ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} < primary=${primaryProb.toFixed(4)} — easier line should have higher prob. Declining.`);
+                return null;
+              }
+              if (!easierToCover && altProb > primaryProb + 0.05) {
+                log.warn('OddsFeed', `Alt spread sanity FAIL: ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} > primary=${primaryProb.toFixed(4)} — harder line should have lower prob. Declining.`);
+                return null;
+              }
             }
           }
           return altProb;
@@ -2194,7 +2237,7 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
       // signed home_point bucket.
       const altProb = getAltLineFairProb(key, marketType, selection, line);
       if (altProb != null) {
-        // Same directional sanity check as getFairProb (see comment there).
+        // Same directional sanity checks as getFairProb (see comments there).
         const market = event.markets[marketType];
         if (marketType === 'totals' && market?.line != null) {
           const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
@@ -2203,6 +2246,25 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
             if (expectHigh && altProb < 0.55) {
               log.warn('OddsFeed', `Alt total sanity FAIL (async): ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} — declining`);
               return null;
+            }
+          }
+        }
+        if (marketType === 'spreads' && market?.line != null) {
+          const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
+          if (lineDiff >= 2.0) {
+            const primaryProb = selection === 'home' ? market.home?.fairProb : market.away?.fairProb;
+            if (primaryProb != null) {
+              const easierToCover = (selection === 'home')
+                ? (line > market.line)
+                : (line < market.line);
+              if (easierToCover && altProb < primaryProb - 0.05) {
+                log.warn('OddsFeed', `Alt spread sanity FAIL (async): ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} < primary=${primaryProb.toFixed(4)} — declining`);
+                return null;
+              }
+              if (!easierToCover && altProb > primaryProb + 0.05) {
+                log.warn('OddsFeed', `Alt spread sanity FAIL (async): ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} > primary=${primaryProb.toFixed(4)} — declining`);
+                return null;
+              }
             }
           }
         }
@@ -2241,21 +2303,38 @@ function spreadHomePoint(line, selection) {
  */
 function getAltLineFairProb(eventKey, marketType, selection, line) {
   const alt = altLinesCache[eventKey];
-  if (!alt) return null;
+  if (!alt) {
+    log.debug('AltLine', `MISS cache: ${eventKey} ${marketType} ${selection} line=${line} — no alt cache entry`);
+    return null;
+  }
 
   if (marketType === 'spreads') {
     const homePoint = spreadHomePoint(line, selection);
-    if (homePoint == null) return null;
-    const lineData = alt.altSpreads[String(homePoint)];
-    if (!lineData) return null;
-    if (selection === 'home') return lineData.home || null;
-    if (selection === 'away') return lineData.away || null;
+    if (homePoint == null) {
+      log.debug('AltLine', `MISS homePoint null: ${eventKey} ${selection} line=${line}`);
+      return null;
+    }
+    const lineKey = String(homePoint);
+    const lineData = alt.altSpreads[lineKey];
+    if (!lineData) {
+      const availableKeys = Object.keys(alt.altSpreads).slice(0, 10).join(', ');
+      log.debug('AltLine', `MISS spread: ${eventKey} ${selection} line=${line} homePoint=${lineKey} — not in cache. Available: [${availableKeys}]`);
+      return null;
+    }
+    const fairProb = selection === 'home' ? (lineData.home || null) : (selection === 'away' ? (lineData.away || null) : null);
+    log.debug('AltLine', `HIT spread: ${eventKey} ${selection} line=${line} homePoint=${lineKey} fair=${fairProb?.toFixed(4) ?? 'null'} books=${lineData.books}`);
+    return fairProb;
   } else if (marketType === 'totals') {
     // Totals have no sign — over/under don't swap direction.
     const lineData = alt.altTotals[Math.abs(line)];
-    if (!lineData) return null;
-    if (selection === 'over') return lineData.over || null;
-    if (selection === 'under') return lineData.under || null;
+    if (!lineData) {
+      const availableKeys = Object.keys(alt.altTotals).slice(0, 10).join(', ');
+      log.debug('AltLine', `MISS total: ${eventKey} ${selection} line=${line} — not in cache. Available: [${availableKeys}]`);
+      return null;
+    }
+    const fairProb = selection === 'over' ? (lineData.over || null) : (selection === 'under' ? (lineData.under || null) : null);
+    log.debug('AltLine', `HIT total: ${eventKey} ${selection} line=${line} fair=${fairProb?.toFixed(4) ?? 'null'} books=${lineData.books}`);
+    return fairProb;
   }
 
   return null;
