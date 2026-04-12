@@ -26,6 +26,42 @@ CREATE INDEX IF NOT EXISTS idx_declines_reason ON declines(reason);
 
 After running, restart the service or trigger a redeploy — the code will start writing every decline to this table and will load up to 2000 rows on startup.
 
+## 2026-04-11: `line_cache` table
+
+Persistent lineId→team/market mapping so enrichment can resolve historical
+line_ids even after PX purges events from the mm namespace.
+
+```sql
+CREATE TABLE IF NOT EXISTS line_cache (
+  line_id TEXT PRIMARY KEY,
+  sport TEXT,
+  px_event_id TEXT,
+  px_event_name TEXT,
+  market_type TEXT,
+  market_name TEXT,
+  is_dnb BOOLEAN DEFAULT false,
+  selection TEXT,
+  team_name TEXT,
+  line NUMERIC,
+  home_team TEXT,
+  away_team TEXT,
+  odds_api_sport TEXT,
+  odds_api_market TEXT,
+  odds_api_selection TEXT,
+  competitor_id TEXT,
+  start_time TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_line_cache_sport ON line_cache(sport);
+CREATE INDEX IF NOT EXISTS idx_line_cache_px_event_id ON line_cache(px_event_id);
+CREATE INDEX IF NOT EXISTS idx_line_cache_updated_at ON line_cache(updated_at DESC);
+```
+
+After running, restart the service — the line manager will start persisting the
+lineIndex to this table on every seed, and lookupLine will fall back to it for
+line_ids not in the current in-memory index.
+
 ## Existing tables
 
 The app also uses:

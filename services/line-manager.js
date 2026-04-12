@@ -2,6 +2,7 @@ const { config } = require('../config');
 const log = require('./logger');
 const px = require('./prophetx');
 const oddsFeed = require('./odds-feed');
+const db = require('./db');
 // Lazy require for orderTracker to avoid circular dependency
 let orderTracker = null;
 function getOrderTracker() {
@@ -718,6 +719,12 @@ async function seedAllLines() {
   };
 
   log.info('Lines', `=== Seed complete: ${events.length} events, ${totalLines} lines parsed, ${matchedLines} matched, ${lineIds.length} registered ===`);
+
+  // Persist lineIndex to Supabase so historical line_ids survive restarts
+  db.saveLineCache(lineIndex).catch(err => {
+    log.warn('Lines', `saveLineCache failed: ${err.message}`);
+  });
+
   return lastSeedStats;
 }
 
@@ -731,6 +738,23 @@ function __debugGetLineIndex() {
 
 function lookupLine(lineId) {
   return lineIndex[lineId] || null;
+}
+
+/**
+ * Async lookupLine that falls back to the persistent Supabase cache
+ * when the in-memory lineIndex doesn't have the lineId.
+ * Use this for enrichment paths that can await.
+ */
+async function lookupLineAsync(lineId) {
+  if (lineIndex[lineId]) return lineIndex[lineId];
+  // Fall back to persistent cache
+  const cached = await db.loadLineCacheEntry(lineId);
+  if (cached) {
+    // Populate in-memory index so subsequent sync lookups hit
+    lineIndex[lineId] = cached;
+    log.debug('Lines', `lookupLineAsync: resolved ${lineId} from Supabase cache → ${cached.teamName}`);
+  }
+  return cached;
 }
 
 // Track in-flight resolution attempts to avoid duplicate work / rate limiting
@@ -1133,6 +1157,7 @@ module.exports = {
   seedAllLines,
   refreshLines,
   lookupLine,
+  lookupLineAsync,
   __debugGetLineIndex,
   resolveUnknownLine,
   getRegisteredLineIds,

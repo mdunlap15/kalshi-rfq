@@ -335,6 +335,159 @@ async function countOrders() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// LINE CACHE — persistent lineId → team/market mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Bulk-upsert the entire lineIndex to Supabase so historical line_ids survive
+ * restarts even after PX purges events from the mm namespace.
+ *
+ * @param {Object} lineIndex - { lineId: { sport, pxEventId, teamName, ... } }
+ */
+async function saveLineCache(lineIndex) {
+  const db = getClient();
+  if (!db) return;
+
+  const entries = Object.entries(lineIndex);
+  if (entries.length === 0) return;
+
+  const now = new Date().toISOString();
+  const rows = entries.map(([lineId, info]) => ({
+    line_id: lineId,
+    sport: info.sport || null,
+    px_event_id: info.pxEventId || null,
+    px_event_name: info.pxEventName || null,
+    market_type: info.marketType || null,
+    market_name: info.marketName || null,
+    is_dnb: !!info.isDNB,
+    selection: info.selection || info.oddsApiSelection || null,
+    team_name: info.teamName || null,
+    line: info.line != null ? info.line : null,
+    home_team: info.homeTeam || null,
+    away_team: info.awayTeam || null,
+    odds_api_sport: info.oddsApiSport || info.sport || null,
+    odds_api_market: info.oddsApiMarket || null,
+    odds_api_selection: info.oddsApiSelection || null,
+    competitor_id: info.competitorId || null,
+    start_time: info.startTime || null,
+    updated_at: now,
+  }));
+
+  // Supabase upsert in chunks of 500 to stay within payload limits
+  const CHUNK = 500;
+  let saved = 0;
+  try {
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
+      const { error } = await db
+        .from('line_cache')
+        .upsert(chunk, { onConflict: 'line_id' });
+      if (error) {
+        if (!saveLineCache._warned) {
+          log.error('DB', `saveLineCache failed (run the SQL migration to create 'line_cache' table): ${error.message}`);
+          saveLineCache._warned = true;
+        }
+        return;
+      }
+      saved += chunk.length;
+    }
+    log.info('DB', `saveLineCache: upserted ${saved} lines`);
+  } catch (err) {
+    if (!saveLineCache._warned) {
+      log.error('DB', `saveLineCache error: ${err.message}`);
+      saveLineCache._warned = true;
+    }
+  }
+}
+
+/**
+ * Look up a single lineId from the persistent cache.
+ * Returns the same shape as lineIndex entries, or null.
+ */
+async function loadLineCacheEntry(lineId) {
+  const db = getClient();
+  if (!db) return null;
+  try {
+    const { data, error } = await db
+      .from('line_cache')
+      .select('*')
+      .eq('line_id', lineId)
+      .limit(1);
+    if (error || !data || data.length === 0) return null;
+    const row = data[0];
+    return {
+      sport: row.sport,
+      pxEventId: row.px_event_id,
+      pxEventName: row.px_event_name,
+      marketType: row.market_type,
+      marketName: row.market_name,
+      isDNB: !!row.is_dnb,
+      selection: row.selection,
+      teamName: row.team_name,
+      line: row.line != null ? Number(row.line) : null,
+      homeTeam: row.home_team,
+      awayTeam: row.away_team,
+      oddsApiSport: row.odds_api_sport,
+      oddsApiMarket: row.odds_api_market,
+      oddsApiSelection: row.odds_api_selection,
+      competitorId: row.competitor_id,
+      startTime: row.start_time,
+    };
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Bulk-load multiple lineIds from the persistent cache.
+ * Returns a map { lineId: info }.
+ */
+async function loadLineCacheBulk(lineIds) {
+  const db = getClient();
+  if (!db) return {};
+  if (!lineIds || lineIds.length === 0) return {};
+
+  const result = {};
+  const CHUNK = 200;
+  try {
+    for (let i = 0; i < lineIds.length; i += CHUNK) {
+      const chunk = lineIds.slice(i, i + CHUNK);
+      const { data, error } = await db
+        .from('line_cache')
+        .select('*')
+        .in('line_id', chunk);
+      if (error) {
+        log.warn('DB', `loadLineCacheBulk failed: ${error.message}`);
+        break;
+      }
+      for (const row of data || []) {
+        result[row.line_id] = {
+          sport: row.sport,
+          pxEventId: row.px_event_id,
+          pxEventName: row.px_event_name,
+          marketType: row.market_type,
+          marketName: row.market_name,
+          isDNB: !!row.is_dnb,
+          selection: row.selection,
+          teamName: row.team_name,
+          line: row.line != null ? Number(row.line) : null,
+          homeTeam: row.home_team,
+          awayTeam: row.away_team,
+          oddsApiSport: row.odds_api_sport,
+          oddsApiMarket: row.odds_api_market,
+          oddsApiSelection: row.odds_api_selection,
+          competitorId: row.competitor_id,
+          startTime: row.start_time,
+        };
+      }
+    }
+  } catch (err) {
+    log.warn('DB', `loadLineCacheBulk error: ${err.message}`);
+  }
+  return result;
+}
+
 module.exports = {
   getClient,
   isEnabled,
@@ -346,4 +499,7 @@ module.exports = {
   saveDecline,
   loadDeclines,
   lookupDecline,
+  saveLineCache,
+  loadLineCacheEntry,
+  loadLineCacheBulk,
 };

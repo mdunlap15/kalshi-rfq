@@ -3074,6 +3074,36 @@ async function enrichOpenPositionsFromAffiliate() {
   }
   log.info('Affiliate', `Resolved ${Object.keys(lineIdInfo).length} line_ids across ${marketsChunks} chunks`);
 
+  // ---- 4b) fallback: check persistent line_cache for any unresolved line_ids ----
+  const unresolvedLineIds = [];
+  for (const order of targetOrders) {
+    const legs = order.legs || order.meta?.legs || [];
+    for (const l of legs) {
+      if (l.lineId && !lineIdInfo[l.lineId]) unresolvedLineIds.push(l.lineId);
+    }
+  }
+  if (unresolvedLineIds.length > 0) {
+    const unique = [...new Set(unresolvedLineIds)];
+    try {
+      const cached = await db.loadLineCacheBulk(unique);
+      const cacheHits = Object.keys(cached).length;
+      if (cacheHits > 0) {
+        for (const [lid, info] of Object.entries(cached)) {
+          lineIdInfo[lid] = {
+            teamName: info.teamName,
+            marketType: info.marketType,
+            selection: info.selection || info.oddsApiSelection,
+            line: info.line,
+            competitorId: info.competitorId,
+          };
+        }
+        log.info('Affiliate', `Resolved ${cacheHits}/${unique.length} additional line_ids from Supabase line_cache`);
+      }
+    } catch (err) {
+      log.warn('Affiliate', `loadLineCacheBulk failed: ${err.message}`);
+    }
+  }
+
   // ---- 5) apply enrichment to target orders + persist ----
   let enriched = 0;
   const pending = [];
@@ -3205,6 +3235,38 @@ async function enrichReconstructedFromPx() {
     } catch (err) {
       eventsFailed++;
       log.debug('Orders', `enrichReconstructedFromPx: fetchMarkets(${eventId}) failed: ${err.message}`);
+    }
+  }
+
+  // Fallback: check persistent line_cache for unresolved line_ids
+  const unresolvedLineIds = [];
+  for (const order of Object.values(orders)) {
+    const legs = order.legs || order.meta?.legs || [];
+    for (const l of legs) {
+      if (l.lineId && !lineIdInfo[l.lineId] && (!l.team || l.team === '?' || l.team === 'unknown')) {
+        unresolvedLineIds.push(l.lineId);
+      }
+    }
+  }
+  if (unresolvedLineIds.length > 0) {
+    const unique = [...new Set(unresolvedLineIds)];
+    try {
+      const cached = await db.loadLineCacheBulk(unique);
+      const cacheHits = Object.keys(cached).length;
+      if (cacheHits > 0) {
+        for (const [lid, info] of Object.entries(cached)) {
+          lineIdInfo[lid] = {
+            teamName: info.teamName,
+            marketType: info.marketType,
+            selection: info.selection || info.oddsApiSelection,
+            line: info.line,
+            competitorId: info.competitorId,
+          };
+        }
+        log.info('Orders', `Deep enrichment: resolved ${cacheHits}/${unique.length} line_ids from Supabase line_cache`);
+      }
+    } catch (err) {
+      log.warn('Orders', `loadLineCacheBulk failed in deep enrichment: ${err.message}`);
     }
   }
 
