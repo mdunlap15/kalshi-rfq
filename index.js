@@ -1014,6 +1014,29 @@ function startStatusServer() {
     }
   });
 
+  // Quote coverage: real-time breakdown of why RFQs are being declined or failing to price.
+  app.get('/quote-coverage', (req, res) => {
+    try {
+      const coverage = ws.getQuoteCoverageStats();
+      const total = coverage.rfqStages.received || 1;
+      res.json({
+        ok: true,
+        summary: {
+          received: coverage.rfqStages.received,
+          submitted: coverage.rfqStages.submitted,
+          declined: coverage.rfqStages.declined,
+          priceFailed: coverage.rfqStages.priceFailed,
+          submissionRate: coverage.submissionRate,
+        },
+        priceFailureReasons: coverage.priceFailureReasons,
+        declineReasons: coverage.declineReasons,
+        recentFailures: coverage.recentFailures,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Decline audit: rank unknown events/sports by how often they're declining parlays.
   // Optional ?window=5m|15m|30m|1h|2h|6h|24h — when provided, stats are computed from
   // the rolling event log filtered to the window rather than all-session cumulative.

@@ -461,6 +461,7 @@ async function handleRFQ(data) {
         declineDetail: declineCheck.detail || null,
       });
       rfqStages.declined++;
+      recordDeclineReason(reason, declineCheck.detail || null, knownLegs);
       updateRfqOutcome(parlayId, 'declined', reason);
       return;
     }
@@ -499,6 +500,7 @@ async function handleRFQ(data) {
         declineDetail: failure.detail,
       });
       rfqStages.priceFailed++;
+      recordPriceFailure(declineReason, failure.detail, knownLegs);
       updateRfqOutcome(parlayId, 'price_failed', declineReason);
       return;
     }
@@ -935,6 +937,50 @@ function recordResponseTime(parlayId, elapsed, offeredOdds) {
 
 const offerErrors = []; // last N offer submission failures
 
+// ---------------------------------------------------------------------------
+// PRICE FAILURE + DECLINE TRACKING — real-time reason breakdown
+// ---------------------------------------------------------------------------
+const priceFailureReasons = {};   // reason → count
+const declineReasons = {};        // reason → count
+const recentFailures = [];        // last N with detail
+const MAX_RECENT_FAILURES = 200;
+
+function recordPriceFailure(reason, detail, knownLegs) {
+  priceFailureReasons[reason] = (priceFailureReasons[reason] || 0) + 1;
+  recentFailures.unshift({
+    type: 'price_failed',
+    reason,
+    detail: detail || null,
+    legs: (knownLegs || []).map(l => `${l.team} ${l.market}${l.line != null ? ' ' + l.line : ''}`).join(' + ') || null,
+    time: new Date().toISOString(),
+  });
+  if (recentFailures.length > MAX_RECENT_FAILURES) recentFailures.pop();
+}
+
+function recordDeclineReason(reason, detail, knownLegs) {
+  declineReasons[reason] = (declineReasons[reason] || 0) + 1;
+  recentFailures.unshift({
+    type: 'declined',
+    reason,
+    detail: detail || null,
+    legs: (knownLegs || []).map(l => `${l.team || l.teamName || '?'} ${l.market || l.marketType || '?'}`).join(' + ') || null,
+    time: new Date().toISOString(),
+  });
+  if (recentFailures.length > MAX_RECENT_FAILURES) recentFailures.pop();
+}
+
+function getQuoteCoverageStats() {
+  return {
+    rfqStages: { ...rfqStages },
+    priceFailureReasons: { ...priceFailureReasons },
+    declineReasons: { ...declineReasons },
+    submissionRate: rfqStages.received > 0
+      ? `${((rfqStages.submitted / rfqStages.received) * 100).toFixed(1)}%`
+      : '0%',
+    recentFailures: recentFailures.slice(0, 50),
+  };
+}
+
 function getResponseTimeStats() {
   const times = responseTimes.map(r => r.elapsed);
   if (times.length > 0) times.sort((a, b) => a - b);
@@ -973,4 +1019,5 @@ module.exports = {
   getResponseTimeStats,
   wasRfqReceived,
   getReceivedRfqStats,
+  getQuoteCoverageStats,
 };
