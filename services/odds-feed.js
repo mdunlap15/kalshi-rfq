@@ -1825,34 +1825,68 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
   const market = event.markets[marketType];
   if (!market) return null;
 
-  if ((marketType === 'spreads' || marketType === 'totals') && market.line != null && line != null) {
-    const absLine = Math.abs(line);
-    const lineDiff = Math.abs(Math.abs(market.line) - absLine);
-    if (lineDiff > 0.01) {
-      // Line magnitude doesn't match primary — check alt lines.
-      // Pass the SIGNED line so getAltLineFairProb can route to the correct
-      // signed home_point bucket (critical: sign flips on alt spreads).
+  if (marketType === 'spreads' || marketType === 'totals') {
+    // CRITICAL: spreads/totals MUST have a line value to price correctly.
+    // Without a line, we can't distinguish Over 4.5 from Over 8.5 — returning
+    // the primary fair prob would be catastrophically wrong for alt lines.
+    // (Root cause of +377 mispricing on Over 4.5 + Under 5.5 parlay, 2026-04-12)
+    if (line == null) {
+      log.warn('OddsFeed', `getFairProb: null line for ${marketType} ${selection} ${homeTeam} vs ${awayTeam} — declining to avoid primary-line contamination`);
+      return null;
+    }
+
+    if (market.line != null) {
+      const absLine = Math.abs(line);
+      const lineDiff = Math.abs(Math.abs(market.line) - absLine);
+      if (lineDiff > 0.01) {
+        // Line magnitude doesn't match primary — check alt lines.
+        // Pass the SIGNED line so getAltLineFairProb can route to the correct
+        // signed home_point bucket (critical: sign flips on alt spreads).
+        const key = normalizeEventKey(homeTeam, awayTeam);
+        const altProb = getAltLineFairProb(key, marketType, selection, line);
+        if (altProb != null) {
+          // Sanity: for totals far from primary, verify direction makes sense.
+          // Over a low total (e.g. 4.5 when primary is 8.5) should be a heavy
+          // favorite (fairProb >= 0.60). Under a low total should be an underdog.
+          // Vice versa for high totals.  If violated, the alt line data may be
+          // corrupted (swapped over/under, wrong point, stale cache).
+          if (marketType === 'totals' && lineDiff >= 2.0) {
+            const expectHigh = (selection === 'over' && line < market.line) || (selection === 'under' && line > market.line);
+            if (expectHigh && altProb < 0.55) {
+              log.warn('OddsFeed', `Alt total sanity FAIL: ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} — expected heavy favorite, got underdog. Declining.`);
+              return null;
+            }
+          }
+          return altProb;
+        }
+        return null;
+      }
+
+      // Magnitude matches — verify spread DIRECTION is correct.
+      // For spreads: if selection is 'home', the cached home point should have the
+      // same sign as the requested line. E.g., if home is -1.5 (favorite) but
+      // request is +1.5, the bettor wants the alt side, not the primary.
+      if (marketType === 'spreads' && line !== 0) {
+        const cachedPoint = selection === 'home' ? market.home?.point : market.away?.point;
+        if (cachedPoint != null && Math.sign(cachedPoint) !== Math.sign(line)) {
+          // Direction mismatch — requested +1.5 but team is -1.5 (or vice versa)
+          // Treat as alt line, not primary
+          log.info('OddsFeed', `Spread direction mismatch: ${selection} cached ${cachedPoint} vs requested ${line} for ${homeTeam} vs ${awayTeam}`);
+          const key = normalizeEventKey(homeTeam, awayTeam);
+          const altProb = getAltLineFairProb(key, marketType, selection, line);
+          if (altProb != null) return altProb;
+          return null; // no alt line data — decline
+        }
+      }
+    } else {
+      // market.line is null — can't verify if request matches primary.
+      // Route to alt lines; if not cached, decline rather than risk
+      // returning an unverified primary fair prob.
+      log.warn('OddsFeed', `getFairProb: market.line is null for ${marketType}, requested line=${line} — trying alt lines only`);
       const key = normalizeEventKey(homeTeam, awayTeam);
       const altProb = getAltLineFairProb(key, marketType, selection, line);
       if (altProb != null) return altProb;
       return null;
-    }
-
-    // Magnitude matches — verify spread DIRECTION is correct.
-    // For spreads: if selection is 'home', the cached home point should have the
-    // same sign as the requested line. E.g., if home is -1.5 (favorite) but
-    // request is +1.5, the bettor wants the alt side, not the primary.
-    if (marketType === 'spreads' && line !== 0) {
-      const cachedPoint = selection === 'home' ? market.home?.point : market.away?.point;
-      if (cachedPoint != null && Math.sign(cachedPoint) !== Math.sign(line)) {
-        // Direction mismatch — requested +1.5 but team is -1.5 (or vice versa)
-        // Treat as alt line, not primary
-        log.info('OddsFeed', `Spread direction mismatch: ${selection} cached ${cachedPoint} vs requested ${line} for ${homeTeam} vs ${awayTeam}`);
-        const key = normalizeEventKey(homeTeam, awayTeam);
-        const altProb = getAltLineFairProb(key, marketType, selection, line);
-        if (altProb != null) return altProb;
-        return null; // no alt line data — decline
-      }
     }
   }
 
@@ -1904,9 +1938,9 @@ function getDisplayFairProb(sport, homeTeam, awayTeam, marketType, selection, li
   // For spreads/totals, require the requested line to match the cached primary.
   // If it doesn't match (e.g. requested -0.5 but cache has -0.25), return null
   // so the dashboard shows a dash rather than the wrong line's fair value.
-  // Pricing uses the alt-lines cache for these cases; display has no equivalent
-  // path, so it's better to show nothing than to show a misleading number.
-  if ((marketType === 'spreads' || marketType === 'totals') && market.line != null && line != null) {
+  // If line is null for spreads/totals, decline — can't verify match.
+  if (marketType === 'spreads' || marketType === 'totals') {
+    if (line == null || market.line == null) return null;
     if (Math.abs(Math.abs(market.line) - Math.abs(line)) > 0.01) return null;
   }
 
@@ -1944,7 +1978,7 @@ function getDisplayFairProb(sport, homeTeam, awayTeam, marketType, selection, li
  */
 function lineMatchesPrimary(market, marketType, requestedLine, selection) {
   if (marketType !== 'spreads' && marketType !== 'totals') return true;
-  if (requestedLine == null) return true; // legacy callers without line info
+  if (requestedLine == null) return false; // null line → can't verify match, route to alt
   if (market.line == null) return false;
 
   // Magnitude match first
@@ -2158,7 +2192,22 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
       const key = normalizeEventKey(homeTeam, awayTeam);
       // Pass SIGNED line (not abs) so alt-line lookup routes to the correct
       // signed home_point bucket.
-      return getAltLineFairProb(key, marketType, selection, line);
+      const altProb = getAltLineFairProb(key, marketType, selection, line);
+      if (altProb != null) {
+        // Same directional sanity check as getFairProb (see comment there).
+        const market = event.markets[marketType];
+        if (marketType === 'totals' && market?.line != null) {
+          const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
+          if (lineDiff >= 2.0) {
+            const expectHigh = (selection === 'over' && line < market.line) || (selection === 'under' && line > market.line);
+            if (expectHigh && altProb < 0.55) {
+              log.warn('OddsFeed', `Alt total sanity FAIL (async): ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} — declining`);
+              return null;
+            }
+          }
+        }
+      }
+      return altProb;
     }
   }
 
