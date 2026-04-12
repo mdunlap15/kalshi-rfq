@@ -97,6 +97,56 @@ const gameExposure = {};  // keyed by pxEventId
 // Legacy team exposure kept for backward compat with dashboard
 const exposure = {};
 
+// ---------------------------------------------------------------------------
+// PENDING EXPOSURE — reservations for quotes not yet confirmed.
+// Closes the race window where N identical RFQs all pass shouldDecline
+// concurrently because none of them has been confirmed (and so added to
+// `exposure`) yet. Each quote immediately reserves its worst-case risk
+// against the per-team and per-game buckets; the reservation is released
+// when the quote is confirmed (and replaced by real exposure), rejected,
+// or expires (offerValidSeconds).
+// Shape: { [parlayId]: { expiresAt, teamKeys:[{key, risk}], gameKeys:[{key, risk}] } }
+// ---------------------------------------------------------------------------
+const pendingExposure = {};
+
+// ---------------------------------------------------------------------------
+// RECENT LEG SIGNATURES — dedup identical parlay structures from the same
+// bettor pool within a short window. Bettors can farm a correlated parlay
+// by re-submitting it faster than our exposure state updates; we just say
+// no on the second one.
+// Shape: { [sigKey]: lastSeenMs }
+// ---------------------------------------------------------------------------
+const recentParlaySignatures = {};
+const DEDUP_WINDOW_MS = 60 * 1000; // 60s: same leg-set → decline
+
+function parlayLegSignature(legs) {
+  if (!legs || legs.length === 0) return null;
+  const ids = legs
+    .map(l => String(l.line_id || l.lineId || l))
+    .sort();
+  return ids.join('|');
+}
+
+function checkRecentDuplicate(legs) {
+  const sig = parlayLegSignature(legs);
+  if (!sig) return null;
+  const now = Date.now();
+  // Opportunistic cleanup
+  for (const [k, ts] of Object.entries(recentParlaySignatures)) {
+    if (now - ts > DEDUP_WINDOW_MS) delete recentParlaySignatures[k];
+  }
+  const last = recentParlaySignatures[sig];
+  if (last && now - last < DEDUP_WINDOW_MS) {
+    return { ageMs: now - last };
+  }
+  return null;
+}
+
+function recordParlaySignature(legs) {
+  const sig = parlayLegSignature(legs);
+  if (sig) recentParlaySignatures[sig] = Date.now();
+}
+
 // Running stats
 const stats = {
   totalQuotes: 0,
@@ -112,6 +162,94 @@ const stats = {
 // ---------------------------------------------------------------------------
 // RECORD FUNCTIONS
 // ---------------------------------------------------------------------------
+
+/**
+ * Compute per-team + per-game risk reservations for a quote.
+ * Uses the SAME key construction as addExposure (team+event+date) so that
+ * checkExposureLimits sees consistent totals across real + pending.
+ */
+function buildPendingReservation(legs, worstCaseRisk, offerValidSeconds) {
+  if (!legs || legs.length === 0) return null;
+  const teamKeys = [];
+  const gameKeys = [];
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i];
+    const li = leg.lineInfo || leg;
+    const eventId = li.pxEventId;
+    const gameDate = li.startTime ? new Date(li.startTime).toISOString().substring(0, 10) : '';
+    let eventSuffix = eventId ? (eventId + '|' + gameDate) : null;
+    if (!eventSuffix) {
+      const opp = normalizeExposureKey((li.homeTeam || '') + (li.awayTeam || ''));
+      eventSuffix = (opp || '') + '|' + (gameDate || 'noevent');
+    }
+    // Weighted by other-legs fair prob, matching addExposure
+    let otherProb = 1;
+    for (let j = 0; j < legs.length; j++) {
+      if (j === i) continue;
+      const ol = legs[j];
+      const oli = ol.lineInfo || ol;
+      otherProb *= (ol.fairProb || oli.fairProb || 0.5);
+    }
+    const weightedRisk = worstCaseRisk * otherProb;
+
+    // Per-team key
+    const teamName = li.teamName || li.team || li.homeTeam || li.awayTeam || 'unknown';
+    const teamKey = normalizeExposureKey(teamName);
+    if (teamKey) {
+      teamKeys.push({ key: teamKey + '|' + eventSuffix, risk: weightedRisk });
+    }
+    // Per-game key
+    const gameKey = eventId ? (eventId + '|' + gameDate) : ('syn_' + eventSuffix);
+    gameKeys.push({ key: gameKey, risk: weightedRisk });
+  }
+  return {
+    expiresAt: Date.now() + (offerValidSeconds || 120) * 1000,
+    teamKeys,
+    gameKeys,
+  };
+}
+
+function reservePending(parlayId, reservation) {
+  if (!reservation) return;
+  pendingExposure[parlayId] = reservation;
+  // Opportunistic cleanup of expired reservations
+  const now = Date.now();
+  for (const [pid, res] of Object.entries(pendingExposure)) {
+    if (res.expiresAt < now) delete pendingExposure[pid];
+  }
+}
+
+function releasePending(parlayId) {
+  delete pendingExposure[parlayId];
+}
+
+/**
+ * Sum of all in-flight (non-expired) pending risk for a given team+event key.
+ * Called by checkExposureLimits to include pending reservations in the total.
+ */
+function getPendingTeamRisk(teamEventKey) {
+  const now = Date.now();
+  let total = 0;
+  for (const res of Object.values(pendingExposure)) {
+    if (res.expiresAt < now) continue;
+    for (const tk of res.teamKeys) {
+      if (tk.key === teamEventKey) total += tk.risk;
+    }
+  }
+  return total;
+}
+
+function getPendingGameRisk(gameKey) {
+  const now = Date.now();
+  let total = 0;
+  for (const res of Object.values(pendingExposure)) {
+    if (res.expiresAt < now) continue;
+    for (const gk of res.gameKeys) {
+      if (gk.key === gameKey) total += gk.risk;
+    }
+  }
+  return total;
+}
 
 function recordQuote(parlayId, legs, offeredOdds, maxRisk, fairParlayProb, meta) {
   stats.totalQuotes++;
@@ -177,8 +315,9 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
       ordersByUuid[orderUuid] = parlayId;
     }
 
-    // Track exposure per team/selection
+    // Track exposure per team/selection — real exposure supersedes pending
     addExposure(order);
+    releasePending(parlayId);
 
     log.info('Orders', `Confirmed: parlay=${parlayId}, order=${orderUuid}, odds=${confirmedOdds}, stake=$${confirmedStake}`);
     db.saveOrder(order).catch(err => log.error('DB', `saveOrder(confirmation) failed: ${err.message}`));
@@ -213,6 +352,8 @@ function recordRejection(parlayId, reason) {
     order.rejectionReason = reason;
     log.info('Orders', `Rejected: parlay=${parlayId}, reason=${reason}`);
   }
+  // Release any pending reservation — rejection means we won't take this risk
+  releasePending(parlayId);
   return order;
 }
 
@@ -1251,15 +1392,16 @@ function checkGameExposure(legs, estPayout, maxPerGame) {
     }
     const newWeightedRisk = estPayout * otherProb;
 
-    // Current net exposure for this game
+    // Current net exposure for this game (real confirmations) + pending quotes
     const currentNet = gameExposure[gameKey]?.netExposure || 0;
+    const pendingNet = getPendingGameRisk(gameKey);
 
     // Conservative: add full weighted risk (worst case is no offsetting)
-    if (currentNet + newWeightedRisk > maxPerGame) {
+    if (currentNet + pendingNet + newWeightedRisk > maxPerGame) {
       const gameName = gameExposure[gameKey]?.name || gameKey;
       return {
         allowed: false,
-        reason: `Game "${gameName}" net exposure $${Math.round(currentNet)} + $${Math.round(newWeightedRisk)} > max $${Math.round(maxPerGame)}`,
+        reason: `Game "${gameName}" net $${Math.round(currentNet)} + pending $${Math.round(pendingNet)} + new $${Math.round(newWeightedRisk)} > max $${Math.round(maxPerGame)}`,
       };
     }
   }
@@ -1299,12 +1441,17 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
 
     const newRisk = payout * otherProb;
     const currentNet = exposure[key]?.netExposure || 0;
-    const afterAdd = currentNet + newRisk;
+    // Pending = in-flight reservations from quotes not yet confirmed.
+    // Including this closes the race window where N concurrent RFQs for the
+    // same team all pass because none has been confirmed yet.
+    const pendingNet = getPendingTeamRisk(key);
+    const afterAdd = currentNet + pendingNet + newRisk;
 
     if (afterAdd > maxNetExposure) {
       violations.push({
         team: name,
         currentExposure: Math.round(currentNet * 100) / 100,
+        pendingExposure: Math.round(pendingNet * 100) / 100,
         newRisk: Math.round(newRisk * 100) / 100,
         wouldBe: Math.round(afterAdd * 100) / 100,
         limit: maxNetExposure,
@@ -2725,6 +2872,13 @@ module.exports = {
   getExposureForTeam,
   checkExposureLimits,
   getExposureSnapshot,
+  buildPendingReservation,
+  reservePending,
+  releasePending,
+  getPendingTeamRisk,
+  getPendingGameRisk,
+  checkRecentDuplicate,
+  recordParlaySignature,
   recordMatchedParlay,
   recordDecline,
   recordUnsupportedMarket,

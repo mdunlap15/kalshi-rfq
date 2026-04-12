@@ -2308,6 +2308,27 @@ function getStaleThreshold(sport) {
   return perSport[sport] != null ? perSport[sport] : config.pricing.stalePriceMinutes;
 }
 
+/**
+ * Pre-game closing-line guard. When an event starts within PREGAME_WINDOW_MIN,
+ * sportsbooks move the line hard on late news (scratches, weather, scratches).
+ * Our cached odds can be stale even when the sport-level cache passes isStale.
+ *
+ * Returns true if the caller should REFUSE to quote because the cache is too
+ * stale for a game that's about to start.
+ *
+ * Rule: if startTime is within 30 min, require cache age ≤ 2 min.
+ * Otherwise falls back to the normal per-sport threshold.
+ */
+function isEventStalePreGame(sport, startTime) {
+  if (!startTime) return false;
+  const startMs = new Date(startTime).getTime();
+  if (isNaN(startMs)) return false;
+  const minsToStart = (startMs - Date.now()) / 60000;
+  if (minsToStart < 0 || minsToStart > 30) return false; // not in window
+  // Within 30 min of tip-off — tighten to 2 min cache age
+  return getCacheAge(sport) > 2;
+}
+
 // ---------------------------------------------------------------------------
 // DELTA UPDATES — incremental odds changes from SharpAPI /odds/delta
 // ---------------------------------------------------------------------------
@@ -2990,6 +3011,7 @@ module.exports = {
   getCacheAge,
   isStale,
   getStaleThreshold,
+  isEventStalePreGame,
   getCacheStatus,
   getAllCachedEvents,
   __debugGetCache,

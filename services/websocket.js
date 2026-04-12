@@ -513,6 +513,30 @@ async function handleRFQ(data) {
       result.meta
     );
 
+    // Reserve pending exposure for this quote so concurrent RFQs on the
+    // same teams see this risk in their shouldDecline check. Uses the SAME
+    // worst-case max_risk that handleConfirm enforces. Expires automatically
+    // when the quote window closes (offerValidSeconds).
+    const confirmMaxFromPct = config.pricing.maxRiskPerParlayPct > 0
+      ? getBankroll() * config.pricing.maxRiskPerParlayPct / 100
+      : Infinity;
+    const worstCaseRisk = Math.min(
+      config.pricing.maxRiskPerParlay || Infinity,
+      confirmMaxFromPct
+    );
+    const legsWithInfo = result.meta.legs.map(l => ({
+      ...l,
+      lineInfo: l, // match shape expected by buildPendingReservation
+      fairProb: l.fairProb,
+    }));
+    const reservation = orderTracker.buildPendingReservation(
+      legsWithInfo, worstCaseRisk, config.pricing.offerValidSeconds
+    );
+    orderTracker.reservePending(parlayId, reservation);
+    // Mark this leg-set in the dedup window — subsequent identical RFQs
+    // within 60s will short-circuit in shouldDecline.
+    orderTracker.recordParlaySignature(result.meta.legs);
+
     // Submit offer to PX (skip when paused — paper-trade mode)
     if (isPausedNow) {
       log.debug('RFQ', `[PAUSED] Would offer: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}`);
@@ -592,12 +616,35 @@ async function handleConfirm(data) {
     // Check game-level exposure
     const maxPerGame = getBankroll() * config.pricing.maxExposurePerGamePct / 100;
     const origLegs = originalOrder.legs || originalOrder.meta?.legs || [];
-    const gameCheck = orderTracker.checkGameExposure(
-      origLegs.map(l => ({ ...l, lineInfo: l })), ourRisk, maxPerGame
-    );
+    const legsForCheck = origLegs.map(l => ({ ...l, lineInfo: l, team: l.team || l.teamName, fairProb: l.fairProb }));
+
+    // Release this parlay's pending reservation BEFORE the exposure checks
+    // below so we don't double-count (real ourRisk + pending worst-case for
+    // the same parlay). The remaining pending totals reflect OTHER in-flight
+    // quotes, which is what we want to include in the cap.
+    orderTracker.releasePending(parlayId);
+
+    const gameCheck = orderTracker.checkGameExposure(legsForCheck, ourRisk, maxPerGame);
     if (!gameCheck.allowed) {
       log.warn('Confirm', `Rejecting: ${gameCheck.reason}`);
       orderTracker.recordRejection(parlayId, gameCheck.reason);
+      if (callbackUrl) {
+        await px.confirmOrder(callbackUrl, orderUuid, 'reject');
+      }
+      return;
+    }
+
+    // Per-team exposure re-check — CRITICAL. shouldDecline ran at price time
+    // with stale exposure data; by confirm time other parlays may have pushed
+    // real exposure past the cap. Without this check, 5 concurrent quotes all
+    // passed shouldDecline and all 5 confirmed, blowing through the per-team
+    // limit. Use ourRisk (the actual stake PX is confirming) not a guess.
+    const teamCheck = orderTracker.checkExposureLimits(
+      legsForCheck, ourRisk, config.pricing.maxExposurePerTeam
+    );
+    if (!teamCheck.allowed) {
+      log.warn('Confirm', `Rejecting: ${teamCheck.reason}`);
+      orderTracker.recordRejection(parlayId, teamCheck.reason);
       if (callbackUrl) {
         await px.confirmOrder(callbackUrl, orderUuid, 'reject');
       }

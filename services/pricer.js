@@ -98,6 +98,22 @@ async function priceParlay(legs) {
       return null;
     }
 
+    // Pre-game closing-line guard: within 30 min of tip-off, sportsbooks
+    // move the line hard on late news. Require much fresher cache (≤ 2 min)
+    // for events in the final pre-game window. Catches scenarios where the
+    // sport-level cache passes isStale but the line has moved since refresh
+    // (this is how the Rockies +190/+194 stale FD/DK quote slipped through).
+    if (oddsFeed.isEventStalePreGame(lineInfo.sport, lineInfo.startTime)) {
+      const ageMin = Math.round(oddsFeed.getCacheAge(lineInfo.sport) * 10) / 10;
+      log.info('Pricing', `Declined pre-game: ${legLabel} starts soon, cache ${ageMin}m old (limit 2m)`);
+      priceParlay._lastFailure = {
+        reason: 'stale odds (pre-game)',
+        detail: `${legLabel} starts within 30m, ${lineInfo.sport} cache ${ageMin}m old (pre-game limit 2m)`,
+        blockerLeg: legDescriptor,
+      };
+      return null;
+    }
+
     // Lineup-change guard: if the MLB starting pitcher or NHL starting goalie
     // has swapped within the last few minutes, the sportsbooks are still
     // re-pricing and our cached odds are likely stale even if the cache
@@ -716,6 +732,18 @@ function shouldDecline(legs) {
     return { declined: true, reason: 'too many legs', detail: `${legs.length} legs > max ${config.pricing.maxLegs}` };
   }
 
+  // Dedup: decline if we just quoted this exact leg-set within the window.
+  // Bettors can submit the same parlay repeatedly faster than our exposure
+  // state updates (race between quote and confirm). Say no on the repeats.
+  const dup = orderTracker.checkRecentDuplicate(legs);
+  if (dup) {
+    return {
+      declined: true,
+      reason: 'duplicate parlay',
+      detail: `identical leg-set quoted ${Math.round(dup.ageMs / 1000)}s ago (60s dedup window)`,
+    };
+  }
+
   // Check all legs are known and events haven't started
   const resolvedLegs = [];
   for (const leg of legs) {
@@ -848,9 +876,19 @@ function shouldDecline(legs) {
     // at pricing time via Pin-match logic (pinMatchTarget in priceParlay).
   }
 
-  // Check team-level exposure limits
-  // Estimate payout for exposure check (max_risk is our max payout)
-  const estPayout = config.pricing.maxRiskPerParlay;
+  // Check team-level exposure limits.
+  // Use the SAME worst-case max_risk that handleConfirm uses to gate the
+  // actual confirmation — otherwise shouldDecline systematically underestimates
+  // exposure (the bug that let 5 identical $1,124 parlays stack on Rockies
+  // while the per-team check thought each was only adding $500 × other_prob).
+  const bankroll = getBankroll();
+  const maxRiskFromPct = config.pricing.maxRiskPerParlayPct > 0
+    ? bankroll * config.pricing.maxRiskPerParlayPct / 100
+    : Infinity;
+  const estPayout = Math.min(
+    config.pricing.maxRiskPerParlay || Infinity,
+    maxRiskFromPct
+  );
   // Pass legs with fairProb info for weighted calculation
   const legsWithProb = resolvedLegs.map(l => {
     const fp = oddsFeed.getFairProb(
