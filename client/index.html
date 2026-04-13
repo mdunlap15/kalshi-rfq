@@ -2178,9 +2178,9 @@
     const el = document.getElementById('positions-table');
     const countEl = document.getElementById('positions-count');
     const allOrders = data.recentOrders || [];
-    // Exclude reconstructed orders we never quoted (no pricing data)
-    const positions = allOrders.filter(o => o.status === 'confirmed'
-      && (o.quotedAt || !(o.meta && o.meta.reconstructed)));
+    // Show ALL confirmed orders in Open Positions — including reconstructed
+    // ones from PX reconcile. These are real positions with real exposure.
+    const positions = allOrders.filter(o => o.status === 'confirmed');
 
     if (countEl) countEl.textContent = positions.length > 0 ? positions.length + ' active' : '';
 
