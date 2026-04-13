@@ -722,6 +722,15 @@ async function handleConfirm(data) {
         priceProbability
       );
       log.info('Confirm', `Accepted: order=${orderUuid}`);
+
+      // Send push notification to mobile app
+      try {
+        const push = require('./push');
+        const order = orderTracker.findByParlayId(parlayId);
+        if (order) push.notifyConfirmation(order);
+      } catch (pushErr) {
+        log.debug('Push', `Notification failed: ${pushErr.message}`);
+      }
     }
   } catch (err) {
     log.error('Confirm', `Error handling confirmation: ${err.message}`);

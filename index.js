@@ -2909,6 +2909,44 @@ function startStatusServer() {
     res.json(out);
   });
 
+  // --- PWA / Mobile App routes ---
+  const push = require('./services/push');
+
+  app.get('/app', (req, res) => {
+    push.resetBadge();
+    res.sendFile(path.join(__dirname, 'client', 'app.html'));
+  });
+  app.get('/app/manifest.json', (req, res) => {
+    res.sendFile(path.join(__dirname, 'client', 'manifest.json'));
+  });
+  app.get('/app/sw.js', (req, res) => {
+    res.setHeader('Service-Worker-Allowed', '/');
+    res.setHeader('Content-Type', 'application/javascript');
+    res.sendFile(path.join(__dirname, 'client', 'sw.js'));
+  });
+  // SVG icon for PWA
+  app.get('/app/icon-192.svg', (req, res) => {
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.send(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+      <rect width="192" height="192" rx="32" fill="#0d1117"/>
+      <text x="96" y="120" text-anchor="middle" font-size="100" font-family="sans-serif" font-weight="bold" fill="#58a6ff">P</text>
+    </svg>`);
+  });
+  app.get('/app/icon-512.svg', (req, res) => {
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.send(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+      <rect width="512" height="512" rx="80" fill="#0d1117"/>
+      <text x="256" y="320" text-anchor="middle" font-size="280" font-family="sans-serif" font-weight="bold" fill="#58a6ff">P</text>
+    </svg>`);
+  });
+  app.get('/push/vapid-key', (req, res) => {
+    res.json({ publicKey: push.getVapidPublicKey() });
+  });
+  app.post('/push/subscribe', (req, res) => {
+    push.addSubscription(req.body);
+    res.json({ ok: true });
+  });
+
   // SPA fallback
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'client', 'index.html'));

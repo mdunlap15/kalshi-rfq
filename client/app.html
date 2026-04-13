@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/app/manifest.json">
+  <title>Parlay SP</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #1c2129;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text2: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --red: #f85149;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+    }
+
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .header h1 { font-size: 18px; font-weight: 600; }
+    .header .status {
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      background: var(--surface2);
+    }
+    .header .status.connected { color: var(--green); border: 1px solid var(--green); }
+    .header .status.disconnected { color: var(--red); border: 1px solid var(--red); }
+
+    .summary {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 12px 16px;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .stat-card .label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-card .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+    .stat-card .value.positive { color: var(--green); }
+    .stat-card .value.negative { color: var(--red); }
+
+    .section-title {
+      font-size: 13px;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 12px 16px 6px;
+    }
+
+    .parlay-list { padding: 0 12px 24px; }
+    .parlay-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .parlay-card:active { border-color: var(--accent); }
+    .parlay-card .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 12px;
+    }
+    .parlay-card .odds {
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .parlay-card .result {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+    .parlay-card .result.won { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+    .parlay-card .result.lost { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+    .parlay-card .result.push { background: rgba(139, 148, 158, 0.15); color: var(--text2); }
+    .parlay-card .result.confirmed { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
+
+    .parlay-card .legs {
+      padding: 0 12px 10px;
+      font-size: 12px;
+      color: var(--text2);
+    }
+    .parlay-card .leg {
+      padding: 3px 0;
+      display: flex;
+      justify-content: space-between;
+      border-top: 1px solid var(--border);
+    }
+    .parlay-card .leg:first-child { border-top: none; }
+    .parlay-card .leg .leg-result { font-size: 11px; }
+    .parlay-card .leg .leg-result.won { color: var(--green); }
+    .parlay-card .leg .leg-result.lost { color: var(--red); }
+
+    .parlay-card .card-footer {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 12px;
+      font-size: 11px;
+      color: var(--text2);
+      background: var(--surface2);
+    }
+    .parlay-card .pnl { font-weight: 600; }
+    .parlay-card .pnl.positive { color: var(--green); }
+    .parlay-card .pnl.negative { color: var(--red); }
+
+    .notify-banner {
+      margin: 12px 16px;
+      padding: 12px;
+      background: var(--surface);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      font-size: 13px;
+      text-align: center;
+      cursor: pointer;
+    }
+    .notify-banner:active { background: var(--surface2); }
+
+    .empty { text-align: center; padding: 40px 16px; color: var(--text2); font-size: 14px; }
+
+    .refresh-btn {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      font-size: 20px;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .refresh-btn:active { opacity: 0.8; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .refresh-btn.loading { animation: spin 1s linear infinite; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Parlay SP</h1>
+    <span class="status" id="conn-status">...</span>
+  </div>
+
+  <div class="summary" id="summary"></div>
+
+  <div id="notify-prompt"></div>
+
+  <div class="section-title" id="list-title">Recent Parlays</div>
+  <div class="parlay-list" id="parlay-list">
+    <div class="empty">Loading...</div>
+  </div>
+
+  <button class="refresh-btn" id="refresh-btn" onclick="loadData()">&#8635;</button>
+
+  <script>
+    const BASE = location.origin;
+    const DASHBOARD_URL = BASE;
+
+    // --- Push Notifications ---
+    let swReg = null;
+    let pushSubscribed = false;
+
+    async function initServiceWorker() {
+      if (!('serviceWorker' in navigator)) return;
+      try {
+        swReg = await navigator.serviceWorker.register('/app/sw.js');
+        console.log('SW registered');
+        checkPushSubscription();
+      } catch (e) {
+        console.error('SW registration failed:', e);
+      }
+    }
+
+    async function checkPushSubscription() {
+      if (!swReg) return;
+      const sub = await swReg.pushManager.getSubscription();
+      pushSubscribed = !!sub;
+      renderNotifyPrompt();
+    }
+
+    async function subscribePush() {
+      if (!swReg) return;
+      try {
+        // Get VAPID public key from server
+        const resp = await fetch(BASE + '/push/vapid-key');
+        const { publicKey } = await resp.json();
+
+        const sub = await swReg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(publicKey),
+        });
+
+        // Send subscription to server
+        await fetch(BASE + '/push/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sub.toJSON()),
+        });
+
+        pushSubscribed = true;
+        renderNotifyPrompt();
+      } catch (e) {
+        console.error('Push subscribe failed:', e);
+        alert('Could not enable notifications. Check browser permissions.');
+      }
+    }
+
+    function renderNotifyPrompt() {
+      const el = document.getElementById('notify-prompt');
+      if (pushSubscribed) {
+        el.innerHTML = '';
+      } else {
+        el.innerHTML = '<div class="notify-banner" onclick="subscribePush()">Tap to enable push notifications</div>';
+      }
+    }
+
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - base64String.length % 4) % 4);
+      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+      return outputArray;
+    }
+
+    // --- Data Loading ---
+    async function loadData() {
+      const btn = document.getElementById('refresh-btn');
+      btn.classList.add('loading');
+
+      try {
+        const [statusResp, ordersResp] = await Promise.all([
+          fetch(BASE + '/status'),
+          fetch(BASE + '/orders'),
+        ]);
+        const status = await statusResp.json();
+        const ordersData = await ordersResp.json();
+
+        renderStatus(status);
+        renderParlays(ordersData.recentOrders || []);
+
+        // Clear badge on load
+        if (navigator.clearAppBadge) navigator.clearAppBadge();
+      } catch (e) {
+        console.error('Load failed:', e);
+      } finally {
+        btn.classList.remove('loading');
+      }
+    }
+
+    function renderStatus(status) {
+      const o = status.orders || {};
+      const p = status.portfolio || {};
+      const ws = status.websocket || {};
+      const connected = ws.connected;
+
+      const connEl = document.getElementById('conn-status');
+      connEl.textContent = connected ? 'Connected' : 'Disconnected';
+      connEl.className = 'status ' + (connected ? 'connected' : 'disconnected');
+
+      const pnl = o.runningPnL || 0;
+      const pnlCls = pnl >= 0 ? 'positive' : 'negative';
+
+      document.getElementById('summary').innerHTML = `
+        <div class="stat-card">
+          <div class="label">P&L</div>
+          <div class="value ${pnlCls}">${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(2)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Active</div>
+          <div class="value">${o.activeOrders || 0}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Settled</div>
+          <div class="value">${o.totalSettlements || 0}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Win Rate</div>
+          <div class="value">${o.totalSettlements > 0 ? ((o.totalWins / o.totalSettlements) * 100).toFixed(1) : 0}%</div>
+        </div>
+      `;
+    }
+
+    function renderParlays(orders) {
+      const el = document.getElementById('parlay-list');
+      // Show confirmed + settled, newest first
+      const relevant = orders
+        .filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
+        .filter(o => o.quotedAt || o.confirmedAt || (o.meta && o.meta.pxBackfill))
+        .sort((a, b) => (b.confirmedAt || b.quotedAt || '').localeCompare(a.confirmedAt || a.quotedAt || ''))
+        .slice(0, 50);
+
+      if (relevant.length === 0) {
+        el.innerHTML = '<div class="empty">No parlays yet</div>';
+        return;
+      }
+
+      document.getElementById('list-title').textContent = `Recent Parlays (${relevant.length})`;
+
+      el.innerHTML = relevant.map(o => {
+        const legs = o.legs || (o.meta && o.meta.legs) || [];
+        const odds = o.confirmedOdds || o.offeredOdds;
+        const oddsStr = odds ? (odds > 0 ? '+' + odds : '' + odds) : '-';
+        const result = o.settlementResult || (o.status === 'confirmed' ? 'confirmed' : (o.status || '').replace('settled_', ''));
+        const resultCls = result === 'won' ? 'won' : result === 'lost' ? 'lost' : result === 'push' ? 'push' : 'confirmed';
+        const pnl = o.pnl;
+        const pnlStr = pnl != null ? (pnl >= 0 ? '+$' + pnl.toFixed(2) : '-$' + Math.abs(pnl).toFixed(2)) : '-';
+        const pnlCls = pnl != null ? (pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : '') : '';
+        const stake = o.confirmedStake ? '$' + o.confirmedStake.toFixed(2) : '-';
+        const time = (o.confirmedAt || o.quotedAt || '').replace('T', ' ').substring(0, 16);
+        const parlayUrl = BASE + '/order/' + o.parlayId;
+
+        const legHtml = legs.map(l => {
+          const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
+          const lr = l.settlementStatus || l.settlement_status || l.inferredResult || '';
+          const lrCls = lr === 'won' ? 'won' : lr === 'lost' ? 'lost' : '';
+          const lrLabel = lr ? lr.charAt(0).toUpperCase() + lr.slice(1) : '';
+          return '<div class="leg"><span>' + name + '</span><span class="leg-result ' + lrCls + '">' + lrLabel + '</span></div>';
+        }).join('');
+
+        return '<div class="parlay-card" onclick="window.open(\'' + parlayUrl + '\', \'_blank\')">' +
+          '<div class="card-header">' +
+            '<span class="odds">' + legs.length + '-leg ' + oddsStr + '</span>' +
+            '<span class="result ' + resultCls + '">' + result + '</span>' +
+          '</div>' +
+          '<div class="legs">' + legHtml + '</div>' +
+          '<div class="card-footer">' +
+            '<span>Stake: ' + stake + '</span>' +
+            '<span class="pnl ' + pnlCls + '">' + pnlStr + '</span>' +
+            '<span>' + time + '</span>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    // --- Init ---
+    initServiceWorker();
+    loadData();
+    // Auto-refresh every 60s
+    setInterval(loadData, 60000);
+  </script>
+</body>
+</html>
