@@ -1985,10 +1985,12 @@ async function pollOrderSettlements(px) {
       // If still no match: reconstruct the order from PX data so P&L is captured.
       // This handles cases where we missed the confirmation WS event entirely
       // (e.g., service was down) but PX knows about the settled order.
-      // Disabled when SKIP_RECONSTRUCTION=true (production clean start).
+      // Only reconstruct if we have a Supabase record (i.e., we actually quoted it).
       if (!order && pxParlayId) {
-        if (process.env.SKIP_RECONSTRUCTION === 'true' || process.env.SKIP_RECONSTRUCTION === '1') {
-          continue; // skip all reconstruction
+        const dbOrder = dbFallback[pxParlayId];
+        if (!dbOrder) {
+          log.debug('Poll', `Skipping PX order ${pxParlayId} — no Supabase record (never quoted by us)`);
+          continue;
         }
         const settlementStatus = pxOrder.settlement_status;
         if (settlementStatus && !['tbd','requested'].includes(settlementStatus)) {
