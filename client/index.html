@@ -2178,7 +2178,9 @@
     const el = document.getElementById('positions-table');
     const countEl = document.getElementById('positions-count');
     const allOrders = data.recentOrders || [];
-    const positions = allOrders.filter(o => o.status === 'confirmed');
+    // Exclude reconstructed orders we never quoted (no pricing data)
+    const positions = allOrders.filter(o => o.status === 'confirmed'
+      && (o.quotedAt || !(o.meta && o.meta.reconstructed)));
 
     if (countEl) countEl.textContent = positions.length > 0 ? positions.length + ' active' : '';
 
@@ -3754,8 +3756,10 @@
     window._lastPortfolioData = data;
     const allOrders = data.recentOrders || [];
     const stats = data.stats || {};
-    const settled = allOrders.filter(o => o.status && o.status.startsWith('settled_'));
-    const active = allOrders.filter(o => o.status === 'confirmed');
+    // Exclude reconstructed orders we never actually quoted (no pricing data)
+    const ownOrders = allOrders.filter(o => o.quotedAt || !(o.meta && o.meta.reconstructed));
+    const settled = ownOrders.filter(o => o.status && o.status.startsWith('settled_'));
+    const active = ownOrders.filter(o => o.status === 'confirmed');
 
     // --- Section 2: Open Exposure ---
     // (Note: the previous "Section 1: Performance Summary Cards" was
@@ -7019,9 +7023,11 @@
     const el = document.getElementById('history-table');
     const orders = data.recentOrders || [];
 
-    // Merge into history
+    // Merge into history (exclude reconstructed orders we never quoted)
     for (const o of orders) {
-      if (o.parlayId) historyState.orders[o.parlayId] = o;
+      if (o.parlayId && (o.quotedAt || !(o.meta && o.meta.reconstructed))) {
+        historyState.orders[o.parlayId] = o;
+      }
     }
 
     const allOrders = Object.values(historyState.orders)
