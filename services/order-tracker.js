@@ -1985,7 +1985,9 @@ async function pollOrderSettlements(px) {
       // If still no match: reconstruct the order from PX data so P&L is captured.
       // This handles cases where we missed the confirmation WS event entirely
       // (e.g., service was down) but PX knows about the settled order.
-      // Only reconstruct if we have a Supabase record (i.e., we actually quoted it).
+      // Only reconstruct if we have a Supabase record (i.e., we actually quoted
+      // it). Without this guard, every PX order we never quoted gets imported as
+      // a skeleton on each poll cycle, corrupting P&L.
       if (!order && pxParlayId) {
         const dbOrder = dbFallback[pxParlayId];
         if (!dbOrder) {
