@@ -374,6 +374,13 @@ function startStatusServer() {
   });
 
   // Recent orders
+  app.get('/order/:id', (req, res) => {
+    const id = req.params.id;
+    const order = orderTracker.findByParlayId(id) || orderTracker.findByOrderUuid(id);
+    if (!order) return res.status(404).json({ error: 'Order not found', id });
+    res.json(order);
+  });
+
   app.get('/orders', (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     res.json({
