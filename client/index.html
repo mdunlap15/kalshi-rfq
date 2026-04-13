@@ -5853,8 +5853,9 @@
     for (const o of confirmed) {
       const day = (o.confirmedAt || o.quotedAt || '').substring(0, 10);
       if (!day) continue;
-      if (!byDay[day]) byDay[day] = { volume: 0, risk: 0, toWin: 0, pnl: 0, count: 0, settled: 0 };
+      if (!byDay[day]) byDay[day] = { volume: 0, risk: 0, toWin: 0, pnl: 0, count: 0, settled: 0, orders: [] };
       byDay[day].count++;
+      byDay[day].orders.push(o);
       // My Risk = confirmedStake (our max payout liability)
       byDay[day].risk += (o.confirmedStake || 0);
       // To Win = bettor's wager = what we keep if SP wins
@@ -5929,18 +5930,50 @@
 
     svg += '</svg>';
 
-    // Summary table below chart
+    // Summary table below chart — rows expand to show individual wagers
     svg += '<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:11px;">';
     svg += '<tr><th>Date</th><th style="text-align:right">Fills</th><th style="text-align:right">My Risk</th><th style="text-align:right">To Win</th><th style="text-align:right">Settled</th><th style="text-align:right">P&L</th></tr>';
     for (const day of days.reverse()) {
       const d = byDay[day];
       const pnlCls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
-      svg += '<tr><td>' + day + '</td>';
+      const dayId = 'dv-' + day.replace(/-/g, '');
+      svg += '<tr onclick="document.getElementById(\'' + dayId + '\').style.display = document.getElementById(\'' + dayId + '\').style.display === \'none\' ? \'table-row\' : \'none\'" style="cursor:pointer;">';
+      svg += '<td>&#9654; ' + day + '</td>';
       svg += '<td style="text-align:right">' + d.count + '</td>';
       svg += '<td style="text-align:right">' + fmtDollar(d.risk) + '</td>';
       svg += '<td style="text-align:right; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
       svg += '<td style="text-align:right">' + d.settled + '</td>';
       svg += '<td style="text-align:right" class="' + pnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
+      // Expandable detail row
+      svg += '<tr id="' + dayId + '" style="display:none;"><td colspan="6" style="padding:0;">';
+      svg += '<table style="font-size:10px; width:100%; background:var(--surface2); margin:0;">';
+      svg += '<tr style="color:var(--text3);"><th style="padding:2px 6px;">Time</th><th style="padding:2px 6px;">Selections</th><th style="padding:2px 6px;text-align:center;">Legs</th><th style="padding:2px 6px;text-align:right;">Odds</th><th style="padding:2px 6px;text-align:right;">Stake</th><th style="padding:2px 6px;text-align:right;">P&L</th><th style="padding:2px 6px;text-align:center;">Result</th></tr>';
+      const dayOrders = d.orders
+        .filter(o => o.pnl != null)
+        .sort((a, b) => (a.settledAt || a.confirmedAt || '').localeCompare(b.settledAt || b.confirmedAt || ''));
+      for (const o of dayOrders) {
+        const legs = o.legs || o.meta?.legs || [];
+        const selections = legs.map(l => {
+          const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
+          return name.length > 30 ? name.substring(0, 28) + '..' : name;
+        }).join(', ');
+        const time = (o.confirmedAt || '').substring(11, 16) || '--:--';
+        const odds = o.confirmedOdds || o.offeredOdds;
+        const oddsStr = odds ? (odds > 0 ? '+' + odds : '' + odds) : '-';
+        const pnlCls2 = o.pnl > 0 ? 'positive' : o.pnl < 0 ? 'negative' : 'neutral';
+        const result = o.settlementResult || (o.status || '').replace('settled_', '') || '-';
+        const resultColor = result === 'won' ? 'var(--green)' : result === 'lost' ? 'var(--red)' : 'var(--text3)';
+        svg += '<tr style="border-top:1px solid var(--border);">';
+        svg += '<td style="padding:2px 6px;white-space:nowrap;">' + time + '</td>';
+        svg += '<td style="padding:2px 6px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + selections.replace(/"/g, '&quot;') + '">' + selections + '</td>';
+        svg += '<td style="padding:2px 6px;text-align:center;">' + legs.length + '</td>';
+        svg += '<td style="padding:2px 6px;text-align:right;">' + oddsStr + '</td>';
+        svg += '<td style="padding:2px 6px;text-align:right;">' + fmtDollar(o.confirmedStake || 0) + '</td>';
+        svg += '<td style="padding:2px 6px;text-align:right;" class="' + pnlCls2 + '">' + fmtPnl(o.pnl) + '</td>';
+        svg += '<td style="padding:2px 6px;text-align:center;color:' + resultColor + ';">' + result.charAt(0).toUpperCase() + result.slice(1) + '</td>';
+        svg += '</tr>';
+      }
+      svg += '</table></td></tr>';
     }
     svg += '</table></div>';
 
