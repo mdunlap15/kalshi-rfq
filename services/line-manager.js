@@ -35,7 +35,7 @@ const TOTAL_BOUNDS_BY_SPORT = {
   'basketball_ncaab': [100, 200],
   'basketball_wnba': [130, 200],
   'icehockey_nhl': [4, 9],
-  'baseball_mlb': [4, 15],
+  'baseball_mlb': [5, 15],
   'soccer': [0.5, 7],
   'soccer_usa_mls': [0.5, 7],
   'soccer_epl': [0.5, 7],
@@ -488,7 +488,11 @@ async function seedAllLines() {
 
     // Filter to FULL-GAME main markets only.
     // Exclude: first half, first quarter, period, inning, player props
-    const excludePatterns = /first half|1st half|first quarter|1st quarter|2nd half|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|overtime|player|total hits|total strikeout|total earned|total block|total point[^s]|total rebound|total assist|total steal|total made|total rush|total recei|total passing/i;
+    // Exclude: sub-game markets (halves/quarters/periods/innings) and player
+    // props. Standalone prop keywords (strikeouts, pitching, milestones, etc.)
+    // ensure we reject props even when "Total" appears in the name with
+    // intervening words (e.g. "Total Pitching Strikeouts Milestones").
+    const excludePatterns = /first half|1st half|first quarter|1st quarter|2nd half|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|overtime|player|milestones|strikeouts?|pitching|batting|home runs?\b|total hits|total earned|total block|total point[^s]|total rebound|total assist|total steal|total made|total rush|total recei|total passing/i;
 
     const fullGameNames = {
       moneyline: ['Moneyline', 'Moneyline (2 Way)', 'Moneyline (2-Way)', 'Moneyline (Regulation)', 'Draw No Bet'],
@@ -943,7 +947,7 @@ async function resolveUnknownLine(rfqLeg) {
       // PX tags with a supported type like "total" or "spread". These MUST
       // NOT be treated as full-game markets. Pattern matches common prop
       // keywords that appear alongside player names.
-      const playerPropNamePat = /\b(?:made|attempted|assists|rebounds|steals|blocks|turnovers|points|passing|rushing|receiving|tackles|sacks|completions|interceptions|touchdowns|yards|shots|saves|hits|runs|rbis?|strikeouts|walks|home runs|goals|pim|faceoffs?|aces|double faults|games won)\b/i;
+      const playerPropNamePat = /\b(?:made|attempted|assists|rebounds|steals|blocks|turnovers|points|passing|rushing|receiving|tackles|sacks|completions|interceptions|touchdowns|yards|shots|saves|hits|runs|rbis?|strikeouts|walks|home runs|goals|pim|faceoffs?|aces|double faults|games won|milestones|pitching|batting|earned|fantasy)\b/i;
       for (const market of markets || []) {
         if (!SUPPORTED_TYPES.includes(market.type)) continue;
         // Reject sub-game markets (halves/quarters/periods) by name BEFORE
