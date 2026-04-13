@@ -2578,7 +2578,15 @@ async function fullPxReconcile(px) {
     if (!order) {
       // Check Supabase for a previously-saved version with pricing data.
       // If found, use it as the base and only backfill missing fields from PX.
+      // If NOT found, skip — this is a PX order we never quoted, so there's
+      // no pricing data to reconstruct. Importing it would create a skeleton
+      // with null odds/stake/fair that pollutes the dashboard and inflates
+      // the active order count.
       const dbOrder = dbFallback[pxParlayId];
+      if (!dbOrder) {
+        log.debug('Reconcile', `Skipping PX order ${pxParlayId} — no Supabase record (never quoted by us)`);
+        continue;
+      }
 
       // Reconstruct skeleton from PX data (mirrors pollOrderSettlements logic).
       // Uses lineManager (live index) first, then lineCacheFallback (Supabase)
