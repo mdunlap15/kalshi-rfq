@@ -1157,15 +1157,15 @@ async function resolveUnknownLine(rfqLeg) {
             // Max deviation from primary: sport-aware. NBA/NCAAB alt spreads
             // can deviate ±15+, but MLB/NHL/soccer rarely deviate more than
             // ±3 from the primary run/puck line.
+            // Only basketball and football get virtual alt spread registration.
+            // MLB/NHL/soccer: set to 0 to block all virtual alt spreads
+            // (too easy to confuse with player props, puck/run lines rarely
+            // have meaningful alt-line volume anyway).
             const MAX_ALT_DEVIATION = {
               'basketball_nba': 20, 'basketball_ncaab': 20, 'basketball_wnba': 20,
-              'baseball_mlb': 2.5, 'icehockey_nhl': 2.5,
-              'soccer': 3, 'soccer_usa_mls': 3, 'soccer_epl': 3,
-              'soccer_uefa_champs_league': 3, 'soccer_uefa_europa_league': 3,
-              'soccer_spain_la_liga': 3, 'soccer_italy_serie_a': 3,
-              'soccer_germany_bundesliga': 3, 'soccer_france_ligue_one': 3,
+              'americanfootball_nfl': 15, 'americanfootball_ncaaf': 15,
             };
-            const maxDeviation = MAX_ALT_DEVIATION[sportKey] || 10;
+            const maxDeviation = MAX_ALT_DEVIATION[sportKey] ?? 0;
             const deviation = Math.abs(absLine - primaryAbsSpread);
             if (absLine <= maxSpread && deviation <= maxDeviation) {
               inferredType = 'spread';
@@ -1214,13 +1214,9 @@ async function resolveUnknownLine(rfqLeg) {
                 if (primaryHomePoint != null) {
                   const MAX_ALT_DEV_FALLBACK = {
                     'basketball_nba': 20, 'basketball_ncaab': 20, 'basketball_wnba': 20,
-                    'baseball_mlb': 2.5, 'icehockey_nhl': 2.5,
-                    'soccer': 3, 'soccer_usa_mls': 3, 'soccer_epl': 3,
-                    'soccer_uefa_champs_league': 3, 'soccer_uefa_europa_league': 3,
-                    'soccer_spain_la_liga': 3, 'soccer_italy_serie_a': 3,
-                    'soccer_germany_bundesliga': 3, 'soccer_france_ligue_one': 3,
+                    'americanfootball_nfl': 15, 'americanfootball_ncaaf': 15,
                   };
-                  const maxDev = MAX_ALT_DEV_FALLBACK[sportKey] || 10;
+                  const maxDev = MAX_ALT_DEV_FALLBACK[sportKey] ?? 0;
                   const primaryAbs = Math.abs(primaryHomePoint);
                   const dev = Math.abs(absLine - primaryAbs);
                   if (dev > maxDev) {
