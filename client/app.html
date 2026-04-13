@@ -395,24 +395,55 @@
 
       const dashboardUrl = BASE;
 
+      // Convert fair probability to American odds
+      function probToAmerican(p) {
+        if (!p || p <= 0 || p >= 1) return '-';
+        if (p >= 0.5) return Math.round(-100 * p / (1 - p));
+        return '+' + Math.round(100 * (1 - p) / p);
+      }
+
+      function fmtOdds(odds) {
+        if (odds == null) return '-';
+        return odds > 0 ? '+' + odds : '' + odds;
+      }
+
+      // Calculate to-win: what bettor wagered = SP profit if we win
+      function calcToWin(stake, odds) {
+        if (!stake || !odds) return 0;
+        return stake * 100 / Math.abs(odds);
+      }
+
       el.innerHTML = relevant.map(o => {
         const legs = o.legs || (o.meta && o.meta.legs) || [];
         const odds = o.confirmedOdds || o.offeredOdds;
-        const oddsStr = odds ? (odds > 0 ? '+' + odds : '' + odds) : '-';
+        const oddsStr = fmtOdds(odds);
         const result = o.settlementResult || (o.status === 'confirmed' ? 'confirmed' : (o.status || '').replace('settled_', ''));
         const resultCls = result === 'won' ? 'won' : result === 'lost' ? 'lost' : result === 'push' ? 'push' : 'confirmed';
         const pnl = o.pnl;
         const pnlStr = pnl != null ? (pnl >= 0 ? '+$' + pnl.toFixed(2) : '-$' + Math.abs(pnl).toFixed(2)) : '-';
         const pnlCls = pnl != null ? (pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : '') : '';
-        const stake = o.confirmedStake ? '$' + o.confirmedStake.toFixed(2) : '-';
+        const stake = o.confirmedStake || 0;
+        const stakeStr = stake ? '$' + stake.toFixed(2) : '-';
+        const toWinAmt = calcToWin(stake, odds);
+        const toWinStr = toWinAmt > 0 ? '$' + toWinAmt.toFixed(2) : '-';
         const time = (o.confirmedAt || o.quotedAt || '').replace('T', ' ').substring(0, 16);
 
         const legHtml = legs.map(l => {
           const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
+          const displayName = name.length > 25 ? name.substring(0, 23) + '..' : name;
           const lr = l.settlementStatus || l.settlement_status || l.inferredResult || '';
           const lrCls = lr === 'won' ? 'won' : lr === 'lost' ? 'lost' : '';
           const lrLabel = lr ? lr.charAt(0).toUpperCase() + lr.slice(1) : '';
-          return '<div class="leg"><span>' + name + '</span><span class="leg-result ' + lrCls + '">' + lrLabel + '</span></div>';
+          // Best available leg odds: fair, then pinnacle, fanduel, draftkings
+          const legOdds = l.fairProb ? probToAmerican(l.fairProb)
+            : fmtOdds(l.pinnacleOdds || l.fanduelOdds || l.draftkingsOdds);
+          return '<div class="leg">' +
+            '<span>' + displayName + '</span>' +
+            '<span style="display:flex;gap:8px;align-items:center;">' +
+              '<span style="color:var(--text2);font-size:11px;">' + legOdds + '</span>' +
+              (lrLabel ? '<span class="leg-result ' + lrCls + '">' + lrLabel + '</span>' : '') +
+            '</span>' +
+          '</div>';
         }).join('');
 
         return '<div class="parlay-card" onclick="window.open(\'' + dashboardUrl + '\', \'_blank\')">' +
@@ -422,10 +453,11 @@
           '</div>' +
           '<div class="legs">' + legHtml + '</div>' +
           '<div class="card-footer">' +
-            '<span>Stake: ' + stake + '</span>' +
+            '<span>Risk: ' + stakeStr + '</span>' +
+            '<span style="color:var(--green);">Win: ' + toWinStr + '</span>' +
             '<span class="pnl ' + pnlCls + '">' + pnlStr + '</span>' +
-            '<span>' + time + '</span>' +
           '</div>' +
+          '<div style="padding:2px 12px 6px;font-size:10px;color:var(--text2);">' + time + '</div>' +
         '</div>';
       }).join('');
     }
