@@ -393,21 +393,20 @@ async function priceParlay(legs) {
   }
 
   // ---------------------------------------------------------------------
-  // SGP correlation handling — PIN-MATCH approach
+  // SGP correlation handling
   //
-  // Prior approach used hard-coded multiplicative boosts (1.15x ML+total,
-  // 1.22x spread+total) which consistently priced SGPs far below Pinnacle,
-  // crushing fill rate. New approach: target Pinnacle's raw compound parlay
-  // price (which already embeds Pin's own correlation model) and offer the
-  // bettor a small 0.5% edge below that. Pinnacle's SGP pricing is the
-  // sharpest public signal — matching it ensures we're competitive without
-  // overpaying on correlation.
+  // Same-game parlays have correlated legs that independent multiplication
+  // doesn't capture. ML/spread + total on the same game are positively
+  // correlated (favorites covering → more scoring → pushes over).
   //
-  // Formula: pinMatchTarget = pinRawCompound * (1 - 0.005)
-  //   offered = max(perLegVigResult, pinMatchTarget)
-  //
-  // max() ensures we never loosen below per-leg vig baseline. If Pin data
-  // missing for any leg, fall back to a modest 1.05x boost re-vigged.
+  // Two-layer approach:
+  //   1. Correlation discount: 3% implied prob boost on ML/spread + total
+  //      SGP pairs. Calibrated from DK (+240 on Rangers ML + Over 9) vs
+  //      independent (+253). DK discounts ~4%, Bookmaker ~0%, we split at 3%.
+  //   2. Pin-match floor: if Pinnacle data available, ensure we never
+  //      offer better than Pinnacle raw compound minus 0.5% edge.
+  //      max(correlation-adjusted, pin-match) ensures we take the tighter
+  //      of the two signals.
   // ---------------------------------------------------------------------
   let pricingMethod = 'perLegVig';
   let pinRawCompound = null;
@@ -423,8 +422,43 @@ async function priceParlay(legs) {
   const isSGP = Object.values(eventCounts).some(c => c >= 2);
 
   if (isSGP) {
+    // --- Layer 1: Correlation discount ---
+    // For each same-game pair of (ML or spread) + total, apply a 3%
+    // boost to the offered implied probability. This makes our price
+    // worse for the bettor (lower payout) to account for positive
+    // correlation that independent multiplication ignores.
+    const SGP_CORRELATION_DISCOUNT = 0.01; // 1% per correlated pair
+    const byEvent = {};
+    for (const pl of pricedLegs) {
+      const eid = pl.lineInfo.pxEventId;
+      if (!eid) continue;
+      if (!byEvent[eid]) byEvent[eid] = [];
+      byEvent[eid].push(pl);
+    }
+
+    let correlationBoost = 1.0;
+    for (const legs of Object.values(byEvent)) {
+      if (legs.length < 2) continue;
+      const hasMLOrSpread = legs.some(l =>
+        l.lineInfo.marketType === 'moneyline' || l.lineInfo.marketType === 'spread'
+      );
+      const hasTotal = legs.some(l => l.lineInfo.marketType === 'total');
+      if (hasMLOrSpread && hasTotal) {
+        correlationBoost *= (1 + SGP_CORRELATION_DISCOUNT);
+      }
+    }
+
+    if (correlationBoost > 1.0) {
+      const beforeDiscount = offeredImpliedProb;
+      offeredImpliedProb *= correlationBoost;
+      pricingMethod = 'sgp_correlation_discount';
+      log.info('Pricing', `SGP correlation discount: ${correlationBoost.toFixed(3)}x boost, offered ${(beforeDiscount*100).toFixed(2)}% → ${(offeredImpliedProb*100).toFixed(2)}% for ${pricedLegs.length}-leg parlay`);
+    }
+
+    // --- Layer 2: Pin-match floor ---
     // Compute Pinnacle raw compound implied prob using DNB-adjusted values
-    // where applicable (soccer 2-way moneylines).
+    // where applicable (soccer 2-way moneylines). If Pin data available,
+    // ensure we don't offer better than Pin raw minus 0.5%.
     const pinLegs = pricedLegs.filter(l => l.pinnacleOdds != null);
     const havePinAll = pinLegs.length === pricedLegs.length;
 
@@ -441,18 +475,18 @@ async function priceParlay(legs) {
         // Target 0.5% bettor edge below Pin raw compound
         pinMatchTarget = pinRawCompound * (1 - 0.005);
         if (pinMatchTarget > offeredImpliedProb) {
-          log.info('Pricing', `SGP pin-match: ${pricedLegs.length}-leg parlay offered ${(offeredImpliedProb*100).toFixed(2)}% → ${(pinMatchTarget*100).toFixed(2)}% (Pin raw ${(pinRawCompound*100).toFixed(2)}%)`);
+          log.info('Pricing', `SGP pin-match tightening: ${(offeredImpliedProb*100).toFixed(2)}% → ${(pinMatchTarget*100).toFixed(2)}% (Pin raw ${(pinRawCompound*100).toFixed(2)}%)`);
           offeredImpliedProb = pinMatchTarget;
-          pricingMethod = 'sgp_pin_match';
+          pricingMethod = correlationBoost > 1.0 ? 'sgp_correlation_and_pin_match' : 'sgp_pin_match';
         } else {
-          // Per-leg vig already gives bettor better value than Pin — keep it
-          pricingMethod = 'sgp_pin_match_keep_baseline';
+          // Correlation discount already tighter than Pin — keep it
+          if (correlationBoost <= 1.0) pricingMethod = 'sgp_pin_match_keep_baseline';
         }
       }
     }
 
-    // Fallback: Pin data missing — use modest 1.05x boost on fair prob re-vigged
-    if (pinRawCompound == null) {
+    // Fallback: no Pin data AND no correlation discount applied
+    if (pinRawCompound == null && correlationBoost <= 1.0) {
       const fallbackBoost = 1.05;
       const adjustedFair = Math.min(fairParlayProb * fallbackBoost, 0.99);
       const adjustedFairDecimal = 1 / adjustedFair;
