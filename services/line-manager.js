@@ -922,6 +922,11 @@ async function resolveUnknownLine(rfqLeg) {
 
       // Find the line in the markets
       let foundInfo = null;
+      // Track whether the line_id was found in ANY PX market (even if we
+      // couldn't use it — e.g. out-of-bounds line, player prop total).
+      // When set, virtual registration is blocked: PX already told us what
+      // this line_id is, and we must not override that with heuristics.
+      let lineFoundInPxMarket = false;
       // F5 name pattern — detect F5 markets by name since PX uses
       // market.type='spread'/'total' for them (distinguishes only via name)
       const f5NamePat = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings|f5\b/i;
@@ -933,6 +938,12 @@ async function resolveUnknownLine(rfqLeg) {
       // leading to mispriced offers. Mirror the seed-time excludePatterns.
       // F5 is exempt (handled via its own marketType above).
       const subGameNamePat = /first half|1st half|second half|2nd half|first quarter|1st quarter|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|2nd inning|3rd inning|overtime/i;
+      // Player prop name pattern: markets named after a player (e.g.
+      // "LeBron James Made Threes", "Patrick Mahomes Passing Yards") that
+      // PX tags with a supported type like "total" or "spread". These MUST
+      // NOT be treated as full-game markets. Pattern matches common prop
+      // keywords that appear alongside player names.
+      const playerPropNamePat = /\b(?:made|attempted|assists|rebounds|steals|blocks|turnovers|points|passing|rushing|receiving|tackles|sacks|completions|interceptions|touchdowns|yards|shots|saves|hits|runs|rbis?|strikeouts|walks|home runs|goals|pim|faceoffs?|aces|double faults|games won)\b/i;
       for (const market of markets || []) {
         if (!SUPPORTED_TYPES.includes(market.type)) continue;
         // Reject sub-game markets (halves/quarters/periods) by name BEFORE
@@ -958,6 +969,26 @@ async function resolveUnknownLine(rfqLeg) {
           // Otherwise skip this market and keep searching
           continue;
         }
+        // Reject player prop markets — PX often tags these with a supported
+        // type (e.g. "total") but the name reveals it's a player stat market.
+        // Must check BEFORE the per-selection loop so we don't register a
+        // "LeBron James Made Threes O 1.5" as a game total or alt spread.
+        if (playerPropNamePat.test(market.name || '')) {
+          const parsedProp = px.parseMarketSelections(market);
+          if (parsedProp.some(s => s.lineId === lineId)) {
+            log.info('Lines', `Declined player prop market: ${market.type} / "${market.name}" (${event.name})`);
+            resolveUnknownLine._lastFailure = {
+              lineId,
+              reason: 'player_prop_market',
+              marketType: market.type,
+              marketName: market.name,
+              sport: sportKey,
+              eventName: event.name,
+            };
+            return null;
+          }
+          continue;
+        }
         // Reject sub-game/prop totals and spreads by sport-aware bounds.
         // F5 markets must be exempt — detect by NAME, not type, because PX
         // uses type='spread' / 'total' for F5 (only name distinguishes).
@@ -980,6 +1011,7 @@ async function resolveUnknownLine(rfqLeg) {
           if ((sel.marketType === 'total' || sel.marketType === 'spread') && !isF5Market) {
             if (!isValidFullGameLine(sportKey, sel.marketType, sel.line)) {
               log.debug('Lines', `resolveUnknownLine: rejecting out-of-bounds selection ${sel.marketType} ${sel.line} for ${sportKey}: ${market.name}`);
+              lineFoundInPxMarket = true; // Line exists in PX — block virtual registration
               resolveUnknownLine._lastFailure = { lineId, reason: 'out_of_bounds_line', sport: sportKey, marketType: sel.marketType, line: sel.line, marketName: market.name };
               continue;
             }
@@ -1022,7 +1054,10 @@ async function resolveUnknownLine(rfqLeg) {
               oddsApiSelection = sel.selection;
             }
           }
-          if (!oddsApiSelection || !oddsApiMarket) continue;
+          if (!oddsApiSelection || !oddsApiMarket) {
+            lineFoundInPxMarket = true; // Line exists in PX — block virtual registration
+            continue;
+          }
 
           const pxTime = event.scheduled || null;
           const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxTime);
@@ -1072,6 +1107,15 @@ async function resolveUnknownLine(rfqLeg) {
         // Log what market types we DID find for this event (helps diagnose player props etc.)
         const foundTypes = (markets || []).map(m => m.type).filter(Boolean);
         const marketNames = (markets || []).map(m => m.name).filter(Boolean).slice(0, 5);
+
+        // If the line_id was found in a PX market but rejected (out-of-bounds,
+        // unmappable selection, player prop total, etc.), do NOT fall through
+        // to virtual registration. PX already told us what this line is — the
+        // heuristic would misidentify it (e.g. player prop O 1.5 → alt spread).
+        if (lineFoundInPxMarket) {
+          log.info('Lines', `Blocking virtual registration for line ${lineId}: found in PX market but rejected (${resolveUnknownLine._lastFailure?.reason || 'unknown'}). Event: ${event.name}`);
+          return null;
+        }
 
         // --- Virtual registration fallback ---
         // PX fetchMarkets often omits the specific alt-line the RFQ referenced.

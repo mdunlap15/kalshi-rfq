@@ -483,6 +483,8 @@ async function handleRFQ(data) {
         unknownSports,
         unknownCategories,
         declineDetail: declineCheck.detail || null,
+        violations: declineCheck.violations || null,
+        estPayout: declineCheck.estPayout || null,
       });
       rfqStages.declined++;
       recordDeclineReason(reason, declineCheck.detail || null, knownLegs);
@@ -625,6 +627,7 @@ async function handleConfirm(data) {
     if (maxRisk > 0 && maxRisk < Infinity && ourRisk > maxRisk) {
       log.warn('Confirm', `Rejecting: our risk $${ourRisk.toFixed(2)} exceeds max $${maxRisk.toFixed(0)} (stake=$${confirmedStake}, odds=${confirmedOdds})`);
       orderTracker.recordRejection(parlayId, `risk $${ourRisk.toFixed(0)} > max $${maxRisk}`);
+      orderTracker.recordExposureRejection(parlayId, ourRisk, 'per-parlay risk limit', [{ team: 'parlay-cap', wouldBe: ourRisk, limit: maxRisk }]);
       if (callbackUrl) {
         await px.confirmOrder(callbackUrl, orderUuid, 'reject');
       }
@@ -647,6 +650,7 @@ async function handleConfirm(data) {
     if (!gameCheck.allowed) {
       log.warn('Confirm', `Rejecting: ${gameCheck.reason}`);
       orderTracker.recordRejection(parlayId, gameCheck.reason);
+      orderTracker.recordExposureRejection(parlayId, ourRisk, 'game exposure limit');
       if (callbackUrl) {
         await px.confirmOrder(callbackUrl, orderUuid, 'reject');
       }
@@ -664,6 +668,7 @@ async function handleConfirm(data) {
     if (!teamCheck.allowed) {
       log.warn('Confirm', `Rejecting: ${teamCheck.reason}`);
       orderTracker.recordRejection(parlayId, teamCheck.reason);
+      orderTracker.recordExposureRejection(parlayId, ourRisk, 'team exposure limit', teamCheck.violations);
       if (callbackUrl) {
         await px.confirmOrder(callbackUrl, orderUuid, 'reject');
       }
@@ -675,6 +680,7 @@ async function handleConfirm(data) {
     if (!portfolioCheck.allowed) {
       log.warn('Confirm', `Rejecting: portfolio risk $${portfolioCheck.current.toFixed(0)} + $${ourRisk.toFixed(0)} > max drawdown $${maxDrawdown.toFixed(0)}`);
       orderTracker.recordRejection(parlayId, `portfolio risk $${(portfolioCheck.current + ourRisk).toFixed(0)} > $${maxDrawdown.toFixed(0)}`);
+      orderTracker.recordExposureRejection(parlayId, ourRisk, 'portfolio drawdown limit', [{ team: 'portfolio', wouldBe: portfolioCheck.current + ourRisk, limit: maxDrawdown }]);
       if (callbackUrl) {
         await px.confirmOrder(callbackUrl, orderUuid, 'reject');
       }

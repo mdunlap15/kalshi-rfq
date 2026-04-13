@@ -77,6 +77,42 @@ const LIMIT_REASONS = new Set([
   'portfolio drawdown limit',
   'too many legs',
 ]);
+// ---------------------------------------------------------------------------
+// EXPOSURE-LIMIT DECLINE TRACKING — structured data about parlays declined
+// because they'd exceed team/game/portfolio exposure limits. Lets us see how
+// often large-payout parlays are coming through PX that we can't take on.
+// ---------------------------------------------------------------------------
+const exposureLimitStats = {
+  total: 0,
+  byReason: {}, // { 'team exposure limit': count, 'game exposure limit': count, ... }
+  // Size buckets based on the estimated payout (estPayout × leg probs)
+  // At quote time we only have estPayout (maxRiskPerParlay); at confirm time
+  // we have the actual stake. We track both scenarios.
+  bySizeBucket: {
+    'under_1k': 0,
+    '1k_5k': 0,
+    '5k_10k': 0,
+    '10k_50k': 0,
+    '50k_plus': 0,
+  },
+  // Recent entries with full detail (cap at 200)
+  recent: [],
+  // Confirm-time rejections have actual stakes — tracked separately
+  confirmTimeRejections: {
+    total: 0,
+    bySizeBucket: { 'under_1k': 0, '1k_5k': 0, '5k_10k': 0, '10k_50k': 0, '50k_plus': 0 },
+    recent: [], // { parlayId, stake, reason, violations, time }
+  },
+};
+
+function getSizeBucket(amount) {
+  if (amount < 1000) return 'under_1k';
+  if (amount < 5000) return '1k_5k';
+  if (amount < 10000) return '5k_10k';
+  if (amount < 50000) return '10k_50k';
+  return '50k_plus';
+}
+
 // Reject reasons from risk checks at confirmation time
 const rejectStats = {
   total: 0,
@@ -846,6 +882,28 @@ function recordDecline(reason, detail) {
     }
   }
 
+  // Track exposure-limit declines with structured data
+  if (isLimit && detail?.violations) {
+    exposureLimitStats.total++;
+    exposureLimitStats.byReason[bucket] = (exposureLimitStats.byReason[bucket] || 0) + 1;
+    // Use the max violation amount as the representative size
+    const maxViolationAmount = Math.max(...detail.violations.map(v => v.wouldBe || 0), 0);
+    const sizeBucket = getSizeBucket(maxViolationAmount);
+    exposureLimitStats.bySizeBucket[sizeBucket] = (exposureLimitStats.bySizeBucket[sizeBucket] || 0) + 1;
+    exposureLimitStats.recent.unshift({
+      parlayId: detail.parlayId || null,
+      reason: bucket,
+      violations: detail.violations,
+      estPayout: detail.estPayout || null,
+      legCount,
+      maxViolationAmount,
+      sizeBucket,
+      time: declinedAt,
+      teams: detail.violations.map(v => v.team),
+    });
+    if (exposureLimitStats.recent.length > 200) exposureLimitStats.recent.pop();
+  }
+
   // Track near-misses (all legs known but couldn't price)
   // Near-miss reasons include: 'no fair value', 'stale odds', 'parlay too unlikely', 'odds too high'
   const nearMissReasons = new Set(['no fair value', 'stale odds', 'parlay too unlikely', 'odds too high', 'event started']);
@@ -1416,9 +1474,12 @@ function checkGameExposure(legs, estPayout, maxPerGame) {
     // Conservative: add full weighted risk (worst case is no offsetting)
     if (currentNet + pendingNet + newWeightedRisk > maxPerGame) {
       const gameName = gameExposure[gameKey]?.name || gameKey;
+      const wouldBe = currentNet + pendingNet + newWeightedRisk;
       return {
         allowed: false,
         reason: `Game "${gameName}" net $${Math.round(currentNet)} + pending $${Math.round(pendingNet)} + new $${Math.round(newWeightedRisk)} > max $${Math.round(maxPerGame)}`,
+        wouldBe,
+        limit: maxPerGame,
       };
     }
   }
@@ -1911,10 +1972,33 @@ async function pollOrderSettlements(px) {
           const dbOrder = dbFallback[pxParlayId];
           const pxOdds = pxOrder.confirmed_odds != null ? Number(pxOrder.confirmed_odds) : null;
           const pxStake = pxOrder.confirmed_stake != null ? Number(pxOrder.confirmed_stake) : null;
+
+          // Prefer DB legs when they have richer data (same logic as fullPxReconcile)
+          const dbLegs = dbOrder?.legs;
+          const dbLegsRicher = Array.isArray(dbLegs) && dbLegs.length > 0
+            && dbLegs.some(l => l.fairProb != null || l.market != null || (l.sport && l.sport !== 'unknown'));
+          let mergedLegs;
+          if (dbLegsRicher) {
+            mergedLegs = dbLegs.map(dbLeg => {
+              const pxLeg = enrichedLegs.find(el => el.lineId === dbLeg.lineId);
+              if (pxLeg) {
+                return {
+                  ...dbLeg,
+                  settlementStatus: pxLeg.settlementStatus || dbLeg.settlementStatus,
+                  settlement_status: pxLeg.settlement_status || dbLeg.settlement_status,
+                  inferredResult: pxLeg.inferredResult || dbLeg.inferredResult,
+                };
+              }
+              return dbLeg;
+            });
+          } else {
+            mergedLegs = enrichedLegs;
+          }
+
           order = {
             parlayId: pxParlayId,
             status: dbOrder?.status || 'confirmed', // will be set to settled_* below by recordSettlement
-            legs: enrichedLegs,
+            legs: mergedLegs,
             offeredOdds: dbOrder?.offeredOdds ?? (pxOdds != null ? -pxOdds : null),
             fairParlayProb: dbOrder?.fairParlayProb ?? null,
             maxRisk: dbOrder?.maxRisk ?? null,
@@ -1928,8 +2012,8 @@ async function pollOrderSettlements(px) {
             pnl: dbOrder?.pnl ?? null,
             settlementResult: dbOrder?.settlementResult || null,
             meta: dbOrder?.meta && Object.keys(dbOrder.meta).length > 1
-              ? { ...dbOrder.meta, legs: enrichedLegs }
-              : { reconstructed: true, legs: enrichedLegs },
+              ? { ...dbOrder.meta, legs: mergedLegs }
+              : { reconstructed: true, legs: mergedLegs },
           };
           orders[pxParlayId] = order;
           ordersByUuid[uuid] = pxParlayId;
@@ -2476,10 +2560,39 @@ async function fullPxReconcile(px) {
       // PX REST fills in confirmation fields if Supabase is missing them.
       const pxOdds = pxOrder.confirmed_odds != null ? Number(pxOrder.confirmed_odds) : null;
       const pxStake = pxOrder.confirmed_stake != null ? Number(pxOrder.confirmed_stake) : null;
+
+      // Prefer DB legs when they have richer data (fairProb, market type,
+      // team names, book odds). The enrichedLegs skeleton from PX REST only
+      // has lineId, line, and settlement_status — it lacks all pricing data.
+      // Without this, every restart destroys the pricing detail for all
+      // historical orders, leaving team='?', market=null, fairProb=null.
+      const dbLegs = dbOrder?.legs;
+      const dbLegsAreRicher = Array.isArray(dbLegs) && dbLegs.length > 0
+        && dbLegs.some(l => l.fairProb != null || l.market != null || (l.sport && l.sport !== 'unknown'));
+      let mergedLegs;
+      if (dbLegsAreRicher) {
+        // Start from DB legs (which have full pricing data), then backfill
+        // settlement status from PX REST (which has the authoritative result).
+        mergedLegs = dbLegs.map(dbLeg => {
+          const pxLeg = enrichedLegs.find(el => el.lineId === dbLeg.lineId);
+          if (pxLeg) {
+            return {
+              ...dbLeg,
+              settlementStatus: pxLeg.settlementStatus || dbLeg.settlementStatus,
+              settlement_status: pxLeg.settlement_status || dbLeg.settlement_status,
+              inferredResult: pxLeg.inferredResult || dbLeg.inferredResult,
+            };
+          }
+          return dbLeg;
+        });
+      } else {
+        mergedLegs = enrichedLegs;
+      }
+
       order = {
         parlayId: pxParlayId,
         status: dbOrder?.status || 'confirmed',
-        legs: enrichedLegs,
+        legs: mergedLegs,
         offeredOdds: dbOrder?.offeredOdds ?? (pxOdds != null ? -pxOdds : null),
         fairParlayProb: dbOrder?.fairParlayProb ?? null,
         maxRisk: dbOrder?.maxRisk ?? null,
@@ -2493,8 +2606,8 @@ async function fullPxReconcile(px) {
         pnl: dbOrder?.pnl ?? null,
         settlementResult: dbOrder?.settlementResult || null,
         meta: dbOrder?.meta && Object.keys(dbOrder.meta).length > 1
-          ? { ...dbOrder.meta, legs: enrichedLegs }
-          : { reconstructed: true, legs: enrichedLegs },
+          ? { ...dbOrder.meta, legs: mergedLegs }
+          : { reconstructed: true, legs: mergedLegs },
       };
       orders[pxParlayId] = order;
       ordersByUuid[uuid] = pxParlayId;
@@ -2989,6 +3102,8 @@ module.exports = {
   recordUnsupportedMarket,
   getMarketIntel,
   getAlerts,
+  getExposureLimitStats,
+  recordExposureRejection,
   refreshLiveOdds,
   rebuildAllExposure,
   enrichReconstructedOrders,
@@ -3514,6 +3629,49 @@ async function enrichReconstructedFromPx() {
 
   log.info('Orders', `Deep enrichment: ${scanned} orders scanned, ${eventsFetched} events fetched (${eventsFailed} failed), ${enriched} orders enriched`);
   return { scanned, enriched, eventsFetched, eventsFailed, uniqueEvents: eventIdToOrders.size };
+}
+
+/**
+ * Record a confirm-time exposure rejection with actual stake data.
+ * Called from websocket.js when a confirmation is rejected for exposure limits.
+ */
+function recordExposureRejection(parlayId, stake, reason, violations) {
+  const time = new Date().toISOString();
+  const sizeBucket = getSizeBucket(stake);
+  exposureLimitStats.confirmTimeRejections.total++;
+  exposureLimitStats.confirmTimeRejections.bySizeBucket[sizeBucket] =
+    (exposureLimitStats.confirmTimeRejections.bySizeBucket[sizeBucket] || 0) + 1;
+  exposureLimitStats.confirmTimeRejections.recent.unshift({
+    parlayId,
+    stake: Math.round(stake * 100) / 100,
+    reason,
+    violations: violations || null,
+    sizeBucket,
+    time,
+  });
+  if (exposureLimitStats.confirmTimeRejections.recent.length > 100) {
+    exposureLimitStats.confirmTimeRejections.recent.pop();
+  }
+}
+
+/**
+ * Get exposure-limit rejection stats — both quote-time (estimated) and
+ * confirm-time (actual stakes). Used by /status and dashboard.
+ */
+function getExposureLimitStats() {
+  return {
+    quoteTime: {
+      total: exposureLimitStats.total,
+      byReason: { ...exposureLimitStats.byReason },
+      bySizeBucket: { ...exposureLimitStats.bySizeBucket },
+      recent: exposureLimitStats.recent.slice(0, 50),
+    },
+    confirmTime: {
+      total: exposureLimitStats.confirmTimeRejections.total,
+      bySizeBucket: { ...exposureLimitStats.confirmTimeRejections.bySizeBucket },
+      recent: exposureLimitStats.confirmTimeRejections.recent.slice(0, 50),
+    },
+  };
 }
 
 /**

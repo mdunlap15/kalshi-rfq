@@ -367,6 +367,7 @@ function startStatusServer() {
           : null,
       },
       alerts: orderTracker.getAlerts(),
+      exposureLimits: orderTracker.getExposureLimitStats(),
     });
   });
 

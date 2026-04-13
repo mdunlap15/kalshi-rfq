@@ -797,6 +797,17 @@
             <div class="empty-state"><div class="icon">-</div><div>Need active positions</div></div>
           </div>
         </div>
+
+        <!-- Exposure Limit Rejections -->
+        <div class="card">
+          <div class="card-header">
+            <span>Exposure Limit Rejections</span>
+            <span id="exposure-limit-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="exposure-limit-stats">
+            <div class="empty-state"><div class="icon">-</div><div>No exposure limit data yet</div></div>
+          </div>
+        </div>
       </div>
 
       <!-- ===================== SECTION: MARKET INTEL ===================== -->
@@ -960,6 +971,7 @@
       renderMarketIntel(intel);
       renderCompetitiveness(intel);
       renderAnalytics(orders);
+      renderExposureLimitStats(status.exposureLimits || null);
       renderHistory(orders);
       addLog('system', 'Dashboard refreshed');
     } catch (err) {
@@ -5595,6 +5607,101 @@
     renderChartExposure(confirmed);
     renderChartPricingEdge(allQuoted);
     renderChartClv(settled);
+  }
+
+  // -----------------------------------------------------------------------
+  // EXPOSURE LIMIT REJECTION STATS
+  // -----------------------------------------------------------------------
+  function renderExposureLimitStats(data) {
+    const el = document.getElementById('exposure-limit-stats');
+    const summaryEl = document.getElementById('exposure-limit-summary');
+    if (!el) return;
+    if (!data || (data.quoteTime.total === 0 && data.confirmTime.total === 0)) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No exposure limit rejections this session</div></div>';
+      if (summaryEl) summaryEl.textContent = '';
+      return;
+    }
+
+    const qt = data.quoteTime;
+    const ct = data.confirmTime;
+    const totalDeclines = qt.total + ct.total;
+    if (summaryEl) summaryEl.textContent = `${totalDeclines} total (${qt.total} at quote, ${ct.total} at confirm)`;
+
+    // Size bucket labels
+    const bucketLabels = {
+      'under_1k': '< $1K',
+      '1k_5k': '$1K - $5K',
+      '5k_10k': '$5K - $10K',
+      '10k_50k': '$10K - $50K',
+      '50k_plus': '$50K+',
+    };
+
+    // Build size distribution table
+    let html = '<div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">';
+
+    // Quote-time section
+    html += '<div>';
+    html += '<div style="font-weight:600; margin-bottom:8px; color:var(--text2);">Quote-Time Declines <span style="color:var(--text3); font-weight:400;">(estimated payout)</span></div>';
+    html += '<table style="width:100%; font-size:13px;">';
+    html += '<tr style="color:var(--text3);"><td>Size Bucket</td><td style="text-align:right;">Count</td></tr>';
+    for (const [bucket, label] of Object.entries(bucketLabels)) {
+      const count = qt.bySizeBucket[bucket] || 0;
+      if (count > 0) {
+        const pct = qt.total > 0 ? (count / qt.total * 100).toFixed(0) : 0;
+        html += `<tr><td>${label}</td><td style="text-align:right;">${count} <span style="color:var(--text3);">(${pct}%)</span></td></tr>`;
+      }
+    }
+    if (qt.total === 0) html += '<tr><td colspan="2" style="color:var(--text3);">None</td></tr>';
+    html += '</table>';
+
+    // Reason breakdown
+    if (Object.keys(qt.byReason).length > 0) {
+      html += '<div style="margin-top:12px; font-size:12px; color:var(--text3);">By reason:</div>';
+      for (const [reason, count] of Object.entries(qt.byReason)) {
+        html += `<div style="font-size:12px; padding:2px 0;">${reason}: ${count}</div>`;
+      }
+    }
+    html += '</div>';
+
+    // Confirm-time section
+    html += '<div>';
+    html += '<div style="font-weight:600; margin-bottom:8px; color:var(--text2);">Confirm-Time Rejections <span style="color:var(--text3); font-weight:400;">(actual stake)</span></div>';
+    html += '<table style="width:100%; font-size:13px;">';
+    html += '<tr style="color:var(--text3);"><td>Size Bucket</td><td style="text-align:right;">Count</td></tr>';
+    for (const [bucket, label] of Object.entries(bucketLabels)) {
+      const count = ct.bySizeBucket[bucket] || 0;
+      if (count > 0) {
+        const pct = ct.total > 0 ? (count / ct.total * 100).toFixed(0) : 0;
+        html += `<tr><td>${label}</td><td style="text-align:right;">${count} <span style="color:var(--text3);">(${pct}%)</span></td></tr>`;
+      }
+    }
+    if (ct.total === 0) html += '<tr><td colspan="2" style="color:var(--text3);">None</td></tr>';
+    html += '</table>';
+    html += '</div>';
+
+    html += '</div>';
+
+    // Recent rejections table
+    const allRecent = [
+      ...qt.recent.map(r => ({ ...r, phase: 'quote' })),
+      ...ct.recent.map(r => ({ ...r, phase: 'confirm' })),
+    ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 20);
+
+    if (allRecent.length > 0) {
+      html += '<div style="margin-top:16px; font-weight:600; color:var(--text2); margin-bottom:8px;">Recent Rejections</div>';
+      html += '<table style="width:100%; font-size:12px;">';
+      html += '<tr style="color:var(--text3);"><td>Time</td><td>Phase</td><td>Reason</td><td>Teams</td><td style="text-align:right;">Amount</td></tr>';
+      for (const r of allRecent) {
+        const time = new Date(r.time).toLocaleTimeString();
+        const phase = r.phase === 'confirm' ? '<span style="color:var(--amber);">confirm</span>' : 'quote';
+        const teams = r.teams ? r.teams.join(', ') : (r.violations || []).map(v => v.team).join(', ') || '-';
+        const amount = r.phase === 'confirm' ? `$${(r.stake || 0).toLocaleString()}` : `$${(r.maxViolationAmount || 0).toLocaleString()}`;
+        html += `<tr><td>${time}</td><td>${phase}</td><td>${r.reason}</td><td>${teams}</td><td style="text-align:right;">${amount}</td></tr>`;
+      }
+      html += '</table>';
+    }
+
+    el.innerHTML = html;
   }
 
   // Closing Line Value summary — measures how our offered implied probability

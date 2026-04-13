@@ -905,7 +905,7 @@ function shouldDecline(legs) {
   );
   if (!exposureCheck.allowed) {
     log.info('Pricing', `Exposure limit: ${exposureCheck.reason}`);
-    return { declined: true, reason: 'team exposure limit', detail: exposureCheck.reason };
+    return { declined: true, reason: 'team exposure limit', detail: exposureCheck.reason, violations: exposureCheck.violations, estPayout };
   }
 
   // Check game-level exposure limit
@@ -913,7 +913,7 @@ function shouldDecline(legs) {
   const gameCheck = orderTracker.checkGameExposure(resolvedLegs, estPayout, maxPerGame);
   if (!gameCheck.allowed) {
     log.info('Pricing', `Game exposure limit: ${gameCheck.reason}`);
-    return { declined: true, reason: 'game exposure limit', detail: gameCheck.reason };
+    return { declined: true, reason: 'game exposure limit', detail: gameCheck.reason, violations: [{ team: 'game-level', wouldBe: gameCheck.wouldBe || 0, limit: gameCheck.limit || 0 }], estPayout };
   }
 
   // Check portfolio-level drawdown limit
@@ -925,6 +925,8 @@ function shouldDecline(legs) {
       declined: true,
       reason: 'portfolio drawdown limit',
       detail: `$${portfolioCheck.current.toFixed(0)} current + $${estPayout.toFixed(0)} new > $${portfolioCheck.limit.toFixed(0)} max`,
+      violations: [{ team: 'portfolio', wouldBe: portfolioCheck.current + estPayout, limit: portfolioCheck.limit }],
+      estPayout,
     };
   }
 
