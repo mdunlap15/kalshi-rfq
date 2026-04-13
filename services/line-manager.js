@@ -1144,13 +1144,30 @@ async function resolveUnknownLine(rfqLeg) {
           let inferredTeam = null;
           let inferredOddsMarket = null;
 
-          // If we have a primary spread registered, compare magnitude
+          // If we have a primary spread registered, compare magnitude.
+          // Require the line to be within a sport-aware distance of the
+          // primary spread. Without this, player prop lines (e.g. pitcher
+          // K's O/U 4.5) that happen to fall within MAX_SPREAD_BY_SPORT
+          // get misidentified as alt spreads. PX fetchMarkets often omits
+          // player prop markets entirely, so the name-based check above
+          // never fires — virtual registration is the last line of defense.
           if (hasSpread && primarySpread) {
             const primaryAbsSpread = Math.abs(primarySpread.line || 0);
-            // If the line is in the same magnitude range as the primary spread,
-            // it's likely an alt spread. Allow up to 3x the primary or MAX_SPREAD bounds.
             const maxSpread = MAX_SPREAD_BY_SPORT[sportKey] || 15;
-            if (absLine <= maxSpread) {
+            // Max deviation from primary: sport-aware. NBA/NCAAB alt spreads
+            // can deviate ±15+, but MLB/NHL/soccer rarely deviate more than
+            // ±3 from the primary run/puck line.
+            const MAX_ALT_DEVIATION = {
+              'basketball_nba': 20, 'basketball_ncaab': 20, 'basketball_wnba': 20,
+              'baseball_mlb': 2.5, 'icehockey_nhl': 2.5,
+              'soccer': 3, 'soccer_usa_mls': 3, 'soccer_epl': 3,
+              'soccer_uefa_champs_league': 3, 'soccer_uefa_europa_league': 3,
+              'soccer_spain_la_liga': 3, 'soccer_italy_serie_a': 3,
+              'soccer_germany_bundesliga': 3, 'soccer_france_ligue_one': 3,
+            };
+            const maxDeviation = MAX_ALT_DEVIATION[sportKey] || 10;
+            const deviation = Math.abs(absLine - primaryAbsSpread);
+            if (absLine <= maxSpread && deviation <= maxDeviation) {
               inferredType = 'spread';
               // For spreads: negative line = favorite, positive = underdog.
               // Map to home/away using the primary spread's polarity.
@@ -1181,28 +1198,45 @@ async function resolveUnknownLine(rfqLeg) {
             }
           }
 
-          // Fallback: if no primary data, use sport-specific line ranges
+          // Fallback: if no primary data in lineIndex, check odds feed
+          // for a primary spread and require proximity to it.
           if (!inferredType && !hasSpread && !hasTotal) {
             const maxSpread = MAX_SPREAD_BY_SPORT[sportKey] || 15;
             if (absLine <= maxSpread) {
-              inferredType = 'spread';
-              // Without a primary spread, we can try to determine favorite from
-              // the odds feed's primary consensus
+              // Without a primary spread in lineIndex, consult odds feed.
+              // Require the line to be within sport-aware deviation of the
+              // odds feed's primary spread to avoid misidentifying player
+              // props as alt spreads.
               const pxTime = event.scheduled || null;
               const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxTime);
               if (oddsEvt?.markets?.spreads) {
                 const primaryHomePoint = oddsEvt.markets.spreads.home?.point;
                 if (primaryHomePoint != null) {
-                  // Negative rfqLine = favorite, positive = underdog
-                  const homeIsFav = primaryHomePoint < 0;
-                  if (rfqLine < 0) {
-                    inferredSelection = homeIsFav ? 'home' : 'away';
-                    inferredTeam = homeIsFav ? matchedHome : matchedAway;
+                  const MAX_ALT_DEV_FALLBACK = {
+                    'basketball_nba': 20, 'basketball_ncaab': 20, 'basketball_wnba': 20,
+                    'baseball_mlb': 2.5, 'icehockey_nhl': 2.5,
+                    'soccer': 3, 'soccer_usa_mls': 3, 'soccer_epl': 3,
+                    'soccer_uefa_champs_league': 3, 'soccer_uefa_europa_league': 3,
+                    'soccer_spain_la_liga': 3, 'soccer_italy_serie_a': 3,
+                    'soccer_germany_bundesliga': 3, 'soccer_france_ligue_one': 3,
+                  };
+                  const maxDev = MAX_ALT_DEV_FALLBACK[sportKey] || 10;
+                  const primaryAbs = Math.abs(primaryHomePoint);
+                  const dev = Math.abs(absLine - primaryAbs);
+                  if (dev > maxDev) {
+                    log.info('Lines', `Virtual registration blocked: line ${rfqLine} deviates ${dev.toFixed(1)} from primary spread ${primaryHomePoint} (max ${maxDev}) for ${sportKey}. Likely player prop.`);
                   } else {
-                    inferredSelection = homeIsFav ? 'away' : 'home';
-                    inferredTeam = homeIsFav ? matchedAway : matchedHome;
+                    inferredType = 'spread';
+                    const homeIsFav = primaryHomePoint < 0;
+                    if (rfqLine < 0) {
+                      inferredSelection = homeIsFav ? 'home' : 'away';
+                      inferredTeam = homeIsFav ? matchedHome : matchedAway;
+                    } else {
+                      inferredSelection = homeIsFav ? 'away' : 'home';
+                      inferredTeam = homeIsFav ? matchedAway : matchedHome;
+                    }
+                    inferredOddsMarket = 'spreads';
                   }
-                  inferredOddsMarket = 'spreads';
                 }
               }
             }
