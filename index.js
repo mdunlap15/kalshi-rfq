@@ -1,6 +1,6 @@
 // =============================================================================
 // ProphetX Parlay Service Provider
-// MLB / NBA / NHL — Spreads, Moneylines, Totals
+// MLB / NBA / NHL / Tennis / Soccer — Spreads, Moneylines, Totals
 // =============================================================================
 console.log('[BOOT] Process starting, NODE_ENV=' + process.env.NODE_ENV + ', PORT=' + process.env.PORT);
 
