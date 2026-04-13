@@ -55,18 +55,17 @@ async function saveOrder(order) {
       meta: metaWithExtras,
     };
 
-    // Guard: never overwrite a DB row that has pricing data with one that doesn't.
-    // This prevents reconcile/reconstructed skeletons from wiping real records.
-    const pricingFields = ['offered_odds', 'confirmed_odds', 'confirmed_stake', 'fair_parlay_prob'];
-    const hasNoPricing = pricingFields.every(f => row[f] == null);
-    if (hasNoPricing) {
+    // Guard: never let a reconstructed order overwrite a pxBackfill record.
+    // The PX backfill is verified ground-truth data from the PX team's export.
+    // Reconstructed orders are skeleton records from PX REST with incomplete data.
+    if (metaWithExtras.reconstructed) {
       const { data: existing } = await db
         .from('parlay_orders')
-        .select('offered_odds, confirmed_odds, confirmed_stake, fair_parlay_prob')
+        .select('meta')
         .eq('parlay_id', order.parlayId)
         .maybeSingle();
-      if (existing && pricingFields.some(f => existing[f] != null)) {
-        log.warn('DB', `Blocked saveOrder for ${order.parlayId} — would overwrite pricing data with nulls`);
+      if (existing?.meta?.pxBackfill) {
+        log.debug('DB', `Blocked saveOrder for ${order.parlayId} — reconstructed cannot overwrite pxBackfill`);
         return;
       }
     }
