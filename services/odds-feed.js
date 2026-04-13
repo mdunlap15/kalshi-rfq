@@ -307,6 +307,7 @@ async function fetchOddsForSport(sport, opts) {
         const oAwaySingle = getLastWord(orphan.awayTeam);
 
         let bestMatch = null;
+        let bestMatchSwapped = false;
         for (const mainId of mainEvents) {
           const main = eventMap[mainId];
           const mainDate = main.commenceTime ? new Date(main.commenceTime).toISOString().substring(0, 10) : '';
@@ -342,19 +343,48 @@ async function fetchOddsForSport(sport, opts) {
             normalizeTeamName(main.awayTeam).includes(normalizeTeamName(orphan.homeTeam)) ||
             normalizeTeamName(orphan.homeTeam).includes(normalizeTeamName(main.awayTeam));
 
-          if ((homeMatch && awayMatch) || (homeMatchSwap && awayMatchSwap)) {
+          if (homeMatch && awayMatch) {
             bestMatch = mainId;
+            bestMatchSwapped = false;
+            break;
+          }
+          if (homeMatchSwap && awayMatchSwap) {
+            bestMatch = mainId;
+            bestMatchSwapped = true;
             break;
           }
         }
 
         if (bestMatch) {
-          // Merge orphan odds into main event
+          // Merge orphan odds into main event.
+          // If the match was via swapped home/away, flip selection_type
+          // so "home"/"away" align with the main event's perspective.
+          // Without this, Kalshi's "home" odds (which refer to the orphan's
+          // home = main's away) get averaged into the wrong side of the
+          // consensus, corrupting fair probabilities.
+          const SWAP_MAP = {
+            'home': 'away', 'away': 'home',
+            'home_over': 'away_over', 'home_under': 'away_under',
+            'away_over': 'home_over', 'away_under': 'home_under',
+          };
           for (const row of orphan.odds) {
+            if (bestMatchSwapped) {
+              if (row.selection_type && SWAP_MAP[row.selection_type]) {
+                row.selection_type = SWAP_MAP[row.selection_type];
+              }
+              // Negate spread points when swapping (home -1.5 ↔ away +1.5)
+              const isSpread = ['run_line', 'puck_line', 'point_spread'].includes(row.market_type);
+              if (isSpread && row.point != null) {
+                row.point = -row.point;
+              }
+            }
             eventMap[bestMatch].odds.push(row);
           }
           delete eventMap[orphanId];
           mergedOrphans++;
+          if (bestMatchSwapped) {
+            log.info('OddsFeed', `Merged swapped orphan ${orphan.homeTeam}/${orphan.awayTeam} → main ${eventMap[bestMatch].homeTeam}/${eventMap[bestMatch].awayTeam} (flipped selection_type)`);
+          }
         }
       }
       if (mergedOrphans > 0) {
