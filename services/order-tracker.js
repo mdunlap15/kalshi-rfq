@@ -3913,6 +3913,14 @@ async function loadFromDb() {
         if (px && leg.inferredResult !== px) leg.inferredResult = px;
       }
     }
+    // Skip reconstructed orders — they're skeleton records imported from PX REST
+    // that we never actually quoted. Real settled orders come from either the PX
+    // backfill (meta.pxBackfill) or our live quoting pipeline (have quotedAt).
+    if (o.meta?.reconstructed && !o.meta?.pxBackfill) {
+      log.debug('DB', `Skipping reconstructed order ${o.parlayId} on load`);
+      continue;
+    }
+
     orders[o.parlayId] = o;
     if (o.orderUuid) ordersByUuid[o.orderUuid] = o.parlayId;
 
