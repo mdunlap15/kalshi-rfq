@@ -1049,15 +1049,49 @@ function findByParlayId(parlayId) {
 }
 
 /**
+ * Returns true if all legs of an order have already started (game is
+ * finished or in-progress). These orders are awaiting settlement from PX
+ * but no longer represent live risk — the outcome is already determined.
+ * Used to exclude phantom exposure from stale reconstructed orders.
+ */
+function isOrderFinished(order) {
+  const legs = order.legs || order.meta?.legs || [];
+  if (legs.length === 0) return false;
+  const now = Date.now();
+  // Every leg with a startTime must have started. Legs without a startTime
+  // (reconstructed with team='?') are assumed stale if confirmedAt is old.
+  let hasAnyTime = false;
+  for (const leg of legs) {
+    const st = leg.startTime || leg.start_time;
+    if (st) {
+      hasAnyTime = true;
+      if (new Date(st).getTime() > now) return false; // future game
+    }
+  }
+  if (hasAnyTime) return true;
+  // No startTime on any leg — use confirmedAt as a proxy. If confirmed
+  // more than 8 hours ago, almost certainly finished.
+  const ca = order.confirmedAt;
+  if (ca && (now - new Date(ca).getTime()) > 8 * 3600 * 1000) return true;
+  return false;
+}
+
+/**
  * Get total portfolio risk — sum of our max payouts across all confirmed orders.
  * This is the naive worst case (all parlays win simultaneously).
  * Our risk per parlay = americanOddsToProfit(odds, confirmedStake)
  * where confirmedStake = bettor's wager and the profit calc gives our payout.
+ *
+ * Excludes orders where all legs have already started — those games are
+ * finished and the outcome is determined, just awaiting PX settlement.
+ * Without this filter, reconstructed orders from previous restarts inflate
+ * portfolio risk by tens of thousands of dollars of phantom exposure.
  */
 function getTotalPortfolioRisk() {
   let total = 0;
   for (const order of Object.values(orders)) {
     if (order.status !== 'confirmed') continue;
+    if (isOrderFinished(order)) continue;
     // confirmedStake IS our SP risk (verified from PX payload). No multiplication.
     total += (order.confirmedStake || 0);
   }
@@ -1591,10 +1625,12 @@ function rebuildAllExposure() {
     legsSkippedNoPayout: 0,
     uniqueTeamKeys: new Set(),
   };
-  // Re-add all confirmed orders
+  // Re-add all confirmed orders (skip finished — games already played)
+  let skippedFinished = 0;
   for (const order of Object.values(orders)) {
     diag.totalOrders++;
     if (order.status !== 'confirmed') continue;
+    if (isOrderFinished(order)) { skippedFinished++; continue; }
     diag.confirmedOrders++;
     const legs = order.legs || order.meta?.legs || [];
     if (legs.length === 0) continue;
@@ -1611,6 +1647,7 @@ function rebuildAllExposure() {
     }
     addExposure(order);
   }
+  if (skippedFinished > 0) log.info('Exposure', `Skipped ${skippedFinished} finished orders during rebuild`);
   const result = {
     ...diag,
     uniqueTeamKeys: diag.uniqueTeamKeys.size,
@@ -2637,9 +2674,11 @@ async function fullPxReconcile(px) {
       if (!order.status?.startsWith('settled_')) {
         order.status = order.status || 'confirmed';
       }
-      if (wasNew) {
+      if (wasNew && !isOrderFinished(order)) {
         // Register exposure for newly-reconstructed confirmed orders so the
         // exposure tracker includes them in portfolio calculations.
+        // Skip finished orders (all legs started) — they inflate exposure
+        // with phantom risk from games that are already over.
         addExposure(order);
       }
       db.saveOrder(order).catch(err => log.error('Reconcile', `saveOrder(unsettled) failed for ${pxParlayId}: ${err.message}`));
@@ -3865,7 +3904,7 @@ async function loadFromDb() {
     stats.totalQuotes++;
     if (o.status === 'confirmed') {
       stats.totalConfirmations++;
-      addExposure(o);
+      if (!isOrderFinished(o)) addExposure(o);
     } else if (o.status === 'rejected') {
       stats.totalRejections++;
     } else if (o.status?.startsWith('settled_')) {
