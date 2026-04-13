@@ -348,8 +348,10 @@ function startStatusServer() {
       },
       portfolio: {
         bankroll: getBankroll(),
+        balance: config.pricing.liveBankroll || getBankroll(),
         maxDrawdownPct: config.pricing.maxDrawdownPct,
         maxDrawdown: getBankroll() * config.pricing.maxDrawdownPct / 100,
+        totalRisk: orderTracker.getTotalPortfolioRisk(),
         currentRisk: orderTracker.getTotalPortfolioRisk(),
         totalToWin: orderTracker.getTotalToWin(),
         maxRiskPerParlay: config.pricing.maxRiskPerParlay,

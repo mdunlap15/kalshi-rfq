@@ -52,7 +52,7 @@
 
     .summary {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr 1fr 1fr;
       gap: 8px;
       padding: 12px 16px;
     }
@@ -272,9 +272,10 @@
         ]);
         const status = await statusResp.json();
         const ordersData = await ordersResp.json();
+        const allOrders = ordersData.recentOrders || [];
 
-        renderStatus(status);
-        renderParlays(ordersData.recentOrders || []);
+        renderStatus(status, allOrders);
+        renderParlays(allOrders);
 
         // Clear badge on load
         if (navigator.clearAppBadge) navigator.clearAppBadge();
@@ -285,7 +286,20 @@
       }
     }
 
-    function renderStatus(status) {
+    // Get today's date in ET (US Eastern)
+    function getTodayET() {
+      return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    }
+
+    // Get 10am ET today as a Date object
+    function getTodayCutoffET() {
+      const todayStr = getTodayET();
+      // Create a date at 10:00 ET
+      const d = new Date(todayStr + 'T10:00:00-04:00'); // EDT
+      return d;
+    }
+
+    function renderStatus(status, allOrders) {
       const o = status.orders || {};
       const p = status.portfolio || {};
       const ws = status.websocket || {};
@@ -297,6 +311,31 @@
 
       const pnl = o.runningPnL || 0;
       const pnlCls = pnl >= 0 ? 'positive' : 'negative';
+      const deployed = p.totalRisk || 0;
+      const toWin = p.totalToWin || 0;
+      const balance = p.balance || 0;
+
+      // Daily P&L: settled orders after 10am ET today
+      const cutoff = getTodayCutoffET();
+      const todaySettled = allOrders.filter(ord => {
+        if (!ord.status || !ord.status.startsWith('settled_')) return false;
+        const t = ord.settledAt ? new Date(ord.settledAt) : null;
+        return t && t >= cutoff;
+      });
+      const dailyPnl = todaySettled.reduce((sum, ord) => sum + (ord.pnl || 0), 0);
+      const dailyPnlCls = dailyPnl >= 0 ? 'positive' : 'negative';
+
+      // Open parlays with a game starting today
+      const todayStr = getTodayET();
+      const openToday = allOrders.filter(ord => {
+        if (ord.status !== 'confirmed') return false;
+        const legs = ord.legs || (ord.meta && ord.meta.legs) || [];
+        return legs.some(l => {
+          if (!l.startTime) return false;
+          const legDay = new Date(l.startTime).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+          return legDay === todayStr;
+        });
+      });
 
       document.getElementById('summary').innerHTML = `
         <div class="stat-card">
@@ -304,16 +343,36 @@
           <div class="value ${pnlCls}">${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(2)}</div>
         </div>
         <div class="stat-card">
-          <div class="label">Active</div>
-          <div class="value">${o.activeOrders || 0}</div>
+          <div class="label">Daily P&L</div>
+          <div class="value ${dailyPnlCls}">${dailyPnl >= 0 ? '+' : ''}$${Math.abs(dailyPnl).toFixed(2)}</div>
         </div>
         <div class="stat-card">
-          <div class="label">Settled</div>
-          <div class="value">${o.totalSettlements || 0}</div>
+          <div class="label">Settled Today</div>
+          <div class="value">${todaySettled.length}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Deployed</div>
+          <div class="value">$${deployed.toFixed(2)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">To Win</div>
+          <div class="value" style="color:var(--green);">$${toWin.toFixed(2)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Balance</div>
+          <div class="value">$${balance.toFixed(2)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Open Today</div>
+          <div class="value">${openToday.length}</div>
         </div>
         <div class="stat-card">
           <div class="label">Win Rate</div>
           <div class="value">${o.totalSettlements > 0 ? ((o.totalWins / o.totalSettlements) * 100).toFixed(1) : 0}%</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Active</div>
+          <div class="value">${o.activeOrders || 0}</div>
         </div>
       `;
     }
@@ -334,6 +393,8 @@
 
       document.getElementById('list-title').textContent = `Recent Parlays (${relevant.length})`;
 
+      const dashboardUrl = BASE;
+
       el.innerHTML = relevant.map(o => {
         const legs = o.legs || (o.meta && o.meta.legs) || [];
         const odds = o.confirmedOdds || o.offeredOdds;
@@ -345,7 +406,6 @@
         const pnlCls = pnl != null ? (pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : '') : '';
         const stake = o.confirmedStake ? '$' + o.confirmedStake.toFixed(2) : '-';
         const time = (o.confirmedAt || o.quotedAt || '').replace('T', ' ').substring(0, 16);
-        const parlayUrl = BASE + '/order/' + o.parlayId;
 
         const legHtml = legs.map(l => {
           const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
@@ -355,7 +415,7 @@
           return '<div class="leg"><span>' + name + '</span><span class="leg-result ' + lrCls + '">' + lrLabel + '</span></div>';
         }).join('');
 
-        return '<div class="parlay-card" onclick="window.open(\'' + parlayUrl + '\', \'_blank\')">' +
+        return '<div class="parlay-card" onclick="window.open(\'' + dashboardUrl + '\', \'_blank\')">' +
           '<div class="card-header">' +
             '<span class="odds">' + legs.length + '-leg ' + oddsStr + '</span>' +
             '<span class="result ' + resultCls + '">' + result + '</span>' +
