@@ -360,6 +360,7 @@ function startStatusServer() {
         maxDrawdownPct: config.pricing.maxDrawdownPct,
         maxDrawdown: getBankroll() * config.pricing.maxDrawdownPct / 100,
         currentRisk: orderTracker.getTotalPortfolioRisk(),
+        totalToWin: orderTracker.getTotalToWin(),
         maxRiskPerParlay: config.pricing.maxRiskPerParlay,
         maxRiskPerParlayPct: config.pricing.maxRiskPerParlayPct,
         maxRiskPerParlayFromPct: config.pricing.maxRiskPerParlayPct > 0

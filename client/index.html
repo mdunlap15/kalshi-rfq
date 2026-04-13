@@ -4815,18 +4815,9 @@
     const active = orderStats.activeOrders || 0;
     const winRate = settled > 0 ? Math.round(wins / settled * 100) : null;
 
-    // Calculate totals from active orders
-    const activeOrders = (allOrders || []).filter(o => o.status === 'confirmed');
-    let totalRisk = 0, totalToWin = 0;
-    for (const o of activeOrders) {
-      // Risk = our SP stake (= confirmedStake directly)
-      totalRisk += (o.confirmedStake || 0);
-      // To Win = our profit if SP wins (= bettor's original stake)
-      if (o.confirmedStake && o.offeredOdds) totalToWin += calcSpProfit(o.confirmedStake, o.offeredOdds);
-    }
-
-    // Portfolio risk from status
-    const portRisk = portfolio?.currentRisk || totalRisk;
+    // Use server-computed values that correctly exclude finished orders
+    const portRisk = portfolio?.currentRisk || 0;
+    const totalToWin = portfolio?.totalToWin || 0;
     const portLimit = portfolio?.maxDrawdown || 0;
     const portPct = portLimit > 0 ? Math.round(portRisk / portLimit * 100) : 0;
     const portCls = portPct > 90 ? 'negative' : portPct > 70 ? '' : 'positive';
@@ -5593,11 +5584,14 @@
 
   function renderAnalytics(data) {
     const allOrders = data.recentOrders || [];
-    const settled = allOrders.filter(o => o.status && o.status.startsWith('settled_'));
-    const confirmed = allOrders.filter(o => o.status === 'confirmed');
-    const allQuoted = allOrders.filter(o => o.offeredOdds);
+    // Exclude reconstructed orders we never actually quoted — old PX orders
+    // from before the SP was actively trading (quotedAt null + meta.reconstructed).
+    const ownOrders = allOrders.filter(o => o.quotedAt || !(o.meta && o.meta.reconstructed));
+    const settled = ownOrders.filter(o => o.status && o.status.startsWith('settled_'));
+    const confirmed = ownOrders.filter(o => o.status === 'confirmed');
+    const allQuoted = ownOrders.filter(o => o.offeredOdds);
 
-    renderChartDailyVolume(allOrders);
+    renderChartDailyVolume(ownOrders);
     renderChartCumulPnl(settled);
     renderChartCumulRoi(settled);
     renderChartPnlSport(settled);
@@ -5838,8 +5832,14 @@
     const el = document.getElementById('chart-daily-volume');
     if (!el) return;
 
-    // Group confirmed orders by day
-    const confirmed = allOrders.filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')));
+    // Group confirmed orders by day.
+    // Exclude reconstructed orders we never actually quoted (quotedAt is null
+    // AND meta.reconstructed is true) — these are old PX orders pulled in by
+    // fullPxReconcile from before the SP was actively trading.
+    const confirmed = allOrders.filter(o =>
+      (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
+      && (o.quotedAt || !(o.meta && o.meta.reconstructed))
+    );
     if (confirmed.length < 1) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>';
       return;
@@ -5851,8 +5851,10 @@
       if (!day) continue;
       if (!byDay[day]) byDay[day] = { volume: 0, risk: 0, toWin: 0, pnl: 0, count: 0, settled: 0 };
       byDay[day].count++;
-      byDay[day].risk += o.confirmedStake && o.offeredOdds ? calcBettorWager(o.confirmedStake, o.offeredOdds) : 0;
-      byDay[day].toWin += (o.confirmedStake || 0);
+      // My Risk = confirmedStake (our max payout liability)
+      byDay[day].risk += (o.confirmedStake || 0);
+      // To Win = bettor's wager = what we keep if SP wins
+      byDay[day].toWin += o.confirmedStake && o.offeredOdds ? calcSpProfit(o.confirmedStake, o.offeredOdds) : 0;
       if (o.pnl != null) {
         byDay[day].pnl += o.pnl;
         byDay[day].settled++;

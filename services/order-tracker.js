@@ -1099,6 +1099,23 @@ function getTotalPortfolioRisk() {
 }
 
 /**
+ * Sum of SP profit across all live (non-finished) confirmed orders.
+ * SP profit = bettor's wager = confirmedStake * 100 / |odds|.
+ * This is what we keep if every active parlay settles in our favor.
+ */
+function getTotalToWin() {
+  let total = 0;
+  for (const order of Object.values(orders)) {
+    if (order.status !== 'confirmed') continue;
+    if (isOrderFinished(order)) continue;
+    const stake = order.confirmedStake || 0;
+    const odds = Math.abs(order.confirmedOdds || order.offeredOdds || 0);
+    if (stake > 0 && odds >= 100) total += stake * 100 / odds;
+  }
+  return total;
+}
+
+/**
  * Check if adding a new parlay would exceed the portfolio drawdown limit.
  * @param {number} additionalRisk - payout of the new parlay
  * @param {number} maxDrawdown - max allowed total portfolio risk
@@ -3120,6 +3137,7 @@ module.exports = {
   findByParlayId,
   findByOrderUuid,
   getTotalPortfolioRisk,
+  getTotalToWin,
   checkPortfolioRisk,
   getGameExposureSnapshot,
   checkGameExposure,
