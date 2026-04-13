@@ -90,39 +90,36 @@ async function loadOrders(limit = 100) {
     return [];
   }
 
-  // Supabase caps single queries at 1000 rows by default. Paginate via .range()
-  // to fetch all requested orders beyond that cap.
+  // Load only settled + confirmed orders on startup. The 50K+ "quoted" rows
+  // (unfilled RFQs) don't affect P&L, exposure, or positions and cause
+  // Supabase free-tier timeouts when sorting/paginating the full table.
+  // New quotes from the current session are tracked in memory.
   const PAGE_SIZE = 1000;
   const all = [];
   const startMs = Date.now();
   let pagesFetched = 0;
+  const STATUSES = ['confirmed', 'settled_won', 'settled_lost', 'settled_push', 'rejected'];
   try {
-    let offset = 0;
-    while (offset < limit) {
-      const pageSize = Math.min(PAGE_SIZE, limit - offset);
-      // Stable pagination: primary sort on quoted_at (may be NULL for
-      // reconstructed orders) + secondary sort on parlay_id so .range()
-      // is guaranteed deterministic across pages.
-      const { data, error } = await db
-        .from('parlay_orders')
-        .select('*')
-        .order('quoted_at', { ascending: false, nullsFirst: false })
-        .order('parlay_id', { ascending: true })
-        .range(offset, offset + pageSize - 1);
-      if (error) {
-        log.error('DB', `loadOrders page ${pagesFetched} at offset ${offset} failed: ${error.message} (code=${error.code} details=${error.details})`);
-        break;
-      }
-      if (!data || data.length === 0) {
-        if (pagesFetched === 0) {
-          log.warn('DB', `loadOrders first page returned empty — table may be empty or the query returned no rows`);
+    for (const status of STATUSES) {
+      let offset = 0;
+      while (offset < limit - all.length) {
+        const pageSize = Math.min(PAGE_SIZE, limit - all.length - offset);
+        const { data, error } = await db
+          .from('parlay_orders')
+          .select('*')
+          .eq('status', status)
+          .order('parlay_id', { ascending: true })
+          .range(offset, offset + pageSize - 1);
+        if (error) {
+          log.error('DB', `loadOrders ${status} page at offset ${offset} failed: ${error.message}`);
+          break;
         }
-        break;
+        if (!data || data.length === 0) break;
+        all.push(...data);
+        pagesFetched++;
+        if (data.length < pageSize) break;
+        offset += pageSize;
       }
-      all.push(...data);
-      pagesFetched++;
-      if (data.length < pageSize) break; // reached end
-      offset += pageSize;
     }
     log.info('DB', `loadOrders: ${all.length} rows in ${pagesFetched} pages (${Date.now() - startMs}ms)`);
 
