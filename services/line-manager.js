@@ -977,7 +977,14 @@ async function resolveUnknownLine(rfqLeg) {
         // type (e.g. "total") but the name reveals it's a player stat market.
         // Must check BEFORE the per-selection loop so we don't register a
         // "LeBron James Made Threes O 1.5" as a game total or alt spread.
-        if (playerPropNamePat.test(market.name || '')) {
+        //
+        // IMPORTANT: Skip this check for known full-game market names like
+        // "Total Points", "Total Runs", "Total Goals", "Point Spread", etc.
+        // These contain generic words (points, runs, goals) that also appear
+        // in playerPropNamePat, causing thousands of false-positive declines
+        // on legitimate alt spread/total lines.
+        const fullGameNamePat = /^(?:total|spread|moneyline|run line|puck line|point spread|alternate|alt |game spread|team total|draw no bet|both teams|double chance)/i;
+        if (playerPropNamePat.test(market.name || '') && !fullGameNamePat.test(market.name || '')) {
           const parsedProp = px.parseMarketSelections(market);
           if (parsedProp.some(s => s.lineId === lineId)) {
             log.info('Lines', `Declined player prop market: ${market.type} / "${market.name}" (${event.name})`);
