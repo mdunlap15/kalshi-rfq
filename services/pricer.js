@@ -324,8 +324,8 @@ async function priceParlay(legs) {
   // without killing competitiveness on normal parlays.
   function getEffectiveVig(fairProb, sport) {
     const baseVig = getBaseVigForSport(sport);
-    if (fairProb >= 0.80) return Math.max(baseVig, 0.05);  // extreme favorites (-400+)
-    if (fairProb >= 0.70) return Math.max(baseVig, 0.04);  // heavy favorites (-230+)
+    if (fairProb >= 0.80) return Math.max(baseVig, 0.03);  // extreme favorites (-400+)
+    if (fairProb >= 0.70) return Math.max(baseVig, 0.025); // heavy favorites (-230+)
     return baseVig;                                         // everything else keeps base vig
   }
 
