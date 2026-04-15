@@ -726,6 +726,16 @@
           </div>
         </div>
 
+        <!-- Parlay-Level Edge -->
+        <div class="card">
+          <div class="card-header">
+            <span>Parlay-Level Edge (compound)</span>
+          </div>
+          <div class="card-body" id="chart-parlay-edge">
+            <div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays</div></div>
+          </div>
+        </div>
+
         <!-- Missed Volume from Risk Limits -->
         <div class="card">
           <div class="card-header">
@@ -5704,6 +5714,7 @@
     renderChartCompGap(data);
     renderChartExposure(confirmed);
     renderChartPricingEdge(allQuoted);
+    renderChartParlayEdge(allQuoted);
     renderChartClv(settled);
     renderChartRiskLimitMissed(intel);
   }
@@ -7048,6 +7059,218 @@
     }
     if (sorted.length > 100) html += '<tr><td colspan="9" style="text-align:center; color:var(--text3);">... ' + (sorted.length - 100) + ' more legs</td></tr>';
     html += '</table></div>';
+
+    el.innerHTML = html;
+  }
+
+  // ===================== PARLAY-LEVEL EDGE =====================
+  // One dot per parlay. Compound edge = (our offered prob − reference prob)
+  // Two toggleable series: vs Pinnacle and vs Consensus Fair.
+  // Confirmed parlays render as filled large dots; other quoted parlays
+  // render small and translucent so the won cluster pops.
+  if (!window._parlayEdgeToggle) window._parlayEdgeToggle = { pinnacle: true, fair: true };
+  function toggleParlayEdgeSeries(which) {
+    window._parlayEdgeToggle[which] = !window._parlayEdgeToggle[which];
+    if (window._parlayEdgeData) renderChartParlayEdge(null);
+  }
+
+  function renderChartParlayEdge(allQuoted) {
+    const el = document.getElementById('chart-parlay-edge');
+    if (!el) return;
+
+    // Build-or-reuse cached data so toggle re-renders don't redo the work.
+    let data = window._parlayEdgeData;
+    if (allQuoted) {
+      data = [];
+      const threeDaysAgo = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+      for (const o of allQuoted) {
+        const qDate = o.quotedAt || o.confirmedAt;
+        if (qDate && qDate < threeDaysAgo) continue;
+        if (!o.offeredOdds) continue;
+        const legs = o.meta?.legs || o.legs || [];
+        if (legs.length === 0) continue;
+
+        // Our offered parlay prob — convert American → implied probability directly
+        const myDec = o.offeredOdds > 0 ? (o.offeredOdds / 100 + 1) : (100 / Math.abs(o.offeredOdds) + 1);
+        const myProb = 1 / myDec;
+
+        // Compound consensus-fair prob = product of per-leg fair probs
+        let fairProb = 1;
+        let fairOk = true;
+        // Compound Pinnacle prob = product of per-leg Pinnacle implied probs
+        let pinProb = 1;
+        let pinOk = true;
+        for (const l of legs) {
+          if (!l.fairProb || l.fairProb <= 0 || l.fairProb >= 1) { fairOk = false; }
+          else fairProb *= l.fairProb;
+
+          const legPin = l.isDNB && l.pinnacleDNBProb != null
+            ? l.pinnacleDNBProb
+            : (l.pinnacleOdds != null ? americanToProb(l.pinnacleOdds) : null);
+          if (legPin == null || legPin <= 0 || legPin >= 1) { pinOk = false; }
+          else pinProb *= legPin;
+        }
+
+        const entry = {
+          parlayId: o.parlayId,
+          legCount: legs.length,
+          isWon: o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')),
+          myProb,
+          fairProb: fairOk ? fairProb : null,
+          pinProb: pinOk ? pinProb : null,
+          // Edge in probability points — positive = we charge more (tighter)
+          edgeFair: fairOk ? (myProb - fairProb) * 100 : null,
+          edgePin:  pinOk  ? (myProb - pinProb)  * 100 : null,
+          myOddsAm: o.offeredOdds,
+        };
+        if (entry.edgeFair == null && entry.edgePin == null) continue;
+        data.push(entry);
+      }
+      window._parlayEdgeData = data;
+    }
+
+    if (!data || data.length < 3) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays with fair/Pinnacle data</div></div>';
+      return;
+    }
+
+    const toggle = window._parlayEdgeToggle;
+    const showPin = !!toggle.pinnacle;
+    const showFair = !!toggle.fair;
+
+    // --- Toggle controls ---
+    let html = '';
+    html += '<div style="display:flex; gap:14px; align-items:center; margin-bottom:10px; font-size:12px;">';
+    html += '<label style="cursor:pointer; user-select:none;">'
+      + '<input type="checkbox"' + (showPin ? ' checked' : '') + ' onchange="toggleParlayEdgeSeries(\'pinnacle\')" style="margin-right:6px; vertical-align:middle;">'
+      + '<span style="display:inline-block;width:10px;height:10px;background:#a855f7;margin:0 6px -1px 0;border-radius:50%;"></span>'
+      + 'vs Pinnacle</label>';
+    html += '<label style="cursor:pointer; user-select:none;">'
+      + '<input type="checkbox"' + (showFair ? ' checked' : '') + ' onchange="toggleParlayEdgeSeries(\'fair\')" style="margin-right:6px; vertical-align:middle;">'
+      + '<span style="display:inline-block;width:10px;height:10px;background:#14b8a6;margin:0 6px -1px 0;border-radius:50%;"></span>'
+      + 'vs Consensus Fair</label>';
+    html += '<span style="color:var(--text3); margin-left:10px;">' + data.length + ' parlays · <span style="color:var(--blue);">&#9679;</span> large = confirmed, small = not filled</span>';
+    html += '</div>';
+
+    // --- Scatter ---
+    const W = 900, H = 360, pad = { l: 60, r: 20, t: 25, b: 50 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+
+    // Collect visible edge values for y-axis scaling
+    const visibleEdges = [];
+    for (const d of data) {
+      if (showPin && d.edgePin != null) visibleEdges.push(d.edgePin);
+      if (showFair && d.edgeFair != null) visibleEdges.push(d.edgeFair);
+    }
+    if (visibleEdges.length === 0) {
+      html += '<div class="empty-state"><div class="icon">-</div><div>Enable at least one series above</div></div>';
+      el.innerHTML = html;
+      return;
+    }
+    const minEdge = Math.min(-2, ...visibleEdges);
+    const maxEdge = Math.max(2, ...visibleEdges);
+    const edgeRange = maxEdge - minEdge || 4;
+
+    // X-axis: parlay implied probability (log-friendly scale via americanToProb)
+    // Most parlays cluster in 1–40% win prob, so use log scale for clarity.
+    const logClamp = (p) => Math.log10(Math.max(0.001, Math.min(0.999, p)));
+    const xMin = logClamp(0.002);
+    const xMax = logClamp(0.6);
+    const scaleX = (p) => {
+      const lp = logClamp(p);
+      const t = (lp - xMin) / (xMax - xMin);
+      return pad.l + Math.max(0, Math.min(1, t)) * chartW;
+    };
+    const scaleY = (edge) => pad.t + chartH - ((edge - minEdge) / edgeRange) * chartH;
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; height:auto; display:block;">';
+
+    // Y gridlines (pp)
+    const yStep = edgeRange > 20 ? 5 : edgeRange > 10 ? 2 : 1;
+    for (let t = Math.ceil(minEdge / yStep) * yStep; t <= maxEdge; t += yStep) {
+      const y = scaleY(t);
+      svg += svgLine(pad.l, y, pad.l + chartW, y, 'var(--border)', 0.5);
+      svg += svgText(pad.l - 8, y + 4, (t >= 0 ? '+' : '') + t.toFixed(0) + 'pp', { anchor: 'end', size: 11, fill: 'var(--text3)' });
+    }
+    // Zero line
+    const zeroY = scaleY(0);
+    svg += svgLine(pad.l, zeroY, pad.l + chartW, zeroY, '#ffffff', 1.5);
+
+    // X-axis log ticks
+    const xTicks = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4];
+    for (const p of xTicks) {
+      const x = scaleX(p);
+      if (x < pad.l - 2 || x > pad.l + chartW + 2) continue;
+      svg += svgLine(x, pad.t + chartH, x, pad.t + chartH + 4, 'var(--text3)', 1);
+      svg += svgText(x, pad.t + chartH + 16, (p * 100).toFixed(p < 0.05 ? 1 : 0) + '%', { size: 11, fill: 'var(--text3)' });
+    }
+
+    // Dots: render non-won (small, translucent) first, then confirmed on top
+    const sorted = [...data].sort((a, b) => (a.isWon ? 1 : 0) - (b.isWon ? 1 : 0));
+    for (const d of sorted) {
+      const x = scaleX(d.myProb);
+      const r = d.isWon ? 5.5 : 2.5;
+      const opacity = d.isWon ? 0.85 : 0.35;
+      if (showPin && d.edgePin != null) {
+        const y = scaleY(d.edgePin);
+        svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="#a855f7" opacity="' + opacity + '"><title>Parlay ' + (d.parlayId || '').substring(0,8) + '\n' + d.legCount + ' legs · ' + (d.myOddsAm >= 0 ? '+' : '') + d.myOddsAm + ' · ' + (d.myProb*100).toFixed(2) + '% implied\nvs PIN: ' + (d.edgePin >= 0 ? '+' : '') + d.edgePin.toFixed(2) + 'pp' + (d.isWon ? '\n[CONFIRMED]' : '') + '</title></circle>';
+      }
+      if (showFair && d.edgeFair != null) {
+        const y = scaleY(d.edgeFair);
+        svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="#14b8a6" opacity="' + opacity + '"><title>Parlay ' + (d.parlayId || '').substring(0,8) + '\n' + d.legCount + ' legs · ' + (d.myOddsAm >= 0 ? '+' : '') + d.myOddsAm + ' · ' + (d.myProb*100).toFixed(2) + '% implied\nvs FAIR: ' + (d.edgeFair >= 0 ? '+' : '') + d.edgeFair.toFixed(2) + 'pp' + (d.isWon ? '\n[CONFIRMED]' : '') + '</title></circle>';
+      }
+    }
+
+    // Annotations
+    svg += svgText(pad.l + 10, pad.t + 14, 'You charge more (tighter)', { anchor: 'start', size: 11, fill: 'var(--green)' });
+    svg += svgText(pad.l + 10, pad.t + chartH - 6, 'You offer better (more generous)', { anchor: 'start', size: 11, fill: 'var(--red)' });
+    svg += svgText(pad.l + chartW, zeroY - 4, 'Parity', { anchor: 'end', size: 10, fill: '#ffffff' });
+
+    // Axis titles
+    svg += svgText(pad.l + chartW / 2, H - 6, 'Our Parlay Implied Probability (log)', { size: 13, fill: '#ffffff' });
+    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">Compound Edge (pp)</text>';
+    svg += '</svg>';
+
+    html += svg;
+
+    // --- Summary metrics per visible series ---
+    html += '<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; padding:10px 14px; background:var(--surface2); border-radius:6px; font-size:12px;">';
+    const box = (label, value, color) =>
+      '<div style="min-width:140px;"><div style="font-size:11px; color:var(--text3); text-transform:uppercase;">' + label + '</div>'
+      + '<div style="font-size:17px; font-weight:700; color:' + color + ';">' + value + '</div></div>';
+
+    function summarize(values) {
+      if (values.length === 0) return { avg: 0, wonAvg: 0, outbidAvg: 0, count: 0, wonCount: 0 };
+      const avg = values.reduce((s, v) => s + v.edge, 0) / values.length;
+      const won = values.filter(v => v.isWon);
+      const outbid = values.filter(v => !v.isWon);
+      const wonAvg = won.length > 0 ? won.reduce((s, v) => s + v.edge, 0) / won.length : null;
+      const outbidAvg = outbid.length > 0 ? outbid.reduce((s, v) => s + v.edge, 0) / outbid.length : null;
+      return { avg, wonAvg, outbidAvg, count: values.length, wonCount: won.length };
+    }
+
+    if (showPin) {
+      const pinValues = data.filter(d => d.edgePin != null).map(d => ({ edge: d.edgePin, isWon: d.isWon }));
+      const s = summarize(pinValues);
+      html += box('vs PIN · Avg Edge', (s.avg >= 0 ? '+' : '') + s.avg.toFixed(2) + 'pp', '#a855f7');
+      if (s.wonAvg != null) html += box('vs PIN · Avg Edge on Won', (s.wonAvg >= 0 ? '+' : '') + s.wonAvg.toFixed(2) + 'pp', '#a855f7');
+      if (s.outbidAvg != null) html += box('vs PIN · Avg Edge on Not Filled', (s.outbidAvg >= 0 ? '+' : '') + s.outbidAvg.toFixed(2) + 'pp', '#a855f7');
+    }
+    if (showFair) {
+      const fairValues = data.filter(d => d.edgeFair != null).map(d => ({ edge: d.edgeFair, isWon: d.isWon }));
+      const s = summarize(fairValues);
+      html += box('vs FAIR · Avg Edge', (s.avg >= 0 ? '+' : '') + s.avg.toFixed(2) + 'pp', '#14b8a6');
+      if (s.wonAvg != null) html += box('vs FAIR · Avg Edge on Won', (s.wonAvg >= 0 ? '+' : '') + s.wonAvg.toFixed(2) + 'pp', '#14b8a6');
+      if (s.outbidAvg != null) html += box('vs FAIR · Avg Edge on Not Filled', (s.outbidAvg >= 0 ? '+' : '') + s.outbidAvg.toFixed(2) + 'pp', '#14b8a6');
+    }
+    html += '</div>';
+
+    html += '<div style="font-size:11px; color:var(--text3); margin-top:8px;">'
+      + 'Each dot = one quoted parlay\'s compound edge (product of leg probabilities). '
+      + 'vs Consensus Fair shows your vig directly — expect a positive band matching your effective vig. '
+      + 'vs Pinnacle can be negative because Pinnacle\'s displayed prices carry ~2–2.5% of their own vig baked in. '
+      + 'If "Avg Edge on Won" is meaningfully lower than "Avg Edge on Not Filled," you only win auctions by being generous — a useful tell for tuning vig.'
+      + '</div>';
 
     el.innerHTML = html;
   }
