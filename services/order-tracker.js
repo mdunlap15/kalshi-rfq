@@ -1076,22 +1076,64 @@ function isOrderFinished(order) {
   return false;
 }
 
+// ~12h covers any single game (even longest MLB extra innings + cross-country
+// travel padding) plus PX settlement lag. Anything older than this with all
+// legs started is either a stuck settlement or a reconstructed phantom — not
+// live risk we should show on the dashboard.
+const STALE_PHANTOM_HOURS = 12;
+
 /**
- * Get total portfolio risk — sum of our max payouts across all confirmed orders.
- * This is the naive worst case (all parlays win simultaneously).
- * Our risk per parlay = americanOddsToProfit(odds, confirmedStake)
- * where confirmedStake = bettor's wager and the profit calc gives our payout.
+ * Returns true only for orders that are almost certainly phantom/stuck:
+ * every leg started more than STALE_PHANTOM_HOURS ago (or no startTime on
+ * any leg and confirmedAt is that old). In-play games that started minutes
+ * or hours ago still count as live risk.
  *
- * Excludes orders where all legs have already started — those games are
- * finished and the outcome is determined, just awaiting PX settlement.
- * Without this filter, reconstructed orders from previous restarts inflate
- * portfolio risk by tens of thousands of dollars of phantom exposure.
+ * This is the narrow exclusion used for dashboard "deployed" accounting.
+ * isOrderFinished (above) is the broader exclusion used for exposure
+ * rebuilds and pre-trade checks where "game has started" is the right
+ * semantic regardless of how recently.
+ */
+function isOrderStalePhantom(order) {
+  const legs = order.legs || order.meta?.legs || [];
+  const now = Date.now();
+  const cutoff = STALE_PHANTOM_HOURS * 3600 * 1000;
+
+  let latestStart = 0;
+  let hasAnyTime = false;
+  for (const leg of legs) {
+    const st = leg.startTime || leg.start_time;
+    if (st) {
+      hasAnyTime = true;
+      const t = new Date(st).getTime();
+      if (t > latestStart) latestStart = t;
+    }
+  }
+  if (hasAnyTime) {
+    // Still live if any leg is future or latest start is within cutoff.
+    return (now - latestStart) > cutoff;
+  }
+  // No leg start times at all — fall back to confirmedAt.
+  const ca = order.confirmedAt;
+  if (ca && (now - new Date(ca).getTime()) > cutoff) return true;
+  return false;
+}
+
+/**
+ * Get total portfolio risk — sum of SP stakes across all confirmed orders
+ * that still represent live exposure (pre-game or in-play, not yet settled).
+ *
+ * Excludes only stale phantom orders (all legs started >12h ago or no start
+ * time and confirmed >12h ago) — those are either stuck settlements or
+ * reconstructed-from-PX orders from previous restarts. Without that filter,
+ * phantoms inflated this number by tens of thousands. With too broad a filter
+ * (e.g. "any leg has started"), in-play games disappear from the dashboard
+ * the moment they tip off — hiding real live risk.
  */
 function getTotalPortfolioRisk() {
   let total = 0;
   for (const order of Object.values(orders)) {
     if (order.status !== 'confirmed') continue;
-    if (isOrderFinished(order)) continue;
+    if (isOrderStalePhantom(order)) continue;
     // confirmedStake IS our SP risk (verified from PX payload). No multiplication.
     total += (order.confirmedStake || 0);
   }
@@ -1099,7 +1141,7 @@ function getTotalPortfolioRisk() {
 }
 
 /**
- * Sum of SP profit across all live (non-finished) confirmed orders.
+ * Sum of SP profit across all live (non-phantom) confirmed orders.
  * SP profit = bettor's wager = confirmedStake * 100 / |odds|.
  * This is what we keep if every active parlay settles in our favor.
  */
@@ -1107,7 +1149,7 @@ function getTotalToWin() {
   let total = 0;
   for (const order of Object.values(orders)) {
     if (order.status !== 'confirmed') continue;
-    if (isOrderFinished(order)) continue;
+    if (isOrderStalePhantom(order)) continue;
     const stake = order.confirmedStake || 0;
     const odds = Math.abs(order.confirmedOdds || order.offeredOdds || 0);
     if (stake > 0 && odds >= 100) total += stake * 100 / odds;
