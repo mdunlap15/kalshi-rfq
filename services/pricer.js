@@ -319,14 +319,30 @@ async function priceParlay(legs) {
     return globalBaseVig;
   }
 
-  // Tiered vig: scaled proportionally above base.
-  // Gentle bumps on heavy favorites to prevent compounding leaks
-  // without killing competitiveness on normal parlays.
+  // Smoothly scaling vig: linear ramp above fairProb 0.50.
+  // Replaces the previous 2-step floor (2.5% @ 0.70, 3% @ 0.80) — the
+  // step function gave identical vig at p=0.81 and p=0.95 even though
+  // the long tail needs more bite to prevent compounding leaks on
+  // heavy favorites in multi-leg parlays.
+  //
+  // Formula: vig = max(floor, baseVig + slope * (fairProb - 0.5))
+  // Slope and floor are Railway-tunable via VIG_FAVORITE_SLOPE and
+  // VIG_FAVORITE_FLOOR env vars.
+  //
+  // Default slope 0.075 sample (base 1%):
+  //   p=0.60: 1.75%   p=0.70: 2.50%   p=0.75: 2.875%
+  //   p=0.80: 3.25%   p=0.85: 3.625%  p=0.90: 4.00%
+  //   p=0.95: 4.375%  p=1.00: 4.75%
+  // Hits the old 2.5% floor exactly at p=0.70 (no regression at the
+  // standard heavy-favorite band), exceeds the old 3% at p≥0.80, and
+  // grows ~1.4pp into the long tail where the old step was bleeding.
+  const favSlope = config.pricing.vigFavoriteSlope;
+  const favFloor = config.pricing.vigFavoriteFloor;
   function getEffectiveVig(fairProb, sport) {
     const baseVig = getBaseVigForSport(sport);
-    if (fairProb >= 0.80) return Math.max(baseVig, 0.03);  // extreme favorites (-400+)
-    if (fairProb >= 0.70) return Math.max(baseVig, 0.025); // heavy favorites (-230+)
-    return baseVig;                                         // everything else keeps base vig
+    if (fairProb <= 0.5) return baseVig;
+    const ramp = baseVig + favSlope * (fairProb - 0.5);
+    return favFloor > 0 ? Math.max(favFloor, ramp) : ramp;
   }
 
   function applyOddsVig(fairProb, sport) {

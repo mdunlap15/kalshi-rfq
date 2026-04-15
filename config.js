@@ -22,6 +22,14 @@ const config = {
     // Falls back to defaultVig if sport not listed.
     // Adjustable at runtime via POST /config/vig.
     vigBySport: {},
+    // Heavy-favorite vig ramp. For legs with fairProb > 0.5, vig is computed as:
+    //   vig = max(vigFavoriteFloor, baseVig + vigFavoriteSlope * (fairProb - 0.5))
+    // Tunable at runtime via Railway env vars without code changes.
+    // Slope 0.075 default: matches old 2.5% step at p=0.70, exceeds it everywhere
+    // above, and adds meaningful bite in the long tail (4% at p=0.90, 4.4% at p=0.95).
+    // Floor 0 (off) by default — set e.g. 0.02 to enforce a 2% minimum on favorite legs.
+    vigFavoriteSlope: parseFloat(process.env.VIG_FAVORITE_SLOPE) || 0.075,
+    vigFavoriteFloor: parseFloat(process.env.VIG_FAVORITE_FLOOR) || 0,
     maxRiskPerParlay: parseFloat(process.env.MAX_RISK_PER_PARLAY) || 500,
     maxLegs: parseInt(process.env.MAX_LEGS) || 8,
     stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 5,
