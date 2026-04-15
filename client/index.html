@@ -5885,43 +5885,61 @@
       return;
     }
 
-    const W = 700, H = 250, pad = { l: 70, r: 20, t: 30, b: 50 };
+    const W = 700, H = 280, pad = { l: 70, r: 20, t: 30, b: 60 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
     const barGroupW = Math.min(80, chartW / days.length - 4);
-    const barW = barGroupW / 2 - 1;
+    // Overlaid bars: wider risk bar in back, narrower P&L bar centered in front
+    const riskBarW = barGroupW * 0.85;
+    const pnlBarW = barGroupW * 0.45;
 
-    const maxRisk = Math.max(1, ...days.map(d => byDay[d].risk));
-    const maxPnl = Math.max(1, ...days.map(d => Math.abs(byDay[d].pnl)));
-    const maxVal = Math.max(maxRisk, maxPnl);
+    // Compute cumulative P&L running total across days
+    const cumul = [];
+    let running = 0;
+    for (const day of days) { running += byDay[day].pnl; cumul.push(running); }
 
-    const scaleY = (v) => pad.t + chartH - (Math.abs(v) / maxVal) * chartH;
-    const zeroY = pad.t + chartH;
+    // Y axis must accommodate positive (risk, +P&L, +cumul) and negative (-P&L, -cumul)
+    const maxRisk = Math.max(0, ...days.map(d => byDay[d].risk));
+    const maxPnlPos = Math.max(0, ...days.map(d => byDay[d].pnl));
+    const minPnlNeg = Math.min(0, ...days.map(d => byDay[d].pnl));
+    const maxCumul = Math.max(0, ...cumul);
+    const minCumul = Math.min(0, ...cumul);
+    const yMax = Math.max(1, maxRisk, maxPnlPos, maxCumul);
+    const yMin = Math.min(0, minPnlNeg, minCumul);
+    const yRange = yMax - yMin || 1;
 
-    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:300px;">`;
+    const scaleY = (v) => pad.t + ((yMax - v) / yRange) * chartH;
+    const zeroY = scaleY(0);
 
-    // Grid lines
-    for (let pct = 0; pct <= 100; pct += 25) {
-      const y = pad.t + chartH - (pct / 100) * chartH;
-      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5);
-      if (pct % 50 === 0) {
-        const val = Math.round(maxVal * pct / 100);
-        svg += svgText(pad.l - 6, y + 3, fmtDollar(val).replace(/\.00$/, ''), { anchor: 'end', size: 9 });
-      }
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:320px;">`;
+
+    // Grid lines — 4 ticks spanning yMin..yMax
+    for (let t = 0; t <= 4; t++) {
+      const v = yMin + (yRange * t / 4);
+      const y = scaleY(v);
+      const isZero = Math.abs(v) < 0.5;
+      svg += svgLine(pad.l, y, W - pad.r, y, isZero ? 'var(--text3)' : 'var(--border)', isZero ? 1 : 0.5);
+      svg += svgText(pad.l - 6, y + 3, fmtDollar(Math.round(v)).replace(/\.00$/, ''), { anchor: 'end', size: 9 });
     }
 
-    // Bars
+    // Bars — overlaid at same x position
     for (let i = 0; i < days.length; i++) {
       const d = byDay[days[i]];
       const cx = pad.l + (i + 0.5) * (chartW / days.length);
 
-      // Risk bar (blue)
-      const riskH = (d.risk / maxVal) * chartH;
-      svg += svgRect(cx - barGroupW / 2, zeroY - riskH, barW, riskH, 'var(--accent)', 2);
+      // Risk bar (blue, semi-transparent, always above zero)
+      if (d.risk > 0) {
+        const yTop = scaleY(d.risk);
+        const riskH = zeroY - yTop;
+        svg += `<rect x="${cx - riskBarW / 2}" y="${yTop}" width="${riskBarW}" height="${riskH}" fill="var(--accent)" fill-opacity="0.35" rx="2"/>`;
+      }
 
-      // P&L bar (green/red)
-      const pnlH = (Math.abs(d.pnl) / maxVal) * chartH;
-      const pnlColor = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-      svg += svgRect(cx + 1, zeroY - pnlH, barW, pnlH, pnlColor, 2);
+      // P&L bar (green up / red down below zero line) — narrower, centered over risk
+      if (d.pnl !== 0) {
+        const pnlColor = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const yTop = d.pnl >= 0 ? scaleY(d.pnl) : zeroY;
+        const pnlH = Math.abs(scaleY(d.pnl) - zeroY);
+        svg += svgRect(cx - pnlBarW / 2, yTop, pnlBarW, pnlH, pnlColor, 2);
+      }
 
       // Day label
       const dayLabel = days[i].substring(5); // MM-DD
@@ -5930,16 +5948,43 @@
       // Count label
       svg += svgText(cx, H - pad.b + 26, d.count + ' fills', { size: 8, fill: 'var(--text3)' });
 
-      // Value labels on top of bars
-      if (d.risk > 0) svg += svgText(cx - barGroupW / 4, zeroY - riskH - 4, fmtDollar(d.risk).replace(/\.00$/, ''), { size: 8, fill: 'var(--accent)' });
-      if (d.pnl !== 0) svg += svgText(cx + barGroupW / 4, zeroY - pnlH - 4, fmtPnl(d.pnl), { size: 8, fill: pnlColor });
+      // Risk value label above risk bar
+      if (d.risk > 0) {
+        svg += svgText(cx, scaleY(d.risk) - 4, fmtDollar(d.risk).replace(/\.00$/, ''), { size: 8, fill: 'var(--accent)' });
+      }
+      // P&L value label — above if positive, below if negative
+      if (d.pnl !== 0) {
+        const pnlColor = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const y = d.pnl >= 0 ? scaleY(d.pnl) - 14 : scaleY(d.pnl) + 10;
+        svg += svgText(cx, y, fmtPnl(d.pnl), { size: 8, fill: pnlColor });
+      }
+    }
+
+    // Cumulative P&L line (overlaid on the bars)
+    if (cumul.length >= 1) {
+      const linePoints = days.map((_, i) => {
+        const cx = pad.l + (i + 0.5) * (chartW / days.length);
+        return cx + ',' + scaleY(cumul[i]);
+      }).join(' ');
+      svg += `<polyline points="${linePoints}" fill="none" stroke="var(--yellow, #f5b942)" stroke-width="2.5" stroke-linejoin="round"/>`;
+      for (let i = 0; i < days.length; i++) {
+        const cx = pad.l + (i + 0.5) * (chartW / days.length);
+        const cy = scaleY(cumul[i]);
+        svg += `<circle cx="${cx}" cy="${cy}" r="3" fill="var(--yellow, #f5b942)" stroke="var(--bg)" stroke-width="1"/>`;
+      }
+      // Final cumulative label at the last point
+      const lastCx = pad.l + (days.length - 0.5) * (chartW / days.length);
+      const lastCy = scaleY(cumul[cumul.length - 1]);
+      svg += svgText(lastCx + 6, lastCy + 3, fmtPnl(cumul[cumul.length - 1]), { anchor: 'start', size: 9, fill: 'var(--yellow, #f5b942)' });
     }
 
     // Legend
-    svg += svgRect(pad.l, H - 10, 8, 8, 'var(--accent)', 1);
+    svg += `<rect x="${pad.l}" y="${H - 10}" width="8" height="8" fill="var(--accent)" fill-opacity="0.35"/>`;
     svg += svgText(pad.l + 12, H - 3, 'My Risk (volume)', { anchor: 'start', size: 9 });
     svg += svgRect(pad.l + 120, H - 10, 8, 8, 'var(--green)', 1);
-    svg += svgText(pad.l + 132, H - 3, 'P&L', { anchor: 'start', size: 9 });
+    svg += svgText(pad.l + 132, H - 3, 'Daily P&L', { anchor: 'start', size: 9 });
+    svg += svgLine(pad.l + 210, H - 6, pad.l + 226, H - 6, 'var(--yellow, #f5b942)', 2.5);
+    svg += svgText(pad.l + 230, H - 3, 'Cumulative P&L', { anchor: 'start', size: 9 });
 
     svg += '</svg>';
 
