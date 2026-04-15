@@ -7363,7 +7363,7 @@
     }
 
     if (!data || data.length < 3) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays with Pinnacle compound data</div></div>';
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays with Pinnacle data</div></div>';
       return;
     }
 
@@ -7385,7 +7385,7 @@
         + '<span style="display:inline-block;width:10px;height:10px;background:' + s.color + ';margin:0 6px -1px 0;border-radius:50%;"></span>'
         + s.label + '</label>';
     }
-    html += '<span style="color:var(--text3); margin-left:10px;">' + data.length + ' parlays · last 7d · ring = confirmed · size ∝ stake</span>';
+    html += '<span style="color:var(--text3); margin-left:10px;">' + data.length + ' parlays · last 7d · solid = confirmed · size ∝ stake</span>';
     html += '</div>';
 
     // --- Scatter ---
@@ -7458,7 +7458,7 @@
         + '\nQuoted: ' + t
         + '\n\nSelections:\n' + d.selections
         + '\n\nMy implied: ' + (d.myProb * 100).toFixed(2) + '%'
-        + ' · PIN compound: ' + (d.pinProb * 100).toFixed(2) + '%'
+        + ' · PIN implied: ' + (d.pinProb * 100).toFixed(2) + '%'
         + '\nEdge vs PIN: ' + fmtPp(d.edgePin)
         + '\nEdge vs DK:  ' + fmtPp(d.edgeDk)
         + '\nEdge vs FD:  ' + fmtPp(d.edgeFd)
@@ -7475,11 +7475,9 @@
         const x = scaleX(d.pinProb);
         const y = scaleY(e);
         const r = stakeRadius(d.stake);
-        // Confirmed = red ring; not confirmed = soft gray ring
-        const stroke = d.isConfirmed ? '#ef4444' : '#9ca3af';
-        const strokeW = d.isConfirmed ? 1.8 : 0.6;
-        const opacity = d.isConfirmed ? 0.85 : 0.45;
-        svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + s.color + '" opacity="' + opacity + '" stroke="' + stroke + '" stroke-width="' + strokeW + '"><title>' + tipFor(d, s.label) + '</title></circle>';
+        // Confirmed parlays render solid; not-confirmed render translucent.
+        const opacity = d.isConfirmed ? 0.85 : 0.35;
+        svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + s.color + '" opacity="' + opacity + '"><title>' + tipFor(d, s.label) + '</title></circle>';
       }
     }
 
@@ -7488,7 +7486,7 @@
     svg += svgText(pad.l + 10, pad.t + chartH - 6, 'You offer better (value leak)', { anchor: 'start', size: 11, fill: 'var(--red)' });
 
     // Axis titles
-    svg += svgText(pad.l + chartW / 2, H - 6, 'Pinnacle Compound Implied Probability', { size: 13, fill: '#ffffff' });
+    svg += svgText(pad.l + chartW / 2, H - 6, 'Pinnacle Implied Probability', { size: 13, fill: '#ffffff' });
     svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">My Prob − Book Prob (pp)</text>';
     svg += '</svg>';
 
@@ -7511,7 +7509,7 @@
     const confirmedCount = data.filter(d => d.isConfirmed).length;
     html += '<div style="font-size:11px; color:var(--text3); margin-top:8px;">'
       + confirmedCount + ' confirmed of ' + data.length + ' quoted parlays. '
-      + 'Each dot = one parlay\'s edge vs that book (compound). Red ring = confirmed, gray ring = not filled. '
+      + 'Each dot = one parlay\'s edge vs that book. Solid = confirmed, translucent = not filled. '
       + 'Above zero = your offer is tighter than the book. Below = book would price tighter than you. Hover any dot for selections, dates, all edges, and quote time.'
       + '</div>';
 
