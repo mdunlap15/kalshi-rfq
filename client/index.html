@@ -4820,7 +4820,11 @@
     ].filter(Boolean);
     if (els.length === 0) return;
 
-    const pnl = orderStats.runningPnL || 0;
+    // Prefer account-based P&L (PX balance - starting balance) — it's the
+    // canonical source. Fall back to in-memory tracker only if balance
+    // hasn't been fetched yet. The tracker drifts from PX; PX is truth.
+    const accountPnL = portfolio?.accountPnL;
+    const pnl = accountPnL != null ? accountPnL : (orderStats.runningPnL || 0);
     const wins = orderStats.totalWins || 0;
     const losses = orderStats.totalLosses || 0;
     const settled = wins + losses;
@@ -4850,7 +4854,7 @@
     const roiStr = roi != null ? (roi >= 0 ? '+' : '') + roi.toFixed(2) + '%' : '-';
 
     const pnlCls = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral';
-    const pnlStr = settled > 0 ? fmtPnl(pnl) : '-';
+    const pnlStr = (accountPnL != null || settled > 0) ? fmtPnl(pnl) : '-';
     const wrCls = winRate != null ? (winRate >= 50 ? 'positive' : 'negative') : 'neutral';
     const wrStr = winRate != null ? winRate + '%' : '-';
 
