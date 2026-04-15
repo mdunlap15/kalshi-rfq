@@ -346,20 +346,35 @@ function startStatusServer() {
         maxPerGame: getBankroll() * config.pricing.maxExposurePerGamePct / 100,
         games: orderTracker.getGameExposureSnapshot(),
       },
-      portfolio: {
-        bankroll: getBankroll(),
-        balance: config.pricing.liveBankroll || getBankroll(),
-        maxDrawdownPct: config.pricing.maxDrawdownPct,
-        maxDrawdown: getBankroll() * config.pricing.maxDrawdownPct / 100,
-        totalRisk: orderTracker.getTotalPortfolioRisk(),
-        currentRisk: orderTracker.getTotalPortfolioRisk(),
-        totalToWin: orderTracker.getTotalToWin(),
-        maxRiskPerParlay: config.pricing.maxRiskPerParlay,
-        maxRiskPerParlayPct: config.pricing.maxRiskPerParlayPct,
-        maxRiskPerParlayFromPct: config.pricing.maxRiskPerParlayPct > 0
-          ? getBankroll() * config.pricing.maxRiskPerParlayPct / 100
-          : null,
-      },
+      portfolio: (() => {
+        // Account-based P&L is the SOURCE OF TRUTH for the dashboard.
+        // PX returns balance directly — it does not lock SP risk, so
+        // balance IS total account value, no add-back needed.
+        // accountPnL = liveBalance - startingBankroll. If liveBalance
+        // hasn't been fetched yet (or returned 0), accountPnL is null
+        // and the dashboard shows '—' rather than a misleading number.
+        // The tracker's runningPnL is exposed under orders.runningPnL
+        // for comparison/debugging but is NOT the headline number.
+        const liveBal = config.pricing.liveBankroll;
+        const startingBankroll = config.pricing.startingBankroll;
+        const accountPnL = (liveBal && liveBal > 0) ? (liveBal - startingBankroll) : null;
+        return {
+          bankroll: getBankroll(),
+          balance: liveBal || getBankroll(),
+          startingBankroll,
+          accountPnL,
+          maxDrawdownPct: config.pricing.maxDrawdownPct,
+          maxDrawdown: getBankroll() * config.pricing.maxDrawdownPct / 100,
+          totalRisk: orderTracker.getTotalPortfolioRisk(),
+          currentRisk: orderTracker.getTotalPortfolioRisk(),
+          totalToWin: orderTracker.getTotalToWin(),
+          maxRiskPerParlay: config.pricing.maxRiskPerParlay,
+          maxRiskPerParlayPct: config.pricing.maxRiskPerParlayPct,
+          maxRiskPerParlayFromPct: config.pricing.maxRiskPerParlayPct > 0
+            ? getBankroll() * config.pricing.maxRiskPerParlayPct / 100
+            : null,
+        };
+      })(),
       alerts: orderTracker.getAlerts(),
       exposureLimits: orderTracker.getExposureLimitStats(),
     });

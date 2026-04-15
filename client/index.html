@@ -1090,12 +1090,21 @@
     // data.recentOrders which only exists on the /orders response, not
     // /status. See updateNotificationBadge() called from refresh().
 
-    const pnl = o.runningPnL || 0;
+    // Headline P&L is account-based (PX balance - starting balance), not
+    // the in-memory tracker ledger. The tracker drifts; PX is canonical.
+    // Show '—' if balance hasn't been fetched yet rather than fall back
+    // to the drifty number.
+    const accountPnL = data.portfolio?.accountPnL;
     const pnlEl = document.getElementById('stat-pnl');
-    pnlEl.textContent = fmtPnl(pnl);
-    if (pnl > 0) { pnlEl.className = 'value positive'; }
-    else if (pnl < 0) { pnlEl.className = 'value negative'; }
-    else { pnlEl.className = 'value neutral'; }
+    if (accountPnL == null) {
+      pnlEl.textContent = '—';
+      pnlEl.className = 'value neutral';
+    } else {
+      pnlEl.textContent = fmtPnl(accountPnL);
+      if (accountPnL > 0) { pnlEl.className = 'value positive'; }
+      else if (accountPnL < 0) { pnlEl.className = 'value negative'; }
+      else { pnlEl.className = 'value neutral'; }
+    }
 
     const wins = o.totalWins || 0;
     const losses = o.totalLosses || 0;

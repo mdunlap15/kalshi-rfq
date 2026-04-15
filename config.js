@@ -53,6 +53,12 @@ const config = {
     bankroll: parseFloat(process.env.BANKROLL) || 0,
     // Override live PX balance with a fixed amount. Set to 0 (or unset) to use live balance.
     assumedBankroll: parseFloat(process.env.ASSUMED_BANKROLL) || 0,
+    // Starting account balance, used as the baseline for account-based P&L
+    // (accountPnL = liveBalance - startingBankroll). PX balance is the source
+    // of truth — this number anchors the P&L calculation to a known origin.
+    // PX does NOT separately deduct SP risk from balance, so balance alone
+    // is the total account value.
+    startingBankroll: parseFloat(process.env.STARTING_BANKROLL) || 20000,
     maxDrawdownPct: parseFloat(process.env.MAX_DRAWDOWN_PCT) || 100,
     maxRiskPerParlayPct: parseFloat(process.env.MAX_RISK_PER_PARLAY_PCT) || 5,
     maxExposurePerGamePct: parseFloat(process.env.MAX_EXPOSURE_PER_GAME_PCT) || 10,
