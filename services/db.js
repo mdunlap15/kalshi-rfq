@@ -94,33 +94,82 @@ async function loadOrders(limit = 100) {
   // Supabase free-tier timeouts when sorting/paginating the full table.
   // New quotes from the current session are tracked in memory.
   const PAGE_SIZE = 1000;
+  const MAX_PAGE_RETRIES = 4;
   const all = [];
   const startMs = Date.now();
   let pagesFetched = 0;
+  // Per-status row counts so we can compare to a head count and detect
+  // silent partial loads (e.g. Supabase timeouts mid-pagination).
+  const perStatus = {};
   const STATUSES = ['confirmed', 'settled_won', 'settled_lost', 'settled_push', 'rejected'];
   try {
     for (const status of STATUSES) {
+      // Get authoritative count first so we know if pagination got truncated.
+      let expected = null;
+      try {
+        const { count, error: cErr } = await db
+          .from('parlay_orders')
+          .select('*', { count: 'exact', head: true })
+          .eq('status', status);
+        if (!cErr) expected = count;
+      } catch (_) { /* count is best-effort */ }
+
       let offset = 0;
+      let loaded = 0;
       while (offset < limit - all.length) {
         const pageSize = Math.min(PAGE_SIZE, limit - all.length - offset);
-        const { data, error } = await db
-          .from('parlay_orders')
-          .select('*')
-          .eq('status', status)
-          .order('parlay_id', { ascending: true })
-          .range(offset, offset + pageSize - 1);
-        if (error) {
-          log.error('DB', `loadOrders ${status} page at offset ${offset} failed: ${error.message}`);
-          break;
+
+        // Retry loop: Supabase free-tier occasionally times out individual
+        // page queries. Previously a single failure would `break` out of the
+        // while loop and silently drop the rest of this status's rows,
+        // producing a biased subset (e.g. all losses + some wins → fake
+        // negative P&L on restart). Retry with exponential backoff and only
+        // give up after MAX_PAGE_RETRIES.
+        let data = null;
+        let lastError = null;
+        for (let attempt = 0; attempt < MAX_PAGE_RETRIES; attempt++) {
+          const result = await db
+            .from('parlay_orders')
+            .select('*')
+            .eq('status', status)
+            .order('parlay_id', { ascending: true })
+            .range(offset, offset + pageSize - 1);
+          if (!result.error) {
+            data = result.data;
+            lastError = null;
+            break;
+          }
+          lastError = result.error;
+          log.warn('DB', `loadOrders ${status} offset ${offset} attempt ${attempt + 1}/${MAX_PAGE_RETRIES} failed: ${result.error.message}`);
+          // Exponential backoff: 250ms, 500ms, 1s, 2s
+          await new Promise(r => setTimeout(r, 250 * Math.pow(2, attempt)));
+        }
+        if (lastError) {
+          // After exhausting retries, log loudly. Do NOT break — try the
+          // next page anyway. A single bad page shouldn't poison the
+          // whole status. Worst case we still log the gap below.
+          log.error('DB', `loadOrders ${status} offset ${offset}: gave up after ${MAX_PAGE_RETRIES} retries (${lastError.message})`);
+          offset += pageSize;
+          continue;
         }
         if (!data || data.length === 0) break;
         all.push(...data);
+        loaded += data.length;
         pagesFetched++;
         if (data.length < pageSize) break;
         offset += pageSize;
       }
+      perStatus[status] = loaded;
+
+      // Drift detection: if we know the expected count and loaded fewer
+      // rows, that's a partial load. Log loudly so this doesn't silently
+      // corrupt P&L the way it did 2026-04-15 (loaded 180/675 wins, P&L
+      // showed -$8,871 instead of +$7,536).
+      if (expected != null && loaded < expected) {
+        log.error('DB', `loadOrders PARTIAL LOAD for ${status}: got ${loaded} rows, expected ${expected} (missing ${expected - loaded})`);
+      }
     }
-    log.info('DB', `loadOrders: ${all.length} rows in ${pagesFetched} pages (${Date.now() - startMs}ms)`);
+    log.info('DB', `loadOrders: ${all.length} rows in ${pagesFetched} pages (${Date.now() - startMs}ms) — ${JSON.stringify(perStatus)}`);
 
     // Convert DB rows back to order format
     return all.map(row => ({
