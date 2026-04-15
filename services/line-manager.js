@@ -983,7 +983,7 @@ async function resolveUnknownLine(rfqLeg) {
         // These contain generic words (points, runs, goals) that also appear
         // in playerPropNamePat, causing thousands of false-positive declines
         // on legitimate alt spread/total lines.
-        const fullGameNamePat = /^(?:total|spread|moneyline|run line|puck line|point spread|alternate|alt |game spread|team total|home total|away total|draw no bet|both teams|double chance)/i;
+        const fullGameNamePat = /^(?:total|spread|moneyline|run line|puck line|point spread|alternate|alt |game spread|team total|draw no bet|both teams|double chance)/i;
         if (playerPropNamePat.test(market.name || '') && !fullGameNamePat.test(market.name || '')) {
           const parsedProp = px.parseMarketSelections(market);
           if (parsedProp.some(s => s.lineId === lineId)) {
@@ -1168,17 +1168,13 @@ async function resolveUnknownLine(rfqLeg) {
             // Max deviation from primary: sport-aware. NBA/NCAAB alt spreads
             // can deviate ±15+, but MLB/NHL/soccer rarely deviate more than
             // ±3 from the primary run/puck line.
-            // Virtual alt spread registration: allow sports where we can
-            // safely distinguish alt lines from player props. MLB/NHL alt
-            // run/puck lines cluster tightly around the primary ±1.5, so a
-            // small deviation window (4/3) captures ±0.5 through ±4.5/±3.5
-            // without reaching player prop territory. Player props that
-            // overlap are caught by playerPropNamePat when PX includes them,
-            // and by isValidFullGameLine bounds otherwise.
+            // Only basketball and football get virtual alt spread registration.
+            // MLB/NHL/soccer: set to 0 to block all virtual alt spreads
+            // (too easy to confuse with player props, puck/run lines rarely
+            // have meaningful alt-line volume anyway).
             const MAX_ALT_DEVIATION = {
               'basketball_nba': 20, 'basketball_ncaab': 20, 'basketball_wnba': 20,
               'americanfootball_nfl': 15, 'americanfootball_ncaaf': 15,
-              'baseball_mlb': 4, 'icehockey_nhl': 3,
             };
             const maxDeviation = MAX_ALT_DEVIATION[sportKey] ?? 0;
             const deviation = Math.abs(absLine - primaryAbsSpread);
@@ -1230,7 +1226,6 @@ async function resolveUnknownLine(rfqLeg) {
                   const MAX_ALT_DEV_FALLBACK = {
                     'basketball_nba': 20, 'basketball_ncaab': 20, 'basketball_wnba': 20,
                     'americanfootball_nfl': 15, 'americanfootball_ncaaf': 15,
-                    'baseball_mlb': 4, 'icehockey_nhl': 3,
                   };
                   const maxDev = MAX_ALT_DEV_FALLBACK[sportKey] ?? 0;
                   const primaryAbs = Math.abs(primaryHomePoint);
