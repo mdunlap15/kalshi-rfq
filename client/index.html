@@ -736,6 +736,16 @@
           </div>
         </div>
 
+        <!-- Parlay Pricing vs. Books -->
+        <div class="card">
+          <div class="card-header">
+            <span>Parlay Pricing vs. Books</span>
+          </div>
+          <div class="card-body" id="chart-parlay-vs-books">
+            <div class="empty-state"><div class="icon">-</div><div>Need quoted parlays with book odds</div></div>
+          </div>
+        </div>
+
         <!-- Missed Volume from Risk Limits -->
         <div class="card">
           <div class="card-header">
@@ -5715,6 +5725,7 @@
     renderChartExposure(confirmed);
     renderChartPricingEdge(allQuoted);
     renderChartParlayEdge(allQuoted);
+    renderChartParlayVsBooks(allQuoted);
     renderChartClv(settled);
     renderChartRiskLimitMissed(intel);
   }
@@ -7270,6 +7281,216 @@
       + 'vs Consensus Fair shows your vig directly — expect a positive band matching your effective vig. '
       + 'vs Pinnacle can be negative because Pinnacle\'s displayed prices carry ~2–2.5% of their own vig baked in. '
       + 'If "Avg Edge on Won" is meaningfully lower than "Avg Edge on Not Filled," you only win auctions by being generous — a useful tell for tuning vig.'
+      + '</div>';
+
+    el.innerHTML = html;
+  }
+
+  // ===================== PARLAY PRICING vs. BOOKS =====================
+  // Cross-book scatter: each parlay produces one dot per series (mine + 4 books).
+  // X = my offered parlay implied probability (log). Y = that series' compound
+  // implied probability (log). Mine sits on the parity diagonal. Dot size ∝ stake.
+  if (!window._parlayVsBooksToggle) {
+    window._parlayVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true, kalshi: true };
+  }
+  function toggleParlayVsBooksSeries(which) {
+    window._parlayVsBooksToggle[which] = !window._parlayVsBooksToggle[which];
+    if (window._parlayVsBooksData) renderChartParlayVsBooks(null);
+  }
+
+  function renderChartParlayVsBooks(allQuoted) {
+    const el = document.getElementById('chart-parlay-vs-books');
+    if (!el) return;
+
+    let data = window._parlayVsBooksData;
+    if (allQuoted) {
+      data = [];
+      const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+      for (const o of allQuoted) {
+        const qDate = o.quotedAt || o.confirmedAt;
+        if (qDate && qDate < cutoff) continue;
+        if (!o.offeredOdds) continue;
+        const legs = o.meta?.legs || o.legs || [];
+        if (legs.length === 0) continue;
+
+        const myDec = o.offeredOdds > 0 ? (o.offeredOdds / 100 + 1) : (100 / Math.abs(o.offeredOdds) + 1);
+        const myProb = 1 / myDec;
+
+        // Compound book probs — null if any leg is missing that book
+        function compound(field) {
+          let p = 1;
+          for (const l of legs) {
+            const v = l[field];
+            if (v == null) return null;
+            const lp = americanToProb(v);
+            if (lp == null || lp <= 0 || lp >= 1) return null;
+            p *= lp;
+          }
+          return p > 0 && p < 1 ? p : null;
+        }
+        const pinProb = compound('pinnacleOdds');
+        const dkProb  = compound('draftkingsOdds');
+        const fdProb  = compound('fanduelOdds');
+        const kProb   = compound('kalshiOdds');
+
+        // Selections summary for tooltip
+        const selections = legs.map(l => {
+          const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
+          const dt = l.startTime ? new Date(l.startTime).toLocaleDateString([], { month: 'numeric', day: 'numeric' }) : '';
+          return '• ' + name + (dt ? ' (' + dt + ')' : '');
+        }).join('\n');
+
+        // Edges in pp (my prob − book prob; positive = I charge more)
+        const edge = (bp) => bp != null ? ((myProb - bp) * 100) : null;
+
+        data.push({
+          parlayId: o.parlayId,
+          legCount: legs.length,
+          isConfirmed: o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')),
+          stake: o.confirmedStake || o.maxStake || o.stake || 0,
+          myProb,
+          pinProb, dkProb, fdProb, kProb,
+          edgePin: edge(pinProb),
+          edgeDk:  edge(dkProb),
+          edgeFd:  edge(fdProb),
+          edgeK:   edge(kProb),
+          myOddsAm: o.offeredOdds,
+          quotedAt: qDate,
+          selections,
+        });
+      }
+      window._parlayVsBooksData = data;
+    }
+
+    if (!data || data.length < 3) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays with book data</div></div>';
+      return;
+    }
+
+    const T = window._parlayVsBooksToggle;
+    const series = [
+      { key: 'mine',     label: 'Mine',     color: '#ef4444', getProb: d => d.myProb,  getEdge: () => 0 },
+      { key: 'pinnacle', label: 'Pinnacle', color: '#a855f7', getProb: d => d.pinProb, getEdge: d => d.edgePin },
+      { key: 'dk',       label: 'DK',       color: '#22c55e', getProb: d => d.dkProb,  getEdge: d => d.edgeDk },
+      { key: 'fd',       label: 'FanDuel',  color: '#3b82f6', getProb: d => d.fdProb,  getEdge: d => d.edgeFd },
+      { key: 'kalshi',   label: 'Kalshi',   color: '#eab308', getProb: d => d.kProb,   getEdge: d => d.edgeK },
+    ];
+
+    let html = '';
+    html += '<div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:10px; font-size:12px;">';
+    for (const s of series) {
+      const checked = T[s.key] ? ' checked' : '';
+      const swatch = s.key === 'mine'
+        ? '<span style="display:inline-block;width:10px;height:10px;background:#9ca3af;border:1.5px solid #ef4444;margin:0 6px -1px 0;border-radius:50%;"></span>'
+        : '<span style="display:inline-block;width:10px;height:10px;background:' + s.color + ';margin:0 6px -1px 0;border-radius:50%;"></span>';
+      html += '<label style="cursor:pointer; user-select:none;">'
+        + '<input type="checkbox"' + checked + ' onchange="toggleParlayVsBooksSeries(\'' + s.key + '\')" style="margin-right:6px; vertical-align:middle;">'
+        + swatch + s.label + '</label>';
+    }
+    html += '<span style="color:var(--text3); margin-left:10px;">' + data.length + ' parlays · last 7d · dot size ∝ stake</span>';
+    html += '</div>';
+
+    // --- Scatter ---
+    const W = 900, H = 420, pad = { l: 60, r: 20, t: 25, b: 50 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+
+    // Log axes for both x (my prob) and y (book prob)
+    const logClamp = (p) => Math.log10(Math.max(0.001, Math.min(0.999, p)));
+    const xMin = logClamp(0.002);
+    const xMax = logClamp(0.6);
+    const yMin = xMin, yMax = xMax;
+    const scaleX = (p) => {
+      const t = (logClamp(p) - xMin) / (xMax - xMin);
+      return pad.l + Math.max(0, Math.min(1, t)) * chartW;
+    };
+    const scaleY = (p) => {
+      const t = (logClamp(p) - yMin) / (yMax - yMin);
+      return pad.t + chartH - Math.max(0, Math.min(1, t)) * chartH;
+    };
+
+    // Stake → radius (sqrt scale so area ∝ stake)
+    const stakes = data.map(d => d.stake || 0).filter(s => s > 0);
+    const maxStake = stakes.length ? Math.max(...stakes) : 1;
+    const stakeRadius = (s) => {
+      if (!s || s <= 0) return 3;
+      const r = 3 + Math.sqrt(s / maxStake) * 12; // 3..15 px
+      return r;
+    };
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; height:auto; display:block;">';
+
+    // Gridlines + ticks (log)
+    const ticks = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4];
+    for (const p of ticks) {
+      const x = scaleX(p), y = scaleY(p);
+      if (x >= pad.l && x <= pad.l + chartW) {
+        svg += svgLine(x, pad.t, x, pad.t + chartH, 'var(--border)', 0.4);
+        svg += svgText(x, pad.t + chartH + 16, (p * 100).toFixed(p < 0.05 ? 1 : 0) + '%', { size: 11, fill: 'var(--text3)' });
+      }
+      if (y >= pad.t && y <= pad.t + chartH) {
+        svg += svgLine(pad.l, y, pad.l + chartW, y, 'var(--border)', 0.4);
+        svg += svgText(pad.l - 8, y + 4, (p * 100).toFixed(p < 0.05 ? 1 : 0) + '%', { anchor: 'end', size: 11, fill: 'var(--text3)' });
+      }
+    }
+
+    // Parity diagonal
+    svg += '<line x1="' + scaleX(0.002) + '" y1="' + scaleY(0.002) + '" x2="' + scaleX(0.6) + '" y2="' + scaleY(0.6) + '" stroke="#ffffff" stroke-width="1" stroke-dasharray="4,4" opacity="0.5"/>';
+    svg += svgText(pad.l + chartW - 4, scaleY(0.5) - 4, 'Parity', { anchor: 'end', size: 10, fill: '#ffffff' });
+
+    // Build tooltip text once per parlay
+    const tipFor = (d) => {
+      const fmtPp = (e) => e == null ? 'n/a' : (e >= 0 ? '+' : '') + e.toFixed(2) + 'pp';
+      const t = (d.quotedAt || '').replace('T', ' ').substring(0, 16);
+      return d.legCount + '-leg ' + (d.myOddsAm >= 0 ? '+' : '') + d.myOddsAm
+        + ' · stake $' + (d.stake || 0).toFixed(0)
+        + (d.isConfirmed ? ' · CONFIRMED' : '')
+        + '\nQuoted: ' + t
+        + '\n\nSelections:\n' + d.selections
+        + '\n\nMy implied: ' + (d.myProb * 100).toFixed(2) + '%'
+        + '\nEdge vs PIN: ' + fmtPp(d.edgePin)
+        + '\nEdge vs DK:  ' + fmtPp(d.edgeDk)
+        + '\nEdge vs FD:  ' + fmtPp(d.edgeFd)
+        + '\nEdge vs KAL: ' + fmtPp(d.edgeK);
+    };
+
+    // Render: book dots first (translucent), then "mine" dots on top
+    const drawOrder = series.filter(s => T[s.key] && s.key !== 'mine').concat(series.filter(s => T[s.key] && s.key === 'mine'));
+    for (const s of drawOrder) {
+      for (const d of data) {
+        const yp = s.getProb(d);
+        if (yp == null) continue;
+        const x = scaleX(d.myProb);
+        const y = scaleY(yp);
+        const r = stakeRadius(d.stake);
+        let fill, opacity, stroke = 'none', strokeW = 0;
+        if (s.key === 'mine') {
+          fill = d.isConfirmed ? '#ef4444' : '#9ca3af';
+          opacity = 0.95;
+          stroke = '#000';
+          strokeW = 0.5;
+        } else {
+          fill = s.color;
+          opacity = 0.32;
+        }
+        svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + fill + '" opacity="' + opacity + '"'
+          + (strokeW ? ' stroke="' + stroke + '" stroke-width="' + strokeW + '"' : '')
+          + '><title>[' + s.label + ']\n' + tipFor(d) + '</title></circle>';
+      }
+    }
+
+    // Axis titles
+    svg += svgText(pad.l + chartW / 2, H - 6, 'My Parlay Implied Probability (log)', { size: 13, fill: '#ffffff' });
+    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">Book Compound Implied Probability (log)</text>';
+    svg += '</svg>';
+
+    html += svg;
+
+    // Footer
+    const confirmedCount = data.filter(d => d.isConfirmed).length;
+    html += '<div style="font-size:11px; color:var(--text3); margin-top:8px;">'
+      + confirmedCount + ' confirmed of ' + data.length + ' quoted · '
+      + 'Above the parity line = my offer is more generous (worse for SP). '
+      + 'Below = book would price tighter than I did. Hover any dot for selections, edges, and quote time.'
       + '</div>';
 
     el.innerHTML = html;

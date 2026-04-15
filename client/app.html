@@ -210,20 +210,44 @@
 
     async function checkPushSubscription() {
       if (!swReg) return;
-      const sub = await swReg.pushManager.getSubscription();
+      let sub = await swReg.pushManager.getSubscription();
+
+      // Self-heal: if the browser has no subscription but notification
+      // permission is already granted, silently create one. subscribe()
+      // only needs a user gesture when permission is 'default'; with
+      // 'granted' it can be called any time. This handles the case where
+      // the browser dropped the subscription (PWA reinstall, permissions
+      // reset, sw update, etc.) without forcing the user to tap a banner.
+      if (!sub && 'Notification' in window && Notification.permission === 'granted') {
+        try {
+          const resp = await fetch(BASE + '/push/vapid-key');
+          const { publicKey } = await resp.json();
+          sub = await swReg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey),
+          });
+          console.log('Auto-resubscribed to push');
+        } catch (e) {
+          console.warn('Auto-resubscribe failed:', e);
+        }
+      }
+
       pushSubscribed = !!sub;
       renderNotifyPrompt();
+
       // Re-POST the subscription to the server on every load. The server
       // keeps subscriptions in memory only, so every deploy/restart forgets
       // them. Browser-side subscription persists, so we just push it back
       // up each time the app opens.
       if (sub) {
         try {
-          await fetch(BASE + '/push/subscribe', {
+          const r = await fetch(BASE + '/push/subscribe', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(sub.toJSON()),
           });
+          const j = await r.json().catch(() => ({}));
+          console.log('Push subscription registered:', j);
         } catch (e) {
           console.warn('Re-register push subscription failed:', e);
         }
@@ -262,7 +286,11 @@
       if (pushSubscribed) {
         el.innerHTML = '';
       } else {
-        el.innerHTML = '<div class="notify-banner" onclick="subscribePush()">Tap to enable push notifications</div>';
+        const perm = ('Notification' in window) ? Notification.permission : 'unsupported';
+        let msg = 'Tap to enable push notifications';
+        if (perm === 'denied') msg = 'Push notifications BLOCKED — enable in browser settings';
+        else if (perm === 'unsupported') msg = 'Push notifications not supported on this browser';
+        el.innerHTML = '<div class="notify-banner" onclick="subscribePush()">' + msg + '</div>';
       }
     }
 
@@ -460,19 +488,23 @@
 
         const legHtml = legs.map(l => {
           const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
-          const displayName = name.length > 25 ? name.substring(0, 23) + '..' : name;
+          const displayName = name.length > 28 ? name.substring(0, 26) + '..' : name;
           const lr = l.settlementStatus || l.settlement_status || l.inferredResult || '';
           const lrCls = lr === 'won' ? 'won' : lr === 'lost' ? 'lost' : '';
           const lrLabel = lr ? lr.charAt(0).toUpperCase() + lr.slice(1) : '';
-          // Best available leg odds: fair, then pinnacle, fanduel, draftkings
-          const legOdds = l.fairProb ? probToAmerican(l.fairProb)
-            : fmtOdds(l.pinnacleOdds || l.fanduelOdds || l.draftkingsOdds);
-          return '<div class="leg">' +
-            '<span>' + displayName + '</span>' +
-            '<span style="display:flex;gap:8px;align-items:center;">' +
-              '<span style="color:var(--text2);font-size:11px;">' + legOdds + '</span>' +
+          const pinStr = fmtOdds(l.pinnacleOdds);
+          const dkStr = fmtOdds(l.draftkingsOdds);
+          const fairStr = l.fairProb ? probToAmerican(l.fairProb) : '-';
+          return '<div class="leg" style="flex-direction:column;align-items:stretch;gap:2px;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+              '<span>' + displayName + '</span>' +
               (lrLabel ? '<span class="leg-result ' + lrCls + '">' + lrLabel + '</span>' : '') +
-            '</span>' +
+            '</div>' +
+            '<div style="display:flex;gap:10px;font-size:10px;color:var(--text2);">' +
+              '<span>PIN <span style="color:var(--text);">' + pinStr + '</span></span>' +
+              '<span>DK <span style="color:var(--text);">' + dkStr + '</span></span>' +
+              '<span>FAIR <span style="color:var(--text);">' + fairStr + '</span></span>' +
+            '</div>' +
           '</div>';
         }).join('');
 
