@@ -715,6 +715,17 @@
           </div>
         </div>
 
+        <!-- Cumulative P&L + ROI (merged) -->
+        <div class="card">
+          <div class="card-header">
+            <span>Cumulative P&L & ROI</span>
+            <span id="cumul-pnlroi-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="chart-cumul-pnl-roi">
+            <div class="empty-state"><div class="icon">-</div><div>Need settled orders to chart P&L / ROI</div></div>
+          </div>
+        </div>
+
         <!-- Pricing Edge vs Sportsbooks -->
         <div class="card">
           <div class="card-header">
@@ -736,16 +747,6 @@
           </div>
         </div>
 
-        <!-- Parlay Pricing vs. Books -->
-        <div class="card">
-          <div class="card-header">
-            <span>Parlay Pricing vs. Books</span>
-          </div>
-          <div class="card-body" id="chart-parlay-vs-books">
-            <div class="empty-state"><div class="icon">-</div><div>Need quoted parlays with book odds</div></div>
-          </div>
-        </div>
-
         <!-- Missed Volume from Risk Limits -->
         <div class="card">
           <div class="card-header">
@@ -754,25 +755,6 @@
           </div>
           <div class="card-body" id="chart-risk-limit-missed">
             <div class="empty-state"><div class="icon">-</div><div>No RFQs declined for risk-limit reasons yet</div></div>
-          </div>
-        </div>
-
-        <!-- Cumulative P&L -->
-        <div class="card">
-          <div class="card-header"><span>Cumulative P&L</span></div>
-          <div class="card-body" id="chart-cumul-pnl">
-            <div class="empty-state"><div class="icon">-</div><div>Need settled orders to chart P&L</div></div>
-          </div>
-        </div>
-
-        <!-- Cumulative ROI -->
-        <div class="card">
-          <div class="card-header">
-            <span>Cumulative ROI</span>
-            <span id="roi-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-          </div>
-          <div class="card-body" id="chart-cumul-roi">
-            <div class="empty-state"><div class="icon">-</div><div>Need settled orders to chart ROI</div></div>
           </div>
         </div>
 
@@ -802,43 +784,6 @@
           </div>
         </div>
 
-        <!-- Competitive Gap -->
-        <div class="card">
-          <div class="card-header"><span>Competitive Gap</span></div>
-          <div class="card-body" id="chart-comp-gap">
-            <div class="empty-state"><div class="icon">-</div><div>Need quoted + matched parlays</div></div>
-          </div>
-        </div>
-
-        <!-- CLV (Closing Line Value) -->
-        <div class="card">
-          <div class="card-header">
-            <span>Closing Line Value (CLV)</span>
-            <span id="clv-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-          </div>
-          <div class="card-body" id="chart-clv">
-            <div class="empty-state"><div class="icon">-</div><div>Need settled orders with closing-line data</div></div>
-          </div>
-        </div>
-
-        <!-- Exposure Concentration -->
-        <div class="card">
-          <div class="card-header"><span>Exposure Concentration</span></div>
-          <div class="card-body" id="chart-exposure">
-            <div class="empty-state"><div class="icon">-</div><div>Need active positions</div></div>
-          </div>
-        </div>
-
-        <!-- Exposure Limit Rejections -->
-        <div class="card">
-          <div class="card-header">
-            <span>Exposure Limit Rejections</span>
-            <span id="exposure-limit-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
-          </div>
-          <div class="card-body" id="exposure-limit-stats">
-            <div class="empty-state"><div class="icon">-</div><div>No exposure limit data yet</div></div>
-          </div>
-        </div>
       </div>
 
       <!-- ===================== SECTION: MARKET INTEL ===================== -->
@@ -5716,17 +5661,12 @@
     const allQuoted = ownOrders.filter(o => o.offeredOdds);
 
     renderChartDailyVolume(ownOrders);
-    renderChartCumulPnl(settled);
-    renderChartCumulRoi(settled);
+    renderChartCumulPnlRoi(settled);
     renderChartPnlSport(settled);
     renderChartPnlLegs(settled);
     renderChartCalibration(settled);
-    renderChartCompGap(data);
-    renderChartExposure(confirmed);
     renderChartPricingEdge(allQuoted);
     renderChartParlayEdge(allQuoted);
-    renderChartParlayVsBooks(allQuoted);
-    renderChartClv(settled);
     renderChartRiskLimitMissed(intel);
   }
 
@@ -6257,8 +6197,174 @@
     el.innerHTML = svg;
   }
 
+  // Merged Cumulative P&L + ROI — one chart, two lines, dual y-axis.
+  // Left axis: cumulative P&L in $. Right axis: cumulative ROI in %.
+  function renderChartCumulPnlRoi(settled) {
+    const el = document.getElementById('chart-cumul-pnl-roi');
+    const sumEl = document.getElementById('cumul-pnlroi-summary');
+    if (!el) return;
+    if (settled.length < 2) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders to chart P&L / ROI</div></div>';
+      if (sumEl) sumEl.textContent = '';
+      return;
+    }
+
+    const sorted = [...settled]
+      .filter(o => o.settledAt)
+      .sort((a, b) => (a.settledAt || '').localeCompare(b.settledAt || ''));
+    if (sorted.length < 2) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders with timestamps</div></div>';
+      if (sumEl) sumEl.textContent = '';
+      return;
+    }
+
+    const points = [];
+    let cumulPnl = 0;
+    let cumulRisk = 0;
+    for (const o of sorted) {
+      const risk = (o.confirmedStake && o.offeredOdds)
+        ? calcBettorWager(o.confirmedStake, o.offeredOdds)
+        : (o.confirmedStake || 0);
+      cumulPnl += (o.pnl || 0);
+      if (risk > 0) cumulRisk += risk;
+      const t = new Date(o.settledAt).getTime();
+      if (isNaN(t)) continue;
+      const roiPct = cumulRisk > 0 ? (cumulPnl / cumulRisk) * 100 : 0;
+      points.push({ t, pnl: cumulPnl, roi: roiPct, order: o });
+    }
+    if (points.length < 2) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders with valid stakes</div></div>';
+      if (sumEl) sumEl.textContent = '';
+      return;
+    }
+
+    const finalPnl = points[points.length - 1].pnl;
+    const finalRoi = points[points.length - 1].roi;
+    if (sumEl) {
+      const pnlCls = finalPnl >= 0 ? 'positive' : 'negative';
+      const roiCls = finalRoi >= 0 ? 'positive' : 'negative';
+      sumEl.innerHTML = '<span class="' + pnlCls + '">' + (finalPnl >= 0 ? '+$' : '-$') + Math.abs(finalPnl).toFixed(2) + '</span>'
+        + ' &middot; <span class="' + roiCls + '">' + (finalRoi >= 0 ? '+' : '') + finalRoi.toFixed(2) + '%</span>'
+        + ' &middot; $' + cumulRisk.toFixed(0) + ' risked';
+    }
+
+    const W = 720, H = 260, pad = { l: 60, r: 60, t: 20, b: 40 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+
+    // Independent scales so both series use the full chart height
+    const minPnl = Math.min(0, ...points.map(p => p.pnl));
+    const maxPnl = Math.max(0, ...points.map(p => p.pnl));
+    const pnlRange = maxPnl - minPnl || 1;
+    const minRoi = Math.min(0, ...points.map(p => p.roi));
+    const maxRoi = Math.max(0, ...points.map(p => p.roi));
+    const roiRange = maxRoi - minRoi || 1;
+
+    // Align zero across both axes: compute a normalized 0-point and snap both ranges.
+    // Simpler: scale each axis independently, but place both zero lines at the same y.
+    const zeroFracPnl = -minPnl / pnlRange;
+    const zeroFracRoi = -minRoi / roiRange;
+    // Use the max of the two to find shared zero fraction
+    const zeroFrac = Math.max(zeroFracPnl, zeroFracRoi);
+    // Rescale each so their zero lands at this fraction
+    const pnlLo = -zeroFrac * pnlRange + minPnl; // keeps original span, just shifts
+    const pnlHi = pnlLo + pnlRange;
+    const roiLo = -zeroFrac * roiRange + minRoi;
+    const roiHi = roiLo + roiRange;
+
+    const tMin = points[0].t;
+    const tMax = points[points.length - 1].t;
+    const tRange = Math.max(1, tMax - tMin);
+
+    const scaleX = (t) => pad.l + ((t - tMin) / tRange) * chartW;
+    const scaleYpnl = (v) => pad.t + chartH - ((v - pnlLo) / (pnlHi - pnlLo)) * chartH;
+    const scaleYroi = (v) => pad.t + chartH - ((v - roiLo) / (roiHi - roiLo)) * chartH;
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:320px;">`;
+
+    // Shared zero line (both series converge here by construction)
+    const zeroY = scaleYpnl(0);
+    svg += svgLine(pad.l, zeroY, W - pad.r, zeroY, 'var(--border)', 1);
+
+    // Left axis labels (P&L, green)
+    svg += svgText(pad.l - 8, zeroY + 3, '$0', { anchor: 'end', size: 9, fill: 'var(--green)' });
+    if (maxPnl > 0) { const y = scaleYpnl(maxPnl); svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.3); svg += svgText(pad.l - 8, y + 3, '+$' + maxPnl.toFixed(0), { anchor: 'end', size: 9, fill: 'var(--green)' }); }
+    if (minPnl < 0) { const y = scaleYpnl(minPnl); svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.3); svg += svgText(pad.l - 8, y + 3, '-$' + Math.abs(minPnl).toFixed(0), { anchor: 'end', size: 9, fill: 'var(--red)' }); }
+
+    // Right axis labels (ROI, cyan)
+    svg += svgText(W - pad.r + 8, zeroY + 3, '0%', { anchor: 'start', size: 9, fill: 'var(--blue)' });
+    if (maxRoi > 0) { const y = scaleYroi(maxRoi); svg += svgText(W - pad.r + 8, y + 3, '+' + maxRoi.toFixed(1) + '%', { anchor: 'start', size: 9, fill: 'var(--blue)' }); }
+    if (minRoi < 0) { const y = scaleYroi(minRoi); svg += svgText(W - pad.r + 8, y + 3, minRoi.toFixed(1) + '%', { anchor: 'start', size: 9, fill: 'var(--red)' }); }
+
+    // X-axis time ticks
+    const spanHours = tRange / (1000 * 60 * 60);
+    const spanDays = spanHours / 24;
+    let tickMs, tickFmt;
+    if (spanHours <= 6) { tickMs = 60 * 60 * 1000; tickFmt = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+    else if (spanHours <= 36) { tickMs = 2 * 60 * 60 * 1000; tickFmt = (d) => d.toLocaleTimeString([], { hour: 'numeric' }); }
+    else if (spanDays <= 14) { tickMs = 24 * 60 * 60 * 1000; tickFmt = (d) => d.toLocaleDateString([], { month: 'numeric', day: 'numeric' }); }
+    else { tickMs = 7 * 24 * 60 * 60 * 1000; tickFmt = (d) => d.toLocaleDateString([], { month: 'numeric', day: 'numeric' }); }
+    const firstTick = Math.ceil(tMin / tickMs) * tickMs;
+    const xAxisY = pad.t + chartH;
+    for (let t = firstTick; t <= tMax; t += tickMs) {
+      const x = scaleX(t);
+      svg += svgLine(x, pad.t, x, xAxisY, 'var(--border)', 0.25);
+      svg += svgText(x, xAxisY + 14, tickFmt(new Date(t)), { size: 9, fill: 'var(--text3)' });
+    }
+    svg += svgText(pad.l, H - 6, new Date(tMin).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }), { anchor: 'start', size: 9, fill: 'var(--text3)' });
+    svg += svgText(W - pad.r, H - 6, new Date(tMax).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }), { anchor: 'end', size: 9, fill: 'var(--text3)' });
+
+    // P&L area fill
+    let pnlAreaPath = `M${scaleX(points[0].t)},${zeroY}`;
+    for (const p of points) pnlAreaPath += ` L${scaleX(p.t)},${scaleYpnl(p.pnl)}`;
+    pnlAreaPath += ` L${scaleX(points[points.length - 1].t)},${zeroY} Z`;
+    const pnlAreaColor = finalPnl >= 0 ? 'rgba(63,185,80,0.12)' : 'rgba(248,81,73,0.12)';
+    svg += `<path d="${pnlAreaPath}" fill="${pnlAreaColor}" />`;
+
+    // P&L line (green/red)
+    let pnlLinePath = '';
+    for (let i = 0; i < points.length; i++) {
+      pnlLinePath += (i === 0 ? 'M' : ' L') + scaleX(points[i].t) + ',' + scaleYpnl(points[i].pnl);
+    }
+    const pnlLineColor = finalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    svg += `<path d="${pnlLinePath}" fill="none" stroke="${pnlLineColor}" stroke-width="2.2" />`;
+
+    // ROI line (cyan/blue dashed)
+    let roiLinePath = '';
+    for (let i = 0; i < points.length; i++) {
+      roiLinePath += (i === 0 ? 'M' : ' L') + scaleX(points[i].t) + ',' + scaleYroi(points[i].roi);
+    }
+    svg += `<path d="${roiLinePath}" fill="none" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5,3" />`;
+
+    // Dots on P&L line, colored per-parlay pnl
+    for (const p of points) {
+      const color = p.order.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      svg += svgCircle(scaleX(p.t), scaleYpnl(p.pnl), 3, color);
+    }
+
+    // Final labels
+    const lastP = points[points.length - 1];
+    const pnlLabel = (lastP.pnl >= 0 ? '+$' : '-$') + Math.abs(lastP.pnl).toFixed(2);
+    const roiLabel = (lastP.roi >= 0 ? '+' : '') + lastP.roi.toFixed(2) + '%';
+    svg += svgText(scaleX(lastP.t) - 4, scaleYpnl(lastP.pnl) - 4, pnlLabel, { anchor: 'end', size: 11, fill: pnlLineColor });
+    svg += svgText(scaleX(lastP.t) - 4, scaleYroi(lastP.roi) - 4, roiLabel, { anchor: 'end', size: 11, fill: 'var(--blue)' });
+
+    // Legend
+    svg += '<g transform="translate(' + (pad.l + 10) + ',' + (pad.t + 12) + ')">';
+    svg += '<line x1="0" y1="0" x2="18" y2="0" stroke="' + pnlLineColor + '" stroke-width="2.2"/>';
+    svg += svgText(24, 4, 'P&L ($, left)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
+    svg += '<line x1="110" y1="0" x2="128" y2="0" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5,3"/>';
+    svg += svgText(134, 4, 'ROI (%, right)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
+    svg += '</g>';
+
+    svg += '</svg>';
+    svg += `<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">${points.length} settled parlays &middot; zero lines aligned &middot; x-axis by settlement time</div>`;
+    el.innerHTML = svg;
+  }
+
+  // (Legacy single-chart P&L — retained for API compatibility but unused.)
   function renderChartCumulPnl(settled) {
     const el = document.getElementById('chart-cumul-pnl');
+    if (!el) return;
     if (settled.length < 2) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 2+ settled orders to chart P&L</div></div>'; return; }
 
     // Sort by settlement time and parse timestamps into ms
