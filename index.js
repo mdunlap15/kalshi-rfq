@@ -348,19 +348,24 @@ function startStatusServer() {
       },
       portfolio: (() => {
         // Account-based P&L is the SOURCE OF TRUTH for the dashboard.
-        // PX returns balance directly — it does not lock SP risk, so
-        // balance IS total account value, no add-back needed.
-        // accountPnL = liveBalance - startingBankroll. If liveBalance
-        // hasn't been fetched yet (or returned 0), accountPnL is null
-        // and the dashboard shows '—' rather than a misleading number.
-        // The tracker's runningPnL is exposed under orders.runningPnL
-        // for comparison/debugging but is NOT the headline number.
+        // PX's /balance endpoint returns the AVAILABLE balance — cash
+        // not currently locked in open parlays. Total account value is
+        // therefore liveBalance + currentRisk (add back the deployed
+        // amount). accountPnL = (liveBalance + currentRisk) - startingBankroll.
+        // If liveBalance hasn't been fetched yet (or returned 0),
+        // accountPnL is null and the dashboard shows '—' rather than a
+        // misleading number. The tracker's runningPnL is exposed under
+        // orders.runningPnL for comparison/debugging but is NOT the
+        // headline number.
         const liveBal = config.pricing.liveBankroll;
+        const currentRisk = orderTracker.getTotalPortfolioRisk();
         const startingBankroll = config.pricing.startingBankroll;
-        const accountPnL = (liveBal && liveBal > 0) ? (liveBal - startingBankroll) : null;
+        const accountValue = (liveBal && liveBal > 0) ? (liveBal + currentRisk) : null;
+        const accountPnL = accountValue != null ? (accountValue - startingBankroll) : null;
         return {
           bankroll: getBankroll(),
           balance: liveBal || getBankroll(),
+          accountValue,
           startingBankroll,
           accountPnL,
           maxDrawdownPct: config.pricing.maxDrawdownPct,
