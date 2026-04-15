@@ -919,6 +919,115 @@ function recordDecline(reason, detail) {
   }
 }
 
+/**
+ * Split the "not seen" missed-volume bucket into sub-categories so the
+ * operator can tell which kind of coverage gap is producing the volume.
+ *
+ * Categories (mutually exclusive, first match wins):
+ *   1. had_unknown_legs       — at least one leg.wasUnregistered = true
+ *                               (should have been classified as 'unknown
+ *                               legs' but decline reason was lost)
+ *   2. unsupported_sport      — at least one leg has a sport outside
+ *                               config.supportedSports (or sport unknown)
+ *   3. historical_pre_service — matchedAt before the current process
+ *                               booted (prior session, downtime, or
+ *                               pre-fix historical data)
+ *   4. session_active_gap     — matchedAt within current session but we
+ *                               still never saw it (real WS delivery gap
+ *                               or sub-second startup window)
+ *   5. other                  — unclassified
+ *
+ * Returns per-bucket totals plus a dailyByBucket map so the dashboard
+ * can show "missed $X/day in category Y".
+ */
+function buildNotSeenBreakdown(missed) {
+  let config;
+  try { ({ config } = require('../config')); } catch { config = { supportedSports: [] }; }
+  const supported = new Set((config.supportedSports || []).map(s => s.toLowerCase()));
+  const sessionStart = stats.startedAt;
+
+  const notSeen = missed.filter(m => !m.declineReason);
+  const buckets = {
+    had_unknown_legs:       { count: 0, totalStake: 0 },
+    unsupported_sport:      { count: 0, totalStake: 0 },
+    historical_pre_service: { count: 0, totalStake: 0 },
+    session_active_gap:     { count: 0, totalStake: 0 },
+    other:                  { count: 0, totalStake: 0 },
+  };
+  // dailyByBucket[bucket][YYYY-MM-DD] = { count, stake }
+  const dailyByBucket = {};
+  const ensureDay = (bucket, day) => {
+    if (!dailyByBucket[bucket]) dailyByBucket[bucket] = {};
+    if (!dailyByBucket[bucket][day]) dailyByBucket[bucket][day] = { count: 0, stake: 0 };
+    return dailyByBucket[bucket][day];
+  };
+
+  for (const m of notSeen) {
+    const legs = m.legs || [];
+    const stake = m.matchedStake || 0;
+    const day = (m.matchedAt || '').substring(0, 10) || 'unknown';
+
+    let bucket;
+    const hasUnregistered = legs.some(l => l.wasUnregistered);
+    const legSports = legs.map(l => (l.sport || '').toLowerCase()).filter(Boolean);
+    const hasUnsupportedSport = legSports.length > 0 && legSports.some(s => !supported.has(s) && s !== 'unknown');
+    const anyUnknownSport = legSports.length === 0 || legSports.some(s => s === 'unknown' || s === '');
+
+    if (hasUnregistered) {
+      bucket = 'had_unknown_legs';
+    } else if (hasUnsupportedSport || anyUnknownSport) {
+      bucket = 'unsupported_sport';
+    } else if (m.matchedAt && m.matchedAt < sessionStart) {
+      bucket = 'historical_pre_service';
+    } else if (m.matchedAt && m.matchedAt >= sessionStart) {
+      bucket = 'session_active_gap';
+    } else {
+      bucket = 'other';
+    }
+
+    buckets[bucket].count++;
+    buckets[bucket].totalStake += stake;
+    const d = ensureDay(bucket, day);
+    d.count++;
+    d.stake += stake;
+  }
+
+  // Round and compute averages
+  for (const k of Object.keys(buckets)) {
+    const b = buckets[k];
+    b.totalStake = Math.round(b.totalStake * 100) / 100;
+    b.avgStake = b.count > 0 ? Math.round((b.totalStake / b.count) * 100) / 100 : 0;
+  }
+  for (const bucket of Object.keys(dailyByBucket)) {
+    for (const day of Object.keys(dailyByBucket[bucket])) {
+      dailyByBucket[bucket][day].stake = Math.round(dailyByBucket[bucket][day].stake * 100) / 100;
+    }
+  }
+
+  // Also compute combined daily totals across all not-seen parlays
+  // so the dashboard can show an overall daily missed-volume chart.
+  const dailyTotals = {};
+  for (const bucket of Object.keys(dailyByBucket)) {
+    for (const [day, stats2] of Object.entries(dailyByBucket[bucket])) {
+      if (!dailyTotals[day]) dailyTotals[day] = { count: 0, stake: 0 };
+      dailyTotals[day].count += stats2.count;
+      dailyTotals[day].stake += stats2.stake;
+    }
+  }
+  for (const day of Object.keys(dailyTotals)) {
+    dailyTotals[day].stake = Math.round(dailyTotals[day].stake * 100) / 100;
+  }
+
+  return {
+    totalCount: notSeen.length,
+    totalStake: Math.round(notSeen.reduce((s, m) => s + (m.matchedStake || 0), 0) * 100) / 100,
+    buckets,
+    dailyByBucket,
+    dailyTotals,
+    sessionStart,
+  };
+}
+
 function getMarketIntel(limit = 50) {
   return {
     stats: { ...marketStats },
@@ -950,7 +1059,12 @@ function getMarketIntel(limit = 50) {
       for (const r of Object.keys(byReason)) {
         byReason[r].avgStake = byReason[r].count > 0 ? Math.round(byReason[r].totalStake * 100) / 100 : 0;
       }
-      return { totalMissed: missed.length, totalStake: Math.round(totalStake * 100) / 100, byReason };
+      return {
+        totalMissed: missed.length,
+        totalStake: Math.round(totalStake * 100) / 100,
+        byReason,
+        notSeenBreakdown: buildNotSeenBreakdown(missed),
+      };
     })(),
     recentMatched: matchedParlays.slice(0, limit),
     quoteWinRate: marketStats.weQuoted > 0 ? (marketStats.weWon / marketStats.weQuoted * 100).toFixed(1) + '%' : '-',

@@ -1594,7 +1594,13 @@
       for (const r of merged) {
         const pct = d.total > 0 ? (r.declineCount / d.total * 100).toFixed(0) : '0';
         const legBreakdown = r.vol?.byLegCount ? Object.entries(r.vol.byLegCount).sort((a,b) => b[1]-a[1]).map(([k,v]) => k + '-leg: ' + v).join(', ') : '-';
-        html += '<tr><td>' + capFirst(r.reason) + '</td>';
+        const isNotSeen = r.reason === 'not seen';
+        const rowId = 'decline-row-' + r.reason.replace(/\s+/g, '-');
+        const expandable = isNotSeen && mv?.notSeenBreakdown && mv.notSeenBreakdown.totalCount > 0;
+        const rowCursor = expandable ? 'cursor:pointer;' : '';
+        const rowClick = expandable ? ' onclick="toggleDetailRow(\'' + rowId + '\')"' : '';
+        const labelPrefix = expandable ? '&#9654; ' : '';
+        html += '<tr style="' + rowCursor + '"' + rowClick + '><td>' + labelPrefix + capFirst(r.reason) + '</td>';
         html += '<td style="text-align:right; font-weight:600;">' + (r.declineCount || '-') + '</td>';
         html += '<td style="text-align:right; color:var(--text3);">' + pct + '%</td>';
         if (mvTotal > 0) {
@@ -1603,6 +1609,76 @@
           html += '<td style="text-align:right; color:var(--text3);">' + (r.missedCount > 0 ? '$' + (r.missedStake / r.missedCount).toFixed(2) : '-') + '</td>';
         }
         html += '<td style="text-align:right; color:var(--text3); font-size:11px;">' + legBreakdown + '</td></tr>';
+
+        // Expandable "not seen" sub-breakdown
+        if (expandable) {
+          const nsb = mv.notSeenBreakdown;
+          const nsbExpanded = expandedRows.has(rowId);
+          const colspan = mvTotal > 0 ? 7 : 4;
+          const bucketLabels = {
+            had_unknown_legs:       'Unknown legs (reason lost)',
+            unsupported_sport:      'Sport not registered / unknown sport',
+            historical_pre_service: 'Before current session (prior uptime or historical)',
+            session_active_gap:     'Active session — real delivery gap',
+            other:                  'Other / unclassified',
+          };
+          const bucketTips = {
+            had_unknown_legs:       'At least one leg was flagged as unregistered, but the decline reason was not persisted. Should have been "unknown legs".',
+            unsupported_sport:      'At least one leg is in a sport outside SUPPORTED_SPORTS, or has unknown sport. PX doesn\'t route these to us.',
+            historical_pre_service: 'Matched before the current process booted — includes every prior session, downtime window, and pre-fix historical data.',
+            session_active_gap:     'Matched during the current uptime window but we never saw the RFQ. This is the truly actionable bucket — real WS delivery gaps or pre-seed startup window.',
+            other:                  'Unclassified — no matchedAt timestamp or ambiguous.',
+          };
+          const entries = Object.entries(nsb.buckets || {}).sort((a, b) => b[1].totalStake - a[1].totalStake);
+          let sub = '<tr id="' + rowId + '" style="display:' + (nsbExpanded ? 'table-row' : 'none') + '; background:var(--surface2);">';
+          sub += '<td colspan="' + colspan + '" style="padding:8px 12px;">';
+          sub += '<div style="font-size:10px; color:var(--text3); margin-bottom:6px;">Session start: ' + (nsb.sessionStart || '-').substring(0,19).replace('T',' ') + ' UTC · rows with matchedAt before this are from prior sessions.</div>';
+          sub += '<table style="font-size:11px; width:100%; background:var(--surface3);">';
+          sub += '<tr style="color:var(--text3);"><th style="text-align:left; padding:4px 8px;">Sub-bucket</th><th style="text-align:right; padding:4px 8px;">Parlays</th><th style="text-align:right; padding:4px 8px;">Stake</th><th style="text-align:right; padding:4px 8px;">% of Not Seen</th><th style="text-align:right; padding:4px 8px;">Avg Stake</th></tr>';
+          for (const [name, b] of entries) {
+            if (b.count === 0) continue;
+            const stakePct = nsb.totalStake > 0 ? (b.totalStake / nsb.totalStake * 100).toFixed(1) : '0';
+            sub += '<tr title="' + (bucketTips[name] || '') + '">';
+            sub += '<td style="padding:4px 8px;"><strong>' + (bucketLabels[name] || name) + '</strong></td>';
+            sub += '<td style="text-align:right; padding:4px 8px;">' + b.count + '</td>';
+            sub += '<td style="text-align:right; padding:4px 8px; color:var(--amber); font-weight:600;">$' + b.totalStake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td>';
+            sub += '<td style="text-align:right; padding:4px 8px; color:var(--text3);">' + stakePct + '%</td>';
+            sub += '<td style="text-align:right; padding:4px 8px; color:var(--text3);">$' + b.avgStake.toFixed(2) + '</td>';
+            sub += '</tr>';
+          }
+          sub += '</table>';
+
+          // Daily volume table — shows missed stake per day per bucket
+          const allDays = new Set();
+          for (const bkt of Object.keys(nsb.dailyByBucket || {})) {
+            for (const day of Object.keys(nsb.dailyByBucket[bkt])) allDays.add(day);
+          }
+          const daysSorted = [...allDays].filter(d => d !== 'unknown').sort().reverse();
+          if (daysSorted.length > 0) {
+            sub += '<div style="margin-top:10px; font-size:10px; color:var(--text3);">Daily volume missed by bucket (most recent first):</div>';
+            sub += '<div style="max-height:240px; overflow-y:auto; margin-top:4px;"><table style="font-size:10px; width:100%; background:var(--surface3);">';
+            sub += '<tr style="color:var(--text3); position:sticky; top:0; background:var(--surface3);"><th style="text-align:left; padding:3px 6px;">Day</th>';
+            const activeBuckets = entries.filter(([, b]) => b.count > 0).map(([name]) => name);
+            for (const bn of activeBuckets) {
+              sub += '<th style="text-align:right; padding:3px 6px;">' + (bucketLabels[bn] || bn).split(' ')[0] + '</th>';
+            }
+            sub += '<th style="text-align:right; padding:3px 6px;">Day Total</th></tr>';
+            for (const day of daysSorted.slice(0, 60)) {
+              sub += '<tr><td style="padding:3px 6px;">' + day + '</td>';
+              let dayTotal = 0;
+              for (const bn of activeBuckets) {
+                const cell = nsb.dailyByBucket[bn]?.[day];
+                const stake = cell?.stake || 0;
+                dayTotal += stake;
+                sub += '<td style="text-align:right; padding:3px 6px; color:' + (stake > 0 ? 'var(--amber)' : 'var(--text3)') + ';">' + (stake > 0 ? '$' + Math.round(stake).toLocaleString() : '-') + '</td>';
+              }
+              sub += '<td style="text-align:right; padding:3px 6px; font-weight:600; color:var(--amber);">$' + Math.round(dayTotal).toLocaleString() + '</td></tr>';
+            }
+            sub += '</table></div>';
+          }
+          sub += '</td></tr>';
+          html += sub;
+        }
       }
       html += '</table></div>';
 

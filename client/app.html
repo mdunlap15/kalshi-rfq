@@ -303,10 +303,13 @@
       const o = status.orders || {};
       const p = status.portfolio || {};
       const ws = status.websocket || {};
-      const connected = ws.connected;
+      // Server exposes connectionState as a string ('connected' | 'connecting'
+      // | 'disconnected'), not a boolean. Reading ws.connected gave undefined
+      // and the badge was permanently red.
+      const connected = ws.connectionState === 'connected';
 
       const connEl = document.getElementById('conn-status');
-      connEl.textContent = connected ? 'Connected' : 'Disconnected';
+      connEl.textContent = connected ? 'Connected' : (ws.connectionState === 'connecting' ? 'Connecting…' : 'Disconnected');
       connEl.className = 'status ' + (connected ? 'connected' : 'disconnected');
 
       const pnl = o.runningPnL || 0;
