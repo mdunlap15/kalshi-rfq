@@ -2966,7 +2966,14 @@ function startStatusServer() {
   });
   app.post('/push/subscribe', (req, res) => {
     push.addSubscription(req.body);
-    res.json({ ok: true });
+    res.json({ ok: true, subscriptions: push.getSubscriptionCount() });
+  });
+  // Debug: how many push subscriptions does the server currently hold?
+  app.get('/push/status', (req, res) => {
+    res.json({
+      subscriptions: push.getSubscriptionCount(),
+      vapidConfigured: !!push.getVapidPublicKey(),
+    });
   });
 
   // SPA fallback

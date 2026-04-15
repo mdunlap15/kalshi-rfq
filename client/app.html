@@ -187,7 +187,7 @@
     <div class="empty">Loading...</div>
   </div>
 
-  <button class="refresh-btn" id="refresh-btn" onclick="loadData()">&#8635;</button>
+  <button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()">&#8635;</button>
 
   <script>
     const BASE = location.origin;
@@ -213,6 +213,21 @@
       const sub = await swReg.pushManager.getSubscription();
       pushSubscribed = !!sub;
       renderNotifyPrompt();
+      // Re-POST the subscription to the server on every load. The server
+      // keeps subscriptions in memory only, so every deploy/restart forgets
+      // them. Browser-side subscription persists, so we just push it back
+      // up each time the app opens.
+      if (sub) {
+        try {
+          await fetch(BASE + '/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(sub.toJSON()),
+          });
+        } catch (e) {
+          console.warn('Re-register push subscription failed:', e);
+        }
+      }
     }
 
     async function subscribePush() {
@@ -261,6 +276,14 @@
     }
 
     // --- Data Loading ---
+    // Manual refresh = explicit user engagement, so clear the badge.
+    // Background auto-refresh must NOT clear — otherwise the badge is
+    // wiped every minute before the user ever sees it.
+    function manualRefresh() {
+      if (navigator.clearAppBadge) navigator.clearAppBadge();
+      loadData();
+    }
+
     async function loadData() {
       const btn = document.getElementById('refresh-btn');
       btn.classList.add('loading');
@@ -276,15 +299,19 @@
 
         renderStatus(status, allOrders);
         renderParlays(allOrders);
-
-        // Clear badge on load
-        if (navigator.clearAppBadge) navigator.clearAppBadge();
       } catch (e) {
         console.error('Load failed:', e);
       } finally {
         btn.classList.remove('loading');
       }
     }
+
+    // Clear badge when the app becomes visible (user switched back to it).
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && navigator.clearAppBadge) {
+        navigator.clearAppBadge();
+      }
+    });
 
     // Get today's date in ET (US Eastern)
     function getTodayET() {
