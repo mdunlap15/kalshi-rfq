@@ -7291,7 +7291,7 @@
   // X = my offered parlay implied probability (log). Y = that series' compound
   // implied probability (log). Mine sits on the parity diagonal. Dot size ∝ stake.
   if (!window._parlayVsBooksToggle) {
-    window._parlayVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true, kalshi: true };
+    window._parlayVsBooksToggle = { pinnacle: true, dk: true, fd: true, kalshi: true };
   }
   function toggleParlayVsBooksSeries(which) {
     window._parlayVsBooksToggle[which] = !window._parlayVsBooksToggle[which];
@@ -7316,7 +7316,7 @@
         const myDec = o.offeredOdds > 0 ? (o.offeredOdds / 100 + 1) : (100 / Math.abs(o.offeredOdds) + 1);
         const myProb = 1 / myDec;
 
-        // Compound book probs — null if any leg is missing that book
+        // Compound book prob — null if any leg is missing that book
         function compound(field) {
           let p = 1;
           for (const l of legs) {
@@ -7332,15 +7332,15 @@
         const dkProb  = compound('draftkingsOdds');
         const fdProb  = compound('fanduelOdds');
         const kProb   = compound('kalshiOdds');
+        // Need Pinnacle compound prob to anchor the x-axis
+        if (pinProb == null) continue;
 
-        // Selections summary for tooltip
         const selections = legs.map(l => {
           const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
           const dt = l.startTime ? new Date(l.startTime).toLocaleDateString([], { month: 'numeric', day: 'numeric' }) : '';
           return '• ' + name + (dt ? ' (' + dt + ')' : '');
         }).join('\n');
 
-        // Edges in pp (my prob − book prob; positive = I charge more)
         const edge = (bp) => bp != null ? ((myProb - bp) * 100) : null;
 
         data.push({
@@ -7363,134 +7363,156 @@
     }
 
     if (!data || data.length < 3) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays with book data</div></div>';
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays with Pinnacle compound data</div></div>';
       return;
     }
 
     const T = window._parlayVsBooksToggle;
     const series = [
-      { key: 'mine',     label: 'Mine',     color: '#ef4444', getProb: d => d.myProb,  getEdge: () => 0 },
-      { key: 'pinnacle', label: 'Pinnacle', color: '#a855f7', getProb: d => d.pinProb, getEdge: d => d.edgePin },
-      { key: 'dk',       label: 'DK',       color: '#22c55e', getProb: d => d.dkProb,  getEdge: d => d.edgeDk },
-      { key: 'fd',       label: 'FanDuel',  color: '#3b82f6', getProb: d => d.fdProb,  getEdge: d => d.edgeFd },
-      { key: 'kalshi',   label: 'Kalshi',   color: '#eab308', getProb: d => d.kProb,   getEdge: d => d.edgeK },
+      { key: 'pinnacle', label: 'Pinnacle', color: '#a855f7', getEdge: d => d.edgePin },
+      { key: 'dk',       label: 'DK',       color: '#22c55e', getEdge: d => d.edgeDk },
+      { key: 'fd',       label: 'FanDuel',  color: '#3b82f6', getEdge: d => d.edgeFd },
+      { key: 'kalshi',   label: 'Kalshi',   color: '#eab308', getEdge: d => d.edgeK },
     ];
 
+    // --- Toggle controls ---
     let html = '';
     html += '<div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:10px; font-size:12px;">';
     for (const s of series) {
       const checked = T[s.key] ? ' checked' : '';
-      const swatch = s.key === 'mine'
-        ? '<span style="display:inline-block;width:10px;height:10px;background:#9ca3af;border:1.5px solid #ef4444;margin:0 6px -1px 0;border-radius:50%;"></span>'
-        : '<span style="display:inline-block;width:10px;height:10px;background:' + s.color + ';margin:0 6px -1px 0;border-radius:50%;"></span>';
       html += '<label style="cursor:pointer; user-select:none;">'
         + '<input type="checkbox"' + checked + ' onchange="toggleParlayVsBooksSeries(\'' + s.key + '\')" style="margin-right:6px; vertical-align:middle;">'
-        + swatch + s.label + '</label>';
+        + '<span style="display:inline-block;width:10px;height:10px;background:' + s.color + ';margin:0 6px -1px 0;border-radius:50%;"></span>'
+        + s.label + '</label>';
     }
-    html += '<span style="color:var(--text3); margin-left:10px;">' + data.length + ' parlays · last 7d · dot size ∝ stake</span>';
+    html += '<span style="color:var(--text3); margin-left:10px;">' + data.length + ' parlays · last 7d · ring = confirmed · size ∝ stake</span>';
     html += '</div>';
 
     // --- Scatter ---
     const W = 900, H = 420, pad = { l: 60, r: 20, t: 25, b: 50 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
 
-    // Log axes for both x (my prob) and y (book prob)
-    const logClamp = (p) => Math.log10(Math.max(0.001, Math.min(0.999, p)));
-    const xMin = logClamp(0.002);
-    const xMax = logClamp(0.6);
-    const yMin = xMin, yMax = xMax;
-    const scaleX = (p) => {
-      const t = (logClamp(p) - xMin) / (xMax - xMin);
-      return pad.l + Math.max(0, Math.min(1, t)) * chartW;
-    };
-    const scaleY = (p) => {
-      const t = (logClamp(p) - yMin) / (yMax - yMin);
-      return pad.t + chartH - Math.max(0, Math.min(1, t)) * chartH;
-    };
+    // Collect visible edge values for y-scaling
+    const visible = [];
+    for (const d of data) {
+      for (const s of series) {
+        if (T[s.key]) {
+          const e = s.getEdge(d);
+          if (e != null) visible.push(e);
+        }
+      }
+    }
+    if (visible.length === 0) {
+      html += '<div class="empty-state"><div class="icon">-</div><div>Enable at least one series above</div></div>';
+      el.innerHTML = html;
+      return;
+    }
+    const minEdge = Math.min(-3, ...visible);
+    const maxEdge = Math.max(3, ...visible);
+    const edgeRange = maxEdge - minEdge || 6;
+
+    // X = Pinnacle compound implied probability (linear, 0–maxPin)
+    const maxPin = Math.max(0.5, ...data.map(d => d.pinProb));
+    const xMaxScale = Math.min(1, Math.ceil(maxPin * 10) / 10);
+    const scaleX = (p) => pad.l + (p / xMaxScale) * chartW;
+    const scaleY = (e) => pad.t + chartH - ((e - minEdge) / edgeRange) * chartH;
 
     // Stake → radius (sqrt scale so area ∝ stake)
     const stakes = data.map(d => d.stake || 0).filter(s => s > 0);
     const maxStake = stakes.length ? Math.max(...stakes) : 1;
     const stakeRadius = (s) => {
       if (!s || s <= 0) return 3;
-      const r = 3 + Math.sqrt(s / maxStake) * 12; // 3..15 px
-      return r;
+      return 3 + Math.sqrt(s / maxStake) * 11; // 3..14 px
     };
 
     let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; height:auto; display:block;">';
 
-    // Gridlines + ticks (log)
-    const ticks = [0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4];
-    for (const p of ticks) {
-      const x = scaleX(p), y = scaleY(p);
-      if (x >= pad.l && x <= pad.l + chartW) {
-        svg += svgLine(x, pad.t, x, pad.t + chartH, 'var(--border)', 0.4);
-        svg += svgText(x, pad.t + chartH + 16, (p * 100).toFixed(p < 0.05 ? 1 : 0) + '%', { size: 11, fill: 'var(--text3)' });
-      }
-      if (y >= pad.t && y <= pad.t + chartH) {
-        svg += svgLine(pad.l, y, pad.l + chartW, y, 'var(--border)', 0.4);
-        svg += svgText(pad.l - 8, y + 4, (p * 100).toFixed(p < 0.05 ? 1 : 0) + '%', { anchor: 'end', size: 11, fill: 'var(--text3)' });
-      }
+    // Y gridlines
+    const yStep = edgeRange > 30 ? 5 : edgeRange > 15 ? 2 : 1;
+    for (let t = Math.ceil(minEdge / yStep) * yStep; t <= maxEdge; t += yStep) {
+      const y = scaleY(t);
+      svg += svgLine(pad.l, y, pad.l + chartW, y, 'var(--border)', 0.5);
+      svg += svgText(pad.l - 8, y + 4, (t >= 0 ? '+' : '') + t.toFixed(0) + 'pp', { anchor: 'end', size: 11, fill: 'var(--text3)' });
+    }
+    // Zero line
+    const zeroY = scaleY(0);
+    svg += svgLine(pad.l, zeroY, pad.l + chartW, zeroY, '#ffffff', 1.5);
+    svg += svgText(pad.l + chartW + 4, zeroY + 4, 'Parity', { anchor: 'start', size: 10, fill: '#ffffff' });
+
+    // X-axis ticks (linear)
+    const xTickStep = xMaxScale > 0.6 ? 0.1 : xMaxScale > 0.3 ? 0.05 : 0.02;
+    for (let p = 0; p <= xMaxScale + 1e-9; p += xTickStep) {
+      const x = scaleX(p);
+      svg += svgLine(x, pad.t + chartH, x, pad.t + chartH + 4, 'var(--text3)', 1);
+      svg += svgText(x, pad.t + chartH + 16, (p * 100).toFixed(p < 0.1 ? 1 : 0) + '%', { size: 11, fill: 'var(--text3)' });
     }
 
-    // Parity diagonal
-    svg += '<line x1="' + scaleX(0.002) + '" y1="' + scaleY(0.002) + '" x2="' + scaleX(0.6) + '" y2="' + scaleY(0.6) + '" stroke="#ffffff" stroke-width="1" stroke-dasharray="4,4" opacity="0.5"/>';
-    svg += svgText(pad.l + chartW - 4, scaleY(0.5) - 4, 'Parity', { anchor: 'end', size: 10, fill: '#ffffff' });
-
-    // Build tooltip text once per parlay
-    const tipFor = (d) => {
+    // Tooltip builder
+    const tipFor = (d, label) => {
       const fmtPp = (e) => e == null ? 'n/a' : (e >= 0 ? '+' : '') + e.toFixed(2) + 'pp';
       const t = (d.quotedAt || '').replace('T', ' ').substring(0, 16);
-      return d.legCount + '-leg ' + (d.myOddsAm >= 0 ? '+' : '') + d.myOddsAm
+      return '[' + label + ']\n'
+        + d.legCount + '-leg ' + (d.myOddsAm >= 0 ? '+' : '') + d.myOddsAm
         + ' · stake $' + (d.stake || 0).toFixed(0)
         + (d.isConfirmed ? ' · CONFIRMED' : '')
         + '\nQuoted: ' + t
         + '\n\nSelections:\n' + d.selections
         + '\n\nMy implied: ' + (d.myProb * 100).toFixed(2) + '%'
+        + ' · PIN compound: ' + (d.pinProb * 100).toFixed(2) + '%'
         + '\nEdge vs PIN: ' + fmtPp(d.edgePin)
         + '\nEdge vs DK:  ' + fmtPp(d.edgeDk)
         + '\nEdge vs FD:  ' + fmtPp(d.edgeFd)
         + '\nEdge vs KAL: ' + fmtPp(d.edgeK);
     };
 
-    // Render: book dots first (translucent), then "mine" dots on top
-    const drawOrder = series.filter(s => T[s.key] && s.key !== 'mine').concat(series.filter(s => T[s.key] && s.key === 'mine'));
-    for (const s of drawOrder) {
-      for (const d of data) {
-        const yp = s.getProb(d);
-        if (yp == null) continue;
-        const x = scaleX(d.myProb);
-        const y = scaleY(yp);
+    // Render — non-confirmed first (so confirmed sit on top)
+    const sorted = [...data].sort((a, b) => (a.isConfirmed ? 1 : 0) - (b.isConfirmed ? 1 : 0));
+    for (const s of series) {
+      if (!T[s.key]) continue;
+      for (const d of sorted) {
+        const e = s.getEdge(d);
+        if (e == null) continue;
+        const x = scaleX(d.pinProb);
+        const y = scaleY(e);
         const r = stakeRadius(d.stake);
-        let fill, opacity, stroke = 'none', strokeW = 0;
-        if (s.key === 'mine') {
-          fill = d.isConfirmed ? '#ef4444' : '#9ca3af';
-          opacity = 0.95;
-          stroke = '#000';
-          strokeW = 0.5;
-        } else {
-          fill = s.color;
-          opacity = 0.32;
-        }
-        svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + fill + '" opacity="' + opacity + '"'
-          + (strokeW ? ' stroke="' + stroke + '" stroke-width="' + strokeW + '"' : '')
-          + '><title>[' + s.label + ']\n' + tipFor(d) + '</title></circle>';
+        // Confirmed = red ring; not confirmed = soft gray ring
+        const stroke = d.isConfirmed ? '#ef4444' : '#9ca3af';
+        const strokeW = d.isConfirmed ? 1.8 : 0.6;
+        const opacity = d.isConfirmed ? 0.85 : 0.45;
+        svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + s.color + '" opacity="' + opacity + '" stroke="' + stroke + '" stroke-width="' + strokeW + '"><title>' + tipFor(d, s.label) + '</title></circle>';
       }
     }
 
+    // Annotations
+    svg += svgText(pad.l + 10, pad.t + 14, 'You charge more (good)', { anchor: 'start', size: 11, fill: 'var(--green)' });
+    svg += svgText(pad.l + 10, pad.t + chartH - 6, 'You offer better (value leak)', { anchor: 'start', size: 11, fill: 'var(--red)' });
+
     // Axis titles
-    svg += svgText(pad.l + chartW / 2, H - 6, 'My Parlay Implied Probability (log)', { size: 13, fill: '#ffffff' });
-    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">Book Compound Implied Probability (log)</text>';
+    svg += svgText(pad.l + chartW / 2, H - 6, 'Pinnacle Compound Implied Probability', { size: 13, fill: '#ffffff' });
+    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">My Prob − Book Prob (pp)</text>';
     svg += '</svg>';
 
     html += svg;
 
-    // Footer
+    // Per-series summary
+    html += '<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; padding:10px 14px; background:var(--surface2); border-radius:6px; font-size:12px;">';
+    const box = (label, value, color) =>
+      '<div style="min-width:140px;"><div style="font-size:11px; color:var(--text3); text-transform:uppercase;">' + label + '</div>'
+      + '<div style="font-size:17px; font-weight:700; color:' + color + ';">' + value + '</div></div>';
+    for (const s of series) {
+      if (!T[s.key]) continue;
+      const vals = data.map(s.getEdge).filter(v => v != null);
+      if (vals.length === 0) continue;
+      const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+      html += box('vs ' + s.label + ' · Avg', (avg >= 0 ? '+' : '') + avg.toFixed(2) + 'pp · n=' + vals.length, s.color);
+    }
+    html += '</div>';
+
     const confirmedCount = data.filter(d => d.isConfirmed).length;
     html += '<div style="font-size:11px; color:var(--text3); margin-top:8px;">'
-      + confirmedCount + ' confirmed of ' + data.length + ' quoted · '
-      + 'Above the parity line = my offer is more generous (worse for SP). '
-      + 'Below = book would price tighter than I did. Hover any dot for selections, edges, and quote time.'
+      + confirmedCount + ' confirmed of ' + data.length + ' quoted parlays. '
+      + 'Each dot = one parlay\'s edge vs that book (compound). Red ring = confirmed, gray ring = not filled. '
+      + 'Above zero = your offer is tighter than the book. Below = book would price tighter than you. Hover any dot for selections, dates, all edges, and quote time.'
       + '</div>';
 
     el.innerHTML = html;
