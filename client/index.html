@@ -726,6 +726,17 @@
           </div>
         </div>
 
+        <!-- Missed Volume from Risk Limits -->
+        <div class="card">
+          <div class="card-header">
+            <span>Missed Volume from Risk Limits</span>
+            <span id="risk-limit-missed-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body" id="chart-risk-limit-missed">
+            <div class="empty-state"><div class="icon">-</div><div>No RFQs declined for risk-limit reasons yet</div></div>
+          </div>
+        </div>
+
         <!-- Cumulative P&L -->
         <div class="card">
           <div class="card-header"><span>Cumulative P&L</span></div>
@@ -970,7 +981,7 @@
       renderSettled(orders);
       renderMarketIntel(intel);
       renderCompetitiveness(intel);
-      renderAnalytics(orders);
+      renderAnalytics(orders, intel);
       renderExposureLimitStats(status.exposureLimits || null);
       renderHistory(orders);
       addLog('system', 'Dashboard refreshed');
@@ -5675,7 +5686,7 @@
   // ANALYTICS CHARTS (SVG-based, no external libs)
   // -----------------------------------------------------------------------
 
-  function renderAnalytics(data) {
+  function renderAnalytics(data, intel) {
     const allOrders = data.recentOrders || [];
     // Exclude reconstructed orders we never actually quoted — old PX orders
     // from before the SP was actively trading (quotedAt null + meta.reconstructed).
@@ -5694,6 +5705,116 @@
     renderChartExposure(confirmed);
     renderChartPricingEdge(allQuoted);
     renderChartClv(settled);
+    renderChartRiskLimitMissed(intel);
+  }
+
+  // Daily volume missed due to risk-threshold declines
+  function renderChartRiskLimitMissed(intel) {
+    const el = document.getElementById('chart-risk-limit-missed');
+    if (!el) return;
+    const rl = intel?.riskLimitMissed;
+    const summaryEl = document.getElementById('risk-limit-missed-summary');
+    if (!rl || !rl.byDay || Object.keys(rl.byDay).length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No RFQs declined for risk-limit reasons yet</div></div>';
+      if (summaryEl) summaryEl.textContent = '';
+      return;
+    }
+
+    const reasonLabels = {
+      'team exposure limit':      'Team Exposure',
+      'game exposure limit':      'Game Exposure',
+      'portfolio drawdown limit': 'Portfolio Drawdown',
+      'odds too high':            'Max Odds',
+    };
+    const reasonColors = {
+      'team exposure limit':      '#e84a5f',
+      'game exposure limit':      '#f5b942',
+      'portfolio drawdown limit': '#7d5fff',
+      'odds too high':            '#2ecc71',
+    };
+
+    const days = Object.keys(rl.byDay).sort();
+    const activeReasons = Object.keys(rl.byReason).filter(r => rl.byReason[r].count > 0 || rl.byReason[r].stake > 0);
+
+    if (summaryEl) {
+      const grand = rl.grandTotal || { count: 0, stake: 0 };
+      summaryEl.textContent = grand.count.toLocaleString() + ' declines · $' + grand.stake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + ' missed stake';
+    }
+
+    // Chart: stacked bar per day of stake amount, split by reason
+    const W = 720, H = 260, pad = { l: 70, r: 20, t: 20, b: 60 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const maxStake = Math.max(1, ...days.map(d => rl.byDay[d].totalStake || 0));
+    const scaleY = (v) => pad.t + chartH - (v / maxStake) * chartH;
+    const barW = Math.min(60, Math.max(8, chartW / days.length - 6));
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:300px;">`;
+    // Grid
+    for (let t = 0; t <= 4; t++) {
+      const v = maxStake * t / 4;
+      const y = scaleY(v);
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.5);
+      svg += svgText(pad.l - 6, y + 3, '$' + Math.round(v).toLocaleString(), { anchor: 'end', size: 9 });
+    }
+
+    // Stacked bars
+    for (let i = 0; i < days.length; i++) {
+      const day = days[i];
+      const d = rl.byDay[day];
+      const cx = pad.l + (i + 0.5) * (chartW / days.length);
+      let yAccum = scaleY(0);
+      for (const reason of activeReasons) {
+        const stake = d.byReason[reason]?.stake || 0;
+        if (stake <= 0) continue;
+        const segH = (stake / maxStake) * chartH;
+        yAccum -= segH;
+        svg += `<rect x="${cx - barW / 2}" y="${yAccum}" width="${barW}" height="${segH}" fill="${reasonColors[reason] || 'var(--accent)'}"><title>${day} · ${reasonLabels[reason] || reason}: $${stake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})} (${d.byReason[reason].count} RFQs)</title></rect>`;
+      }
+      // Day label
+      svg += svgText(cx, H - pad.b + 14, day.substring(5), { size: 10 });
+      // Count under the day label
+      svg += svgText(cx, H - pad.b + 26, d.totalCount + ' RFQs', { size: 8, fill: 'var(--text3)' });
+      // Total stake above the bar
+      if (d.totalStake > 0) {
+        svg += svgText(cx, scaleY(d.totalStake) - 4, '$' + Math.round(d.totalStake).toLocaleString(), { size: 8, fill: 'var(--amber)' });
+      }
+    }
+
+    // Legend
+    let lx = pad.l;
+    for (const reason of activeReasons) {
+      const color = reasonColors[reason] || 'var(--accent)';
+      svg += svgRect(lx, H - 12, 8, 8, color, 1);
+      svg += svgText(lx + 12, H - 5, reasonLabels[reason] || reason, { anchor: 'start', size: 9 });
+      lx += 130;
+    }
+    svg += '</svg>';
+
+    // Summary table — by reason across all days
+    let html = svg;
+    html += '<div style="margin-top:10px;">';
+    html += '<table style="font-size:12px; width:100%;">';
+    html += '<tr><th>Risk Threshold</th><th style="text-align:right">RFQ Declines</th><th style="text-align:right">Matched Stake Missed</th><th style="text-align:right">% of Total Stake</th></tr>';
+    const rows = activeReasons
+      .map(r => ({ reason: r, ...rl.byReason[r] }))
+      .sort((a, b) => b.stake - a.stake);
+    for (const r of rows) {
+      const pct = rl.grandTotal.stake > 0 ? (r.stake / rl.grandTotal.stake * 100).toFixed(1) : '0.0';
+      const dot = '<span style="display:inline-block;width:10px;height:10px;background:' + (reasonColors[r.reason] || 'var(--accent)') + ';margin-right:6px;border-radius:2px;vertical-align:middle;"></span>';
+      html += '<tr>';
+      html += '<td>' + dot + (reasonLabels[r.reason] || r.reason) + '</td>';
+      html += '<td style="text-align:right; font-weight:600;">' + r.count.toLocaleString() + '</td>';
+      html += '<td style="text-align:right; color:var(--amber); font-weight:600;">$' + r.stake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td>';
+      html += '<td style="text-align:right; color:var(--text3);">' + pct + '%</td>';
+      html += '</tr>';
+    }
+    html += '</table>';
+    html += '<div style="font-size:10px; color:var(--text3); margin-top:6px;">';
+    html += 'Declines counted from the rolling decline-events log. Stake amounts come from matched parlays another SP won — these are real dollars we left on the table. Daily stake may be $0 while decline count is positive if no other SP filled those RFQs.';
+    html += '</div>';
+    html += '</div>';
+
+    el.innerHTML = html;
   }
 
   // -----------------------------------------------------------------------

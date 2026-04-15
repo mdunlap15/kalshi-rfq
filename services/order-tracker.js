@@ -1028,6 +1028,100 @@ function buildNotSeenBreakdown(missed) {
   };
 }
 
+/**
+ * Breakdown of RFQs we declined (and potentially matched parlays we missed)
+ * because the request exceeded one of our risk thresholds. Powers the
+ * Analytics tab "Missed Volume from Risk Limits" chart.
+ *
+ * Two data sources:
+ *  - declineStats.recentDeclineEvents: every decline with timestamp + reason.
+ *    Gives us the REQUEST count per day (all RFQs, not just ones that
+ *    matched to another SP).
+ *  - matchedParlays with declineReason in RISK_LIMIT_REASONS: gives us the
+ *    actual STAKE amounts on the subset that another SP won. This is the
+ *    real dollar volume we left on the table.
+ *
+ * Daily table is keyed by YYYY-MM-DD with counts + stake per reason.
+ */
+const RISK_LIMIT_REASONS = new Set([
+  'team exposure limit',
+  'game exposure limit',
+  'portfolio drawdown limit',
+  'odds too high',
+]);
+
+function buildRiskLimitMissedVolume() {
+  // Init empty daily rollup
+  const byDay = {}; // day → { totalCount, totalStake, byReason: { reason: { count, stake } } }
+  const ensureDay = (day) => {
+    if (!byDay[day]) byDay[day] = { totalCount: 0, totalStake: 0, byReason: {} };
+    return byDay[day];
+  };
+  const ensureReason = (day, reason) => {
+    const d = ensureDay(day);
+    if (!d.byReason[reason]) d.byReason[reason] = { count: 0, stake: 0 };
+    return d.byReason[reason];
+  };
+
+  // 1. Request counts — walk all decline events tagged with a risk reason
+  for (const ev of declineStats.recentDeclineEvents || []) {
+    if (!RISK_LIMIT_REASONS.has(ev.reason)) continue;
+    const day = (ev.time || '').substring(0, 10);
+    if (!day) continue;
+    const d = ensureDay(day);
+    d.totalCount++;
+    const r = ensureReason(day, ev.reason);
+    r.count++;
+  }
+
+  // 2. Real stake amounts — walk matched parlays where we declined for risk
+  for (const m of matchedParlays) {
+    if (m.weQuoted) continue;
+    if (!RISK_LIMIT_REASONS.has(m.declineReason)) continue;
+    const day = (m.matchedAt || '').substring(0, 10);
+    if (!day) continue;
+    const stake = m.matchedStake || 0;
+    const d = ensureDay(day);
+    d.totalStake += stake;
+    const r = ensureReason(day, m.declineReason);
+    r.stake += stake;
+    // Note: the request count was already incremented from
+    // recentDeclineEvents above, so we don't double-count here.
+  }
+
+  // Round stakes
+  for (const day of Object.keys(byDay)) {
+    byDay[day].totalStake = Math.round(byDay[day].totalStake * 100) / 100;
+    for (const r of Object.keys(byDay[day].byReason)) {
+      byDay[day].byReason[r].stake = Math.round(byDay[day].byReason[r].stake * 100) / 100;
+    }
+  }
+
+  // Reason totals across all days
+  const byReason = {};
+  let grandCount = 0;
+  let grandStake = 0;
+  for (const day of Object.keys(byDay)) {
+    grandCount += byDay[day].totalCount;
+    grandStake += byDay[day].totalStake;
+    for (const [reason, r] of Object.entries(byDay[day].byReason)) {
+      if (!byReason[reason]) byReason[reason] = { count: 0, stake: 0 };
+      byReason[reason].count += r.count;
+      byReason[reason].stake += r.stake;
+    }
+  }
+  for (const r of Object.keys(byReason)) {
+    byReason[r].stake = Math.round(byReason[r].stake * 100) / 100;
+  }
+
+  return {
+    byDay,
+    byReason,
+    grandTotal: { count: grandCount, stake: Math.round(grandStake * 100) / 100 },
+    reasons: [...RISK_LIMIT_REASONS],
+  };
+}
+
 function getMarketIntel(limit = 50) {
   return {
     stats: { ...marketStats },
@@ -1066,6 +1160,8 @@ function getMarketIntel(limit = 50) {
         notSeenBreakdown: buildNotSeenBreakdown(missed),
       };
     })(),
+    // Risk-limit decline breakdown for the Analytics tab
+    riskLimitMissed: buildRiskLimitMissedVolume(),
     recentMatched: matchedParlays.slice(0, limit),
     quoteWinRate: marketStats.weQuoted > 0 ? (marketStats.weWon / marketStats.weQuoted * 100).toFixed(1) + '%' : '-',
     coverageRate: marketStats.totalMatched > 0 ? (marketStats.weQuoted / marketStats.totalMatched * 100).toFixed(1) + '%' : '-',
