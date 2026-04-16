@@ -431,10 +431,22 @@ function startStatusServer() {
       const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
       const client = db.getClient();
       if (!client) return res.json({ error: 'No Supabase client' });
-      const { data, error } = await client.from('declines')
-        .select('reason, declined_at, detail')
-        .gte('declined_at', cutoff);
-      if (error) return res.status(500).json({ error: error.message });
+      // Paginate to avoid Supabase 1000-row default limit
+      const PAGE = 1000;
+      let data = [];
+      let offset = 0;
+      while (true) {
+        const { data: page, error: pgErr } = await client.from('declines')
+          .select('reason, declined_at')
+          .gte('declined_at', cutoff)
+          .order('declined_at', { ascending: true })
+          .range(offset, offset + PAGE - 1);
+        if (pgErr) return res.status(500).json({ error: pgErr.message });
+        if (!page || page.length === 0) break;
+        data.push(...page);
+        if (page.length < PAGE) break;
+        offset += PAGE;
+      }
       // Group by reason
       const byReason = {};
       const byReasonByDay = {};
