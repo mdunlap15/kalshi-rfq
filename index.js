@@ -428,41 +428,45 @@ function startStatusServer() {
   app.get('/decline-stats', async (req, res) => {
     try {
       const days = parseInt(req.query.days) || 7;
-      const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
       const client = db.getClient();
       if (!client) return res.json({ error: 'No Supabase client' });
-      // Paginate to avoid Supabase 1000-row default limit.
-      // No .order() — sorting a huge table per page causes statement timeouts.
-      const PAGE = 1000;
-      let data = [];
-      let offset = 0;
-      while (true) {
-        const { data: page, error: pgErr } = await client.from('declines')
-          .select('reason, declined_at')
-          .gte('declined_at', cutoff)
-          .range(offset, offset + PAGE - 1);
-        if (pgErr) return res.status(500).json({ error: pgErr.message });
-        if (!page || page.length === 0) break;
-        data.push(...page);
-        if (page.length < PAGE) break;
-        offset += PAGE;
-      }
-      // Group by reason
+
+      // Query day-by-day to avoid Supabase statement timeouts on large table.
+      // Each single-day query is small enough to stay under limits.
       const byReason = {};
       const byReasonByDay = {};
-      for (const row of (data || [])) {
-        const r = row.reason || 'unknown';
-        if (!byReason[r]) byReason[r] = 0;
-        byReason[r]++;
-        // Also group by day
-        const day = row.declined_at ? new Date(row.declined_at).toLocaleDateString('en-CA') : 'unknown';
-        if (!byReasonByDay[r]) byReasonByDay[r] = {};
-        if (!byReasonByDay[r][day]) byReasonByDay[r][day] = 0;
-        byReasonByDay[r][day]++;
+      let total = 0;
+
+      for (let d = 0; d < days; d++) {
+        const dayStart = new Date(Date.now() - (d + 1) * 24 * 3600 * 1000).toISOString();
+        const dayEnd = new Date(Date.now() - d * 24 * 3600 * 1000).toISOString();
+        const dayLabel = new Date(Date.now() - d * 24 * 3600 * 1000).toLocaleDateString('en-CA');
+
+        // Paginate within each day (some days may have >1000 declines)
+        let offset = 0;
+        const PAGE = 1000;
+        while (true) {
+          const { data: page, error: pgErr } = await client.from('declines')
+            .select('reason')
+            .gte('declined_at', dayStart)
+            .lt('declined_at', dayEnd)
+            .range(offset, offset + PAGE - 1);
+          if (pgErr) return res.status(500).json({ error: pgErr.message });
+          if (!page || page.length === 0) break;
+          for (const row of page) {
+            const r = row.reason || 'unknown';
+            byReason[r] = (byReason[r] || 0) + 1;
+            if (!byReasonByDay[r]) byReasonByDay[r] = {};
+            byReasonByDay[r][dayLabel] = (byReasonByDay[r][dayLabel] || 0) + 1;
+            total++;
+          }
+          if (page.length < PAGE) break;
+          offset += PAGE;
+        }
       }
-      // Sort descending
+
       const sorted = Object.entries(byReason).sort((a, b) => b[1] - a[1]);
-      res.json({ days, total: (data || []).length, byReason: Object.fromEntries(sorted), byReasonByDay });
+      res.json({ days, total, byReason: Object.fromEntries(sorted), byReasonByDay });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
