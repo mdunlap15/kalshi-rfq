@@ -2,6 +2,34 @@ const fetch = require('node-fetch');
 const { config } = require('../config');
 const log = require('./logger');
 
+// AbortController is a Node.js global since v15 — used by abortableFetch below
+// to cancel slow Odds API calls instead of just ignoring the promise. This
+// actually frees the underlying socket and keep-alive connection.
+
+// ---------------------------------------------------------------------------
+// ODDS API FETCH TIMEOUT HELPER (Option E of latency plan)
+// ---------------------------------------------------------------------------
+// Bounds the tail on Odds API calls used during RFQ pricing. Without this,
+// a stuck request can hang for 10+ seconds (observed live in production),
+// blocking the RFQ response well past any useful window. With AbortController
+// we actually cancel the underlying socket instead of just ignoring the
+// promise, which prevents socket leaks and frees the keep-alive connection.
+//
+// The timeout is generous (500ms) — enough for normal calls to complete,
+// tight enough to kill real hangs.
+const ODDS_API_FETCH_TIMEOUT_MS = 500;
+
+async function abortableFetch(url, options, timeoutMs) {
+  const t = timeoutMs || ODDS_API_FETCH_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), t);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // IN-MEMORY CACHE
 // ---------------------------------------------------------------------------
@@ -1761,7 +1789,7 @@ async function resolveOddsApiEventId(sport, homeTeam, awayTeam) {
     // Fetch events list (lightweight — no odds, just event metadata)
     const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events?apiKey=${theOddsApiKey}`;
     try {
-      const resp = await fetch(url);
+      const resp = await abortableFetch(url);
       if (!resp.ok) {
         log.warn('OddsFeed', `Odds API events list failed (${resp.status}) for ${sport}`);
         return null;
@@ -1829,7 +1857,7 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
   log.info('OddsFeed', `Fetching alt lines for ${homeTeam} vs ${awayTeam}...`);
 
   try {
-    const resp = await fetch(url);
+    const resp = await abortableFetch(url);
     if (!resp.ok) {
       const text = await resp.text();
       log.warn('OddsFeed', `Alt lines fetch failed (${resp.status}): ${text.substring(0, 100)}`);
@@ -2458,7 +2486,7 @@ async function verifyLineWithPinnacle(sport, homeTeam, awayTeam, marketType, cac
       + `&bookmakers=pinnacle`
       + `&oddsFormat=american`;
 
-    const resp = await fetch(url);
+    const resp = await abortableFetch(url);
     if (!resp.ok) return { ok: true }; // API error, allow
 
     const events = await resp.json();
