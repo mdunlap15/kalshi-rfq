@@ -2500,28 +2500,14 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
   if (syncResult != null) return syncResult;
 
   // If it's a spread/total with a line mismatch, try fetching alt lines.
-  // Pre-warming runs in the background, so most RFQs hit cache synchronously
-  // via getFairProb above. This path is for cold events — we cap the fetch at
-  // a tight timeout so a slow Odds API response never blocks RFQ response.
+  // NOTE: earlier iteration added a 150ms timeout here which regressed p95/p99
+  // and caused +308 price failures because the warm cycle wasn't effectively
+  // populating the cache. Reverted to unconditional await until warming is
+  // debugged / cache hit rate is high enough for a timeout to be safe.
   if ((marketType === 'spreads' || marketType === 'totals') && line != null) {
     const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
     if (event) {
-      // Race the fetch against a 150ms deadline. Losing a quote by being slow
-      // is the same as not pricing at all — better to decline fast than
-      // submit a 500ms offer that's already stale.
-      const ALT_FETCH_TIMEOUT_MS = 150;
-      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve('__timeout__'), ALT_FETCH_TIMEOUT_MS));
-      const fetchResult = await Promise.race([
-        fetchAltLines(sport, homeTeam, awayTeam),
-        timeoutPromise,
-      ]);
-      if (fetchResult === '__timeout__') {
-        log.debug('OddsFeed', `Alt-line fetch timed out (${ALT_FETCH_TIMEOUT_MS}ms) for ${homeTeam} vs ${awayTeam} — declining instead of stalling RFQ`);
-        // Kick off the fetch in the background so it's cached for the next
-        // RFQ asking about this event. The current RFQ declines.
-        fetchAltLines(sport, homeTeam, awayTeam).catch(() => {});
-        return null;
-      }
+      await fetchAltLines(sport, homeTeam, awayTeam);
       const key = normalizeEventKey(homeTeam, awayTeam);
       // Pass SIGNED line (not abs) so alt-line lookup routes to the correct
       // signed home_point bucket.
