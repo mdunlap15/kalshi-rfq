@@ -442,36 +442,41 @@ function startStatusServer() {
       ];
       const reasons = reasonFilter ? [reasonFilter] : KNOWN_REASONS;
 
-      const byReason = {};
-      const byReasonByDay = {};
-      let total = 0;
-
-      // Process one day at a time, reasons in parallel within each day
+      // Build all (day × reason) count queries and run them ALL in parallel.
+      // With indexes on declined_at and reason, each count is fast (<50ms).
+      const allQueries = [];
       for (let d = 0; d < days; d++) {
         const dayStart = new Date(Date.now() - (d + 1) * 24 * 3600 * 1000).toISOString();
         const dayEnd = new Date(Date.now() - d * 24 * 3600 * 1000).toISOString();
         const dayLabel = new Date(Date.now() - d * 24 * 3600 * 1000).toLocaleDateString('en-CA');
-
-        const dayCounts = await Promise.all(reasons.map(async reason => {
-          const { count, error } = await client.from('declines')
+        for (const reason of reasons) {
+          allQueries.push({ dayLabel, reason, exec: client.from('declines')
             .select('*', { count: 'exact', head: true })
             .gte('declined_at', dayStart)
             .lt('declined_at', dayEnd)
-            .eq('reason', reason);
-          if (error) {
-            log.warn('DeclineStats', `Count query failed for ${reason} on ${dayLabel}: ${error.message || JSON.stringify(error)}`);
-            return { reason, count: 0 };
-          }
-          return { reason, count: count || 0 };
-        }));
-
-        for (const { reason, count } of dayCounts) {
-          if (count === 0) continue;
-          byReason[reason] = (byReason[reason] || 0) + count;
-          if (!byReasonByDay[reason]) byReasonByDay[reason] = {};
-          byReasonByDay[reason][dayLabel] = count;
-          total += count;
+            .eq('reason', reason)
+          });
         }
+      }
+
+      const results = await Promise.all(allQueries.map(async q => {
+        const { count, error } = await q.exec;
+        if (error) {
+          log.warn('DeclineStats', `Count failed ${q.reason} ${q.dayLabel}: ${error.message || JSON.stringify(error)}`);
+          return { ...q, count: 0 };
+        }
+        return { ...q, count: count || 0 };
+      }));
+
+      const byReason = {};
+      const byReasonByDay = {};
+      let total = 0;
+      for (const { dayLabel, reason, count } of results) {
+        if (count === 0) continue;
+        byReason[reason] = (byReason[reason] || 0) + count;
+        if (!byReasonByDay[reason]) byReasonByDay[reason] = {};
+        byReasonByDay[reason][dayLabel] = count;
+        total += count;
       }
 
       const sorted = Object.entries(byReason).sort((a, b) => b[1] - a[1]);
