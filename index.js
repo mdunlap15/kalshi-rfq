@@ -406,6 +406,38 @@ function startStatusServer() {
     });
   });
 
+  // Sport-filtered orders — e.g. /orders/golf, /orders/mma, /orders/nba
+  // Matches if ANY leg's sport field contains the filter string.
+  app.get('/orders/:sportFilter', (req, res) => {
+    const filter = req.params.sportFilter.toLowerCase();
+    const limit = parseInt(req.query.limit) || 500;
+    const statusFilter = req.query.status; // e.g. ?status=settled
+    const allOrders = orderTracker.getRecentOrders(limit);
+    const matched = allOrders.filter(o => {
+      const legs = o.meta?.legs || o.legs || [];
+      const hasSport = legs.some(l => (l.sport || '').toLowerCase().includes(filter));
+      if (!hasSport) return false;
+      if (statusFilter === 'settled') return o.status && o.status.startsWith('settled_');
+      if (statusFilter === 'confirmed') return o.status === 'confirmed';
+      if (statusFilter) return o.status === statusFilter;
+      return true;
+    });
+    const settled = matched.filter(o => o.status && o.status.startsWith('settled_'));
+    const totalPnL = settled.reduce((s, o) => s + (o.pnl || 0), 0);
+    const wins = settled.filter(o => o.status === 'settled_won').length;
+    const losses = settled.filter(o => o.status === 'settled_lost').length;
+    res.json({
+      filter,
+      total: matched.length,
+      settled: settled.length,
+      wins,
+      losses,
+      pushVoid: settled.length - wins - losses,
+      totalPnL: Math.round(totalPnL * 100) / 100,
+      orders: matched,
+    });
+  });
+
   // Market intelligence
   app.get('/market-intel', (req, res) => {
     const limit = parseInt(req.query.limit) || 50;
