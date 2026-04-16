@@ -1,37 +1,8 @@
-const fetch = require('node-fetch');
-const https = require('https');
-const http = require('http');
+// Uses Node's global fetch (undici under the hood). Keep-alive, pool size,
+// and TCP_NODELAY are configured by services/httpClient — see that module.
+// Migrated from node-fetch@2 + custom http.Agent for S3 of latency plan.
 const { config } = require('../config');
 const log = require('./logger');
-
-// ---------------------------------------------------------------------------
-// HTTPS KEEP-ALIVE AGENT (Option B of latency plan)
-// ---------------------------------------------------------------------------
-// node-fetch's default transport doesn't reuse TCP connections, so every
-// submitOffer / pxFetch call pays a full TLS handshake (~50-150ms).
-// A shared keep-alive agent reuses sockets across calls, eliminating that
-// handshake cost on the hot path.
-//
-// maxSockets kept conservative — PX RFQ rate is bursty but we rarely have
-// more than a few outstanding at once. keepAliveMsecs = how often to send
-// a TCP keep-alive probe to prevent idle disconnects.
-const httpsKeepAliveAgent = new https.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 30000,
-  maxSockets: 50,
-  maxFreeSockets: 10,
-});
-const httpKeepAliveAgent = new http.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 30000,
-  maxSockets: 50,
-  maxFreeSockets: 10,
-});
-// node-fetch accepts `agent` as a function of parsedUrl — this lets us
-// apply the right agent per-URL without hard-coding https.
-function pickKeepAliveAgent(parsedUrl) {
-  return parsedUrl.protocol === 'https:' ? httpsKeepAliveAgent : httpKeepAliveAgent;
-}
 
 // Token cache
 let tokenCache = { token: null, refreshToken: null, time: 0 };
@@ -80,7 +51,6 @@ async function login() {
       access_key: config.px.accessKey,
       secret_key: config.px.secretKey,
     }),
-    agent: pickKeepAliveAgent,
   });
 
   if (!resp.ok) {
@@ -118,7 +88,6 @@ async function refreshSession() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
     body: JSON.stringify({ refresh_token: tokenCache.refreshToken }),
-    agent: pickKeepAliveAgent,
   });
 
   if (!resp.ok) {
@@ -155,7 +124,6 @@ async function pxFetch(endpoint, method = 'GET', body = null, useBaseUrl = true)
       'Accept': 'application/json',
       'Content-Type': 'application/json',
     },
-    agent: pickKeepAliveAgent,
   };
   if (body && method !== 'GET') {
     options.body = JSON.stringify(body);

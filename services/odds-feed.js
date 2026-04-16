@@ -1,10 +1,12 @@
-const fetch = require('node-fetch');
+// Uses Node's global fetch (undici). Keep-alive pool, TCP_NODELAY, and HTTP/2
+// support come from services/httpClient which configures the global dispatcher
+// at process bootstrap. Migrated from node-fetch@2 for S3 of latency plan.
 const { config } = require('../config');
 const log = require('./logger');
 
-// AbortController is a Node.js global since v15 — used by abortableFetch below
-// to cancel slow Odds API calls instead of just ignoring the promise. This
-// actually frees the underlying socket and keep-alive connection.
+// AbortController is a Node.js global — used by abortableFetch below to cancel
+// slow Odds API calls instead of just ignoring the promise. This actually
+// frees the underlying socket so keep-alive doesn't reuse a hung connection.
 
 // ---------------------------------------------------------------------------
 // ODDS API FETCH TIMEOUT HELPER (Option E of latency plan)

@@ -4,6 +4,11 @@
 // =============================================================================
 console.log('[BOOT] Process starting, NODE_ENV=' + process.env.NODE_ENV + ', PORT=' + process.env.PORT);
 
+// Configure HTTP transport FIRST — sets global dispatcher for every fetch()
+// call everywhere in the app (keep-alive pooling, TCP_NODELAY, HTTP/2 when
+// negotiated). Must run before any module that imports fetch or node-fetch.
+require('./services/httpClient');
+
 const { config, validate, getBankroll } = require('./config');
 const log = require('./services/logger');
 const px = require('./services/prophetx');
