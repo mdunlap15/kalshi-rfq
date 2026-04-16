@@ -2476,6 +2476,7 @@ function startStatusServer() {
       defaultVigPct: (defaultVig * 100).toFixed(2) + '%',
       overrides: vigBySport,
       effective,
+      parlayLevelVig: !!config.pricing.parlayLevelVig,
     });
   });
 
@@ -2514,11 +2515,20 @@ function startStatusServer() {
       }
     }
 
+    // Toggle parlay-level-vig A/B flag at runtime.
+    // Body: {parlayLevelVig: true|false}
+    if (body.parlayLevelVig != null) {
+      const on = !!body.parlayLevelVig;
+      config.pricing.parlayLevelVig = on;
+      log.info('Config', `Parlay-level vig mode: ${on ? 'ON (max-per-leg applied once)' : 'OFF (per-leg compounded)'}`);
+    }
+
     res.json({
       ok: true,
       defaultVig: config.pricing.defaultVig,
       defaultVigPct: (config.pricing.defaultVig * 100).toFixed(2) + '%',
       overrides: config.pricing.vigBySport,
+      parlayLevelVig: !!config.pricing.parlayLevelVig,
     });
   });
 

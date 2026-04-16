@@ -397,9 +397,49 @@ async function priceParlay(legs) {
     return 1 / (1 + viggedPayout); // convert back to implied prob
   }
 
-  let offeredImpliedProb = 1;
-  for (const leg of pricedLegs) {
-    offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport);
+  // ---------------------------------------------------------------------
+  // VIG APPLICATION — two modes, A/B-testable via config.pricing.parlayLevelVig
+  //
+  // PER-LEG MODE (default, legacy):
+  //   Apply vig to each leg independently, multiply the vigged per-leg
+  //   probs. This COMPOUNDS the vig. For a 5-leg parlay at 2% per leg,
+  //   effective parlay vig ≈ 4.2% (meaningfully uncompetitive).
+  //
+  // PARLAY-LEVEL MODE (experimental):
+  //   Apply vig ONCE at the parlay level using the MAX per-leg effective
+  //   rate. The max preserves sport-aware pricing (highest sport wins)
+  //   and favorite-ramp protection (any leg triggering the ramp pulls
+  //   the whole parlay's vig up). Eliminates multi-leg compounding.
+  //
+  // Observed data: per-leg win rate collapses at 4+ legs (28%→14%→9%)
+  // suggesting competitors don't compound. A/B test via:
+  //   POST /config/vig {parlayLevelVig:true}  — enable
+  //   POST /config/vig {parlayLevelVig:false} — disable
+  // Watch win rate by leg count before/after.
+  // ---------------------------------------------------------------------
+  let offeredImpliedProb;
+  let vigMode;
+  let vigRateUsed; // informational — the rate applied (for debugging/analytics)
+  if (config.pricing.parlayLevelVig) {
+    // Parlay-level: single vig application using max per-leg rate.
+    const perLegVigs = pricedLegs.map(l => getEffectiveVig(l.fairProb, l.lineInfo.sport));
+    const maxVig = perLegVigs.length > 0 ? Math.max(...perLegVigs) : config.pricing.defaultVig;
+    const fairDecimal = 1 / fairParlayProb;
+    const payout = fairDecimal - 1;
+    const viggedPayout = payout * (1 - maxVig);
+    offeredImpliedProb = 1 / (1 + viggedPayout);
+    vigMode = 'parlay-level';
+    vigRateUsed = maxVig;
+  } else {
+    // Per-leg: vig applied to each leg's odds then compounded (legacy).
+    offeredImpliedProb = 1;
+    for (const leg of pricedLegs) {
+      offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport);
+    }
+    vigMode = 'per-leg';
+    // For per-leg, expose the AVERAGE per-leg rate as the "used" value.
+    const avgVig = pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport), 0) / Math.max(pricedLegs.length, 1);
+    vigRateUsed = avgVig;
   }
 
   // -------------------------------------------------------------------
@@ -684,6 +724,10 @@ async function priceParlay(legs) {
         };
       }),
       vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport), 0) / pricedLegs.length * 10000) / 10000,
+      // Which vig application mode was used for this quote. Recorded per-quote
+      // so /market-intel can split win rate by mode for A/B analysis.
+      vigMode,
+      vigRateUsed: Math.round((vigRateUsed || 0) * 10000) / 10000,
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
       pricingMethod,
       isSGP,

@@ -30,6 +30,15 @@ const config = {
     // Floor 0 (off) by default — set e.g. 0.02 to enforce a 2% minimum on favorite legs.
     vigFavoriteSlope: parseFloat(process.env.VIG_FAVORITE_SLOPE) || 0.075,
     vigFavoriteFloor: parseFloat(process.env.VIG_FAVORITE_FLOOR) || 0,
+    // A/B-testable pricing mode for parlays. When true, vig is applied
+    // ONCE at the parlay level using the MAX per-leg effective rate, rather
+    // than compounded per-leg. Per-leg compounding penalizes multi-leg
+    // parlays (a 5-leg at 2% per leg = 4.2% effective parlay vig), which
+    // shows up in our data as a sharp win-rate drop at 4+ legs (28%→14%→9%).
+    // Parlay-level application preserves sport-aware pricing + favorite
+    // ramp (via the MAX leg's rate) while eliminating the compounding tax.
+    // Toggle at runtime via POST /config/vig {parlayLevelVig:true|false}.
+    parlayLevelVig: process.env.PARLAY_LEVEL_VIG === 'true' || process.env.PARLAY_LEVEL_VIG === '1',
     maxRiskPerParlay: parseFloat(process.env.MAX_RISK_PER_PARLAY) || 500,
     maxLegs: parseInt(process.env.MAX_LEGS) || 8,
     stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 5,
