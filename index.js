@@ -11,6 +11,7 @@ const oddsFeed = require('./services/odds-feed');
 const lineManager = require('./services/line-manager');
 const websocket = require('./services/websocket');
 const orderTracker = require('./services/order-tracker');
+const db = require('./services/db');
 const express = require('express');
 const path = require('path');
 
@@ -410,6 +411,19 @@ function startStatusServer() {
       pnlBySport: orderTracker.getPnLBySport(),
       recentOrders: orderTracker.getRecentOrders(limit),
     });
+  });
+
+  // Daily P&L from Supabase (settled orders grouped by date)
+  app.get('/daily-pnl', async (req, res) => {
+    const days = parseInt(req.query.days) || 30;
+    try {
+      const daily = await db.getDailyPnL(days);
+      // Also include current runningPnL for total
+      const stats = orderTracker.getStats();
+      res.json({ daily, runningPnL: stats.runningPnL || 0 });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // Market intelligence

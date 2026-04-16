@@ -648,6 +648,51 @@ async function loadLineCacheByEventIds(eventIds) {
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// DAILY P&L — query settled orders grouped by settlement date
+// ---------------------------------------------------------------------------
+
+async function getDailyPnL(days = 30) {
+  const db = getClient();
+  if (!db) return [];
+
+  try {
+    const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
+    const { data, error } = await db.from('parlay_orders')
+      .select('parlay_id, status, pnl, confirmed_stake, offered_odds, settled_at')
+      .like('status', 'settled_%')
+      .gte('settled_at', cutoff)
+      .order('settled_at', { ascending: true });
+
+    if (error) {
+      log.warn('DB', `getDailyPnL error: ${error.message}`);
+      return [];
+    }
+    if (!data || data.length === 0) return [];
+
+    // Group by date (YYYY-MM-DD in local timezone)
+    const byDay = {};
+    for (const row of data) {
+      if (!row.settled_at) continue;
+      const day = new Date(row.settled_at).toLocaleDateString('en-CA'); // YYYY-MM-DD
+      if (!byDay[day]) byDay[day] = { date: day, pnl: 0, wins: 0, losses: 0, pushes: 0, risk: 0, fills: 0 };
+      const d = byDay[day];
+      d.pnl += (row.pnl || 0);
+      d.fills++;
+      if (row.status === 'settled_won') d.losses++;  // bettor won = SP lost
+      else if (row.status === 'settled_lost') d.wins++;  // bettor lost = SP won
+      else d.pushes++;
+      d.risk += (row.confirmed_stake || 0);
+    }
+
+    // Return sorted array
+    return Object.values(byDay).sort((a, b) => a.date.localeCompare(b.date));
+  } catch (err) {
+    log.warn('DB', `getDailyPnL error: ${err.message}`);
+    return [];
+  }
+}
+
 module.exports = {
   getClient,
   isEnabled,
@@ -664,4 +709,5 @@ module.exports = {
   loadLineCacheEntry,
   loadLineCacheBulk,
   loadLineCacheByEventIds,
+  getDailyPnL,
 };
