@@ -1080,15 +1080,20 @@
     // data.recentOrders which only exists on the /orders response, not
     // /status. See updateNotificationBadge() called from refresh().
 
-    // Headline P&L: prefer Supabase total (dbPnL) over in-memory runningPnL.
-    // runningPnL can drift if loadOrders misses rows on startup;
-    // dbPnL queries Supabase directly every 2 min and is authoritative.
-    const pnlVal = data.orders?.dbPnL != null ? data.orders.dbPnL : (data.orders?.runningPnL || 0);
+    // Headline P&L = PX balance + open risk − starting bankroll.
+    // PX balance is fetched from the API; open risk is the sum of
+    // confirmedStake on orders the tracker considers active.
+    const accountPnL = data.portfolio?.accountPnL;
     const pnlEl = document.getElementById('stat-pnl');
-    pnlEl.textContent = fmtPnl(pnlVal);
-    if (pnlVal > 0) { pnlEl.className = 'value positive'; }
-    else if (pnlVal < 0) { pnlEl.className = 'value negative'; }
-    else { pnlEl.className = 'value neutral'; }
+    if (accountPnL == null) {
+      pnlEl.textContent = '—';
+      pnlEl.className = 'value neutral';
+    } else {
+      pnlEl.textContent = fmtPnl(accountPnL);
+      if (accountPnL > 0) { pnlEl.className = 'value positive'; }
+      else if (accountPnL < 0) { pnlEl.className = 'value negative'; }
+      else { pnlEl.className = 'value neutral'; }
+    }
 
     const wins = o.totalWins || 0;
     const losses = o.totalLosses || 0;
@@ -4882,8 +4887,8 @@
 
     // Prefer account-based P&L (PX balance - starting balance) — it's the
     // canonical source. Fall back to in-memory tracker only if balance
-    // Prefer Supabase dbPnL (refreshed every 2 min) over in-memory runningPnL.
-    const pnl = orderStats.dbPnL != null ? orderStats.dbPnL : (orderStats.runningPnL || 0);
+    // P&L = PX balance + open risk − starting bankroll (account-based).
+    const pnl = portfolio?.accountPnL != null ? portfolio.accountPnL : (orderStats.runningPnL || 0);
     const wins = orderStats.totalWins || 0;
     const losses = orderStats.totalLosses || 0;
     const settled = wins + losses;
