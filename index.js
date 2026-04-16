@@ -570,6 +570,33 @@ function startStatusServer() {
     res.json(websocket.getLatencyBreakdown());
   });
 
+  // Alt-line pre-warming stats + manual trigger
+  app.get('/alt-lines-stats', (req, res) => {
+    res.json(oddsFeed.getAltLinesWarmStats());
+  });
+  app.post('/warm-alt-lines', async (req, res) => {
+    const sport = req.query.sport || req.body?.sport;
+    try {
+      if (sport) {
+        const result = await oddsFeed.warmAltLines(sport);
+        res.json({ ok: true, result });
+      } else {
+        // Warm all configured sports
+        const results = {};
+        for (const s of config.supportedSports || []) {
+          try {
+            results[s] = await oddsFeed.warmAltLines(s);
+          } catch (err) {
+            results[s] = { error: err.message };
+          }
+        }
+        res.json({ ok: true, results });
+      }
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Freeze a baseline snapshot for before/after comparison.
   // POST /latency-baseline/capture → freeze current stats as baseline
   // GET  /latency-baseline         → return frozen baseline + current delta

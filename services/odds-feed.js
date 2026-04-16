@@ -1967,6 +1967,118 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
 }
 
 // ---------------------------------------------------------------------------
+// ALT LINES PRE-WARMING — speculatively fetch alt lines for all registered
+// events so on-demand fetch during RFQ is rare. This moves the latency cost
+// off the critical path.
+// ---------------------------------------------------------------------------
+
+// Sports that actually publish alt spread/total markets on The Odds API.
+// Soccer and tennis don't, so skip them.
+const SPORTS_WITH_ALT_MARKETS = new Set([
+  'basketball_nba', 'basketball_ncaab', 'basketball_wnba',
+  'baseball_mlb',
+  'icehockey_nhl',
+  'americanfootball_nfl', 'americanfootball_ncaaf',
+]);
+
+// Only pre-warm events starting within this window — avoids wasting API calls
+// on events days in the future that the bettor almost certainly won't RFQ.
+const WARM_EVENT_MAX_HOURS_AHEAD = 48;
+
+// Concurrency limit: at most N alt-line fetches in flight simultaneously.
+// Keeps us from burying The Odds API rate limiter.
+const WARM_CONCURRENCY = 3;
+
+// Last warm stats (for /alt-lines-cache-stats)
+let _lastWarmStats = null;
+
+/**
+ * Pre-warm alt-line cache for all registered events in a sport.
+ * Skips events already fresh in cache (< ALT_LINES_TTL_MS old) to avoid
+ * duplicate work. Events with commenceTime more than N hours out are
+ * also skipped — bettor demand is concentrated in the next 1-2 days.
+ *
+ * Runs with bounded concurrency so The Odds API isn't hammered.
+ */
+async function warmAltLines(sport) {
+  if (!SPORTS_WITH_ALT_MARKETS.has(sport)) return { skipped: 'no alt markets' };
+
+  const cache = oddsCache[sport];
+  if (!cache || !cache.events) return { skipped: 'no event cache' };
+
+  const now = Date.now();
+  const cutoffMs = now + WARM_EVENT_MAX_HOURS_AHEAD * 3600 * 1000;
+
+  // Collect candidate events: home/away pairs with near-term commenceTime
+  // and not already fresh in alt-line cache.
+  const candidates = [];
+  for (const [key, entry] of Object.entries(cache.events)) {
+    const events = Array.isArray(entry) ? entry : [entry];
+    for (const ev of events) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      const startMs = ev.commenceTime ? new Date(ev.commenceTime).getTime() : null;
+      if (startMs && !isNaN(startMs)) {
+        if (startMs < now) continue;              // already started
+        if (startMs > cutoffMs) continue;         // too far out
+      }
+      const altKey = normalizeEventKey(ev.homeTeam, ev.awayTeam);
+      const altCached = altLinesCache[altKey];
+      if (altCached && (now - altCached.fetchedAt) < ALT_LINES_TTL_MS) continue;
+      candidates.push({ homeTeam: ev.homeTeam, awayTeam: ev.awayTeam });
+    }
+  }
+
+  if (candidates.length === 0) {
+    return { sport, candidates: 0, fetched: 0, errors: 0 };
+  }
+
+  let fetched = 0, errors = 0;
+  // Bounded-concurrency worker pool
+  let idx = 0;
+  async function worker() {
+    while (idx < candidates.length) {
+      const i = idx++;
+      const c = candidates[i];
+      try {
+        const r = await fetchAltLines(sport, c.homeTeam, c.awayTeam);
+        if (r) fetched++;
+      } catch (err) {
+        errors++;
+      }
+    }
+  }
+  const workers = [];
+  for (let i = 0; i < Math.min(WARM_CONCURRENCY, candidates.length); i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+
+  const stats = { sport, candidates: candidates.length, fetched, errors, completedAt: new Date().toISOString() };
+  _lastWarmStats = _lastWarmStats || {};
+  _lastWarmStats[sport] = stats;
+  log.info('OddsFeed', `Alt-line warm ${sport}: ${fetched}/${candidates.length} fetched (${errors} errors)`);
+  return stats;
+}
+
+function getAltLinesWarmStats() {
+  const cacheSize = Object.keys(altLinesCache).length;
+  // Compute staleness distribution
+  const now = Date.now();
+  let fresh = 0, stale = 0;
+  for (const entry of Object.values(altLinesCache)) {
+    if ((now - entry.fetchedAt) < ALT_LINES_TTL_MS) fresh++;
+    else stale++;
+  }
+  return {
+    cacheSize,
+    fresh,
+    stale,
+    ttlMinutes: ALT_LINES_TTL_MS / 60000,
+    lastWarmBySport: _lastWarmStats || {},
+  };
+}
+
+// ---------------------------------------------------------------------------
 // CACHE LOOKUP
 // ---------------------------------------------------------------------------
 
@@ -2387,11 +2499,29 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
   const syncResult = getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, targetTime);
   if (syncResult != null) return syncResult;
 
-  // If it's a spread/total with a line mismatch, try fetching alt lines
+  // If it's a spread/total with a line mismatch, try fetching alt lines.
+  // Pre-warming runs in the background, so most RFQs hit cache synchronously
+  // via getFairProb above. This path is for cold events — we cap the fetch at
+  // a tight timeout so a slow Odds API response never blocks RFQ response.
   if ((marketType === 'spreads' || marketType === 'totals') && line != null) {
     const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
     if (event) {
-      await fetchAltLines(sport, homeTeam, awayTeam);
+      // Race the fetch against a 150ms deadline. Losing a quote by being slow
+      // is the same as not pricing at all — better to decline fast than
+      // submit a 500ms offer that's already stale.
+      const ALT_FETCH_TIMEOUT_MS = 150;
+      const timeoutPromise = new Promise(resolve => setTimeout(() => resolve('__timeout__'), ALT_FETCH_TIMEOUT_MS));
+      const fetchResult = await Promise.race([
+        fetchAltLines(sport, homeTeam, awayTeam),
+        timeoutPromise,
+      ]);
+      if (fetchResult === '__timeout__') {
+        log.debug('OddsFeed', `Alt-line fetch timed out (${ALT_FETCH_TIMEOUT_MS}ms) for ${homeTeam} vs ${awayTeam} — declining instead of stalling RFQ`);
+        // Kick off the fetch in the background so it's cached for the next
+        // RFQ asking about this event. The current RFQ declines.
+        fetchAltLines(sport, homeTeam, awayTeam).catch(() => {});
+        return null;
+      }
       const key = normalizeEventKey(homeTeam, awayTeam);
       // Pass SIGNED line (not abs) so alt-line lookup routes to the correct
       // signed home_point bucket.
@@ -2910,6 +3040,17 @@ async function refreshAllSports() {
     }
     await new Promise(r => setTimeout(r, 300));
   }
+
+  // Fire-and-forget alt-line pre-warm per sport — don't block the main refresh
+  // cycle on this. Keeps the critical RFQ path hitting cache instead of The
+  // Odds API network round-trip.
+  for (const sport of sportsToRefresh) {
+    if (!SPORTS_WITH_ALT_MARKETS.has(sport)) continue;
+    warmAltLines(sport).catch(err => {
+      log.warn('OddsFeed', `Alt-line warm failed for ${sport}: ${err.message}`);
+    });
+  }
+
   return results;
 }
 
@@ -3355,6 +3496,8 @@ module.exports = {
   getDraftKingsOdds,
   getDNBFairProb,
   fetchAltLines,
+  warmAltLines,
+  getAltLinesWarmStats,
   getEventMarkets,
   getLiveEventMarkets,
   getLiveFairProb,
