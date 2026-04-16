@@ -1762,8 +1762,16 @@ const ODDS_API_EVENT_ID_TTL_MS = 30 * 60 * 1000; // 30 min
  * Resolve The Odds API event ID for a given home/away pair.
  * SharpAPI event IDs are NOT The Odds API event IDs, so we must look up
  * the event list from The Odds API and match by team name.
+ *
+ * Previously used naive toLowerCase().trim() for matching, which silently
+ * failed on accented names ("Montréal Canadiens" vs "Montreal Canadiens"),
+ * abbreviations ("LA Clippers" vs "Los Angeles Clippers"), and compressed
+ * forms ("NY Yankees" vs "New York Yankees"). Evidence: /alt-lines-stats
+ * showed 0-of-10 warm fetches succeeding for NHL/MLB candidates.
+ *
+ * @param {string} targetTime optional ISO — disambiguates doubleheaders.
  */
-async function resolveOddsApiEventId(sport, homeTeam, awayTeam) {
+async function resolveOddsApiEventId(sport, homeTeam, awayTeam, targetTime) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   if (!theOddsApiKey) return null;
 
@@ -1813,23 +1821,69 @@ async function resolveOddsApiEventId(sport, homeTeam, awayTeam) {
     }
   }
 
-  // Match by team name (normalized)
-  const normHome = homeTeam.toLowerCase().trim();
-  const normAway = awayTeam.toLowerCase().trim();
+  // Robust team-name matcher — handles accents, abbreviations, word-tail
+  // equality. Matches the strategy used elsewhere in the codebase
+  // (line-manager.js matchTeamName) rather than the naive substring we had.
+  function teamsMatch(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    // Substring (handles "Rays" vs "Tampa Bay Rays")
+    if (a.includes(b) || b.includes(a)) return true;
+    const aWords = a.split(/\s+/);
+    const bWords = b.split(/\s+/);
+    // Last-2-words equality (handles "Red Sox" vs "Boston Red Sox",
+    // "White Sox" vs "Chicago White Sox" — disambiguates two Sox teams)
+    if (aWords.length >= 2 && bWords.length >= 2) {
+      const aT = aWords.slice(-2).join(' ');
+      const bT = bWords.slice(-2).join(' ');
+      if (aT === bT && aT.length >= 5) return true;
+    }
+    // Last-word equality (handles "LA Clippers" vs "Los Angeles Clippers",
+    // "NY Yankees" vs "New York Yankees"). Require ≥4 chars to avoid "fc"
+    // / "sc" / "utd" false positives on soccer clubs.
+    const aLast = aWords[aWords.length - 1];
+    const bLast = bWords[bWords.length - 1];
+    if (aLast && bLast && aLast === bLast && aLast.length >= 4) return true;
+    return false;
+  }
+
+  const normHome = normalizeTeamName(homeTeam);
+  const normAway = normalizeTeamName(awayTeam);
   const events = oddsApiEventIdCache[sport]?.events || [];
+  const matches = [];
   for (const e of events) {
-    const eHome = e.home.toLowerCase().trim();
-    const eAway = e.away.toLowerCase().trim();
-    if ((eHome === normHome || eHome.includes(normHome) || normHome.includes(eHome))
-        && (eAway === normAway || eAway.includes(normAway) || normAway.includes(eAway))) {
-      return { eventId: e.id, oddsApiSport };
+    if (teamsMatch(normalizeTeamName(e.home), normHome)
+        && teamsMatch(normalizeTeamName(e.away), normAway)) {
+      matches.push(e);
     }
   }
-  log.debug('OddsFeed', `No Odds API event match for ${homeTeam} vs ${awayTeam} in ${sport}`);
-  return null;
+
+  if (matches.length === 0) {
+    log.debug('OddsFeed', `No Odds API event match for ${homeTeam} vs ${awayTeam} in ${sport} (${events.length} candidates)`);
+    return null;
+  }
+
+  // Disambiguate by commence time when multiple candidates (doubleheaders
+  // or back-to-back same-matchup events). Pick the one closest to the
+  // target time; if no target, default to first match.
+  let chosen = matches[0];
+  if (targetTime && matches.length > 1) {
+    const targetMs = new Date(targetTime).getTime();
+    if (!isNaN(targetMs)) {
+      chosen = matches.reduce((best, e) => {
+        const bMs = new Date(best.commence).getTime();
+        const eMs = new Date(e.commence).getTime();
+        if (isNaN(eMs)) return best;
+        if (isNaN(bMs)) return e;
+        return Math.abs(eMs - targetMs) < Math.abs(bMs - targetMs) ? e : best;
+      }, matches[0]);
+    }
+  }
+
+  return { eventId: chosen.id, oddsApiSport };
 }
 
-async function fetchAltLines(sport, homeTeam, awayTeam) {
+async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   if (!theOddsApiKey) return null;
 
@@ -1841,8 +1895,9 @@ async function fetchAltLines(sport, homeTeam, awayTeam) {
     return cached;
   }
 
-  // Resolve The Odds API event ID (SharpAPI IDs are different)
-  const resolved = await resolveOddsApiEventId(sport, homeTeam, awayTeam);
+  // Resolve The Odds API event ID (SharpAPI IDs are different). targetTime
+  // disambiguates same-matchup doubleheaders / back-to-backs.
+  const resolved = await resolveOddsApiEventId(sport, homeTeam, awayTeam, targetTime);
   if (!resolved) {
     log.debug('OddsFeed', `Cannot fetch alt lines for ${homeTeam} vs ${awayTeam}: no Odds API event ID`);
     return null;
@@ -2054,15 +2109,20 @@ async function warmAltLines(sport) {
       const altKey = normalizeEventKey(ev.homeTeam, ev.awayTeam);
       const altCached = altLinesCache[altKey];
       if (altCached && (now - altCached.fetchedAt) < ALT_LINES_TTL_MS) continue;
-      candidates.push({ homeTeam: ev.homeTeam, awayTeam: ev.awayTeam });
+      candidates.push({
+        homeTeam: ev.homeTeam,
+        awayTeam: ev.awayTeam,
+        commenceTime: ev.commenceTime || null,
+      });
     }
   }
 
   if (candidates.length === 0) {
-    return { sport, candidates: 0, fetched: 0, errors: 0 };
+    return { sport, candidates: 0, fetched: 0, noMatch: 0, errors: 0 };
   }
 
-  let fetched = 0, errors = 0;
+  let fetched = 0, errors = 0, noMatch = 0;
+  const unmatched = []; // up to 5 samples — used to diagnose matching gaps
   // Bounded-concurrency worker pool
   let idx = 0;
   async function worker() {
@@ -2070,8 +2130,18 @@ async function warmAltLines(sport) {
       const i = idx++;
       const c = candidates[i];
       try {
-        const r = await fetchAltLines(sport, c.homeTeam, c.awayTeam);
+        // Pre-check: does resolveOddsApiEventId find a match? If not, we
+        // know the fetch would fail for a matching reason vs an API error.
+        // This lets the stats separate "no match" from "API call failed".
+        const resolved = await resolveOddsApiEventId(sport, c.homeTeam, c.awayTeam, c.commenceTime);
+        if (!resolved) {
+          noMatch++;
+          if (unmatched.length < 5) unmatched.push(`${c.homeTeam} vs ${c.awayTeam}`);
+          continue;
+        }
+        const r = await fetchAltLines(sport, c.homeTeam, c.awayTeam, c.commenceTime);
         if (r) fetched++;
+        else errors++; // resolved but fetch returned nothing (API error, empty response)
       } catch (err) {
         errors++;
       }
@@ -2083,10 +2153,18 @@ async function warmAltLines(sport) {
   }
   await Promise.all(workers);
 
-  const stats = { sport, candidates: candidates.length, fetched, errors, completedAt: new Date().toISOString() };
+  const stats = {
+    sport,
+    candidates: candidates.length,
+    fetched,
+    noMatch,
+    errors,
+    unmatchedSamples: unmatched,
+    completedAt: new Date().toISOString(),
+  };
   _lastWarmStats = _lastWarmStats || {};
   _lastWarmStats[sport] = stats;
-  log.info('OddsFeed', `Alt-line warm ${sport}: ${fetched}/${candidates.length} fetched (${errors} errors)`);
+  log.info('OddsFeed', `Alt-line warm ${sport}: ${fetched}/${candidates.length} fetched (${noMatch} no-match, ${errors} errors)`);
   return stats;
 }
 
@@ -2537,7 +2615,7 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
   if ((marketType === 'spreads' || marketType === 'totals') && line != null) {
     const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
     if (event) {
-      await fetchAltLines(sport, homeTeam, awayTeam);
+      await fetchAltLines(sport, homeTeam, awayTeam, targetTime);
       const key = normalizeEventKey(homeTeam, awayTeam);
       // Pass SIGNED line (not abs) so alt-line lookup routes to the correct
       // signed home_point bucket.
