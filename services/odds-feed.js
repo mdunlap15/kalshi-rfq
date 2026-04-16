@@ -1748,7 +1748,13 @@ function avg(arr) {
 // ---------------------------------------------------------------------------
 // { 'eventKey': { fetchedAt, altSpreads: { [line]: { home, away } }, altTotals: { [line]: { over, under } } } }
 const altLinesCache = {};
-const ALT_LINES_TTL_MS = 10 * 60 * 1000; // 10 minute cache
+// 30 min TTL — alt-line values move slower than primary lines and we'd rather
+// serve a slightly stale cached alt than pay a 30-100ms on-demand fetch on
+// the RFQ hot path. Was 10 min, but that caused constant re-fetching of the
+// same events and pushed decline→price p50 to 31ms (vs ~1ms warm). 30 min is
+// safe because the primary-line market check in getFairProb already verifies
+// the line hasn't moved meaningfully.
+const ALT_LINES_TTL_MS = 30 * 60 * 1000;
 
 /**
  * Fetch alternate spreads and totals for a specific event from The Odds API.
@@ -2207,6 +2213,44 @@ async function warmAltLines(sport) {
   _lastWarmStats[sport] = stats;
   log.info('OddsFeed', `Alt-line warm ${sport}: ${fetched}/${candidates.length} fetched (${noMatch} no-match, ${errors} errors)`);
   return stats;
+}
+
+/**
+ * Warm alt lines for every sport that has alt markets, in parallel.
+ * Returns when all sport-level warms complete (or a per-sport error is caught).
+ * Used both at boot (pre-WebSocket) and from the 60s periodic loop.
+ */
+async function warmAllSports() {
+  const sports = [...SPORTS_WITH_ALT_MARKETS].filter(s =>
+    (config.supportedSports || []).includes(s)
+  );
+  const settle = await Promise.allSettled(sports.map(s =>
+    warmAltLines(s).catch(err => {
+      log.warn('OddsFeed', `Warm loop error for ${s}: ${err.message}`);
+      return null;
+    })
+  ));
+  return settle.map((r, i) => ({ sport: sports[i], ok: r.status === 'fulfilled', result: r.value }));
+}
+
+// Periodic-warm loop handle so callers (and tests) can start/stop it cleanly.
+let _warmLoopTimer = null;
+const WARM_LOOP_INTERVAL_MS = 60 * 1000;
+
+/**
+ * Start the background warm loop. Safe to call multiple times — second calls
+ * are no-ops. Runs warmAllSports every WARM_LOOP_INTERVAL_MS (60s).
+ * Deploy-survival: warmAltLines skips events already fresh under ALT_LINES_TTL_MS,
+ * so the loop doesn't hammer The Odds API after the initial population.
+ */
+function startAltLineWarmLoop() {
+  if (_warmLoopTimer) return;
+  _warmLoopTimer = setInterval(() => {
+    warmAllSports().catch(err => {
+      log.warn('OddsFeed', `Alt-line warm loop failed: ${err.message}`);
+    });
+  }, WARM_LOOP_INTERVAL_MS);
+  log.info('OddsFeed', `Alt-line warm loop started (every ${WARM_LOOP_INTERVAL_MS / 1000}s)`);
 }
 
 function getAltLinesWarmStats() {
@@ -3632,6 +3676,8 @@ module.exports = {
   getDNBFairProb,
   fetchAltLines,
   warmAltLines,
+  warmAllSports,
+  startAltLineWarmLoop,
   getAltLinesWarmStats,
   getEventMarkets,
   getLiveEventMarkets,

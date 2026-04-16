@@ -190,6 +190,29 @@ async function startup() {
     log.warn('Startup', `    ✗ Affiliate enrichment failed: ${err.message}`);
   }
 
+  // Step 3c: Pre-warm alt-line cache before WebSocket connect. The odds-refresh
+  // in Step 2 already kicked off a fire-and-forget warm, but we await here with
+  // a bounded deadline so the first RFQs hit warm cache instead of paying cold
+  // decline→price cost (~30ms per unwarmed event). Deadline keeps boot from
+  // stalling if The Odds API is slow.
+  log.info('Startup', '3c/5 Pre-warming alt-line cache...');
+  try {
+    const WARM_BOOT_DEADLINE_MS = 15000;
+    const result = await Promise.race([
+      oddsFeed.warmAllSports(),
+      new Promise(r => setTimeout(() => r('__timeout__'), WARM_BOOT_DEADLINE_MS)),
+    ]);
+    if (result === '__timeout__') {
+      log.warn('Startup', `    ⚠ Alt-line warm exceeded ${WARM_BOOT_DEADLINE_MS}ms deadline — continuing; warm loop will finish in background`);
+    } else {
+      const fetched = (result || []).reduce((s, r) => s + (r.result?.fetched || 0), 0);
+      const candidates = (result || []).reduce((s, r) => s + (r.result?.candidates || 0), 0);
+      log.info('Startup', `    ✓ Alt-line warm: ${fetched}/${candidates} events cached`);
+    }
+  } catch (err) {
+    log.warn('Startup', `    ✗ Alt-line warm failed: ${err.message} — continuing; warm loop will retry`);
+  }
+
   // Step 4: Connect WebSocket
   log.info('Startup', '4/5 Connecting to ProphetX WebSocket...');
   try {
@@ -199,6 +222,11 @@ async function startup() {
     log.error('Startup', `    ✗ WebSocket connection failed: ${err.message}`);
     log.warn('Startup', '    Service will run without WebSocket — use /status to check state');
   }
+
+  // Start the periodic alt-line warm loop (every 60s). Keeps the cache fresh
+  // continuously, not just on odds-refresh cycles. With 30-min TTL, most calls
+  // return cache hits quickly — the loop only re-fetches aging entries.
+  oddsFeed.startAltLineWarmLoop();
 
   // Start periodic timers
   const refreshMs = config.refreshIntervalMinutes * 60 * 1000;
