@@ -707,76 +707,79 @@
 
       <!-- ===================== SECTION: ANALYTICS ===================== -->
       <div id="section-analytics" class="section" style="display:none;">
-        <!-- Daily Volume & P&L -->
+        <!-- Daily Volume & P&L — expanded by default -->
         <div class="card">
-          <div class="card-header"><span>Daily Volume & P&L</span></div>
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
+            <span><span class="toggle-icon">&#9660;</span>Daily Volume & P&L</span>
+          </div>
           <div class="card-body" id="chart-daily-volume">
             <div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>
           </div>
         </div>
 
-        <!-- Parlay Pricing vs. Books -->
+        <!-- Parlay Pricing vs. Books — collapsed -->
         <div class="card">
-          <div class="card-header">
-            <span>Parlay Pricing vs. Books</span>
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Parlay Pricing vs. Books</span>
           </div>
-          <div class="card-body" id="chart-parlay-vs-books">
+          <div class="card-body collapsed" id="chart-parlay-vs-books">
             <div class="empty-state"><div class="icon">-</div><div>Need quoted parlays with book odds</div></div>
           </div>
         </div>
 
-        <!-- Cumulative P&L + ROI (merged) -->
+        <!-- Cumulative P&L + ROI (merged) — collapsed -->
         <div class="card">
-          <div class="card-header">
-            <span>Cumulative P&L & ROI</span>
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Cumulative P&L & ROI</span>
             <span id="cumul-pnlroi-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
-          <div class="card-body" id="chart-cumul-pnl-roi">
+          <div class="card-body collapsed" id="chart-cumul-pnl-roi">
             <div class="empty-state"><div class="icon">-</div><div>Need settled orders to chart P&L / ROI</div></div>
           </div>
         </div>
 
-        <!-- Pricing Edge vs Sportsbooks -->
+        <!-- Pricing Edge vs Sportsbooks — collapsed -->
         <div class="card">
-          <div class="card-header">
-            <span>Pricing Edge vs Sportsbooks</span>
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Pricing Edge vs Sportsbooks</span>
             <span id="pricing-edge-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
-          <div class="card-body" id="chart-pricing-edge">
+          <div class="card-body collapsed" id="chart-pricing-edge">
             <div class="empty-state"><div class="icon">-</div><div>Need quoted parlays with Pinnacle/FanDuel odds</div></div>
           </div>
         </div>
 
-        <!-- Parlay-Level Edge -->
+        <!-- Parlay-Level Edge — collapsed -->
         <div class="card">
-          <div class="card-header">
-            <span>Parlay-Level Edge (compound)</span>
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Parlay-Level Edge (compound)</span>
           </div>
-          <div class="card-body" id="chart-parlay-edge">
+          <div class="card-body collapsed" id="chart-parlay-edge">
             <div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays</div></div>
           </div>
         </div>
 
-        <!-- Missed Volume from Risk Limits -->
+        <!-- Missed Volume from Risk Limits — collapsed -->
         <div class="card">
-          <div class="card-header">
-            <span>Missed Volume from Risk Limits</span>
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Missed Volume from Risk Limits</span>
             <span id="risk-limit-missed-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
-          <div class="card-body" id="chart-risk-limit-missed">
+          <div class="card-body collapsed" id="chart-risk-limit-missed">
             <div class="empty-state"><div class="icon">-</div><div>No RFQs declined for risk-limit reasons yet</div></div>
           </div>
         </div>
 
-        <!-- P&L Breakdown (combined, with tab toggle) -->
+        <!-- P&L Breakdown (combined, with tab toggle) — collapsed -->
         <div class="card">
-          <div class="card-header" style="padding-bottom:0; border-bottom:none;">
-            <div style="display:flex; gap:0;">
-              <button class="btn" id="pnl-tab-sport" onclick="switchPnlBreakdown('sport')" style="border-radius:4px 4px 0 0; border-bottom:2px solid var(--accent); font-size:12px; padding:6px 16px;">P&L by Sport</button>
-              <button class="btn" id="pnl-tab-legs" onclick="switchPnlBreakdown('legs')" style="border-radius:4px 4px 0 0; border-bottom:2px solid transparent; font-size:12px; padding:6px 16px; color:var(--text3);">P&L by Leg Count</button>
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');" style="padding-bottom:0; border-bottom:none;">
+            <div style="display:flex; gap:0; align-items:center;">
+              <span class="toggle-icon collapsed" style="margin-right:6px;">&#9660;</span>
+              <button class="btn" id="pnl-tab-sport" onclick="event.stopPropagation(); switchPnlBreakdown('sport')" style="border-radius:4px 4px 0 0; border-bottom:2px solid var(--accent); font-size:12px; padding:6px 16px;">P&L by Sport</button>
+              <button class="btn" id="pnl-tab-legs" onclick="event.stopPropagation(); switchPnlBreakdown('legs')" style="border-radius:4px 4px 0 0; border-bottom:2px solid transparent; font-size:12px; padding:6px 16px; color:var(--text3);">P&L by Leg Count</button>
             </div>
           </div>
-          <div class="card-body">
+          <div class="card-body collapsed">
             <div id="chart-pnl-sport">
               <div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>
             </div>
@@ -786,10 +789,12 @@
           </div>
         </div>
 
-        <!-- Calibration -->
+        <!-- Calibration — collapsed -->
         <div class="card">
-          <div class="card-header"><span>Model Calibration</span></div>
-          <div class="card-body" id="chart-calibration">
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Model Calibration</span>
+          </div>
+          <div class="card-body collapsed" id="chart-calibration">
             <div class="empty-state"><div class="icon">-</div><div>Need settled orders to evaluate pricing accuracy</div></div>
           </div>
         </div>
@@ -5806,7 +5811,14 @@
     return `<text x="${x}" y="${y}" text-anchor="${anchor}" fill="${fill}" font-size="${size}">${text}</text>`;
   }
 
-  // 1. Cumulative P&L line chart
+  // Nice step for axis ticks (rounds to 1, 2, 5 × 10^n)
+  function niceStep(rough) {
+    const mag = Math.pow(10, Math.floor(Math.log10(Math.abs(rough) || 1)));
+    const norm = rough / mag;
+    const nice = norm <= 1.5 ? 1 : norm <= 3.5 ? 2 : norm <= 7.5 ? 5 : 10;
+    return nice * mag;
+  }
+
   // Daily Volume & P&L — grouped bar chart by day
   function renderChartDailyVolume(allOrders) {
     const el = document.getElementById('chart-daily-volume');
@@ -6282,28 +6294,21 @@
         + ' &middot; $' + cumulRisk.toFixed(0) + ' risked';
     }
 
-    const W = 720, H = 260, pad = { l: 60, r: 60, t: 20, b: 40 };
+    const W = 720, H = 300, pad = { l: 64, r: 64, t: 24, b: 42 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
 
-    // Independent scales so both series use the full chart height
-    const minPnl = Math.min(0, ...points.map(p => p.pnl));
-    const maxPnl = Math.max(0, ...points.map(p => p.pnl));
-    const pnlRange = maxPnl - minPnl || 1;
-    const minRoi = Math.min(0, ...points.map(p => p.roi));
-    const maxRoi = Math.max(0, ...points.map(p => p.roi));
-    const roiRange = maxRoi - minRoi || 1;
+    // Independent scales — each series uses the full chart height with 10% padding
+    const rawMinPnl = Math.min(0, ...points.map(p => p.pnl));
+    const rawMaxPnl = Math.max(0, ...points.map(p => p.pnl));
+    const pnlPad = (rawMaxPnl - rawMinPnl) * 0.1 || 1;
+    const pnlLo = rawMinPnl - pnlPad;
+    const pnlHi = rawMaxPnl + pnlPad;
 
-    // Align zero across both axes: compute a normalized 0-point and snap both ranges.
-    // Simpler: scale each axis independently, but place both zero lines at the same y.
-    const zeroFracPnl = -minPnl / pnlRange;
-    const zeroFracRoi = -minRoi / roiRange;
-    // Use the max of the two to find shared zero fraction
-    const zeroFrac = Math.max(zeroFracPnl, zeroFracRoi);
-    // Rescale each so their zero lands at this fraction
-    const pnlLo = -zeroFrac * pnlRange + minPnl; // keeps original span, just shifts
-    const pnlHi = pnlLo + pnlRange;
-    const roiLo = -zeroFrac * roiRange + minRoi;
-    const roiHi = roiLo + roiRange;
+    const rawMinRoi = Math.min(0, ...points.map(p => p.roi));
+    const rawMaxRoi = Math.max(0, ...points.map(p => p.roi));
+    const roiPad = (rawMaxRoi - rawMinRoi) * 0.1 || 1;
+    const roiLo = rawMinRoi - roiPad;
+    const roiHi = rawMaxRoi + roiPad;
 
     const tMin = points[0].t;
     const tMax = points[points.length - 1].t;
@@ -6313,21 +6318,29 @@
     const scaleYpnl = (v) => pad.t + chartH - ((v - pnlLo) / (pnlHi - pnlLo)) * chartH;
     const scaleYroi = (v) => pad.t + chartH - ((v - roiLo) / (roiHi - roiLo)) * chartH;
 
-    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:320px;">`;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:360px;">`;
 
-    // Shared zero line (both series converge here by construction)
-    const zeroY = scaleYpnl(0);
-    svg += svgLine(pad.l, zeroY, W - pad.r, zeroY, 'var(--border)', 1);
+    // Left axis: P&L gridlines (4-5 ticks across the range)
+    const pnlTicks = 5;
+    const pnlStep = niceStep((pnlHi - pnlLo) / pnlTicks);
+    for (let v = Math.ceil(pnlLo / pnlStep) * pnlStep; v <= pnlHi; v += pnlStep) {
+      const y = scaleYpnl(v);
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.3);
+      const label = v >= 0 ? '+$' + v.toFixed(0) : '-$' + Math.abs(v).toFixed(0);
+      const fill = v >= 0 ? 'var(--green)' : 'var(--red)';
+      svg += svgText(pad.l - 8, y + 3, label, { anchor: 'end', size: 9, fill });
+    }
+    // P&L zero line
+    const pnlZeroY = scaleYpnl(0);
+    svg += svgLine(pad.l, pnlZeroY, W - pad.r, pnlZeroY, 'var(--text3)', 0.8);
 
-    // Left axis labels (P&L, green)
-    svg += svgText(pad.l - 8, zeroY + 3, '$0', { anchor: 'end', size: 9, fill: 'var(--green)' });
-    if (maxPnl > 0) { const y = scaleYpnl(maxPnl); svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.3); svg += svgText(pad.l - 8, y + 3, '+$' + maxPnl.toFixed(0), { anchor: 'end', size: 9, fill: 'var(--green)' }); }
-    if (minPnl < 0) { const y = scaleYpnl(minPnl); svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.3); svg += svgText(pad.l - 8, y + 3, '-$' + Math.abs(minPnl).toFixed(0), { anchor: 'end', size: 9, fill: 'var(--red)' }); }
-
-    // Right axis labels (ROI, cyan)
-    svg += svgText(W - pad.r + 8, zeroY + 3, '0%', { anchor: 'start', size: 9, fill: 'var(--blue)' });
-    if (maxRoi > 0) { const y = scaleYroi(maxRoi); svg += svgText(W - pad.r + 8, y + 3, '+' + maxRoi.toFixed(1) + '%', { anchor: 'start', size: 9, fill: 'var(--blue)' }); }
-    if (minRoi < 0) { const y = scaleYroi(minRoi); svg += svgText(W - pad.r + 8, y + 3, minRoi.toFixed(1) + '%', { anchor: 'start', size: 9, fill: 'var(--red)' }); }
+    // Right axis: ROI labels (4-5 ticks)
+    const roiStep = niceStep((roiHi - roiLo) / pnlTicks);
+    for (let v = Math.ceil(roiLo / roiStep) * roiStep; v <= roiHi; v += roiStep) {
+      const y = scaleYroi(v);
+      const label = (v >= 0 ? '+' : '') + v.toFixed(v > -1 && v < 1 ? 1 : 0) + '%';
+      svg += svgText(W - pad.r + 8, y + 3, label, { anchor: 'start', size: 9, fill: 'var(--blue)' });
+    }
 
     // X-axis time ticks
     const spanHours = tRange / (1000 * 60 * 60);
@@ -6348,9 +6361,9 @@
     svg += svgText(W - pad.r, H - 6, new Date(tMax).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }), { anchor: 'end', size: 9, fill: 'var(--text3)' });
 
     // P&L area fill
-    let pnlAreaPath = `M${scaleX(points[0].t)},${zeroY}`;
+    let pnlAreaPath = `M${scaleX(points[0].t)},${pnlZeroY}`;
     for (const p of points) pnlAreaPath += ` L${scaleX(p.t)},${scaleYpnl(p.pnl)}`;
-    pnlAreaPath += ` L${scaleX(points[points.length - 1].t)},${zeroY} Z`;
+    pnlAreaPath += ` L${scaleX(points[points.length - 1].t)},${pnlZeroY} Z`;
     const pnlAreaColor = finalPnl >= 0 ? 'rgba(63,185,80,0.12)' : 'rgba(248,81,73,0.12)';
     svg += `<path d="${pnlAreaPath}" fill="${pnlAreaColor}" />`;
 
@@ -6369,10 +6382,18 @@
     }
     svg += `<path d="${roiLinePath}" fill="none" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5,3" />`;
 
-    // Dots on P&L line, colored per-parlay pnl
-    for (const p of points) {
+    // Dots on P&L line — subsample if too many to keep chart readable
+    const dotStep = points.length > 100 ? Math.ceil(points.length / 60) : 1;
+    for (let i = 0; i < points.length; i += dotStep) {
+      const p = points[i];
       const color = p.order.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-      svg += svgCircle(scaleX(p.t), scaleYpnl(p.pnl), 3, color);
+      svg += svgCircle(scaleX(p.t), scaleYpnl(p.pnl), 2.5, color);
+    }
+    // Always draw the last point
+    if (dotStep > 1) {
+      const p = points[points.length - 1];
+      const color = p.order.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      svg += svgCircle(scaleX(p.t), scaleYpnl(p.pnl), 2.5, color);
     }
 
     // Final labels
@@ -6391,7 +6412,7 @@
     svg += '</g>';
 
     svg += '</svg>';
-    svg += `<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">${points.length} settled parlays &middot; zero lines aligned &middot; x-axis by settlement time</div>`;
+    svg += `<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">${points.length} settled parlays &middot; x-axis by settlement time</div>`;
     el.innerHTML = svg;
   }
 
