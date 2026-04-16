@@ -486,25 +486,18 @@
         const toWinStr = toWinAmt > 0 ? '$' + toWinAmt.toFixed(2) : '-';
         const time = (o.confirmedAt || o.quotedAt || '').replace('T', ' ').substring(0, 16);
 
+        // Parlay-level fair odds (from fairParlayProb on the order)
+        const fairParlayOdds = o.fairParlayProb ? probToAmerican(o.fairParlayProb) : '-';
+
         const legHtml = legs.map(l => {
           const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
           const displayName = name.length > 28 ? name.substring(0, 26) + '..' : name;
           const lr = l.settlementStatus || l.settlement_status || l.inferredResult || '';
           const lrCls = lr === 'won' ? 'won' : lr === 'lost' ? 'lost' : '';
           const lrLabel = lr ? lr.charAt(0).toUpperCase() + lr.slice(1) : '';
-          const pinStr = fmtOdds(l.pinnacleOdds);
-          const dkStr = fmtOdds(l.draftkingsOdds);
-          const fairStr = l.fairProb ? probToAmerican(l.fairProb) : '-';
-          return '<div class="leg" style="flex-direction:column;align-items:stretch;gap:2px;">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+          return '<div class="leg" style="display:flex;justify-content:space-between;align-items:center;">' +
               '<span>' + displayName + '</span>' +
               (lrLabel ? '<span class="leg-result ' + lrCls + '">' + lrLabel + '</span>' : '') +
-            '</div>' +
-            '<div style="display:flex;gap:10px;font-size:10px;color:var(--text2);">' +
-              '<span>PIN <span style="color:var(--text);">' + pinStr + '</span></span>' +
-              '<span>DK <span style="color:var(--text);">' + dkStr + '</span></span>' +
-              '<span>FAIR <span style="color:var(--text);">' + fairStr + '</span></span>' +
-            '</div>' +
           '</div>';
         }).join('');
 
@@ -514,6 +507,10 @@
             '<span class="result ' + resultCls + '">' + result + '</span>' +
           '</div>' +
           '<div class="legs">' + legHtml + '</div>' +
+          '<div style="display:flex;gap:12px;padding:4px 12px;font-size:11px;color:var(--text2);">' +
+            '<span>OFFER <span style="color:var(--text);font-weight:600;">' + oddsStr + '</span></span>' +
+            '<span>FAIR <span style="color:var(--text);font-weight:600;">' + fairParlayOdds + '</span></span>' +
+          '</div>' +
           '<div class="card-footer">' +
             '<span>Risk: ' + stakeStr + '</span>' +
             '<span style="color:var(--green);">Win: ' + toWinStr + '</span>' +
