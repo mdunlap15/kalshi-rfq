@@ -679,8 +679,8 @@ async function getDailyPnL(days = 30) {
       const d = byDay[day];
       d.pnl += (row.pnl || 0);
       d.fills++;
-      if (row.status === 'settled_won') d.losses++;  // bettor won = SP lost
-      else if (row.status === 'settled_lost') d.wins++;  // bettor lost = SP won
+      if (row.status === 'settled_won') d.wins++;    // SP won (bettor lost parlay)
+      else if (row.status === 'settled_lost') d.losses++;  // SP lost (bettor won parlay)
       else d.pushes++;
       d.risk += (row.confirmed_stake || 0);
     }
@@ -690,6 +690,32 @@ async function getDailyPnL(days = 30) {
   } catch (err) {
     log.warn('DB', `getDailyPnL error: ${err.message}`);
     return [];
+  }
+}
+
+/**
+ * Get the total P&L sum directly from Supabase (source of truth).
+ * Sums the pnl column for all settled orders — no in-memory drift.
+ */
+async function getTotalPnL() {
+  const db = getClient();
+  if (!db) return null;
+
+  try {
+    const { data, error } = await db.from('parlay_orders')
+      .select('pnl')
+      .like('status', 'settled_%')
+      .not('pnl', 'is', null);
+
+    if (error) {
+      log.warn('DB', `getTotalPnL error: ${error.message}`);
+      return null;
+    }
+    if (!data) return 0;
+    return data.reduce((sum, row) => sum + (Number(row.pnl) || 0), 0);
+  } catch (err) {
+    log.warn('DB', `getTotalPnL error: ${err.message}`);
+    return null;
   }
 }
 
@@ -710,4 +736,5 @@ module.exports = {
   loadLineCacheBulk,
   loadLineCacheByEventIds,
   getDailyPnL,
+  getTotalPnL,
 };

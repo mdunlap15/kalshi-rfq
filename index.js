@@ -25,6 +25,15 @@ let lineRefreshTimer = null;
 let settlementPollTimer = null;
 let serviceReady = false;
 
+// Cached Supabase total P&L — refreshed periodically, used by /status
+let cachedDbPnL = null;
+async function refreshDbPnL() {
+  try {
+    const total = await db.getTotalPnL();
+    if (total != null) cachedDbPnL = Math.round(total * 100) / 100;
+  } catch (_) { /* best effort */ }
+}
+
 async function startup() {
   log.setLevel(config.logLevel);
 
@@ -267,6 +276,10 @@ async function startup() {
     }
   }, 5 * 60 * 1000);
 
+  // Refresh DB P&L on startup and every 2 minutes
+  refreshDbPnL();
+  setInterval(refreshDbPnL, 2 * 60 * 1000);
+
   // Initial balance fetch
   try {
     const bal = await px.fetchBalance();
@@ -339,7 +352,7 @@ function startStatusServer() {
         lastSeed: lineManager.getStats(),
       },
       odds: oddsFeed.getCacheStatus(),
-      orders: orderTracker.getStats(),
+      orders: { ...orderTracker.getStats(), dbPnL: cachedDbPnL },
       exposure: {
         maxPerTeam: config.pricing.maxExposurePerTeam,
         teams: orderTracker.getExposureSnapshot(),
@@ -418,9 +431,8 @@ function startStatusServer() {
     const days = parseInt(req.query.days) || 30;
     try {
       const daily = await db.getDailyPnL(days);
-      // Also include current runningPnL for total
-      const stats = orderTracker.getStats();
-      res.json({ daily, runningPnL: stats.runningPnL || 0 });
+      const totalPnL = await db.getTotalPnL();
+      res.json({ daily, totalPnL });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

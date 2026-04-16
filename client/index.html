@@ -1080,14 +1080,14 @@
     // data.recentOrders which only exists on the /orders response, not
     // /status. See updateNotificationBadge() called from refresh().
 
-    // Headline P&L uses runningPnL (sum of settled order P&L).
-    // Account-based formula was unreliable — currentRisk can drift
-    // from PX's internal accounting, inflating the number.
-    const runningPnL = data.orders?.runningPnL || 0;
+    // Headline P&L: prefer Supabase total (dbPnL) over in-memory runningPnL.
+    // runningPnL can drift if loadOrders misses rows on startup;
+    // dbPnL queries Supabase directly every 2 min and is authoritative.
+    const pnlVal = data.orders?.dbPnL != null ? data.orders.dbPnL : (data.orders?.runningPnL || 0);
     const pnlEl = document.getElementById('stat-pnl');
-    pnlEl.textContent = fmtPnl(runningPnL);
-    if (runningPnL > 0) { pnlEl.className = 'value positive'; }
-    else if (runningPnL < 0) { pnlEl.className = 'value negative'; }
+    pnlEl.textContent = fmtPnl(pnlVal);
+    if (pnlVal > 0) { pnlEl.className = 'value positive'; }
+    else if (pnlVal < 0) { pnlEl.className = 'value negative'; }
     else { pnlEl.className = 'value neutral'; }
 
     const wins = o.totalWins || 0;
@@ -4882,9 +4882,8 @@
 
     // Prefer account-based P&L (PX balance - starting balance) — it's the
     // canonical source. Fall back to in-memory tracker only if balance
-    // Use runningPnL (sum of settled order P&L) — account-based formula
-    // was unreliable due to currentRisk drift from PX internal accounting.
-    const pnl = orderStats.runningPnL || 0;
+    // Prefer Supabase dbPnL (refreshed every 2 min) over in-memory runningPnL.
+    const pnl = orderStats.dbPnL != null ? orderStats.dbPnL : (orderStats.runningPnL || 0);
     const wins = orderStats.totalWins || 0;
     const losses = orderStats.totalLosses || 0;
     const settled = wins + losses;
