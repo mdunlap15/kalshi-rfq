@@ -831,6 +831,17 @@
         </div>
 
         <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Latency Monitor</span>
+            <span style="display:flex; gap:6px;">
+              <button class="btn" onclick="event.stopPropagation(); refreshLatencyMonitor()">Refresh</button>
+              <button class="btn" onclick="event.stopPropagation(); captureLatencyBaseline()" title="Freeze current stats as baseline for before/after comparison">Capture Baseline</button>
+            </span>
+          </div>
+          <div class="card-body collapsed" id="latency-monitor"><div class="empty-state"><div class="icon">-</div><div>Click Refresh to load latency breakdown</div></div></div>
+        </div>
+
+        <div class="card">
           <div class="card-header" onclick="toggleCard(this)"><span><span class="toggle-icon collapsed">&#9660;</span>Configuration</span></div>
           <div class="card-body collapsed" id="config-display"><div class="empty-state"><div class="icon">...</div>Loading</div></div>
         </div>
@@ -1407,6 +1418,167 @@
       `;
     }
     html += '</table>';
+    el.innerHTML = html;
+  }
+
+  // ---------------------------------------------------------------------------
+  // LATENCY MONITOR — per-stage RFQ timing with baseline comparison
+  // ---------------------------------------------------------------------------
+  async function refreshLatencyMonitor() {
+    const el = document.getElementById('latency-monitor');
+    if (!el) return;
+    el.innerHTML = '<div class="empty-state"><div class="icon">...</div><div>Loading...</div></div>';
+    try {
+      const resp = await fetch('/latency-baseline');
+      const data = await resp.json();
+      renderLatencyMonitor(data);
+    } catch (err) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">!</div><div>Failed to load: ' + err.message + '</div></div>';
+    }
+  }
+
+  async function captureLatencyBaseline() {
+    if (!confirm('Freeze current stats as the baseline? This replaces any previous baseline so future comparisons are measured against THIS moment.')) return;
+    try {
+      const resp = await fetch('/latency-baseline/capture', { method: 'POST' });
+      const data = await resp.json();
+      if (data.ok) {
+        alert('Baseline captured at ' + new Date(data.baseline.capturedAt).toLocaleString()
+          + '\n\nEnd-to-end percentiles:\n  p50: ' + data.baseline.endToEnd.p50 + 'ms'
+          + '\n  p95: ' + data.baseline.endToEnd.p95 + 'ms'
+          + '\n  p99: ' + data.baseline.endToEnd.p99 + 'ms');
+        refreshLatencyMonitor();
+      }
+    } catch (err) {
+      alert('Capture failed: ' + err.message);
+    }
+  }
+
+  function renderLatencyMonitor(data) {
+    const el = document.getElementById('latency-monitor');
+    if (!el) return;
+    const current = data.current || {};
+    const baseline = data.baseline;
+    const delta = data.delta;
+
+    if (!current.sample || !current.endToEnd) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No latency data yet</div></div>';
+      return;
+    }
+
+    const sample = current.sample;
+    const stages = sample.rfqStages || {};
+    const submissionRate = stages.received > 0 ? (stages.submitted / stages.received * 100).toFixed(1) + '%' : '-';
+
+    // Compact percentile row renderer
+    const pctRow = (label, p, bColor) => {
+      if (!p) return '';
+      return '<tr>'
+        + '<td style="padding:4px 10px; color:var(--text2); font-size:12px;">' + label + '</td>'
+        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + (p.p50 || 0) + 'ms</td>'
+        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + (p.p95 || 0) + 'ms</td>'
+        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + (p.p99 || 0) + 'ms</td>'
+        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--text3);">' + (p.max || 0) + 'ms</td>'
+        + '</tr>';
+    };
+
+    let html = '<div style="padding:12px 16px;">';
+
+    // Header stats
+    html += '<div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:14px; font-size:12px;">'
+      + '<span><span style="color:var(--text3);">Samples:</span> <strong>' + sample.totalResponseTimes + '</strong></span>'
+      + '<span><span style="color:var(--text3);">RFQs received:</span> <strong>' + (stages.received || 0).toLocaleString() + '</strong></span>'
+      + '<span><span style="color:var(--text3);">Submitted:</span> <strong>' + (stages.submitted || 0) + '</strong> (' + submissionRate + ')</span>'
+      + '<span><span style="color:var(--text3);">Declined:</span> <strong style="color:var(--amber);">' + (stages.declined || 0) + '</strong></span>'
+      + '<span><span style="color:var(--text3);">Price failed:</span> <strong>' + (stages.priceFailed || 0) + '</strong></span>'
+      + '<span><span style="color:var(--text3);">Submit errors:</span> <strong style="color:' + ((stages.submitError || 0) > 0 ? 'var(--red)' : 'var(--text3)') + ';">' + (stages.submitError || 0) + '</strong></span>'
+      + '</div>';
+
+    // End-to-end with baseline delta
+    html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">END-TO-END LATENCY</div>';
+    html += '<table style="width:100%; margin-bottom:14px;">'
+      + '<tr style="color:var(--text3); font-size:11px;">'
+      + '<th style="text-align:left; padding:4px 10px;"></th>'
+      + '<th style="text-align:right; padding:4px 10px;">p50</th>'
+      + '<th style="text-align:right; padding:4px 10px;">p95</th>'
+      + '<th style="text-align:right; padding:4px 10px;">p99</th>'
+      + '<th style="text-align:right; padding:4px 10px;">max</th>'
+      + '</tr>';
+    html += pctRow('Current', current.endToEnd);
+    if (baseline && baseline.endToEnd) {
+      html += pctRow('Baseline', baseline.endToEnd);
+    }
+    if (delta) {
+      const deltaCell = (d) => {
+        if (!d) return '<td style="padding:4px 10px; text-align:right; color:var(--text3); font-size:12px;">-</td>';
+        const sign = d.delta >= 0 ? '+' : '';
+        const color = d.delta > 0 ? 'var(--red)' : d.delta < 0 ? 'var(--green)' : 'var(--text3)';
+        return '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:' + color + ';">' + sign + d.delta + 'ms (' + d.pctChange + ')</td>';
+      };
+      html += '<tr style="border-top:1px solid var(--border);">'
+        + '<td style="padding:4px 10px; color:var(--text2); font-size:12px; font-weight:600;">Δ vs baseline</td>'
+        + deltaCell(delta.p50) + deltaCell(delta.p95) + deltaCell(delta.p99)
+        + '<td style="padding:4px 10px;"></td>'
+        + '</tr>';
+    }
+    html += '</table>';
+
+    if (baseline) {
+      html += '<div style="font-size:10px; color:var(--text3); margin-bottom:14px;">Baseline captured: ' + new Date(baseline.capturedAt).toLocaleString() + '</div>';
+    } else {
+      html += '<div style="font-size:11px; color:var(--amber); margin-bottom:14px;">No baseline captured yet. Click "Capture Baseline" to freeze current stats for before/after comparison.</div>';
+    }
+
+    // Stage breakdown (non-cumulative deltas show cost per stage)
+    html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">STAGE COST (non-cumulative)</div>';
+    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">How long each stage actually spends. "decline_to_price" is where alt-line fetches live — typically the biggest win target.</div>';
+    html += '<table style="width:100%; margin-bottom:14px;">'
+      + '<tr style="color:var(--text3); font-size:11px;">'
+      + '<th style="text-align:left; padding:4px 10px;">Stage</th>'
+      + '<th style="text-align:right; padding:4px 10px;">p50</th>'
+      + '<th style="text-align:right; padding:4px 10px;">p95</th>'
+      + '<th style="text-align:right; padding:4px 10px;">p99</th>'
+      + '<th style="text-align:right; padding:4px 10px;">max</th>'
+      + '</tr>';
+    const deltas = current.stageDeltas || {};
+    html += pctRow('receive → resolve', deltas.receive_to_resolve);
+    html += pctRow('resolve → decline', deltas.resolve_to_decline);
+    html += pctRow('decline → price', deltas.decline_to_price);
+    html += pctRow('price → submit', deltas.price_to_submit);
+    html += '</table>';
+
+    // Win-rate-by-bucket
+    const buckets = current.winRateByLatencyBucket;
+    if (Array.isArray(buckets) && buckets.length > 0) {
+      html += '<div style="font-size:12px; font-weight:600; color:var(--text2); margin-bottom:6px;">WIN RATE BY LATENCY BUCKET</div>';
+      html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">Does faster = wins more? Match-outcome data only populates after parlays match via WebSocket.</div>';
+      html += '<table style="width:100%;">'
+        + '<tr style="color:var(--text3); font-size:11px;">'
+        + '<th style="text-align:left; padding:4px 10px;">Bucket</th>'
+        + '<th style="text-align:right; padding:4px 10px;">Quoted</th>'
+        + '<th style="text-align:right; padding:4px 10px;">Won</th>'
+        + '<th style="text-align:right; padding:4px 10px;">Lost</th>'
+        + '<th style="text-align:right; padding:4px 10px;">Unknown</th>'
+        + '<th style="text-align:right; padding:4px 10px;">Win rate</th>'
+        + '</tr>';
+      for (const b of buckets) {
+        const wr = b.winRate || '-';
+        const wrColor = (b.won + b.lost) > 0 ? (b.won > b.lost ? 'var(--green)' : 'var(--amber)') : 'var(--text3)';
+        html += '<tr>'
+          + '<td style="padding:4px 10px; color:var(--text2); font-size:12px;">' + b.label + '</td>'
+          + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + b.quoted + '</td>'
+          + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--green);">' + b.won + '</td>'
+          + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--red);">' + b.lost + '</td>'
+          + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--text3);">' + b.unknown + '</td>'
+          + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:' + wrColor + ';">' + wr + '</td>'
+          + '</tr>';
+      }
+      html += '</table>';
+    }
+
+    html += '<div style="font-size:10px; color:var(--text3); margin-top:12px;">Captured: ' + new Date(current.capturedAt).toLocaleString() + '</div>';
+    html += '</div>';
+
     el.innerHTML = html;
   }
 
