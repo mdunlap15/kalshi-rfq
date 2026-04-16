@@ -313,9 +313,29 @@ function recordQuote(parlayId, legs, offeredOdds, maxRisk, fairParlayProb, meta)
     pnl: null,
   };
 
-  log.info('Orders', `Quote #${stats.totalQuotes}: parlay=${parlayId}, legs=${legs.length}, odds=${offeredOdds}, fair=${fairParlayProb.toFixed(5)}`);
+  // Downgraded from info to debug — fires on every RFQ we quote, which is
+  // high-volume. On Railway, synchronous stdout writes under back-pressure can
+  // add 1-5ms each. Keep the audit trail in the "Offered" log in websocket.js.
+  log.debug('Orders', `Quote #${stats.totalQuotes}: parlay=${parlayId}, legs=${legs.length}, odds=${offeredOdds}, fair=${fairParlayProb.toFixed(5)}`);
   db.saveOrder(orders[parlayId]).catch(() => {});
   return orders[parlayId];
+}
+
+/**
+ * Attach end-to-end submit latency + per-stage timing to an existing quote.
+ * Called from websocket.js after submitOffer returns. Persists to Supabase so
+ * the data survives service restarts and can be joined with matched-outcome
+ * data later for a real latency × win-rate analysis.
+ */
+function updateOrderLatency(parlayId, submitLatencyMs, stageTimings) {
+  const order = orders[parlayId];
+  if (!order) return; // already cleaned up or never stored
+  if (!order.meta) order.meta = {};
+  order.meta.submitLatencyMs = submitLatencyMs;
+  if (stageTimings && typeof stageTimings === 'object') {
+    order.meta.stageTimings = { ...stageTimings };
+  }
+  db.saveOrder(order).catch(() => {});
 }
 
 function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) {
@@ -3383,6 +3403,7 @@ async function deleteUnknownSettledOrders() {
 
 module.exports = {
   recordQuote,
+  updateOrderLatency,
   recordConfirmation,
   recordRejection,
   recordFinalized,

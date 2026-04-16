@@ -311,7 +311,10 @@ async function handleRFQ(data) {
     // was broadcast to us, regardless of whether we decline/error/quote.
     recordRfqReceipt(parlayId, legs.length, isPausedNow);
 
-    log.info('RFQ', `${isPausedNow ? '[PAUSED] ' : ''}Received: parlay=${parlayId}, legs=${legs.length}`);
+    // Downgraded to debug — high-volume log that can backpressure stdout
+    // under load. "Offered" log below preserves the audit trail for successful
+    // submissions; paused/declined outcomes are already tracked separately.
+    log.debug('RFQ', `${isPausedNow ? '[PAUSED] ' : ''}Received: parlay=${parlayId}, legs=${legs.length}`);
 
     // Attempt on-demand resolution of any unknown lines where the event IS known
     // (e.g., alt spreads/totals not pre-registered at startup).
@@ -555,12 +558,19 @@ async function handleRFQ(data) {
       log.debug('RFQ', `[PAUSED] Would offer: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}`);
       updateRfqOutcome(parlayId, 'paused_skip', `would offer ${result.meta.americanOdds}`);
     } else if (callbackUrl) {
-      log.info('RFQ', `Submitting: parlay=${parlayId}, decimal=${result.meta.decimalOdds}, american=${result.meta.americanOdds}, offer=${JSON.stringify(result.offer)}`);
+      // Removed the pre-submit "Submitting: ..." log entirely — it duplicated
+      // the "Offered" log below and forced a synchronous JSON.stringify of the
+      // offer object on the hot path before every PX call. Savings ≈ 1-3ms
+      // under load depending on stdout back-pressure.
       await px.submitOffer(callbackUrl, parlayId, [result.offer]);
       const elapsed = Date.now() - startTime;
       stageTimings.submit = elapsed;
       rfqStages.submitted++;
       recordResponseTime(parlayId, elapsed, result.meta.americanOdds, stageTimings);
+      // Persist latency + per-stage timings to the order record so we can
+      // later join with matched-outcome data for a real latency-vs-win-rate
+      // analysis (survives service restarts, unlike the in-memory rolling buffer).
+      orderTracker.updateOrderLatency(parlayId, elapsed, stageTimings);
       updateRfqOutcome(parlayId, 'submitted', `odds ${result.meta.americanOdds}`);
       log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms (resolve=${stageTimings.resolve || 0} decline=${stageTimings.decline || 0} price=${stageTimings.price || 0})`);
     } else {
