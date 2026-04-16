@@ -1758,6 +1758,34 @@ const ALT_LINES_TTL_MS = 10 * 60 * 1000; // 10 minute cache
 const oddsApiEventIdCache = {};
 const ODDS_API_EVENT_ID_TTL_MS = 30 * 60 * 1000; // 30 min
 
+// Team-name aliases for SharpAPI's Kalshi-style abbreviations. Keys are
+// the NORMALIZED form of the SharpAPI name (lowercased, accent-stripped,
+// punctuation removed by normalizeTeamName). Values are the canonical
+// full names as they appear in The Odds API events feed (also normalized).
+//
+// Only add entries here for abbreviations that our generic matcher
+// (exact / substring / last-N-words) can't resolve. Observed real-world
+// failures from /alt-lines-stats unmatchedSamples.
+const ODDS_API_TEAM_ALIASES = {
+  // MLB — SharpAPI uses compressed forms when a feed falls back to Kalshi
+  'chicago ws': 'chicago white sox',
+  'as': 'oakland athletics',         // "A's" → normalized "as" → needs mapping
+  'oakland as': 'oakland athletics', // belt-and-suspenders
+  // NHL city-abbreviation overrides — mirrors TEAM_NAME_OVERRIDES in
+  // line-manager.js for the reverse direction. Kept in sync so warming
+  // succeeds even when SharpAPI uses the abbreviation form.
+  'was capitals': 'washington capitals',
+  'cbj blue jackets': 'columbus blue jackets',
+  'mtl canadiens': 'montreal canadiens',
+  'nj devils': 'new jersey devils',
+  'sj sharks': 'san jose sharks',
+  'la kings': 'los angeles kings',
+};
+
+function applyTeamAlias(normalizedName) {
+  return ODDS_API_TEAM_ALIASES[normalizedName] || normalizedName;
+}
+
 /**
  * Resolve The Odds API event ID for a given home/away pair.
  * SharpAPI event IDs are NOT The Odds API event IDs, so we must look up
@@ -1847,13 +1875,19 @@ async function resolveOddsApiEventId(sport, homeTeam, awayTeam, targetTime) {
     return false;
   }
 
-  const normHome = normalizeTeamName(homeTeam);
-  const normAway = normalizeTeamName(awayTeam);
+  // Normalize then apply alias map. Alias maps known SharpAPI abbreviations
+  // (e.g. "chicago ws") to canonical Odds API names (e.g. "chicago white sox")
+  // so the downstream exact/substring/word-tail matcher can resolve them.
+  // Applied to BOTH sides — if either side happens to use the abbreviation,
+  // the match still succeeds.
+  const normHome = applyTeamAlias(normalizeTeamName(homeTeam));
+  const normAway = applyTeamAlias(normalizeTeamName(awayTeam));
   const events = oddsApiEventIdCache[sport]?.events || [];
   const matches = [];
   for (const e of events) {
-    if (teamsMatch(normalizeTeamName(e.home), normHome)
-        && teamsMatch(normalizeTeamName(e.away), normAway)) {
+    const eHome = applyTeamAlias(normalizeTeamName(e.home));
+    const eAway = applyTeamAlias(normalizeTeamName(e.away));
+    if (teamsMatch(eHome, normHome) && teamsMatch(eAway, normAway)) {
       matches.push(e);
     }
   }
