@@ -6018,7 +6018,7 @@
   // X = Pinnacle compound implied probability (linear). Y = edge (my prob − book prob) in pp.
   // Dot size ∝ stake. Confirmed = solid, not-filled = translucent.
   if (!window._parlayVsBooksToggle) {
-    window._parlayVsBooksToggle = { pinnacle: true, dk: true, fd: true, kalshi: true };
+    window._parlayVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true, kalshi: true };
   }
   function toggleParlayVsBooksSeries(which) {
     window._parlayVsBooksToggle[which] = !window._parlayVsBooksToggle[which];
@@ -6040,10 +6040,21 @@
         const legs = o.meta?.legs || o.legs || [];
         if (legs.length === 0) continue;
 
+        // My offer implied prob
         const myDec = o.offeredOdds > 0 ? (o.offeredOdds / 100 + 1) : (100 / Math.abs(o.offeredOdds) + 1);
         const myProb = 1 / myDec;
 
-        // Compound book prob — null if any leg is missing that book
+        // Fair compound prob (product of leg fairProbs)
+        let fairProb = 1;
+        let hasFair = true;
+        for (const l of legs) {
+          const fp = l.fairProb;
+          if (fp == null || fp <= 0 || fp >= 1) { hasFair = false; break; }
+          fairProb *= fp;
+        }
+        if (!hasFair || fairProb <= 0 || fairProb >= 1) continue;
+
+        // Compound book probs — null if any leg is missing that book
         function compound(field) {
           let p = 1;
           for (const l of legs) {
@@ -6059,8 +6070,6 @@
         const dkProb  = compound('draftkingsOdds');
         const fdProb  = compound('fanduelOdds');
         const kProb   = compound('kalshiOdds');
-        // Need Pinnacle compound prob to anchor the x-axis
-        if (pinProb == null) continue;
 
         const selections = legs.map(l => {
           const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
@@ -6068,19 +6077,22 @@
           return '• ' + name + (dt ? ' (' + dt + ')' : '');
         }).join('\n');
 
-        const edge = (bp) => bp != null ? ((myProb - bp) * 100) : null;
+        // Distance from fair in pp: (series prob − fair prob) × 100
+        const distFromFair = (sp) => sp != null ? ((sp - fairProb) * 100) : null;
 
         data.push({
           parlayId: o.parlayId,
           legCount: legs.length,
           isConfirmed: o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')),
           stake: o.confirmedStake || o.maxStake || o.stake || 0,
+          fairProb,
           myProb,
           pinProb, dkProb, fdProb, kProb,
-          edgePin: edge(pinProb),
-          edgeDk:  edge(dkProb),
-          edgeFd:  edge(fdProb),
-          edgeK:   edge(kProb),
+          distMine: distFromFair(myProb),
+          distPin:  distFromFair(pinProb),
+          distDk:   distFromFair(dkProb),
+          distFd:   distFromFair(fdProb),
+          distK:    distFromFair(kProb),
           myOddsAm: o.offeredOdds,
           quotedAt: qDate,
           selections,
@@ -6090,16 +6102,17 @@
     }
 
     if (!data || data.length < 3) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays with Pinnacle data</div></div>';
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays with fair prob data</div></div>';
       return;
     }
 
     const T = window._parlayVsBooksToggle;
     const series = [
-      { key: 'pinnacle', label: 'Pinnacle', color: '#a855f7', getEdge: d => d.edgePin },
-      { key: 'dk',       label: 'DK',       color: '#22c55e', getEdge: d => d.edgeDk },
-      { key: 'fd',       label: 'FanDuel',  color: '#3b82f6', getEdge: d => d.edgeFd },
-      { key: 'kalshi',   label: 'Kalshi',   color: '#eab308', getEdge: d => d.edgeK },
+      { key: 'mine',     label: 'My Offer', color: '#ffffff', getDist: d => d.distMine },
+      { key: 'pinnacle', label: 'Pinnacle', color: '#a855f7', getDist: d => d.distPin },
+      { key: 'dk',       label: 'DK',       color: '#22c55e', getDist: d => d.distDk },
+      { key: 'fd',       label: 'FanDuel',  color: '#3b82f6', getDist: d => d.distFd },
+      { key: 'kalshi',   label: 'Kalshi',   color: '#eab308', getDist: d => d.distK },
     ];
 
     // --- Toggle controls ---
@@ -6109,23 +6122,23 @@
       const checked = T[s.key] ? ' checked' : '';
       html += '<label style="cursor:pointer; user-select:none;">'
         + '<input type="checkbox"' + checked + ' onchange="toggleParlayVsBooksSeries(\'' + s.key + '\')" style="margin-right:6px; vertical-align:middle;">'
-        + '<span style="display:inline-block;width:10px;height:10px;background:' + s.color + ';margin:0 6px -1px 0;border-radius:50%;"></span>'
+        + '<span style="display:inline-block;width:10px;height:10px;background:' + s.color + ';margin:0 6px -1px 0;border-radius:50%;' + (s.key === 'mine' ? 'border:1px solid var(--text3);' : '') + '"></span>'
         + s.label + '</label>';
     }
-    html += '<span style="color:var(--text3); margin-left:10px;">' + data.length + ' parlays · last 7d · &#9711; white ring = confirmed · size ∝ stake</span>';
+    html += '<span style="color:var(--text3); margin-left:10px;">' + data.length + ' parlays · last 7d · &#9711; ring = confirmed · size ∝ stake</span>';
     html += '</div>';
 
     // --- Scatter ---
     const W = 900, H = 450, pad = { l: 60, r: 20, t: 25, b: 58 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
 
-    // Collect visible edge values for y-scaling
+    // Collect visible distance values for y-scaling
     const visible = [];
     for (const d of data) {
       for (const s of series) {
         if (T[s.key]) {
-          const e = s.getEdge(d);
-          if (e != null) visible.push(e);
+          const v = s.getDist(d);
+          if (v != null) visible.push(v);
         }
       }
     }
@@ -6134,44 +6147,44 @@
       el.innerHTML = html;
       return;
     }
-    // Use 5th/95th percentile to set axis range so outliers don't compress the bulk
-    const sortedEdges = [...visible].sort((a, b) => a - b);
-    const p5  = sortedEdges[Math.floor(sortedEdges.length * 0.03)] || sortedEdges[0];
-    const p95 = sortedEdges[Math.ceil(sortedEdges.length * 0.97) - 1] || sortedEdges[sortedEdges.length - 1];
-    const edgePad = (p95 - p5) * 0.2 || 1;
-    const minEdge = Math.min(-1, p5 - edgePad * 1.3);
-    const maxEdge = Math.max(1, p95 + edgePad);
-    const edgeRange = maxEdge - minEdge || 2;
+    // Use 3rd/97th percentile for axis range; outliers clamped
+    const sortedDists = [...visible].sort((a, b) => a - b);
+    const p3  = sortedDists[Math.floor(sortedDists.length * 0.03)] || sortedDists[0];
+    const p97 = sortedDists[Math.ceil(sortedDists.length * 0.97) - 1] || sortedDists[sortedDists.length - 1];
+    const distPad = (p97 - p3) * 0.2 || 1;
+    const minDist = Math.min(-1, p3 - distPad * 1.3);
+    const maxDist = Math.max(1, p97 + distPad);
+    const distRange = maxDist - minDist || 2;
 
-    // X = Pinnacle compound implied probability (linear, 0–maxPin)
-    const maxPin = Math.max(0.5, ...data.map(d => d.pinProb));
-    const xMaxScale = Math.min(1, Math.ceil(maxPin * 10) / 10);
+    // X = Fair compound implied probability (linear)
+    const maxFair = Math.max(0.3, ...data.map(d => d.fairProb));
+    const xMaxScale = Math.min(1, Math.ceil(maxFair * 10) / 10);
     const scaleX = (p) => pad.l + (p / xMaxScale) * chartW;
-    const scaleY = (e) => pad.t + chartH - ((e - minEdge) / edgeRange) * chartH;
+    const scaleY = (v) => pad.t + chartH - ((v - minDist) / distRange) * chartH;
 
     // Stake → radius (sqrt scale so area ∝ stake)
     const stakes = data.map(d => d.stake || 0).filter(s => s > 0);
     const maxStake = stakes.length ? Math.max(...stakes) : 1;
     const stakeRadius = (s) => {
       if (!s || s <= 0) return 3;
-      return 3 + Math.sqrt(s / maxStake) * 11; // 3..14 px
+      return 3 + Math.sqrt(s / maxStake) * 11;
     };
 
     let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; height:auto; display:block;">';
 
     // Y gridlines
-    const yStep = edgeRange > 30 ? 5 : edgeRange > 15 ? 2 : 1;
-    for (let t = Math.ceil(minEdge / yStep) * yStep; t <= maxEdge; t += yStep) {
+    const yStep = niceStep(distRange / 8);
+    for (let t = Math.ceil(minDist / yStep) * yStep; t <= maxDist; t += yStep) {
       const y = scaleY(t);
       svg += svgLine(pad.l, y, pad.l + chartW, y, 'var(--border)', 0.5);
-      svg += svgText(pad.l - 8, y + 4, (t >= 0 ? '+' : '') + t.toFixed(0) + 'pp', { anchor: 'end', size: 11, fill: 'var(--text3)' });
+      svg += svgText(pad.l - 8, y + 4, (t >= 0 ? '+' : '') + t.toFixed(t % 1 === 0 ? 0 : 1) + 'pp', { anchor: 'end', size: 11, fill: 'var(--text3)' });
     }
-    // Zero line
+    // Zero line = FAIR
     const zeroY = scaleY(0);
     svg += svgLine(pad.l, zeroY, pad.l + chartW, zeroY, '#ffffff', 1.5);
-    svg += svgText(pad.l + chartW + 4, zeroY + 4, 'Parity', { anchor: 'start', size: 10, fill: '#ffffff' });
+    svg += svgText(pad.l + chartW + 4, zeroY + 4, 'FAIR', { anchor: 'start', size: 10, fill: '#ffffff' });
 
-    // X-axis ticks (linear)
+    // X-axis ticks
     const xTickStep = xMaxScale > 0.6 ? 0.1 : xMaxScale > 0.3 ? 0.05 : 0.02;
     for (let p = 0; p <= xMaxScale + 1e-9; p += xTickStep) {
       const x = scaleX(p);
@@ -6181,7 +6194,7 @@
 
     // Tooltip builder
     const tipFor = (d, label) => {
-      const fmtPp = (e) => e == null ? 'n/a' : (e >= 0 ? '+' : '') + e.toFixed(2) + 'pp';
+      const fmtPp = (v) => v == null ? 'n/a' : (v >= 0 ? '+' : '') + v.toFixed(2) + 'pp';
       const t = (d.quotedAt || '').replace('T', ' ').substring(0, 16);
       return '[' + label + ']\n'
         + d.legCount + '-leg ' + (d.myOddsAm >= 0 ? '+' : '') + d.myOddsAm
@@ -6189,49 +6202,51 @@
         + (d.isConfirmed ? ' · CONFIRMED' : '')
         + '\nQuoted: ' + t
         + '\n\nSelections:\n' + d.selections
-        + '\n\nMy implied: ' + (d.myProb * 100).toFixed(2) + '%'
-        + ' · PIN implied: ' + (d.pinProb * 100).toFixed(2) + '%'
-        + '\nEdge vs PIN: ' + fmtPp(d.edgePin)
-        + '\nEdge vs DK:  ' + fmtPp(d.edgeDk)
-        + '\nEdge vs FD:  ' + fmtPp(d.edgeFd)
-        + '\nEdge vs KAL: ' + fmtPp(d.edgeK);
+        + '\n\nFair: ' + (d.fairProb * 100).toFixed(2) + '%'
+        + ' · My offer: ' + (d.myProb * 100).toFixed(2) + '%'
+        + '\nMy dist:  ' + fmtPp(d.distMine)
+        + '\nPIN dist: ' + fmtPp(d.distPin)
+        + '\nDK dist:  ' + fmtPp(d.distDk)
+        + '\nFD dist:  ' + fmtPp(d.distFd)
+        + '\nKAL dist: ' + fmtPp(d.distK);
     };
 
-    // Render — non-confirmed first (so confirmed sit on top)
-    // Outliers beyond axis range are clamped to edge and drawn as diamonds
+    // Render — non-confirmed first (confirmed sit on top)
+    // Outliers beyond axis are clamped and drawn as diamonds
     const sorted = [...data].sort((a, b) => (a.isConfirmed ? 1 : 0) - (b.isConfirmed ? 1 : 0));
-    for (const s of series) {
+    // Draw book series first, then "mine" last so my dots are always on top
+    const drawOrder = series.filter(s => s.key !== 'mine').concat(series.filter(s => s.key === 'mine'));
+    for (const s of drawOrder) {
       if (!T[s.key]) continue;
       for (const d of sorted) {
-        const e = s.getEdge(d);
-        if (e == null) continue;
-        const x = scaleX(d.pinProb);
-        const isOutlier = e < minEdge || e > maxEdge;
-        const clampedE = Math.max(minEdge, Math.min(maxEdge, e));
-        const y = scaleY(clampedE);
+        const v = s.getDist(d);
+        if (v == null) continue;
+        const x = scaleX(d.fairProb);
+        const isOutlier = v < minDist || v > maxDist;
+        const clampedV = Math.max(minDist, Math.min(maxDist, v));
+        const y = scaleY(clampedV);
         const r = stakeRadius(d.stake);
         const opacity = d.isConfirmed ? 0.9 : 0.3;
         const tip = tipFor(d, s.label);
         if (isOutlier) {
-          // Diamond shape for clamped outliers
           const h = r * 1.2;
-          if (d.isConfirmed) svg += '<polygon points="' + x + ',' + (y - h - 1) + ' ' + (x + h + 1) + ',' + y + ' ' + x + ',' + (y + h + 1) + ' ' + (x - h - 1) + ',' + y + '" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.6"/>';
+          if (d.isConfirmed) svg += '<polygon points="' + x + ',' + (y - h - 1) + ' ' + (x + h + 1) + ',' + y + ' ' + x + ',' + (y + h + 1) + ' ' + (x - h - 1) + ',' + y + '" fill="none" stroke="' + s.color + '" stroke-width="1.5" opacity="0.6"/>';
           svg += '<polygon points="' + x + ',' + (y - h) + ' ' + (x + h) + ',' + y + ' ' + x + ',' + (y + h) + ' ' + (x - h) + ',' + y
             + '" fill="' + s.color + '" opacity="' + opacity + '"><title>' + tip + '</title></polygon>';
         } else {
-          if (d.isConfirmed) svg += '<circle cx="' + x + '" cy="' + y + '" r="' + (r + 1.5) + '" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.6"/>';
+          if (d.isConfirmed) svg += '<circle cx="' + x + '" cy="' + y + '" r="' + (r + 1.5) + '" fill="none" stroke="' + s.color + '" stroke-width="1.5" opacity="0.7"/>';
           svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + s.color + '" opacity="' + opacity + '"><title>' + tip + '</title></circle>';
         }
       }
     }
 
     // Annotations
-    svg += svgText(pad.l + 10, pad.t + 14, 'You charge more (good)', { anchor: 'start', size: 11, fill: 'var(--green)' });
-    svg += svgText(pad.l + 10, pad.t + chartH - 6, 'You offer better (value leak)', { anchor: 'start', size: 11, fill: 'var(--red)' });
+    svg += svgText(pad.l + 10, pad.t + 14, 'Above FAIR = more expensive (tighter for bettor)', { anchor: 'start', size: 11, fill: 'var(--text3)' });
+    svg += svgText(pad.l + 10, pad.t + chartH - 6, 'Below FAIR = cheaper (better for bettor)', { anchor: 'start', size: 11, fill: 'var(--text3)' });
 
     // Axis titles
-    svg += svgText(pad.l + chartW / 2, H - 6, 'Pinnacle Implied Probability', { size: 13, fill: '#ffffff' });
-    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">My Prob − Book Prob (pp)</text>';
+    svg += svgText(pad.l + chartW / 2, H - 6, 'Fair Implied Probability', { size: 13, fill: '#ffffff' });
+    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">Distance from FAIR (pp)</text>';
     svg += '</svg>';
 
     html += svg;
@@ -6239,22 +6254,22 @@
     // Per-series summary
     html += '<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; padding:10px 14px; background:var(--surface2); border-radius:6px; font-size:12px;">';
     const box = (label, value, color) =>
-      '<div style="min-width:140px;"><div style="font-size:11px; color:var(--text3); text-transform:uppercase;">' + label + '</div>'
+      '<div style="min-width:130px;"><div style="font-size:11px; color:var(--text3); text-transform:uppercase;">' + label + '</div>'
       + '<div style="font-size:17px; font-weight:700; color:' + color + ';">' + value + '</div></div>';
     for (const s of series) {
       if (!T[s.key]) continue;
-      const vals = data.map(s.getEdge).filter(v => v != null);
+      const vals = data.map(s.getDist).filter(v => v != null);
       if (vals.length === 0) continue;
       const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-      html += box('vs ' + s.label + ' · Avg', (avg >= 0 ? '+' : '') + avg.toFixed(2) + 'pp · n=' + vals.length, s.color);
+      html += box(s.label + ' avg', (avg >= 0 ? '+' : '') + avg.toFixed(2) + 'pp · n=' + vals.length, s.color);
     }
     html += '</div>';
 
     const confirmedCount = data.filter(d => d.isConfirmed).length;
     html += '<div style="font-size:11px; color:var(--text3); margin-top:8px;">'
       + confirmedCount + ' confirmed of ' + data.length + ' quoted parlays. '
-      + 'Each dot = one parlay\'s edge vs that book. White ring = confirmed, translucent = not filled. &#9670; = outlier clamped to axis edge. '
-      + 'Above zero = your offer is tighter than the book. Below = book would price tighter than you. Hover any dot for selections, dates, all edges, and quote time.'
+      + 'Each dot = distance of that series\' compound implied prob from FAIR. Ring = confirmed, translucent = not filled. &#9670; = outlier clamped to axis edge. '
+      + 'Hover any dot for full details.'
       + '</div>';
 
     el.innerHTML = html;
