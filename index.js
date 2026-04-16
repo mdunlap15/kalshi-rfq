@@ -564,6 +564,43 @@ function startStatusServer() {
     res.json(orderTracker.getMarketIntel(limit));
   });
 
+  // Latency breakdown — per-stage percentiles + win-rate-by-bucket
+  // For measuring before/after effects of latency optimizations.
+  app.get('/latency-breakdown', (req, res) => {
+    res.json(websocket.getLatencyBreakdown());
+  });
+
+  // Freeze a baseline snapshot for before/after comparison.
+  // POST /latency-baseline/capture → freeze current stats as baseline
+  // GET  /latency-baseline         → return frozen baseline + current delta
+  app.post('/latency-baseline/capture', (req, res) => {
+    const snap = websocket.captureBaseline();
+    res.json({ ok: true, baseline: snap });
+  });
+  app.get('/latency-baseline', (req, res) => {
+    const baseline = websocket.getBaseline();
+    const current = websocket.getLatencyBreakdown();
+    // Compute deltas on end-to-end percentiles for quick comparison
+    let delta = null;
+    if (baseline && baseline.endToEnd && current.endToEnd) {
+      const pct = (key) => {
+        const b = baseline.endToEnd[key];
+        const c = current.endToEnd[key];
+        if (b == null || c == null) return null;
+        return { baseline: b, current: c, delta: c - b, pctChange: b > 0 ? Math.round((c - b) / b * 1000) / 10 + '%' : null };
+      };
+      delta = {
+        p50: pct('p50'),
+        p75: pct('p75'),
+        p90: pct('p90'),
+        p95: pct('p95'),
+        p99: pct('p99'),
+        avg: pct('avg'),
+      };
+    }
+    res.json({ baseline, current, delta });
+  });
+
   // Manual refresh odds
   app.post('/refresh-odds', async (req, res) => {
     try {

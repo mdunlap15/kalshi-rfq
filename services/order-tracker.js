@@ -3419,6 +3419,7 @@ module.exports = {
   checkRecentDuplicate,
   recordParlaySignature,
   recordMatchedParlay,
+  getMatchedParlays: () => matchedParlays,
   recordDecline,
   recordUnsupportedMarket,
   getMarketIntel,

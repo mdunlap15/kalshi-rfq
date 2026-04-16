@@ -273,6 +273,10 @@ const RFQ_DEDUP_MS = 2000;     // ignore same parlayId within 2 seconds
 
 async function handleRFQ(data) {
   const startTime = Date.now();
+  // Per-stage cumulative-elapsed markers (ms since RFQ receipt). Populated
+  // progressively as the handler walks through each stage, then attached to
+  // the responseTime record so /latency-breakdown can compute deltas.
+  const stageTimings = {};
 
   rfqStages.received++;
 
@@ -324,9 +328,11 @@ async function handleRFQ(data) {
         log.info('RFQ', `On-demand resolved ${resolvedCount}/${unknownAtStart.length} unknown lines for parlay=${parlayId}`);
       }
     }
+    stageTimings.resolve = Date.now() - startTime;
 
     // Quick decline check
     const declineCheck = pricer.shouldDecline(legs);
+    stageTimings.decline = Date.now() - startTime;
     if (declineCheck && declineCheck.declined) {
       const lineManager = require('./line-manager');
       const knownLegs = [];
@@ -494,6 +500,7 @@ async function handleRFQ(data) {
 
     // Price the parlay
     const result = await pricer.priceParlay(legs);
+    stageTimings.price = Date.now() - startTime;
     if (!result) {
       // Near miss — all legs known but couldn't price. Get the specific blocker.
       const failure = pricer.getLastPriceFailure() || { reason: 'no fair value', detail: null, blockerLeg: null };
@@ -551,10 +558,11 @@ async function handleRFQ(data) {
       log.info('RFQ', `Submitting: parlay=${parlayId}, decimal=${result.meta.decimalOdds}, american=${result.meta.americanOdds}, offer=${JSON.stringify(result.offer)}`);
       await px.submitOffer(callbackUrl, parlayId, [result.offer]);
       const elapsed = Date.now() - startTime;
+      stageTimings.submit = elapsed;
       rfqStages.submitted++;
-      recordResponseTime(parlayId, elapsed, result.meta.americanOdds);
+      recordResponseTime(parlayId, elapsed, result.meta.americanOdds, stageTimings);
       updateRfqOutcome(parlayId, 'submitted', `odds ${result.meta.americanOdds}`);
-      log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms`);
+      log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms (resolve=${stageTimings.resolve || 0} decline=${stageTimings.decline || 0} price=${stageTimings.price || 0})`);
     } else {
       rfqStages.noCallback++;
       updateRfqOutcome(parlayId, 'no_callback');
@@ -904,8 +912,10 @@ function disconnect() {
 }
 
 // Response time tracking
-const responseTimes = []; // { parlayId, elapsed, offeredOdds, time }
-const MAX_RESPONSE_TIMES = 100;
+// { parlayId, elapsed, offeredOdds, time, stages?: { resolve, decline, price, submit } }
+// stages is populated by handleRFQ — per-stage elapsed ms measured from RFQ receipt.
+const responseTimes = [];
+const MAX_RESPONSE_TIMES = 500; // increased for meaningful percentile computation
 
 // RFQ flow stage counters (reset each session)
 const rfqStages = {
@@ -962,9 +972,150 @@ function getReceivedRfqStats() {
   return { total: receivedRfqs.size, outcomes };
 }
 
-function recordResponseTime(parlayId, elapsed, offeredOdds) {
-  responseTimes.unshift({ parlayId, elapsed, offeredOdds, time: new Date().toISOString() });
+function recordResponseTime(parlayId, elapsed, offeredOdds, stages) {
+  responseTimes.unshift({
+    parlayId,
+    elapsed,
+    offeredOdds,
+    time: new Date().toISOString(),
+    stages: stages || null,
+  });
   if (responseTimes.length > MAX_RESPONSE_TIMES) responseTimes.pop();
+}
+
+// ---------------------------------------------------------------------------
+// LATENCY BREAKDOWN — per-stage percentiles + win-rate-by-bucket
+// ---------------------------------------------------------------------------
+
+/** Compute percentiles from a sorted numeric array. */
+function _percentiles(sorted) {
+  if (!sorted.length) return null;
+  const pick = (p) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+  return {
+    count: sorted.length,
+    min: sorted[0],
+    p50: pick(0.5),
+    p75: pick(0.75),
+    p90: pick(0.90),
+    p95: pick(0.95),
+    p99: pick(0.99),
+    max: sorted[sorted.length - 1],
+    avg: Math.round(sorted.reduce((a, b) => a + b, 0) / sorted.length),
+  };
+}
+
+/**
+ * Full latency breakdown — per-stage percentiles + win-rate-by-latency bucket.
+ *
+ * Stages (cumulative elapsed from RFQ receipt):
+ *   resolve → after resolveUnknownLine (unknown-leg on-demand resolution)
+ *   decline → after shouldDecline check
+ *   price   → after priceParlay returns
+ *   submit  → after submitOffer POST returns (end-to-end)
+ *
+ * Non-cumulative "deltas" are derived: e.g. priceDelta = price - decline.
+ */
+function getLatencyBreakdown() {
+  const withStages = responseTimes.filter(r => r.stages);
+  const endToEnd = responseTimes.map(r => r.elapsed).sort((a, b) => a - b);
+
+  // Per-stage cumulative percentiles
+  const stageKeys = ['resolve', 'decline', 'price', 'submit'];
+  const stageStats = {};
+  for (const k of stageKeys) {
+    const vals = withStages
+      .map(r => (r.stages && r.stages[k] != null) ? r.stages[k] : null)
+      .filter(v => v != null)
+      .sort((a, b) => a - b);
+    stageStats[k] = _percentiles(vals);
+  }
+
+  // Per-stage deltas (how long each stage actually took, not cumulative)
+  const deltaStats = {};
+  const deltaPairs = [
+    ['receive_to_resolve', null, 'resolve'],
+    ['resolve_to_decline', 'resolve', 'decline'],
+    ['decline_to_price', 'decline', 'price'],
+    ['price_to_submit', 'price', 'submit'],
+  ];
+  for (const [name, prev, next] of deltaPairs) {
+    const vals = withStages
+      .map(r => {
+        const s = r.stages;
+        if (!s) return null;
+        const a = prev ? s[prev] : 0;
+        const b = s[next];
+        if (a == null || b == null) return null;
+        return b - a;
+      })
+      .filter(v => v != null && v >= 0)
+      .sort((a, b) => a - b);
+    deltaStats[name] = _percentiles(vals);
+  }
+
+  // Win-rate by latency bucket — requires joining with orderTracker matched parlays.
+  // orderTracker tracks matchedParlays with `weQuoted` + `outcome` ('won' = our quote matched).
+  let winRateBuckets = null;
+  try {
+    const orderTracker = require('./order-tracker');
+    const matched = orderTracker.getMatchedParlays ? orderTracker.getMatchedParlays() : [];
+    // Map parlayId -> outcome
+    const outcomeByParlay = new Map();
+    for (const m of matched) {
+      if (!m.parlayId) continue;
+      outcomeByParlay.set(m.parlayId, m.outcome); // 'won' | 'lost' | undefined
+    }
+    const buckets = [
+      { label: '<30ms', min: 0, max: 30 },
+      { label: '30-50ms', min: 30, max: 50 },
+      { label: '50-75ms', min: 50, max: 75 },
+      { label: '75-100ms', min: 75, max: 100 },
+      { label: '100-150ms', min: 100, max: 150 },
+      { label: '150-250ms', min: 150, max: 250 },
+      { label: '>250ms', min: 250, max: Infinity },
+    ].map(b => ({ ...b, quoted: 0, won: 0, lost: 0, unknown: 0 }));
+    for (const r of responseTimes) {
+      const bucket = buckets.find(b => r.elapsed >= b.min && r.elapsed < b.max);
+      if (!bucket) continue;
+      bucket.quoted++;
+      const outcome = outcomeByParlay.get(r.parlayId);
+      if (outcome === 'won') bucket.won++;
+      else if (outcome === 'lost') bucket.lost++;
+      else bucket.unknown++;
+    }
+    winRateBuckets = buckets.map(b => ({
+      ...b,
+      max: b.max === Infinity ? null : b.max,
+      winRate: (b.won + b.lost) > 0 ? (b.won / (b.won + b.lost) * 100).toFixed(1) + '%' : null,
+    }));
+  } catch (err) {
+    // Best-effort — orderTracker may not expose getMatchedParlays yet
+    winRateBuckets = { error: err.message };
+  }
+
+  return {
+    capturedAt: new Date().toISOString(),
+    sample: {
+      totalResponseTimes: responseTimes.length,
+      withStageData: withStages.length,
+      rfqStages: { ...rfqStages },
+    },
+    endToEnd: _percentiles(endToEnd),
+    stagesCumulative: stageStats,
+    stageDeltas: deltaStats,
+    winRateByLatencyBucket: winRateBuckets,
+  };
+}
+
+// Frozen baseline snapshot — set once via /latency-baseline/capture so we can
+// compare post-optimization numbers against pre-optimization numbers.
+let _baselineSnapshot = null;
+function captureBaseline() {
+  _baselineSnapshot = getLatencyBreakdown();
+  return _baselineSnapshot;
+}
+function getBaseline() {
+  return _baselineSnapshot;
 }
 
 const offerErrors = []; // last N offer submission failures
@@ -1049,6 +1200,9 @@ module.exports = {
   resume,
   getState,
   getResponseTimeStats,
+  getLatencyBreakdown,
+  captureBaseline,
+  getBaseline,
   wasRfqReceived,
   getReceivedRfqStats,
   getQuoteCoverageStats,
