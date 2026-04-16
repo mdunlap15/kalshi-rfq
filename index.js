@@ -214,6 +214,8 @@ async function startup() {
     'soccer_uefa_europa_league', 'soccer_spain_la_liga',
     'soccer_italy_serie_a', 'soccer_germany_bundesliga',
     'soccer_france_ligue_one', 'soccer_usa_nwsl',
+    'soccer_mexico_ligamx', 'soccer_brazil_campeonato',
+    'soccer_conmebol_libertadores',
     'golf_pga_championship',
   ];
   setInterval(async () => {

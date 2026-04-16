@@ -72,7 +72,7 @@ const ODDS_API_BOOKMAKERS = 'pinnacle,draftkings,fanduel';
 // Expanded bookmakers for alt-line fetching only — more books = more alt line values.
 // Primary pricing is NOT affected (uses ODDS_API_BOOKMAKERS via SharpAPI consensus).
 // Minimum 2 books required per alt line to ensure de-vig accuracy.
-const ALT_LINES_BOOKMAKERS = 'pinnacle,draftkings,fanduel,bovada,betonlineag,betrivers,williamhill_us,unibet_us,superbook,betmgm';
+const ALT_LINES_BOOKMAKERS = 'pinnacle,draftkings,fanduel,bovada,betonlineag,betrivers,williamhill_us,unibet_us,superbook,betmgm,espnbet,hardrockbet,fliff,betus,lowvig,pointsbetus,wynnbet';
 const ALT_LINES_MIN_BOOKS = 2; // Require at least 2 books for each alt line value
 
 // Sports that use The Odds API as fallback (SharpAPI free tier doesn't cover them)
@@ -146,6 +146,21 @@ const ODDS_API_FALLBACK = {
   },
   'soccer_usa_nwsl': {
     oddsApiSport: 'soccer_usa_nwsl',
+    markets: 'h2h,spreads,totals',
+    bookmakers: ODDS_API_BOOKMAKERS,
+  },
+  'soccer_mexico_ligamx': {
+    oddsApiSport: 'soccer_mexico_ligamx',
+    markets: 'h2h,spreads,totals',
+    bookmakers: ODDS_API_BOOKMAKERS,
+  },
+  'soccer_brazil_campeonato': {
+    oddsApiSport: 'soccer_brazil_campeonato',
+    markets: 'h2h,spreads,totals',
+    bookmakers: ODDS_API_BOOKMAKERS,
+  },
+  'soccer_conmebol_libertadores': {
+    oddsApiSport: 'soccer_conmebol_libertadores',
     markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
@@ -543,6 +558,15 @@ async function fetchOddsForSport(sport, opts) {
     }
   }
 
+  // Supplement with 1st-Half markets for NBA (separate from full-game)
+  if (!liveMode && sport === 'basketball_nba') {
+    try {
+      await supplementNbaH1Markets(parsed);
+    } catch (err) {
+      log.warn('OddsFeed', `NBA H1 supplement failed: ${err.message}`);
+    }
+  }
+
   log.info('OddsFeed', `Cached ${Object.keys(parsed).length} ${liveMode ? 'LIVE ' : ''}events for ${mapping.value}`);
   return parsed;
 }
@@ -630,6 +654,88 @@ async function supplementMlbF5Markets(parsedEvents) {
     if (totalPairs.length > 0) matchedEv.markets.totals_f5 = buildConsensusTotals(totalPairs);
   }
   log.info('OddsFeed', `MLB F5: attached to ${matched} events`);
+}
+
+/**
+ * Fetch 1st-Half markets for NBA from The Odds API and attach them
+ * to the existing event cache as: h2h_h1, spreads_h1, totals_h1.
+ */
+async function supplementNbaH1Markets(parsedEvents) {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return;
+
+  const url = `https://api.the-odds-api.com/v4/sports/basketball_nba/odds`
+    + `?apiKey=${theOddsApiKey}`
+    + `&regions=us,eu`
+    + `&markets=h2h_h1,spreads_h1,totals_h1`
+    + `&bookmakers=pinnacle,draftkings,fanduel`
+    + `&oddsFormat=american`;
+
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    log.warn('OddsFeed', `NBA H1 fetch failed (${resp.status})`);
+    return;
+  }
+  const remaining = resp.headers.get('x-requests-remaining');
+  if (remaining != null) log.debug('OddsFeed', `The Odds API usage (NBA H1): ${remaining} remaining`);
+
+  const events = await resp.json();
+  let matched = 0;
+  for (const event of events) {
+    const key = normalizeEventKey(cleanTeamName(event.home_team), cleanTeamName(event.away_team));
+    const entry = parsedEvents[key];
+    if (!entry) continue;
+    const eventArr = Array.isArray(entry) ? entry : [entry];
+    const evDate = event.commence_time ? new Date(event.commence_time).toISOString().substring(0, 10) : '';
+    const matchedEv = eventArr.find(e => {
+      const d = e.commenceTime ? new Date(e.commenceTime).toISOString().substring(0, 10) : '';
+      return !evDate || !d || d === evDate;
+    }) || eventArr[0];
+    if (!matchedEv) continue;
+
+    const mlPairs = [], spreadPairs = [], totalPairs = [];
+    for (const book of (event.bookmakers || [])) {
+      for (const m of (book.markets || [])) {
+        if (m.key === 'h2h_h1') {
+          const home = m.outcomes?.find(o => o.name === event.home_team);
+          const away = m.outcomes?.find(o => o.name === event.away_team);
+          if (home && away) {
+            mlPairs.push({
+              book: book.key,
+              home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price },
+              away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price },
+            });
+          }
+        } else if (m.key === 'spreads_h1') {
+          const home = m.outcomes?.find(o => o.name === event.home_team);
+          const away = m.outcomes?.find(o => o.name === event.away_team);
+          if (home && away) {
+            spreadPairs.push({
+              book: book.key,
+              home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price, point: home.point, line: home.point },
+              away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price, point: away.point, line: away.point },
+            });
+          }
+        } else if (m.key === 'totals_h1') {
+          const over = m.outcomes?.find(o => o.name === 'Over');
+          const under = m.outcomes?.find(o => o.name === 'Under');
+          if (over && under) {
+            totalPairs.push({
+              book: book.key,
+              over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
+              under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
+            });
+          }
+        }
+      }
+    }
+
+    if (mlPairs.length > 0 || spreadPairs.length > 0 || totalPairs.length > 0) matched++;
+    if (mlPairs.length > 0) matchedEv.markets.h2h_h1 = buildConsensusMoneyline(mlPairs);
+    if (spreadPairs.length > 0) matchedEv.markets.spreads_h1 = buildConsensusSpread(spreadPairs);
+    if (totalPairs.length > 0) matchedEv.markets.totals_h1 = buildConsensusTotals(totalPairs);
+  }
+  log.info('OddsFeed', `NBA H1: attached to ${matched} events`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1993,6 +2099,12 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
   } else if (marketType === 'totals_f5') {
     if (selection === 'over') return market.over?.fairProb || null;
     if (selection === 'under') return market.under?.fairProb || null;
+  } else if (marketType === 'h2h_h1' || marketType === 'spreads_h1') {
+    if (selection === 'home') return market.home?.fairProb || null;
+    if (selection === 'away') return market.away?.fairProb || null;
+  } else if (marketType === 'totals_h1') {
+    if (selection === 'over') return market.over?.fairProb || null;
+    if (selection === 'under') return market.under?.fairProb || null;
   }
 
   return null;
@@ -2032,6 +2144,12 @@ function getDisplayFairProb(sport, homeTeam, awayTeam, marketType, selection, li
     if (!teamData) return null;
     if (parts[1] === 'over') return teamData.over?.displayFairProb || teamData.over?.fairProb || null;
     if (parts[1] === 'under') return teamData.under?.displayFairProb || teamData.under?.fairProb || null;
+  } else if (marketType === 'h2h_h1' || marketType === 'spreads_h1') {
+    if (selection === 'home') return market.home?.displayFairProb || market.home?.fairProb || null;
+    if (selection === 'away') return market.away?.displayFairProb || market.away?.fairProb || null;
+  } else if (marketType === 'totals_h1') {
+    if (selection === 'over') return market.over?.displayFairProb || market.over?.fairProb || null;
+    if (selection === 'under') return market.under?.displayFairProb || market.under?.fairProb || null;
   }
   return null;
 }
@@ -2100,6 +2218,12 @@ function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targe
   } else if (marketType === 'totals') {
     if (selection === 'over') return market.pinnacle.over || null;
     if (selection === 'under') return market.pinnacle.under || null;
+  } else if (marketType === 'h2h_h1' || marketType === 'spreads_h1') {
+    if (selection === 'home') return market.pinnacle.home || null;
+    if (selection === 'away') return market.pinnacle.away || null;
+  } else if (marketType === 'totals_h1') {
+    if (selection === 'over') return market.pinnacle.over || null;
+    if (selection === 'under') return market.pinnacle.under || null;
   }
   return null;
 }
@@ -2145,6 +2269,12 @@ function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, target
     if (selection === 'home') return market.fanduel.home || null;
     if (selection === 'away') return market.fanduel.away || null;
   } else if (marketType === 'totals') {
+    if (selection === 'over') return market.fanduel.over || null;
+    if (selection === 'under') return market.fanduel.under || null;
+  } else if (marketType === 'h2h_h1' || marketType === 'spreads_h1') {
+    if (selection === 'home') return market.fanduel.home || null;
+    if (selection === 'away') return market.fanduel.away || null;
+  } else if (marketType === 'totals_h1') {
     if (selection === 'over') return market.fanduel.over || null;
     if (selection === 'under') return market.fanduel.under || null;
   }

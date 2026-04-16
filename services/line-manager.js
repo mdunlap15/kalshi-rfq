@@ -46,6 +46,9 @@ const TOTAL_BOUNDS_BY_SPORT = {
   'soccer_germany_bundesliga': [0.5, 7],
   'soccer_france_ligue_one': [0.5, 7],
   'soccer_usa_nwsl': [0.5, 7],
+  'soccer_mexico_ligamx': [0.5, 7],
+  'soccer_brazil_campeonato': [0.5, 7],
+  'soccer_conmebol_libertadores': [0.5, 7],
   'tennis': [15, 40],
 };
 // Max plausible alt-spread line per sport. PX bettors commonly play alt
@@ -70,6 +73,9 @@ const MAX_SPREAD_BY_SPORT = {
   'soccer_germany_bundesliga': 5,
   'soccer_france_ligue_one': 5,
   'soccer_usa_nwsl': 5,
+  'soccer_mexico_ligamx': 5,
+  'soccer_brazil_campeonato': 5,
+  'soccer_conmebol_libertadores': 5,
   'tennis': 10,
 };
 
@@ -292,6 +298,15 @@ const MARKET_TYPE_MAP = {
   'first_5_innings_total': 'totals_f5',
   'first_5_innings_total_runs': 'totals_f5',
   'first_five_innings_total': 'totals_f5',
+  // First Half (NBA) — PX market.type guesses; adjust based on decline-audit log
+  'first_half_moneyline': 'h2h_h1',
+  '1st_half_moneyline': 'h2h_h1',
+  'first_half_spread': 'spreads_h1',
+  '1st_half_spread': 'spreads_h1',
+  'first_half_total': 'totals_h1',
+  '1st_half_total': 'totals_h1',
+  'first_half_total_points': 'totals_h1',
+  '1st_half_total_points': 'totals_h1',
 };
 
 const F5_MARKET_TYPES = [
@@ -302,6 +317,17 @@ const F5_MARKET_TYPES = [
   'first_5_innings_total',
   'first_5_innings_total_runs',
   'first_five_innings_total',
+];
+
+const FIRST_HALF_MARKET_TYPES = [
+  'first_half_moneyline',
+  '1st_half_moneyline',
+  'first_half_spread',
+  '1st_half_spread',
+  'first_half_total',
+  '1st_half_total',
+  'first_half_total_points',
+  '1st_half_total_points',
 ];
 
 // ---------------------------------------------------------------------------
@@ -492,7 +518,7 @@ async function seedAllLines() {
     // props. Standalone prop keywords (strikeouts, pitching, milestones, etc.)
     // ensure we reject props even when "Total" appears in the name with
     // intervening words (e.g. "Total Pitching Strikeouts Milestones").
-    const excludePatterns = /first half|1st half|first quarter|1st quarter|2nd half|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|overtime|player|milestones|strikeouts?|pitching|batting|hits|doubles\b|triples?|errors|walks|stolen bases?|rbis?|home runs?\b|outs recorded|innings pitched|at bats?|put outs?|fouls|cards|bookings|yellow cards?|red cards?|offsides?|crosses|clearances|throw.?ins?|tackles|shots|total earned|total block|total point[^s]|total rebound|total assist|total steal|total made|total rush|total recei|total passing/i;
+    const excludePatterns = /first quarter|1st quarter|2nd half|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|overtime|player|milestones|strikeouts?|pitching|batting|hits|doubles\b|triples?|errors|walks|stolen bases?|rbis?|home runs?\b|outs recorded|innings pitched|at bats?|put outs?|fouls|cards|bookings|yellow cards?|red cards?|offsides?|crosses|clearances|throw.?ins?|tackles|shots|total earned|total block|total point[^s]|total rebound|total assist|total steal|total made|total rush|total recei|total passing/i;
 
     const fullGameNames = {
       moneyline: ['Moneyline', 'Moneyline (2 Way)', 'Moneyline (2-Way)', 'Moneyline (Regulation)', 'Draw No Bet'],
@@ -504,6 +530,7 @@ async function seedAllLines() {
     // F5 markets (PX uses market.type === 'moneyline'/'spread'/'total' but
     // distinguishes via market.name). Allow these through the filter.
     const f5NamePattern = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings/i;
+    const h1NamePattern = /first\s*half|1st\s*half/i;
 
     // Combat sports (MMA, Boxing) only have moneyline in our odds feed —
     // SharpAPI/TheOddsAPI don't publish Total Rounds lines. Restrict to
@@ -515,11 +542,12 @@ async function seedAllLines() {
       const supportedBase = isCombatSport
         ? ['moneyline']
         : ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
-      if (!supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type)) return false;
+      if (!supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type) && !FIRST_HALF_MARKET_TYPES.includes(m.type)) return false;
       // Exclude anything matching half/quarter/prop patterns
       if (excludePatterns.test(m.name)) return false;
       // Allow F5 markets by name pattern
       const isF5 = f5NamePattern.test(m.name || '');
+      const isH1 = h1NamePattern.test(m.name || '') || FIRST_HALF_MARKET_TYPES.includes(m.type);
       // Name filter: previously required EXACT match against a fixed whitelist
       // which rejected alt-line markets like "Alternate Spread +3.5" — costing
       // us thousands of unknown-leg declines per day. Relaxed to substring
@@ -528,7 +556,7 @@ async function seedAllLines() {
       // fail because their names don't contain "Spread", "Moneyline", etc.
       // Additional safety comes from excludePatterns (above) and sport-aware
       // line bounds (below).
-      if (!isF5) {
+      if (!isF5 && !isH1) {
         const allowed = fullGameNames[m.type];
         if (allowed) {
           const nameL = (m.name || '').toLowerCase();
@@ -551,7 +579,7 @@ async function seedAllLines() {
       // Use parsed sel.marketType (not raw m.type) so team_total markets
       // (which PX types as 'total' but parser upgrades to 'team_total') get
       // the correct permissive bounds.
-      if ((m.type === 'total' || m.type === 'spread') && !isF5) {
+      if ((m.type === 'total' || m.type === 'spread') && !isF5 && !isH1) {
         const parsed = px.parseMarketSelections(m);
         if (parsed.length === 0) return false;
         const anyInBounds = parsed.some(p => isValidFullGameLine(sportKey, p.marketType || m.type, p.line));
@@ -640,6 +668,20 @@ async function seedAllLines() {
             else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
           } else if (sel.marketType.includes('run_line')) {
             // Explicit home/away match only — no substring fallback.
+            if (matchTeamName(sel.teamName, [matchedHome])) {
+              oddsApiSelection = 'home';
+            } else if (matchTeamName(sel.teamName, [matchedAway])) {
+              oddsApiSelection = 'away';
+            }
+          } else if (sel.marketType.includes('total')) {
+            oddsApiSelection = sel.selection; // 'over' or 'under'
+          }
+        } else if (FIRST_HALF_MARKET_TYPES.includes(sel.marketType)) {
+          // First Half (NBA) — same selection logic as full-game for h2h/spreads/totals
+          if (sel.marketType.includes('moneyline')) {
+            if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
+            else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
+          } else if (sel.marketType.includes('spread')) {
             if (matchTeamName(sel.teamName, [matchedHome])) {
               oddsApiSelection = 'home';
             } else if (matchTeamName(sel.teamName, [matchedAway])) {
@@ -893,7 +935,7 @@ async function resolveUnknownLine(rfqLeg) {
 
       // First pass: find which market contains this line_id (any type)
       // so we can log unsupported market types for diagnostics.
-      const SUPPORTED_TYPES = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance', ...F5_MARKET_TYPES];
+      const SUPPORTED_TYPES = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance', ...F5_MARKET_TYPES, ...FIRST_HALF_MARKET_TYPES];
       let unsupportedMarketInfo = null;
       for (const market of markets || []) {
         if (SUPPORTED_TYPES.includes(market.type)) continue;
@@ -934,6 +976,7 @@ async function resolveUnknownLine(rfqLeg) {
       // F5 name pattern — detect F5 markets by name since PX uses
       // market.type='spread'/'total' for them (distinguishes only via name)
       const f5NamePat = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings|f5\b/i;
+      const h1NamePat = /first\s*half|1st\s*half/i;
       // Sub-game name pattern — halves, quarters, periods, innings.
       // These markets come through with supported types (spread/total/moneyline)
       // but the market.name identifies them as sub-game. We must NOT register
@@ -941,7 +984,8 @@ async function resolveUnknownLine(rfqLeg) {
       // full-game primaries (e.g. NBA 1st-half spread 5.5 vs full-game 5.5),
       // leading to mispriced offers. Mirror the seed-time excludePatterns.
       // F5 is exempt (handled via its own marketType above).
-      const subGameNamePat = /first half|1st half|second half|2nd half|first quarter|1st quarter|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|2nd inning|3rd inning|overtime/i;
+      // H1 (first half) is also exempt — handled via FIRST_HALF_MARKET_TYPES.
+      const subGameNamePat = /second half|2nd half|first quarter|1st quarter|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|2nd inning|3rd inning|overtime/i;
       // Player prop name pattern: markets named after a player (e.g.
       // "LeBron James Made Threes", "Patrick Mahomes Passing Yards") that
       // PX tags with a supported type like "total" or "spread". These MUST
@@ -953,7 +997,8 @@ async function resolveUnknownLine(rfqLeg) {
         // Reject sub-game markets (halves/quarters/periods) by name BEFORE
         // the bounds check. F5 is exempt because it has its own marketType.
         const isF5ByName = f5NamePat.test(market.name || '');
-        if (!isF5ByName && subGameNamePat.test(market.name || '')) {
+        const isH1ByName = h1NamePat.test(market.name || '') || FIRST_HALF_MARKET_TYPES.includes(market.type);
+        if (!isF5ByName && !isH1ByName && subGameNamePat.test(market.name || '')) {
           // Check if the lineId is actually in this market — if so, we've
           // identified the request as a sub-game bet and should decline
           // cleanly with a specific reason.
@@ -1019,7 +1064,7 @@ async function resolveUnknownLine(rfqLeg) {
           // Per-selection bound check: rejects the specific out-of-range
           // alt line the RFQ asked about (e.g. Rangers -6.5) while leaving
           // siblings like Rangers -1.5 intact for future resolves.
-          if ((sel.marketType === 'total' || sel.marketType === 'spread') && !isF5Market) {
+          if ((sel.marketType === 'total' || sel.marketType === 'spread') && !isF5Market && !isH1ByName) {
             if (!isValidFullGameLine(sportKey, sel.marketType, sel.line)) {
               log.debug('Lines', `resolveUnknownLine: rejecting out-of-bounds selection ${sel.marketType} ${sel.line} for ${sportKey}: ${market.name}`);
               lineFoundInPxMarket = true; // Line exists in PX — block virtual registration
@@ -1056,6 +1101,19 @@ async function resolveUnknownLine(rfqLeg) {
               else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
             } else if (sel.marketType.includes('run_line')) {
               // Explicit home/away match only — no substring fallback.
+              if (matchTeamName(sel.teamName, [matchedHome])) {
+                oddsApiSelection = 'home';
+              } else if (matchTeamName(sel.teamName, [matchedAway])) {
+                oddsApiSelection = 'away';
+              }
+            } else if (sel.marketType.includes('total')) {
+              oddsApiSelection = sel.selection;
+            }
+          } else if (FIRST_HALF_MARKET_TYPES.includes(sel.marketType)) {
+            if (sel.marketType.includes('moneyline')) {
+              if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
+              else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
+            } else if (sel.marketType.includes('spread')) {
               if (matchTeamName(sel.teamName, [matchedHome])) {
                 oddsApiSelection = 'home';
               } else if (matchTeamName(sel.teamName, [matchedAway])) {

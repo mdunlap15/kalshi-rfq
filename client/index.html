@@ -6021,9 +6021,28 @@
   if (!window._parlayVsBooksFilter) {
     window._parlayVsBooksFilter = 'all'; // 'all' | 'confirmed' | 'notfilled'
   }
+  if (!window._parlayVsBooksRange) {
+    window._parlayVsBooksRange = '7d'; // '24h' | '3d' | '7d' | '14d' | '30d' | 'all'
+  }
+  const RANGE_OPTIONS = [
+    { key: '24h', label: '24h', ms: 24 * 3600 * 1000 },
+    { key: '3d',  label: '3d',  ms: 3 * 24 * 3600 * 1000 },
+    { key: '7d',  label: '7d',  ms: 7 * 24 * 3600 * 1000 },
+    { key: '14d', label: '14d', ms: 14 * 24 * 3600 * 1000 },
+    { key: '30d', label: '30d', ms: 30 * 24 * 3600 * 1000 },
+    { key: 'all', label: 'All', ms: 0 },
+  ];
   function setParlayVsBooksFilter(f) {
     window._parlayVsBooksFilter = f;
     if (window._parlayVsBooksData) renderChartParlayVsBooks(null);
+  }
+  function setParlayVsBooksRange(r) {
+    window._parlayVsBooksRange = r;
+    // Re-process raw data with new cutoff
+    if (window._parlayVsBooksRawQuotes) {
+      window._parlayVsBooksData = null;
+      renderChartParlayVsBooks(window._parlayVsBooksRawQuotes);
+    }
   }
   function toggleParlayVsBooksSeries(which) {
     window._parlayVsBooksToggle[which] = !window._parlayVsBooksToggle[which];
@@ -6036,11 +6055,13 @@
 
     let data = window._parlayVsBooksData;
     if (allQuoted) {
+      window._parlayVsBooksRawQuotes = allQuoted;
       data = [];
-      const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+      const rangeOpt = RANGE_OPTIONS.find(r => r.key === window._parlayVsBooksRange) || RANGE_OPTIONS[2];
+      const cutoff = rangeOpt.ms > 0 ? new Date(Date.now() - rangeOpt.ms).toISOString() : null;
       for (const o of allQuoted) {
         const qDate = o.quotedAt || o.confirmedAt;
-        if (qDate && qDate < cutoff) continue;
+        if (cutoff && qDate && qDate < cutoff) continue;
         if (!o.offeredOdds) continue;
         const legs = o.meta?.legs || o.legs || [];
         if (legs.length === 0) continue;
@@ -6130,21 +6151,29 @@
         + '<span style="display:inline-block;width:10px;height:10px;background:' + s.color + ';margin:0 6px -1px 0;border-radius:50%;' + (s.key === 'mine' ? 'border:1px solid var(--text3);' : '') + '"></span>'
         + s.label + '</label>';
     }
+    // Date range selector
+    const R = window._parlayVsBooksRange;
+    const btnStyle = (active) => 'cursor:pointer; padding:3px 10px; border-radius:4px; font-size:11px; border:1px solid var(--border); background:' + (active ? 'var(--accent)' : 'transparent') + '; color:' + (active ? '#fff' : 'var(--text3)') + ';';
+    html += '<span style="margin-left:auto; display:flex; gap:4px; align-items:center;">';
+    html += '<span style="font-size:11px; color:var(--text3); margin-right:2px;">Range:</span>';
+    for (const ro of RANGE_OPTIONS) {
+      html += '<button onclick="setParlayVsBooksRange(\'' + ro.key + '\')" style="' + btnStyle(R === ro.key) + '">' + ro.label + '</button>';
+    }
+    html += '</span>';
+    html += '</div>';
     // Confirmed / Not-filled filter
     const F = window._parlayVsBooksFilter;
-    const btnStyle = (active) => 'cursor:pointer; padding:3px 10px; border-radius:4px; font-size:11px; border:1px solid var(--border); background:' + (active ? 'var(--accent)' : 'transparent') + '; color:' + (active ? '#fff' : 'var(--text3)') + ';';
-    html += '<span style="margin-left:auto; display:flex; gap:4px;">';
+    html += '<div style="display:flex; gap:4px; justify-content:flex-end; margin-bottom:8px;">';
     html += '<button onclick="setParlayVsBooksFilter(\'all\')" style="' + btnStyle(F === 'all') + '">All</button>';
     html += '<button onclick="setParlayVsBooksFilter(\'confirmed\')" style="' + btnStyle(F === 'confirmed') + '">Confirmed</button>';
     html += '<button onclick="setParlayVsBooksFilter(\'notfilled\')" style="' + btnStyle(F === 'notfilled') + '">Not Filled</button>';
-    html += '</span>';
     html += '</div>';
 
     // Filter data by confirmed status
     const filtered = F === 'all' ? data : data.filter(d => F === 'confirmed' ? d.isConfirmed : !d.isConfirmed);
     const confirmedCount = data.filter(d => d.isConfirmed).length;
     html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">'
-      + data.length + ' parlays · ' + confirmedCount + ' confirmed · last 7d'
+      + data.length + ' parlays · ' + confirmedCount + ' confirmed · ' + (R === 'all' ? 'all time' : 'last ' + RANGE_OPTIONS.find(r => r.key === R).label)
       + ' · &#9679; solid = confirmed · &#9675; hollow = not filled · size ∝ stake</div>';
 
     // --- Scatter ---

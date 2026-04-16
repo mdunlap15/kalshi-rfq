@@ -66,7 +66,7 @@ const config = {
     maxExposurePerGamePct: parseFloat(process.env.MAX_EXPOSURE_PER_GAME_PCT) || 10,
     maxOdds: parseInt(process.env.MAX_ODDS) || 1500,
   },
-  supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,basketball_wnba,baseball_mlb,icehockey_nhl,tennis,soccer,soccer_usa_mls,soccer_epl')
+  supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,basketball_wnba,baseball_mlb,icehockey_nhl,tennis,soccer,soccer_usa_mls,soccer_epl,soccer_mexico_ligamx,soccer_brazil_campeonato,soccer_conmebol_libertadores')
     .split(',').map(s => s.trim()),
   // Maps our sport keys to ProphetX sport_name values
   // Note: NBA and NCAAB both map to 'Basketball' — line manager handles both
@@ -90,6 +90,9 @@ const config = {
     'soccer_germany_bundesliga': 'Soccer',
     'soccer_france_ligue_one': 'Soccer',
     'soccer_usa_nwsl': 'Soccer',
+    'soccer_mexico_ligamx': 'Soccer',
+    'soccer_brazil_campeonato': 'Soccer',
+    'soccer_conmebol_libertadores': 'Soccer',
     'golf_pga_championship': 'Golf',
     'golf_matchups': 'Golf',
     // PX uses 'MMA' (short form) as sport_name, not 'Mixed Martial Arts'.
