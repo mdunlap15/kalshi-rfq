@@ -432,19 +432,25 @@ function startStatusServer() {
       const client = db.getClient();
       if (!client) return res.json({ error: 'No Supabase client' });
       const { data, error } = await client.from('declines')
-        .select('reason, declined_at')
+        .select('reason, declined_at, detail')
         .gte('declined_at', cutoff);
       if (error) return res.status(500).json({ error: error.message });
       // Group by reason
       const byReason = {};
+      const byReasonByDay = {};
       for (const row of (data || [])) {
         const r = row.reason || 'unknown';
         if (!byReason[r]) byReason[r] = 0;
         byReason[r]++;
+        // Also group by day
+        const day = row.declined_at ? new Date(row.declined_at).toLocaleDateString('en-CA') : 'unknown';
+        if (!byReasonByDay[r]) byReasonByDay[r] = {};
+        if (!byReasonByDay[r][day]) byReasonByDay[r][day] = 0;
+        byReasonByDay[r][day]++;
       }
       // Sort descending
       const sorted = Object.entries(byReason).sort((a, b) => b[1] - a[1]);
-      res.json({ days, total: (data || []).length, byReason: Object.fromEntries(sorted) });
+      res.json({ days, total: (data || []).length, byReason: Object.fromEntries(sorted), byReasonByDay });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
