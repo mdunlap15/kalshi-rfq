@@ -24,6 +24,14 @@ let lineRefreshTimer = null;
 let settlementPollTimer = null;
 let serviceReady = false;
 
+/** Run an async fn with a timeout. Rejects with a clear message on expiry. */
+function withTimeout(fn, ms, label) {
+  return Promise.race([
+    fn(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms)),
+  ]);
+}
+
 async function startup() {
   log.setLevel(config.logLevel);
 
@@ -89,23 +97,26 @@ async function startup() {
   // observed where loadFromDb silently returns 0 orders). PX REST is the
   // authoritative source of truth, so if Supabase is unavailable we can
   // still bootstrap state from PX directly.
+  // Timeout: 60s — if PX or Supabase is slow, don't block the rest of startup.
   try {
-    await orderTracker.loadFromDb();
-    const stats = orderTracker.getStats();
-    if (stats.totalQuotes < 100 && authOk) {
-      log.warn('Startup', `    ⚠ Supabase loaded only ${stats.totalQuotes} orders — falling back to PX reconcile`);
-      try {
-        const result = await orderTracker.fullPxReconcile(px);
-        log.info('Startup', `    ✓ PX reconcile bootstrap: imported ${result.imported}, settled ${result.settled}, P&L $${result.after.runningPnL.toFixed(2)}`);
-      } catch (err) {
-        log.warn('Startup', `    ✗ PX reconcile bootstrap failed: ${err.message}`);
+    await withTimeout(async () => {
+      await orderTracker.loadFromDb();
+      const stats = orderTracker.getStats();
+      if (stats.totalQuotes < 100 && authOk) {
+        log.warn('Startup', `    ⚠ Supabase loaded only ${stats.totalQuotes} orders — falling back to PX reconcile`);
+        try {
+          const result = await orderTracker.fullPxReconcile(px);
+          log.info('Startup', `    ✓ PX reconcile bootstrap: imported ${result.imported}, settled ${result.settled}, P&L $${result.after.runningPnL.toFixed(2)}`);
+        } catch (err) {
+          log.warn('Startup', `    ✗ PX reconcile bootstrap failed: ${err.message}`);
+        }
       }
-    }
+    }, 60000, 'DB load + PX reconcile');
   } catch (err) {
     log.warn('Startup', `    ⚠ DB load failed: ${err.message} — attempting PX reconcile fallback`);
-    if (authOk) {
+    if (authOk && !err.message.includes('timed out')) {
       try {
-        const result = await orderTracker.fullPxReconcile(px);
+        const result = await withTimeout(() => orderTracker.fullPxReconcile(px), 30000, 'PX reconcile fallback');
         log.info('Startup', `    ✓ PX reconcile fallback: imported ${result.imported}, settled ${result.settled}, P&L $${result.after.runningPnL.toFixed(2)}`);
       } catch (err2) {
         log.warn('Startup', `    ✗ PX reconcile fallback also failed: ${err2.message} — continuing with empty state`);
@@ -145,13 +156,16 @@ async function startup() {
   // reflect the newly-enriched legs. Without this step, every deploy wiped
   // the Team Exposure table because loadFromDb ran addExposure BEFORE the
   // line index existed, dropping every leg whose team resolved to '?'.
+  // Timeout: 30s — enrichment is best-effort; next refresh cycle catches up.
   try {
-    const enrich = await orderTracker.enrichReconstructedOrders();
-    if (enrich.enriched > 0) {
-      log.info('Startup', `    ✓ Enriched ${enrich.enriched}/${enrich.scanned} reconstructed orders from lineIndex (persisted ${enrich.persisted})`);
-    }
-    const diag = orderTracker.rebuildAllExposure();
-    log.info('Startup', `    ✓ Exposure rebuilt: ${diag.exposureKeysAfter} team keys, ${diag.gameKeysAfter} games (${diag.legsWithTeamKey}/${diag.legsTotal} legs contributed)`);
+    await withTimeout(async () => {
+      const enrich = await orderTracker.enrichReconstructedOrders();
+      if (enrich.enriched > 0) {
+        log.info('Startup', `    ✓ Enriched ${enrich.enriched}/${enrich.scanned} reconstructed orders from lineIndex (persisted ${enrich.persisted})`);
+      }
+      const diag = orderTracker.rebuildAllExposure();
+      log.info('Startup', `    ✓ Exposure rebuilt: ${diag.exposureKeysAfter} team keys, ${diag.gameKeysAfter} games (${diag.legsWithTeamKey}/${diag.legsTotal} legs contributed)`);
+    }, 30000, 'Post-seed enrichment');
   } catch (err) {
     log.warn('Startup', `    ✗ Post-seed enrichment/exposure rebuild failed: ${err.message}`);
   }
@@ -160,8 +174,9 @@ async function startup() {
   // because the event has already started or aged out), resolve them via PX's
   // /partner/affiliate/* bulk endpoints. This is how we recover real team names
   // for confirmed historical parlays instead of showing "Event 10077494".
+  // Timeout: 30s — affiliate API can be slow; team names fill in on next cycle.
   try {
-    const affil = await orderTracker.enrichOpenPositionsFromAffiliate();
+    const affil = await withTimeout(() => orderTracker.enrichOpenPositionsFromAffiliate(), 30000, 'Affiliate enrichment');
     log.info('Startup', `    ✓ Affiliate enrichment: ${JSON.stringify(affil)}`);
   } catch (err) {
     log.warn('Startup', `    ✗ Affiliate enrichment failed: ${err.message}`);
@@ -275,9 +290,9 @@ async function startup() {
     }
   }, 5 * 60 * 1000);
 
-  // Initial balance fetch
+  // Initial balance fetch — timeout: 10s
   try {
-    const bal = await px.fetchBalance();
+    const bal = await withTimeout(() => px.fetchBalance(), 10000, 'Balance fetch');
     const amount = bal?.balance ?? bal?.available ?? (typeof bal === 'number' ? bal : null);
     if (amount != null && amount > 0) {
       config.pricing.liveBankroll = amount;
