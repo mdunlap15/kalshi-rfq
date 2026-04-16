@@ -432,8 +432,8 @@ function startStatusServer() {
       const client = db.getClient();
       if (!client) return res.json({ error: 'No Supabase client' });
 
-      // Use Supabase head:true count queries — no row transfer, much faster
-      // on unindexed tables. One count query per (day, reason) combination.
+      // Count-only queries (head:true) — no row transfer, much faster.
+      // Process one day at a time to avoid overwhelming Supabase connection pool.
       const KNOWN_REASONS = [
         'unknown legs', 'portfolio drawdown limit', 'stale odds',
         'correlated legs', 'no fair value', 'duplicate parlay',
@@ -442,44 +442,42 @@ function startStatusServer() {
       ];
       const reasons = reasonFilter ? [reasonFilter] : KNOWN_REASONS;
 
-      // Build all count queries in parallel
-      const queries = [];
+      const byReason = {};
+      const byReasonByDay = {};
+      let total = 0;
+
+      // Process one day at a time, reasons in parallel within each day
       for (let d = 0; d < days; d++) {
         const dayStart = new Date(Date.now() - (d + 1) * 24 * 3600 * 1000).toISOString();
         const dayEnd = new Date(Date.now() - d * 24 * 3600 * 1000).toISOString();
         const dayLabel = new Date(Date.now() - d * 24 * 3600 * 1000).toLocaleDateString('en-CA');
-        for (const reason of reasons) {
-          queries.push({ dayLabel, reason, promise: client.from('declines')
+
+        const dayCounts = await Promise.all(reasons.map(async reason => {
+          const { count, error } = await client.from('declines')
             .select('*', { count: 'exact', head: true })
             .gte('declined_at', dayStart)
             .lt('declined_at', dayEnd)
-            .eq('reason', reason)
-          });
+            .eq('reason', reason);
+          if (error) {
+            log.warn('DeclineStats', `Count query failed for ${reason} on ${dayLabel}: ${error.message || JSON.stringify(error)}`);
+            return { reason, count: 0 };
+          }
+          return { reason, count: count || 0 };
+        }));
+
+        for (const { reason, count } of dayCounts) {
+          if (count === 0) continue;
+          byReason[reason] = (byReason[reason] || 0) + count;
+          if (!byReasonByDay[reason]) byReasonByDay[reason] = {};
+          byReasonByDay[reason][dayLabel] = count;
+          total += count;
         }
-      }
-
-      // Execute all in parallel
-      const results = await Promise.all(queries.map(async q => {
-        const { count, error } = await q.promise;
-        if (error) throw error;
-        return { dayLabel: q.dayLabel, reason: q.reason, count: count || 0 };
-      }));
-
-      const byReason = {};
-      const byReasonByDay = {};
-      let total = 0;
-      for (const { dayLabel, reason, count } of results) {
-        if (count === 0) continue;
-        byReason[reason] = (byReason[reason] || 0) + count;
-        if (!byReasonByDay[reason]) byReasonByDay[reason] = {};
-        byReasonByDay[reason][dayLabel] = (byReasonByDay[reason][dayLabel] || 0) + count;
-        total += count;
       }
 
       const sorted = Object.entries(byReason).sort((a, b) => b[1] - a[1]);
       res.json({ days, total, byReason: Object.fromEntries(sorted), byReasonByDay });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: err.message || JSON.stringify(err) });
     }
   });
 
