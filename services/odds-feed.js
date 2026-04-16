@@ -1887,7 +1887,14 @@ async function resolveOddsApiEventId(sport, homeTeam, awayTeam, targetTime) {
   for (const e of events) {
     const eHome = applyTeamAlias(normalizeTeamName(e.home));
     const eAway = applyTeamAlias(normalizeTeamName(e.away));
-    if (teamsMatch(eHome, normHome) && teamsMatch(eAway, normAway)) {
+    // SharpAPI and The Odds API occasionally disagree on which team is home
+    // (observed: Chicago White Sox @ Athletics, Blue Jays @ Diamondbacks —
+    // the two feeds flip the designation). Same physical game either way, so
+    // match in either orientation. Orientation doesn't affect alt-line data
+    // because the alt-line cache is keyed by the event ID we return.
+    const straight = teamsMatch(eHome, normHome) && teamsMatch(eAway, normAway);
+    const flipped  = teamsMatch(eHome, normAway) && teamsMatch(eAway, normHome);
+    if (straight || flipped) {
       matches.push(e);
     }
   }
