@@ -424,6 +424,32 @@ function startStatusServer() {
     res.json(order);
   });
 
+  // Decline stats from Supabase — grouped by reason
+  app.get('/decline-stats', async (req, res) => {
+    try {
+      const days = parseInt(req.query.days) || 7;
+      const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
+      const client = db.getClient();
+      if (!client) return res.json({ error: 'No Supabase client' });
+      const { data, error } = await client.from('declines')
+        .select('reason, declined_at')
+        .gte('declined_at', cutoff);
+      if (error) return res.status(500).json({ error: error.message });
+      // Group by reason
+      const byReason = {};
+      for (const row of (data || [])) {
+        const r = row.reason || 'unknown';
+        if (!byReason[r]) byReason[r] = 0;
+        byReason[r]++;
+      }
+      // Sort descending
+      const sorted = Object.entries(byReason).sort((a, b) => b[1] - a[1]);
+      res.json({ days, total: (data || []).length, byReason: Object.fromEntries(sorted) });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/orders', (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     res.json({
