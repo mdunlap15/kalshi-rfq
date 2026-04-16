@@ -100,19 +100,24 @@ async function startup() {
   // applied in-memory by fullPxReconcile and not always persisted. PX REST
   // is the authoritative source — reconcile on every startup to ensure
   // settlement status, P&L, and stats are accurate.
-  try {
-    await orderTracker.loadFromDb();
-  } catch (err) {
-    log.warn('Startup', `    ⚠ DB load failed: ${err.message} — will attempt PX reconcile`);
-  }
-  if (authOk) {
+  // DB load + PX reconcile run in background so they never block startup.
+  // Positions will populate within ~30s after odds/lines are ready.
+  const dbAndReconcile = (async () => {
     try {
-      const result = await orderTracker.fullPxReconcile(px);
-      log.info('Startup', `    ✓ PX reconcile: imported ${result.imported}, settled ${result.settled}, P&L $${result.after.runningPnL.toFixed(2)}`);
+      await orderTracker.loadFromDb();
     } catch (err) {
-      log.warn('Startup', `    ✗ PX reconcile failed: ${err.message}`);
+      log.warn('Startup', `    ⚠ DB load failed: ${err.message}`);
     }
-  }
+    if (authOk) {
+      try {
+        const result = await orderTracker.fullPxReconcile(px);
+        log.info('Startup', `    ✓ PX reconcile: imported ${result.imported}, settled ${result.settled}, P&L $${result.after.runningPnL.toFixed(2)}`);
+      } catch (err) {
+        log.warn('Startup', `    ✗ PX reconcile failed: ${err.message}`);
+      }
+    }
+  })();
+  // Don't await — let startup continue to odds/lines/WS immediately
 
   // Step 2: Fetch odds from The Odds API
   log.info('Startup', '2/5 Fetching fair values from The Odds API...');
