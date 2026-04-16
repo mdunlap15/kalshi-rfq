@@ -42,9 +42,10 @@ const config = {
       'boxing_boxing': 3,
       'americanfootball_nfl': 4,
       'americanfootball_ncaaf': 4,
-      'basketball_ncaab': 10,
+      'basketball_ncaab': 5,
       'tennis': 4,
       'basketball_wnba': 5,
+      'golf_pga_championship': 5,
     },
     // Confirmation-time re-price drift threshold. If current fair prob drifts
     // by more than this fraction from the original quote, reject the confirm.

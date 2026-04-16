@@ -200,8 +200,17 @@ async function startup() {
 
   // Fast refresh for Odds API sports not covered by SharpAPI delta loop.
   // Full re-fetch every ~2.5 min keeps per-sport stale thresholds honest.
-  // Cost: ~5 extra Odds-API calls per cycle, negligible against daily quota.
-  const FAST_REFRESH_SPORTS = ['mma_mixed_martial_arts', 'boxing_boxing', 'americanfootball_nfl', 'tennis', 'basketball_wnba'];
+  // Cost: ~12 extra Odds-API calls per cycle, negligible against daily quota.
+  const FAST_REFRESH_SPORTS = [
+    'mma_mixed_martial_arts', 'boxing_boxing',
+    'americanfootball_nfl', 'americanfootball_ncaaf',
+    'tennis', 'basketball_wnba', 'basketball_ncaab',
+    'soccer_usa_mls', 'soccer_epl', 'soccer_uefa_champs_league',
+    'soccer_uefa_europa_league', 'soccer_spain_la_liga',
+    'soccer_italy_serie_a', 'soccer_germany_bundesliga',
+    'soccer_france_ligue_one', 'soccer_usa_nwsl',
+    'golf_pga_championship',
+  ];
   setInterval(async () => {
     for (const sport of FAST_REFRESH_SPORTS) {
       if (!config.supportedSports.includes(sport)) continue;
