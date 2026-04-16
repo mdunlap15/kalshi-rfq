@@ -2755,7 +2755,12 @@ async function refreshAllSports() {
 
 function getCacheStatus() {
   const status = {};
-  for (const sport of config.supportedSports) {
+  // Include golf_matchups (DataGolf) alongside configured sports
+  const sports = [...config.supportedSports];
+  if (oddsCache['golf_matchups'] && !sports.includes('golf_matchups')) {
+    sports.push('golf_matchups');
+  }
+  for (const sport of sports) {
     const cache = oddsCache[sport];
     const totalEvents = cache ? Object.values(cache.events).reduce((s, entry) => s + (Array.isArray(entry) ? entry.length : 1), 0) : 0;
     status[sport] = cache ? {
