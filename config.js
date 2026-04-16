@@ -43,7 +43,8 @@ const config = {
       'americanfootball_nfl': 4,
       'americanfootball_ncaaf': 4,
       'basketball_ncaab': 10,
-      'tennis': 10,
+      'tennis': 4,
+      'basketball_wnba': 5,
     },
     // Confirmation-time re-price drift threshold. If current fair prob drifts
     // by more than this fraction from the original quote, reject the confirm.
@@ -64,7 +65,7 @@ const config = {
     maxExposurePerGamePct: parseFloat(process.env.MAX_EXPOSURE_PER_GAME_PCT) || 10,
     maxOdds: parseInt(process.env.MAX_ODDS) || 1500,
   },
-  supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,baseball_mlb,icehockey_nhl,tennis,soccer,soccer_usa_mls,soccer_epl')
+  supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,basketball_wnba,baseball_mlb,icehockey_nhl,tennis,soccer,soccer_usa_mls,soccer_epl')
     .split(',').map(s => s.trim()),
   // Maps our sport keys to ProphetX sport_name values
   // Note: NBA and NCAAB both map to 'Basketball' — line manager handles both
