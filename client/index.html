@@ -6112,11 +6112,11 @@
         + '<span style="display:inline-block;width:10px;height:10px;background:' + s.color + ';margin:0 6px -1px 0;border-radius:50%;"></span>'
         + s.label + '</label>';
     }
-    html += '<span style="color:var(--text3); margin-left:10px;">' + data.length + ' parlays · last 7d · solid = confirmed · size ∝ stake</span>';
+    html += '<span style="color:var(--text3); margin-left:10px;">' + data.length + ' parlays · last 7d · &#9711; white ring = confirmed · size ∝ stake</span>';
     html += '</div>';
 
     // --- Scatter ---
-    const W = 900, H = 420, pad = { l: 60, r: 20, t: 25, b: 50 };
+    const W = 900, H = 450, pad = { l: 60, r: 20, t: 25, b: 58 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
 
     // Collect visible edge values for y-scaling
@@ -6138,8 +6138,8 @@
     const sortedEdges = [...visible].sort((a, b) => a - b);
     const p5  = sortedEdges[Math.floor(sortedEdges.length * 0.03)] || sortedEdges[0];
     const p95 = sortedEdges[Math.ceil(sortedEdges.length * 0.97) - 1] || sortedEdges[sortedEdges.length - 1];
-    const edgePad = (p95 - p5) * 0.15 || 1;
-    const minEdge = Math.min(-1, p5 - edgePad);
+    const edgePad = (p95 - p5) * 0.2 || 1;
+    const minEdge = Math.min(-1, p5 - edgePad * 1.3);
     const maxEdge = Math.max(1, p95 + edgePad);
     const edgeRange = maxEdge - minEdge || 2;
 
@@ -6210,14 +6210,16 @@
         const clampedE = Math.max(minEdge, Math.min(maxEdge, e));
         const y = scaleY(clampedE);
         const r = stakeRadius(d.stake);
-        const opacity = d.isConfirmed ? 0.85 : 0.35;
+        const opacity = d.isConfirmed ? 0.9 : 0.3;
         const tip = tipFor(d, s.label);
         if (isOutlier) {
           // Diamond shape for clamped outliers
           const h = r * 1.2;
+          if (d.isConfirmed) svg += '<polygon points="' + x + ',' + (y - h - 1) + ' ' + (x + h + 1) + ',' + y + ' ' + x + ',' + (y + h + 1) + ' ' + (x - h - 1) + ',' + y + '" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.6"/>';
           svg += '<polygon points="' + x + ',' + (y - h) + ' ' + (x + h) + ',' + y + ' ' + x + ',' + (y + h) + ' ' + (x - h) + ',' + y
-            + '" fill="' + s.color + '" opacity="' + opacity + '" stroke="' + s.color + '" stroke-width="1"><title>' + tip + '</title></polygon>';
+            + '" fill="' + s.color + '" opacity="' + opacity + '"><title>' + tip + '</title></polygon>';
         } else {
+          if (d.isConfirmed) svg += '<circle cx="' + x + '" cy="' + y + '" r="' + (r + 1.5) + '" fill="none" stroke="#fff" stroke-width="1.5" opacity="0.6"/>';
           svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + s.color + '" opacity="' + opacity + '"><title>' + tip + '</title></circle>';
         }
       }
@@ -6251,7 +6253,7 @@
     const confirmedCount = data.filter(d => d.isConfirmed).length;
     html += '<div style="font-size:11px; color:var(--text3); margin-top:8px;">'
       + confirmedCount + ' confirmed of ' + data.length + ' quoted parlays. '
-      + 'Each dot = one parlay\'s edge vs that book. Solid = confirmed, translucent = not filled. &#9670; = outlier clamped to axis edge. '
+      + 'Each dot = one parlay\'s edge vs that book. White ring = confirmed, translucent = not filled. &#9670; = outlier clamped to axis edge. '
       + 'Above zero = your offer is tighter than the book. Below = book would price tighter than you. Hover any dot for selections, dates, all edges, and quote time.'
       + '</div>';
 
