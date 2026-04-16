@@ -1080,21 +1080,15 @@
     // data.recentOrders which only exists on the /orders response, not
     // /status. See updateNotificationBadge() called from refresh().
 
-    // Headline P&L is account-based (PX balance - starting balance), not
-    // the in-memory tracker ledger. The tracker drifts; PX is canonical.
-    // Show '—' if balance hasn't been fetched yet rather than fall back
-    // to the drifty number.
-    const accountPnL = data.portfolio?.accountPnL;
+    // Headline P&L uses runningPnL (sum of settled order P&L).
+    // Account-based formula was unreliable — currentRisk can drift
+    // from PX's internal accounting, inflating the number.
+    const runningPnL = data.orders?.runningPnL || 0;
     const pnlEl = document.getElementById('stat-pnl');
-    if (accountPnL == null) {
-      pnlEl.textContent = '—';
-      pnlEl.className = 'value neutral';
-    } else {
-      pnlEl.textContent = fmtPnl(accountPnL);
-      if (accountPnL > 0) { pnlEl.className = 'value positive'; }
-      else if (accountPnL < 0) { pnlEl.className = 'value negative'; }
-      else { pnlEl.className = 'value neutral'; }
-    }
+    pnlEl.textContent = fmtPnl(runningPnL);
+    if (runningPnL > 0) { pnlEl.className = 'value positive'; }
+    else if (runningPnL < 0) { pnlEl.className = 'value negative'; }
+    else { pnlEl.className = 'value neutral'; }
 
     const wins = o.totalWins || 0;
     const losses = o.totalLosses || 0;
@@ -4888,9 +4882,9 @@
 
     // Prefer account-based P&L (PX balance - starting balance) — it's the
     // canonical source. Fall back to in-memory tracker only if balance
-    // hasn't been fetched yet. The tracker drifts from PX; PX is truth.
-    const accountPnL = portfolio?.accountPnL;
-    const pnl = accountPnL != null ? accountPnL : (orderStats.runningPnL || 0);
+    // Use runningPnL (sum of settled order P&L) — account-based formula
+    // was unreliable due to currentRisk drift from PX internal accounting.
+    const pnl = orderStats.runningPnL || 0;
     const wins = orderStats.totalWins || 0;
     const losses = orderStats.totalLosses || 0;
     const settled = wins + losses;
@@ -4920,7 +4914,7 @@
     const roiStr = roi != null ? (roi >= 0 ? '+' : '') + roi.toFixed(2) + '%' : '-';
 
     const pnlCls = pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : 'neutral';
-    const pnlStr = (accountPnL != null || settled > 0) ? fmtPnl(pnl) : '-';
+    const pnlStr = settled > 0 ? fmtPnl(pnl) : '-';
     const wrCls = winRate != null ? (winRate >= 50 ? 'positive' : 'negative') : 'neutral';
     const wrStr = winRate != null ? winRate + '%' : '-';
 
