@@ -4099,6 +4099,31 @@ function backfillGolfMetadata() {
   return { ordersTouched, updated, skipped, goldLegsTotal };
 }
 
+function hydrateDeclinesInMemory(dbDeclines) {
+  const nearMissReasons = new Set(['no fair value', 'stale odds', 'parlay too unlikely', 'odds too high', 'event started']);
+  for (let i = dbDeclines.length - 1; i >= 0; i--) {
+    const d = dbDeclines[i];
+    declineStats.total++;
+    declineStats.reasons[d.reason] = (declineStats.reasons[d.reason] || 0) + 1;
+    declineStats.recent.unshift({ reason: d.reason, detail: d.detail, parlayId: d.parlayId, time: d.declinedAt, isLimit: d.isLimit });
+    if (declineStats.recent.length > 200) declineStats.recent.pop();
+    if (d.parlayId) {
+      declinesByParlayId[d.parlayId] = { reason: d.reason, unknownLineIds: d.unknownLineIds || [], unknownDetails: d.unknownDetails || [], declineDetail: d.detail, declinedAt: d.declinedAt };
+      declineIdOrder.push(d.parlayId);
+      while (declineIdOrder.length > MAX_DECLINE_ENTRIES) { const old = declineIdOrder.shift(); delete declinesByParlayId[old]; }
+    }
+    for (const ud of (d.unknownDetails || [])) {
+      if (!declineStats.unknownSports[ud]) declineStats.unknownSports[ud] = { count: 0, lastSeen: null, recentDeclines: [] };
+      declineStats.unknownSports[ud].count++;
+      declineStats.unknownSports[ud].lastSeen = d.declinedAt;
+    }
+    if (nearMissReasons.has(d.reason)) {
+      declineStats.nearMisses.unshift({ parlayId: d.parlayId, legs: d.knownLegs || [], time: d.declinedAt, reason: d.reason, detail: d.detail });
+      if (declineStats.nearMisses.length > 500) declineStats.nearMisses.pop();
+    }
+  }
+}
+
 async function loadFromDb() {
   if (!db.isEnabled()) {
     log.info('DB', 'Supabase not configured — running in memory-only mode');
@@ -4239,68 +4264,14 @@ async function loadFromDb() {
   }
   log.info('DB', `Loaded ${dbMatched.length} matched parlays`);
 
-  // Load declines (restores declineStats, declinesByParlayId, nearMisses)
-  const dbDeclines = await db.loadDeclines(2000);
-  const nearMissReasons = new Set(['no fair value', 'stale odds', 'parlay too unlikely', 'odds too high', 'event started']);
-  // dbDeclines are newest-first; iterate oldest-first to rebuild counters
-  for (let i = dbDeclines.length - 1; i >= 0; i--) {
-    const d = dbDeclines[i];
-    declineStats.total++;
-    declineStats.reasons[d.reason] = (declineStats.reasons[d.reason] || 0) + 1;
-    declineStats.recent.unshift({
-      reason: d.reason,
-      detail: d.detail,
-      parlayId: d.parlayId,
-      time: d.declinedAt,
-      isLimit: d.isLimit,
-    });
-    if (declineStats.recent.length > 200) declineStats.recent.pop();
-
-    if (d.parlayId) {
-      declinesByParlayId[d.parlayId] = {
-        reason: d.reason,
-        unknownLineIds: d.unknownLineIds || [],
-        unknownDetails: d.unknownDetails || [],
-        declineDetail: d.detail,
-        declinedAt: d.declinedAt,
-      };
-      declineIdOrder.push(d.parlayId);
-      while (declineIdOrder.length > MAX_DECLINE_ENTRIES) {
-        const old = declineIdOrder.shift();
-        delete declinesByParlayId[old];
-      }
-    }
-
-    // Reconstruct unknownSports aggregations
-    for (const ud of (d.unknownDetails || [])) {
-      if (!declineStats.unknownSports[ud]) {
-        declineStats.unknownSports[ud] = { count: 0, lastSeen: null, recentDeclines: [] };
-      }
-      declineStats.unknownSports[ud].count++;
-      declineStats.unknownSports[ud].lastSeen = d.declinedAt;
-      declineStats.unknownSports[ud].recentDeclines.unshift({
-        parlayId: d.parlayId,
-        knownLegs: d.knownLegs || [],
-        unknownLegs: d.unknownLineIds || [],
-        time: d.declinedAt,
-        legCount: (d.knownLegs || []).length + (d.unknownLineIds || []).length,
-      });
-      if (declineStats.unknownSports[ud].recentDeclines.length > 5) {
-        declineStats.unknownSports[ud].recentDeclines.pop();
-      }
-    }
-
-    // Near misses
-    if (nearMissReasons.has(d.reason)) {
-      declineStats.nearMisses.unshift({
-        parlayId: d.parlayId,
-        legs: d.knownLegs || [],
-        time: d.declinedAt,
-        reason: d.reason,
-        detail: d.detail,
-      });
-      if (declineStats.nearMisses.length > 500) declineStats.nearMisses.pop();
-    }
-  }
-  log.info('DB', `Loaded ${dbDeclines.length} declines`);
+  // Load declines in background — the declines table is too large for a
+  // synchronous startup query. Positions and P&L don't depend on it.
+  db.loadDeclines(2000).then(dbDeclines => {
+    if (!dbDeclines || dbDeclines.length === 0) return;
+    log.info('DB', `Background-loaded ${dbDeclines.length} declines`);
+    hydrateDeclinesInMemory(dbDeclines);
+  }).catch(err => {
+    log.warn('DB', `Background loadDeclines failed: ${err.message}`);
+  });
+  log.info('DB', 'Decline loading deferred to background');
 }
