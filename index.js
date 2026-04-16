@@ -428,40 +428,49 @@ function startStatusServer() {
   app.get('/decline-stats', async (req, res) => {
     try {
       const days = parseInt(req.query.days) || 7;
+      const reasonFilter = req.query.reason || null; // optional: filter to one reason
       const client = db.getClient();
       if (!client) return res.json({ error: 'No Supabase client' });
 
-      // Query day-by-day to avoid Supabase statement timeouts on large table.
-      // Each single-day query is small enough to stay under limits.
-      const byReason = {};
-      const byReasonByDay = {};
-      let total = 0;
-
-      for (let d = 0; d < days; d++) {
+      // Helper: paginate one day's declines
+      async function fetchDay(d) {
         const dayStart = new Date(Date.now() - (d + 1) * 24 * 3600 * 1000).toISOString();
         const dayEnd = new Date(Date.now() - d * 24 * 3600 * 1000).toISOString();
         const dayLabel = new Date(Date.now() - d * 24 * 3600 * 1000).toLocaleDateString('en-CA');
-
-        // Paginate within each day (some days may have >1000 declines)
+        const counts = {};
         let offset = 0;
         const PAGE = 1000;
         while (true) {
-          const { data: page, error: pgErr } = await client.from('declines')
-            .select('reason')
-            .gte('declined_at', dayStart)
-            .lt('declined_at', dayEnd)
-            .range(offset, offset + PAGE - 1);
-          if (pgErr) return res.status(500).json({ error: pgErr.message });
+          let q = client.from('declines').select('reason')
+            .gte('declined_at', dayStart).lt('declined_at', dayEnd);
+          if (reasonFilter) q = q.eq('reason', reasonFilter);
+          const { data: page, error: pgErr } = await q.range(offset, offset + PAGE - 1);
+          if (pgErr) throw pgErr;
           if (!page || page.length === 0) break;
           for (const row of page) {
             const r = row.reason || 'unknown';
-            byReason[r] = (byReason[r] || 0) + 1;
-            if (!byReasonByDay[r]) byReasonByDay[r] = {};
-            byReasonByDay[r][dayLabel] = (byReasonByDay[r][dayLabel] || 0) + 1;
-            total++;
+            counts[r] = (counts[r] || 0) + 1;
           }
           if (page.length < PAGE) break;
           offset += PAGE;
+        }
+        return { dayLabel, counts };
+      }
+
+      // Run all days in parallel (each query is small — bounded to one day)
+      const dayResults = await Promise.all(
+        Array.from({ length: days }, (_, d) => fetchDay(d))
+      );
+
+      const byReason = {};
+      const byReasonByDay = {};
+      let total = 0;
+      for (const { dayLabel, counts } of dayResults) {
+        for (const [r, cnt] of Object.entries(counts)) {
+          byReason[r] = (byReason[r] || 0) + cnt;
+          if (!byReasonByDay[r]) byReasonByDay[r] = {};
+          byReasonByDay[r][dayLabel] = cnt;
+          total += cnt;
         }
       }
 
