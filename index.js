@@ -431,7 +431,8 @@ function startStatusServer() {
       const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
       const client = db.getClient();
       if (!client) return res.json({ error: 'No Supabase client' });
-      // Paginate to avoid Supabase 1000-row default limit
+      // Paginate to avoid Supabase 1000-row default limit.
+      // No .order() — sorting a huge table per page causes statement timeouts.
       const PAGE = 1000;
       let data = [];
       let offset = 0;
@@ -439,7 +440,6 @@ function startStatusServer() {
         const { data: page, error: pgErr } = await client.from('declines')
           .select('reason, declined_at')
           .gte('declined_at', cutoff)
-          .order('declined_at', { ascending: true })
           .range(offset, offset + PAGE - 1);
         if (pgErr) return res.status(500).json({ error: pgErr.message });
         if (!page || page.length === 0) break;
