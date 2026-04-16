@@ -38,10 +38,27 @@ async function priceParlay(legs) {
     return null;
   }
 
-  // Look up and price each leg
+  // Look up and price each leg.
+  //
+  // --- PARALLELIZED STRUCTURE (Phase A of latency plan) ---
+  // Previously every leg ran sequentially — each getFairProbAsync await blocked
+  // the next. For N-leg parlays where M legs need alt-line fetches, worst-case
+  // pricing time was M × (fetch round-trip). Now:
+  //
+  //   Phase 1: All cheap sync validation per leg. Bail early on first failure.
+  //   Phase 2: Fire getFairProbAsync + verifyLineWithPinnacle for ALL surviving
+  //            legs in parallel via Promise.all. Worst-case pricing time caps at
+  //            a single fetch round-trip regardless of leg count.
+  //   Phase 3: Sync post-processing — check async results, compute book odds,
+  //            build pricedLegs array, accumulate fair parlay prob.
+  //
+  // All original validation, decline reasons, and blocker-leg reporting are
+  // preserved — just the two network calls are now parallel instead of serial.
   const pricedLegs = [];
   let fairParlayProb = 1.0;
 
+  // ------------------------- PHASE 1: Sync validation -------------------------
+  const legStates = [];
   for (const leg of legs) {
     const lineId = leg.line_id || leg.lineId || leg;
     const lineInfo = lineManager.lookupLine(lineId);
@@ -133,28 +150,67 @@ async function priceParlay(legs) {
       return null;
     }
 
-    // Get fair probability — tries cache first, then on-demand alt lines fetch.
-    // For Draw No Bet (2-way soccer moneyline), derive from 3-way h2h by
-    // removing the draw probability and renormalizing.
-    let fairProb;
-    if (lineInfo.isDNB) {
-      fairProb = oddsFeed.getDNBFairProb(
-        lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
-        lineInfo.oddsApiSelection, lineInfo.startTime
+    // Pre-compute whether we need Pinnacle line verification for this leg.
+    // (The conditional that used to run after getFairProbAsync — moved here so
+    // we can fire it in parallel with the fair-prob fetch.)
+    let needsVerify = false;
+    let verifyCachedLine = null;
+    if ((lineInfo.oddsApiMarket === 'spreads' || lineInfo.oddsApiMarket === 'totals') && lineInfo.line != null) {
+      const event = oddsFeed.getEventMarkets(
+        lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam, lineInfo.startTime
       );
-      if (fairProb != null) {
-        log.debug('Pricing', `DNB derived fair prob ${fairProb.toFixed(4)} for ${legLabel}`);
+      const cachedLine = event?.markets?.[lineInfo.oddsApiMarket]?.line;
+      if (cachedLine != null && Math.abs(Math.abs(cachedLine) - Math.abs(lineInfo.line)) < 0.01) {
+        needsVerify = true;
+        verifyCachedLine = cachedLine;
       }
-    } else {
-      fairProb = await oddsFeed.getFairProbAsync(
-        lineInfo.oddsApiSport,
-        lineInfo.homeTeam,
-        lineInfo.awayTeam,
-        lineInfo.oddsApiMarket,
-        lineInfo.oddsApiSelection,
-        lineInfo.line,
-        lineInfo.startTime
-      );
+    }
+
+    legStates.push({ lineId, lineInfo, legLabel, legDescriptor, needsVerify, verifyCachedLine });
+  }
+
+  // ------------------- PHASE 2: Parallel async fetches per leg ------------------
+  // getFairProbAsync can trigger an alt-line fetch (expensive). verifyLineWithPinnacle
+  // hits the Pinnacle supplement cache / Odds API. Running these in parallel caps
+  // pricing time at a single worst-case fetch regardless of leg count.
+  const fairProbPromises = legStates.map(s => {
+    if (s.lineInfo.isDNB) {
+      // Draw-No-Bet is sync (derives from cached 3-way h2h).
+      return Promise.resolve(oddsFeed.getDNBFairProb(
+        s.lineInfo.oddsApiSport, s.lineInfo.homeTeam, s.lineInfo.awayTeam,
+        s.lineInfo.oddsApiSelection, s.lineInfo.startTime
+      ));
+    }
+    return oddsFeed.getFairProbAsync(
+      s.lineInfo.oddsApiSport,
+      s.lineInfo.homeTeam,
+      s.lineInfo.awayTeam,
+      s.lineInfo.oddsApiMarket,
+      s.lineInfo.oddsApiSelection,
+      s.lineInfo.line,
+      s.lineInfo.startTime
+    );
+  });
+  const verifyPromises = legStates.map(s => {
+    if (!s.needsVerify) return Promise.resolve(null);
+    return oddsFeed.verifyLineWithPinnacle(
+      s.lineInfo.oddsApiSport, s.lineInfo.homeTeam, s.lineInfo.awayTeam,
+      s.lineInfo.oddsApiMarket, s.verifyCachedLine
+    );
+  });
+  const [fairProbs, verifyResults] = await Promise.all([
+    Promise.all(fairProbPromises),
+    Promise.all(verifyPromises),
+  ]);
+
+  // -------------------- PHASE 3: Post-process results per leg -------------------
+  for (let legIdx = 0; legIdx < legStates.length; legIdx++) {
+    const { lineId, lineInfo, legLabel, legDescriptor } = legStates[legIdx];
+    const fairProb = fairProbs[legIdx];
+    const verifyResult = verifyResults[legIdx];
+
+    if (lineInfo.isDNB && fairProb != null) {
+      log.debug('Pricing', `DNB derived fair prob ${fairProb.toFixed(4)} for ${legLabel}`);
     }
 
     if (fairProb == null || fairProb <= 0 || fairProb >= 1) {
@@ -234,32 +290,20 @@ async function priceParlay(legs) {
     // (fair prob is built from de-vigged consensus of all available books).
     // Previously required specifically Pinnacle or FanDuel, but with 25 books
     // from SharpAPI, any book's data in the consensus is sufficient.
-    // The fairProb null check above (line 107) already catches truly blind legs.
+    // The fairProb null check above already catches truly blind legs.
 
-    // Spread/total line verification: when the requested line matches our cached
-    // primary, spot-check Pinnacle to confirm the line hasn't moved. Prevents
-    // pricing stale alt-spreads at primary-spread odds.
-    if ((lineInfo.oddsApiMarket === 'spreads' || lineInfo.oddsApiMarket === 'totals') && lineInfo.line != null) {
-      const event = oddsFeed.getEventMarkets(
-        lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam, lineInfo.startTime
-      );
-      const cachedLine = event?.markets?.[lineInfo.oddsApiMarket]?.line;
-      if (cachedLine != null && Math.abs(Math.abs(cachedLine) - Math.abs(lineInfo.line)) < 0.01) {
-        // Requested line matches our cached primary — verify it hasn't moved
-        const verify = await oddsFeed.verifyLineWithPinnacle(
-          lineInfo.oddsApiSport, lineInfo.homeTeam, lineInfo.awayTeam,
-          lineInfo.oddsApiMarket, cachedLine
-        );
-        if (!verify.ok) {
-          log.info('Pricing', `Declined: spread line moved for ${legLabel} (cached ${cachedLine}, Pinnacle now ${verify.currentLine})`);
-          priceParlay._lastFailure = {
-            reason: 'spread line moved',
-            detail: `${legLabel}: cached line ${cachedLine} but Pinnacle now ${verify.currentLine} (moved ${verify.diff.toFixed(1)}pts)`,
-            blockerLeg: legDescriptor,
-          };
-          return null;
-        }
-      }
+    // Spread/total line verification: check result from Phase 2. When the
+    // requested line matches our cached primary, verifyLineWithPinnacle
+    // confirms the line hasn't moved. Prevents pricing stale alt-spreads
+    // at primary-spread odds.
+    if (verifyResult && !verifyResult.ok) {
+      log.info('Pricing', `Declined: spread line moved for ${legLabel} (cached ${legStates[legIdx].verifyCachedLine}, Pinnacle now ${verifyResult.currentLine})`);
+      priceParlay._lastFailure = {
+        reason: 'spread line moved',
+        detail: `${legLabel}: cached line ${legStates[legIdx].verifyCachedLine} but Pinnacle now ${verifyResult.currentLine} (moved ${verifyResult.diff.toFixed(1)}pts)`,
+        blockerLeg: legDescriptor,
+      };
+      return null;
     }
 
     // Get de-vigged consensus fair prob for display (separate from pricing fairProb)
