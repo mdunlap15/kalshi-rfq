@@ -1518,7 +1518,9 @@
     }
 
     // Stats bar — these are QUOTE-level outcomes (did we win the RFQ auction?)
-    let html = `<div style="margin-bottom:6px; font-size:11px; color:var(--text3); font-style:italic;">Quote auction outcomes (whether our offer was accepted)</div>
+    const overallRange = formatDateRange(intel.recentMatched || [], 'matchedAt');
+    const rangeBadge = overallRange ? '<span style="color:var(--text3); font-weight:400; margin-left:10px;">· Covers: <span style="color:var(--text2);">' + overallRange + '</span></span>' : '';
+    let html = `<div style="margin-bottom:6px; font-size:11px; color:var(--text3); font-style:italic;">Quote auction outcomes (whether our offer was accepted)${rangeBadge}</div>
     <div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:16px; font-size:13px;">
       <span><span style="color:var(--text3)">Matched (all SPs):</span> <strong>${s.totalMatched || 0}</strong></span>
       <span><span style="color:var(--text3)">We Quoted:</span> <strong>${s.weQuoted || 0}</strong> (${intel.coverageRate || '-'})</span>
@@ -1546,6 +1548,7 @@
     const bySport = intel.matchedBySport || {};
     if (Object.keys(bySport).length > 0) {
       html += subSection('intel-by-sport', 'Matched Parlays by Sport', Object.keys(bySport).length + ' sports', false);
+      html += dateRangeLine(intel.recentMatched || [], 'matchedAt', 'Matched parlays covered');
       html += `<div style="overflow-x:auto;"><table style="font-size:12px;">
         <tr><th>Sport</th><th style="text-align:right">Parlays</th><th style="text-align:right">We Quoted</th><th style="text-align:right">Missed</th><th style="text-align:right">Avg To Win</th></tr>`;
       for (const [sport, info] of Object.entries(bySport).sort((a,b) => b[1].count - a[1].count)) {
@@ -1568,6 +1571,16 @@
       const summaryParts = [d.total + ' RFQs declined'];
       if (mvTotal > 0) summaryParts.push(mvTotal + ' matched missed · $' + mvStake.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) + ' stake');
       html += subSection('intel-declines', 'Declines & Missed Volume', summaryParts.join(' · '), false);
+      // Decline range (from recent decline events) + missed volume range (matched parlays we missed)
+      const declineEvents = (intel.declines && intel.declines.recentDeclineEvents) || [];
+      const nearMisses = (intel.declines && intel.declines.recentNearMisses) || [];
+      const declineRange = formatDateRange(declineEvents.length ? declineEvents : nearMisses, 'time');
+      const missedItems = (intel.recentMatched || []).filter(m => !m.weQuoted);
+      const missedRange = formatDateRange(missedItems, 'matchedAt');
+      let coverParts = [];
+      if (declineRange) coverParts.push('Declines: <span style="color:var(--text2);">' + declineRange + '</span>');
+      if (missedRange) coverParts.push('Missed: <span style="color:var(--text2);">' + missedRange + '</span>');
+      if (coverParts.length) html += '<div style="margin-bottom:6px; font-size:11px; color:var(--text3);">' + coverParts.join(' · ') + '</div>';
       html += '<div style="overflow-x:auto;"><table style="font-size:12px;">';
       html += '<tr><th>Reason</th><th style="text-align:right" title="Total RFQs declined for this reason">RFQ Declines</th><th style="text-align:right">%</th>';
       if (mvTotal > 0) html += '<th style="text-align:right" title="Matched parlays we missed">Missed Fills</th><th style="text-align:right" title="Total matched stake we missed">Missed Stake</th><th style="text-align:right">Avg Stake</th>';
@@ -1843,7 +1856,7 @@
       const nmSortClick = (col) => 'onclick="window._nmSortCol=window._nmSortCol===\'' + col + '\'?window._nmSortCol:\'' + col + '\'; if(window._nmSortCol===\'' + col + '\'){window._nmSortDir=(window._nmSortDir||-1)*-1;} else {window._nmSortCol=\'' + col + '\'; window._nmSortDir=-1;} renderMarketIntel(window._lastIntelData||{})" style="cursor:pointer;"';
 
       html += subSection('intel-near-miss', 'Near Misses (all legs known, could not price)', d.nearMissCount || allNearMisses.length, false);
-      html += `<div style="padding:6px 12px; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border);">All legs were registered, but a specific blocker stopped pricing. Click a row to see which leg caused the miss.</div>`;
+      html += `<div style="padding:6px 12px; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border);">All legs were registered, but a specific blocker stopped pricing. Click a row to see which leg caused the miss.${(() => { const r = formatDateRange(allNearMisses, 'time'); return r ? ' <span style="color:var(--text2);">· Covers: ' + r + '</span>' : ''; })()}</div>`;
       html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">'
         + '<input type="text" placeholder="Search team, detail, sport..." value="' + (window._nmSearch || '') + '" id="nm-search" oninput="window._nmSearch=this.value; rerenderWithFocus(()=>renderMarketIntel(window._lastIntelData||{}))" style="' + nmFSel + ' width:200px;">'
         + '<select onchange="window._nmReasonFilter=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + '">'
@@ -1955,6 +1968,7 @@
       const mpSortClick = (col, align) => 'onclick="window._intelSortCol=window._intelSortCol===\'' + col + '\'?window._intelSortCol:\'' + col + '\'; if(window._intelSortCol===\'' + col + '\'){window._intelSortDir=(window._intelSortDir||-1)*-1;} else {window._intelSortCol=\'' + col + '\'; window._intelSortDir=-1;} renderMarketIntel(window._lastIntelData||{})" style="cursor:pointer;' + (align?'text-align:'+align+';':'') + '"';
 
       html += subSection('intel-matched', 'Recent Matched Parlays', matched.length, false);
+      html += dateRangeLine(matched, 'matchedAt', 'Covers');
       html += `<div style="padding:8px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">
         <input type="text" placeholder="Search team..." value="${window._intelSearch || ''}"
           id="intel-search" oninput="window._intelSearch=this.value; rerenderWithFocus(()=>renderMarketIntel(window._lastIntelData||{}))"
@@ -2088,7 +2102,9 @@
 
     const winColor = winRate >= 50 ? 'var(--green)' : winRate >= 25 ? 'var(--amber)' : 'var(--red)';
     html += `<div style="font-size:20px; font-weight:700; color:${winColor}; margin-bottom:4px;">${winRate}% quote match rate</div>`;
-    html += `<div style="color:var(--text2); margin-bottom:16px;">Our quote was accepted on <strong class="positive">${wins.length}</strong> of <strong>${entries.length}</strong> quoted parlays that got matched by any SP. Outbid on <strong class="negative">${losses.length}</strong>.</div>`;
+    html += `<div style="color:var(--text2); margin-bottom:4px;">Our quote was accepted on <strong class="positive">${wins.length}</strong> of <strong>${entries.length}</strong> quoted parlays that got matched by any SP. Outbid on <strong class="negative">${losses.length}</strong>.</div>`;
+    html += dateRangeLine(entries, 'matchedAt', 'Covers') || '';
+    html += '<div style="margin-bottom:12px;"></div>';
 
     // === DETAIL TABLE with search, filter, sort ===
     const compSearch = (window._compSearch || '').toLowerCase();
@@ -2374,7 +2390,7 @@
       </select>
       ${dateFilterHtml(posState, 'posRerender', dStyle)}
       <button onclick="posState.showAdvanced=!posState.showAdvanced; posRerender()" style="${pFSel} cursor:pointer;">${posState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
-      <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${positions.length}</span>
+      <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${positions.length}${(() => { const r = formatDateRange(filtered, 'confirmedAt'); return r ? ' · ' + r : ''; })()}</span>
     </div>`;
     if (posState.showAdvanced) {
       html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
@@ -2651,7 +2667,7 @@
       + '</select>'
       + dateFilterHtml(settledState, 'function(){' + rerend + '}', sDStyle)
       + '<button onclick="settledState.showAdvanced=!settledState.showAdvanced; ' + rerend + '" style="' + sFSel + ' cursor:pointer;">' + (settledState.showAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>'
-      + '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + settled.length + '</span>'
+      + '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + settled.length + ((() => { const r = formatDateRange(filtered, 'settledAt') || formatDateRange(filtered, 'quotedAt'); return r ? ' · ' + r : ''; })()) + '</span>'
       + '</div>';
 
     if (settledState.showAdvanced) {
@@ -3621,7 +3637,7 @@
         ${allStatuses.map(s => `<option value="${s}" ${orderState.statusFilter.includes(s)?'selected':''}>${s}</option>`).join('')}
       </select>
       ${orderState.legsFilter.length > 0 ? `<button class="btn" style="font-size:11px; padding:3px 8px;" onclick="orderState.legsFilter=[]; orderRerender()">Clear team filter</button>` : ''}
-      <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${allOrders.length}</span>
+      <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${allOrders.length}${(() => { const r = formatDateRange(filtered, 'quotedAt') || formatDateRange(filtered, 'confirmedAt'); return r ? ' · ' + r : ''; })()}</span>
     </div>`;
 
     // Sort arrow
@@ -4744,7 +4760,7 @@
     const psFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
     html += dateFilterHtml(portfolioState, 'portfolioRerender', psDStyle);
     html += '<button onclick="portfolioState.showAdvanced=!portfolioState.showAdvanced; portfolioRerender()" style="' + psFSel + ' cursor:pointer;">' + (portfolioState.showAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>';
-    html += '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + settled.length + '</span>';
+    html += '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + settled.length + ((() => { const r = formatDateRange(filtered, 'settledAt') || formatDateRange(filtered, 'quotedAt'); return r ? ' · ' + r : ''; })()) + '</span>';
     html += '</div>';
 
     if (portfolioState.showAdvanced) {
@@ -5301,6 +5317,41 @@
   function fmtDollar(n) { return n != null && !isNaN(n) ? '$' + fmt(Math.abs(n)) : '-'; }
   /** Format dollar with sign: +$97,397.75 or -$1,234.56 */
   function fmtPnl(n) { return n != null && !isNaN(n) ? (n >= 0 ? '+$' : '-$') + fmt(Math.abs(n)) : '-'; }
+
+  /**
+   * Compute min/max timestamps from a list of items and format as a readable range.
+   * Accepts an array of items (or raw timestamps) and an optional field name.
+   * Returns null when no valid timestamps are found.
+   */
+  function formatDateRange(items, timeField) {
+    if (!items || !items.length) return null;
+    let minT = Infinity, maxT = -Infinity;
+    for (const i of items) {
+      const t = timeField ? (i && i[timeField]) : i;
+      if (!t) continue;
+      const n = new Date(t).getTime();
+      if (isNaN(n)) continue;
+      if (n < minT) minT = n;
+      if (n > maxT) maxT = n;
+    }
+    if (minT === Infinity) return null;
+    const a = new Date(minT), b = new Date(maxT);
+    const sameDay = a.toDateString() === b.toDateString();
+    if (sameDay) {
+      return a.toLocaleDateString([], { month: 'numeric', day: 'numeric' })
+        + ' · ' + a.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+        + '–' + b.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    }
+    const opt = { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+    return a.toLocaleString([], opt) + ' → ' + b.toLocaleString([], opt);
+  }
+
+  /** Render a "Covers: X" sub-heading line. Returns '' if range is null. */
+  function dateRangeLine(items, timeField, label) {
+    const r = formatDateRange(items, timeField);
+    if (!r) return '';
+    return '<div style="margin-bottom:6px; font-size:11px; color:var(--text3);">' + (label || 'Covers') + ': <span style="color:var(--text2);">' + r + '</span></div>';
+  }
 
   /** Check if a date string passes a from/to date filter */
   function passesDateFilter(dateStr, dateFrom, dateTo) {
@@ -7472,7 +7523,12 @@
     const allOrders = Object.values(historyState.orders)
       .sort((a, b) => (b.quotedAt || '').localeCompare(a.quotedAt || ''));
 
-    document.getElementById('history-count').textContent = allOrders.length > 0 ? allOrders.length + ' parlays' : '';
+    {
+      const hRange = formatDateRange(allOrders, 'quotedAt') || formatDateRange(allOrders, 'confirmedAt');
+      document.getElementById('history-count').textContent = allOrders.length > 0
+        ? allOrders.length + ' parlays' + (hRange ? ' · ' + hRange : '')
+        : '';
+    }
 
     if (allOrders.length === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No historical parlays yet</div></div>';
