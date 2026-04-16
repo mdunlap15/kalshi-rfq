@@ -517,11 +517,15 @@
     <div class="content-header">
       <h2 id="section-title">Dashboard</h2>
       <div class="stat-bar">
-        <span class="stat-item"><span class="stat-label">Lines:</span> <span class="stat-val" id="stat-lines">-</span> <span class="stat-label" id="stat-lines-sub" style="font-size:11px;"></span></span>
-        <span class="stat-item"><span class="stat-label">Quotes:</span> <span class="stat-val" id="stat-quotes">0</span></span>
-        <span class="stat-item"><span class="stat-label">Confirmed:</span> <span class="stat-val" id="stat-confirmed">0</span></span>
-        <span class="stat-item"><span class="stat-label">Settled:</span> <span class="stat-val" id="stat-settled">0</span></span>
+        <span class="stat-item"><span class="stat-label">Lines:</span> <span class="stat-val" id="stat-lines">-</span> <span class="stat-label" style="font-size:10px; color:var(--text3);">active now</span><br><span class="stat-label" id="stat-lines-sub" style="font-size:11px;"></span></span>
+        <span class="stat-item"><span class="stat-label">Quotes:</span> <span class="stat-val" id="stat-quotes">0</span> <span class="stat-label stat-window-lbl" style="font-size:10px; color:var(--text3);">today</span></span>
+        <span class="stat-item"><span class="stat-label">Confirmed:</span> <span class="stat-val" id="stat-confirmed">0</span> <span class="stat-label stat-window-lbl" style="font-size:10px; color:var(--text3);">today</span></span>
+        <span class="stat-item"><span class="stat-label">Settled:</span> <span class="stat-val" id="stat-settled">0</span> <span class="stat-label stat-window-lbl" style="font-size:10px; color:var(--text3);">today</span></span>
         <span class="stat-item"><span class="stat-label">P&L:</span> <span class="stat-val" id="stat-pnl">$0.00</span></span>
+        <span class="stat-item" style="margin-left:auto; display:flex; gap:4px; align-items:center;">
+          <span style="font-size:10px; color:var(--text3); margin-right:2px;">Window:</span>
+          <span id="stats-window-buttons"></span>
+        </span>
         <span class="stat-item">
           <span id="countdown-display" style="font-size:11px; color:var(--text3);">-</span>
           <div class="refresh-indicator" id="refresh-indicator" style="display:none;"><div class="spinner"></div></div>
@@ -1036,6 +1040,104 @@
   }
 
   // -----------------------------------------------------------------------
+  // STATS WINDOW — consistent timeframe across Quotes / Confirmed / Settled.
+  // Lines is a live snapshot and always ignores the window.
+  // -----------------------------------------------------------------------
+  if (!window._statsWindow) window._statsWindow = 'today';
+  const STATS_WINDOWS = [
+    { key: 'today', label: 'Today' },   // since midnight local
+    { key: '24h',   label: '24h',  ms: 24 * 3600 * 1000 },
+    { key: '7d',    label: '7d',   ms: 7 * 24 * 3600 * 1000 },
+    { key: '30d',   label: '30d',  ms: 30 * 24 * 3600 * 1000 },
+    { key: 'all',   label: 'All' },
+  ];
+  function setStatsWindow(key) {
+    window._statsWindow = key;
+    renderStatsWindowButtons();
+    // Re-run the status stats update (don't fetch; use cached window._lastStatusData)
+    if (window._lastStatusData) updateStatsFromStatus(window._lastStatusData);
+  }
+  function renderStatsWindowButtons() {
+    const el = document.getElementById('stats-window-buttons');
+    if (!el) return;
+    const current = window._statsWindow;
+    const btnStyle = (active) => 'cursor:pointer; padding:2px 8px; border-radius:3px; font-size:10px; border:1px solid var(--border); background:' + (active ? 'var(--accent)' : 'transparent') + '; color:' + (active ? '#fff' : 'var(--text3)') + ';';
+    el.innerHTML = STATS_WINDOWS.map(w =>
+      '<button style="' + btnStyle(current === w.key) + '" onclick="setStatsWindow(\'' + w.key + '\')">' + w.label + '</button>'
+    ).join(' ');
+  }
+  /** Return the earliest timestamp (ISO) that counts as "in window." */
+  function statsWindowCutoff() {
+    const key = window._statsWindow || 'today';
+    if (key === 'all') return null; // no cutoff
+    if (key === 'today') {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0); // local midnight
+      return d.toISOString();
+    }
+    const wdef = STATS_WINDOWS.find(w => w.key === key);
+    if (!wdef || !wdef.ms) return null;
+    return new Date(Date.now() - wdef.ms).toISOString();
+  }
+  function statsWindowLabel() {
+    const wdef = STATS_WINDOWS.find(w => w.key === window._statsWindow);
+    return wdef ? wdef.label.toLowerCase() : 'today';
+  }
+  /** Count orders whose given timestamp field falls in the current window. */
+  function countInStatsWindow(orders, timeField) {
+    const cutoff = statsWindowCutoff();
+    if (!cutoff) {
+      // "All" — count every order that has a truthy value in that field
+      let n = 0;
+      for (const o of orders) if (o[timeField]) n++;
+      return n;
+    }
+    let n = 0;
+    for (const o of orders) {
+      const t = o[timeField];
+      if (t && t >= cutoff) n++;
+    }
+    return n;
+  }
+
+  /** Compute and write the Quotes/Confirmed/Settled stats from cached status+orders. */
+  function updateStatsFromStatus(statusData) {
+    const o = statusData?.orders || {};
+    // Lines stays a live snapshot
+    document.getElementById('stat-lines').textContent = (statusData?.lines?.registered || 0).toLocaleString();
+    const lineSummary = statusData?.lines?.bySportAndMarket || {};
+    const sportCounts = {};
+    for (const [key, count] of Object.entries(lineSummary)) {
+      const sport = key.split('/')[0];
+      sportCounts[sport] = (sportCounts[sport] || 0) + count;
+    }
+    document.getElementById('stat-lines-sub').textContent = Object.entries(sportCounts)
+      .map(([s, c]) => sportLabel(s) + ': ' + c).join(' · ');
+
+    // Quotes / Confirmed / Settled — filter by selected window using client-side allOrders
+    const allOrders = Object.values(orderState.allOrders || {});
+    const w = window._statsWindow;
+    let quotes, confirmed, settled;
+    if (w === 'all') {
+      // Use backend lifetime totals for "All"
+      quotes = o.totalQuotes || 0;
+      confirmed = o.totalConfirmations || 0;
+      settled = o.totalSettlements || 0;
+    } else {
+      quotes    = countInStatsWindow(allOrders, 'quotedAt');
+      confirmed = countInStatsWindow(allOrders, 'confirmedAt');
+      settled   = countInStatsWindow(allOrders, 'settledAt');
+    }
+    document.getElementById('stat-quotes').textContent    = quotes.toLocaleString();
+    document.getElementById('stat-confirmed').textContent = confirmed.toLocaleString();
+    document.getElementById('stat-settled').textContent   = settled.toLocaleString();
+
+    // Update all timeframe labels
+    const lbl = statsWindowLabel();
+    document.querySelectorAll('.stat-window-lbl').forEach(el => { el.textContent = lbl; });
+  }
+
+  // -----------------------------------------------------------------------
   // RENDER STATUS
   // -----------------------------------------------------------------------
 
@@ -1071,21 +1173,11 @@
     document.getElementById('uptime').textContent = svc.ready ?
       'Up ' + formatDuration(svc.uptime) : 'Not ready';
 
-    // Stats
+    // Stats — windowed view (Today/24h/7d/30d/All). Lines is always a live snapshot.
+    window._lastStatusData = data;
+    renderStatsWindowButtons();
+    updateStatsFromStatus(data);
     const o = data.orders || {};
-    document.getElementById('stat-lines').textContent = (data.lines?.registered || 0).toLocaleString();
-    const lineSummary = data.lines?.bySportAndMarket || {};
-    const sportCounts = {};
-    for (const [key, count] of Object.entries(lineSummary)) {
-      const sport = key.split('/')[0];
-      sportCounts[sport] = (sportCounts[sport] || 0) + count;
-    }
-    document.getElementById('stat-lines-sub').textContent = Object.entries(sportCounts)
-      .map(([s, c]) => `${sportLabel(s)}: ${c}`).join(' · ');
-
-    document.getElementById('stat-quotes').textContent = (o.totalQuotes || 0).toLocaleString();
-    document.getElementById('stat-confirmed').textContent = (o.totalConfirmations || 0).toLocaleString();
-    document.getElementById('stat-settled').textContent = (o.totalSettlements || 0).toLocaleString();
 
     // Notification badge update moved out of renderStatus — it needs
     // data.recentOrders which only exists on the /orders response, not
@@ -3725,6 +3817,12 @@
     // Merge new orders into existing set (keyed by parlayId) so data survives refreshes
     for (const o of orders) {
       if (o.parlayId) orderState.allOrders[o.parlayId] = o;
+    }
+
+    // Now that allOrders has fresh entries, re-compute the windowed stats so the
+    // Quotes/Confirmed/Settled counters in the top bar reflect this update.
+    if (window._lastStatusData && typeof updateStatsFromStatus === 'function') {
+      updateStatsFromStatus(window._lastStatusData);
     }
 
     // Render P&L by Sport
