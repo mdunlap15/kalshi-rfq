@@ -2017,16 +2017,23 @@
               // Convert unknownCategories to leg-shaped objects so buildLegTable
               // can render them alongside (or instead of) known legs. Tagged
               // wasUnregistered so highlightUnregistered amber-flags them.
-              const pseudoUnknownLegs = unknownCats.map(uc => ({
-                team: uc.eventName || '(unknown event)',
-                market: uc.category || 'unknown',
-                line: uc.line,
-                sport: uc.sport || 'unknown',
-                wasUnregistered: true,
-                // Surface the per-leg detail text as a fake teamName suffix so
-                // the selection column shows the full "player prop: ..." hint.
-                teamName: (uc.eventName || '') + (uc.detail ? ' — ' + uc.detail : ''),
-              }));
+              const pseudoUnknownLegs = unknownCats.map(uc => {
+                // Prefer the actual PX market name (e.g. "LeBron James Made
+                // Threes", "1st Quarter Spread") when the resolver captured
+                // one — it identifies the exact unregistered market. Fall
+                // back to the event name otherwise.
+                const label = uc.marketName
+                  ? uc.marketName + ' (' + (uc.eventName || 'unknown event') + ')'
+                  : (uc.eventName || '(unknown event)');
+                return {
+                  team: label,
+                  market: uc.category || 'unknown',
+                  line: uc.line,
+                  sport: uc.sport || 'unknown',
+                  wasUnregistered: true,
+                  teamName: label,
+                };
+              });
               const allLegs = [...knownLegs, ...pseudoUnknownLegs];
               const legCount = rd.legCount || allLegs.length || 0;
               detailHtml += '<div style="margin-bottom:10px; padding:6px 8px; background:var(--surface2); border-radius:4px;">';

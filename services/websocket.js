@@ -398,6 +398,13 @@ async function handleRFQ(data) {
               // Sub-game detected by name in the spread/total market walk
               category = 'sub_game';
               detail = `sub-game: ${resolveFailure.marketName}`;
+            } else if (resolveReason === 'player_prop_market') {
+              // Line-manager identified a player prop market by name even
+              // though PX tagged it with a supported type (e.g. "total").
+              // marketName carries the actual prop label (e.g. "LeBron
+              // James Made Threes").
+              category = 'player_prop';
+              detail = `player prop: ${resolveFailure.marketName}`;
             } else if (resolveReason === 'unknown_event') {
               category = 'unknown_event';
               detail = `event ${resolveFailure.eventId} not in lineManager`;
@@ -489,6 +496,11 @@ async function handleRFQ(data) {
             isKnownEvent,
             resolveReason,
             resolveDetail,
+            // Surface the human-readable PX market name (e.g. "LeBron
+            // James Made Threes", "1st Quarter Spread") when the resolver
+            // captured one, so the dashboard can show *exactly* what
+            // unregistered market this leg belongs to.
+            marketName: (resolveFailure && resolveFailure.marketName) || null,
           });
         }
       }
