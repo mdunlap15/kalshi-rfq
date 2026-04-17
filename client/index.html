@@ -5747,6 +5747,51 @@
     return map[sport] || (sport === 'unknown' ? 'Unknown' : sport);
   }
 
+  /**
+   * Collapse every leg-sport string variant into ONE canonical label.
+   *
+   * Raw leg.sport can appear under multiple conventions depending on the
+   * source of the order:
+   *   - odds-feed registrations: "basketball_nba", "baseball_mlb",
+   *     "soccer_epl", "soccer_spain_la_liga"
+   *   - PX backfill / historical: "NBA", "Baseball", "Ice Hockey", "Soccer"
+   *   - Kalshi / Pinnacle merges: "hockey", "basketball"
+   *
+   * Without normalization, P&L-by-sport charts show Baseball AND MLB as
+   * separate rows, and every soccer league as its own bucket. This helper
+   * maps them all to a single canonical pretty name — the grouping key
+   * the dashboard should use for aggregation views. sportLabel() still
+   * exists for when a specific league's own label is useful (e.g. "EPL").
+   */
+  function canonicalSport(raw) {
+    const s = (raw || '').toLowerCase().trim();
+    if (!s || s === 'unknown') return 'Unknown';
+    // Soccer — every league and the generic "soccer" collapse together
+    if (s === 'soccer' || s.startsWith('soccer_') || s === 'mls' || s === 'epl' ||
+        s === 'serie a' || s === 'la liga' || s === 'bundesliga' ||
+        s === 'ligue 1' || s === 'uel' || s === 'ucl' || s === 'nwsl') return 'Soccer';
+    // Basketball variants
+    if (s === 'basketball_nba' || s === 'nba' || s === 'basketball') return 'NBA';
+    if (s === 'basketball_ncaab' || s === 'ncaab') return 'NCAAB';
+    if (s === 'basketball_wnba' || s === 'wnba') return 'WNBA';
+    // Baseball
+    if (s === 'baseball_mlb' || s === 'mlb' || s === 'baseball') return 'MLB';
+    // Hockey
+    if (s === 'icehockey_nhl' || s === 'nhl' || s === 'hockey' || s === 'ice hockey') return 'NHL';
+    // Tennis
+    if (s === 'tennis') return 'Tennis';
+    // Golf — matchups AND tournament outrights both roll up to Golf
+    if (s === 'golf_matchups' || s === 'golf_pga_championship' || s === 'golf' || s === 'pga' || s === 'lpga') return 'Golf';
+    // Combat sports
+    if (s === 'mma_mixed_martial_arts' || s === 'mma' || s === 'ufc') return 'MMA';
+    if (s === 'boxing_boxing' || s === 'boxing') return 'Boxing';
+    // Football (unlikely today but supported sports key)
+    if (s === 'americanfootball_nfl' || s === 'nfl') return 'NFL';
+    if (s === 'americanfootball_ncaaf' || s === 'ncaaf') return 'NCAAF';
+    // Last resort — Title-case the raw value so it still renders readably
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }
+
   function sportPill(sport) {
     const label = sportLabel(sport);
     // Map label to CSS class
@@ -7245,9 +7290,14 @@
     const el = document.getElementById('chart-pnl-sport');
     if (settled.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>'; return; }
 
+    // Use canonicalSport to collapse variants (Baseball == MLB,
+    // basketball_nba == NBA, every soccer_* league == Soccer, etc.).
+    // Without this, historical PX-backfilled orders and odds-feed
+    // orders show up as separate bars for the same physical sport.
     const bySport = {};
     for (const o of settled) {
-      const sport = (o.legs || o.meta?.legs || [])[0]?.sport || 'unknown';
+      const raw = (o.legs || o.meta?.legs || [])[0]?.sport || 'unknown';
+      const sport = canonicalSport(raw);
       if (!bySport[sport]) bySport[sport] = { pnl: 0, wins: 0, losses: 0 };
       bySport[sport].pnl += (o.pnl || 0);
       if (o.pnl > 0) bySport[sport].wins++; else if (o.pnl < 0) bySport[sport].losses++;
