@@ -434,16 +434,27 @@ async function handleRFQ(data) {
                 category = 'player_prop';
                 detail = `line ${lineNum} (walked ${resolveFailure?.marketTypesFound?.length || '?'} markets, no match)`;
               } else if (eventSport.includes('basketball') && absLine > 100) {
-                category = 'alt_total'; // game total like 224.5
+                // Real NBA game totals (e.g., 224.5) — over 100 is the only
+                // line range that isn't a player prop or alt-spread.
+                category = 'alt_total';
                 detail = `line ${lineNum}`;
-              } else if (eventSport.includes('basketball') && absLine >= 15 && absLine <= 60) {
-                // Narrow bucket — most fall into player_prop above, remainder
-                // are genuine team totals
-                category = 'team_total';
+              } else if (eventSport.includes('basketball') && absLine > 60 && absLine <= 100) {
+                // Possible team-half-total (e.g., 55.5) — narrow band, could
+                // also be alt game total. Tag as alt_total since team_total
+                // for NBA is very rarely registered as a primary anyway.
+                category = 'alt_total';
                 detail = `line ${lineNum}`;
-              } else if (eventSport.includes('basketball') && absLine <= 14) {
-                category = 'alt_spread';
-                detail = `line ${lineNum}`;
+              } else if (eventSport.includes('basketball')) {
+                // 0.5–60 range. Real NBA team totals are 100+, real
+                // alt-spreads of registered primaries already routed to
+                // 'alt_line' via origLine match above. What lands here is
+                // overwhelmingly player props (points, rebounds, assists,
+                // threes, blocks, steals) — line values 0.5–14 (rebounds /
+                // assists / made threes) and 14.5–60 (player points). Bias
+                // to player_prop since prior heuristic mis-tagged thousands
+                // as team_total and alt_spread.
+                category = 'player_prop';
+                detail = `line ${lineNum} (likely player prop)`;
               } else if (eventSport.includes('baseball') && absLine >= 5 && absLine <= 15) {
                 category = 'alt_total';
                 detail = `line ${lineNum}`;
