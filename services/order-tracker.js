@@ -716,34 +716,31 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     marketStats.weWon++;
     marketStats.weQuoted++;
   } else if (weQuoted) {
-    // Check if this broadcast is actually another SP's fill on a parlay we also quoted.
-    // If the matched odds/stake don't match what we offered, it's another SP — not us losing.
-    const ourOdds = Math.abs(ourQuote.offeredOdds || 0);
-    const broadcastOdds = Math.abs(matchedOdds || 0);
-    const isOurFill = Math.abs(ourOdds - broadcastOdds) < 2; // within rounding
-    if (!isOurFill) {
-      // Another SP's fill — we might still win our portion
-      log.debug('Market', `Other SP fill on parlay we quoted: our=${ourQuote.offeredOdds}, matched=${matchedOdds}`);
-      outcome = 'other_sp';
-      marketStats.totalMatched--; // don't count as a separate match for us
-      // Don't change our order status — we might still get confirmed
-    } else {
-      outcome = 'lost'; // we quoted at similar odds but didn't win
-      marketStats.weLost++;
-    }
+    // We quoted this parlay but order.finalized didn't set our status to
+    // 'confirmed' — so a different SP won the auction. matched_odds is the
+    // winner's price (possibly different from ours, possibly identical due
+    // to tiebreaker on tied integer odds).
+    //
+    // Prior version of this branch filtered losses where |ourOdds - matchedOdds| > 2
+    // as 'other_sp' on the theory that PX splits parlays across SPs. In
+    // practice that filter silently discarded the vast majority of real
+    // outbid events — 98% of surviving 'lost' entries had matchedOdds
+    // identical to ours (because those were the only ones that passed the
+    // filter). True outbids were never tracked. Removed the heuristic;
+    // authoritative signal is our own order status.
+    outcome = 'lost';
+    marketStats.weLost++;
     marketStats.weQuoted++;
-    if (outcome === 'lost') {
-      // Update order status to 'lost' so dashboard reflects it
-      ourQuote.status = 'lost';
-      ourQuote.lostAt = new Date().toISOString();
-      ourQuote.winningOdds = matchedOdds != null ? -matchedOdds : null;
-      ourQuote.winningStake = matchedStake;
-      ourQuote.meta = ourQuote.meta || {};
-      ourQuote.meta.winningOdds = ourQuote.winningOdds;
-      ourQuote.meta.winningStake = ourQuote.winningStake;
-      ourQuote.meta.lostAt = ourQuote.lostAt;
-      db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(outbid) failed: ${err.message}`));
-    }
+    // Update order status to 'lost' so dashboard reflects it
+    ourQuote.status = 'lost';
+    ourQuote.lostAt = new Date().toISOString();
+    ourQuote.winningOdds = matchedOdds != null ? -matchedOdds : null;
+    ourQuote.winningStake = matchedStake;
+    ourQuote.meta = ourQuote.meta || {};
+    ourQuote.meta.winningOdds = ourQuote.winningOdds;
+    ourQuote.meta.winningStake = ourQuote.winningStake;
+    ourQuote.meta.lostAt = ourQuote.lostAt;
+    db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(outbid) failed: ${err.message}`));
   } else {
     outcome = 'missed';
     marketStats.missedNoQuote++;
@@ -770,8 +767,9 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     unknownLegDetails: declineInfo?.unknownDetails || [],
   };
 
-  // Don't store other_sp fills as separate matched entries
-  if (outcome === 'other_sp') return entry;
+  // (previously: early-return for 'other_sp' outcome — that branch was removed
+  // along with the isOurFill heuristic; no outcome can reach this point that
+  // should skip persistence.)
 
   matchedParlays.unshift(entry); // newest first
   db.saveMatchedParlay(entry).catch(() => {});
@@ -4322,6 +4320,37 @@ async function loadFromDb() {
     }
   }
   log.info('DB', `Loaded ${dbMatched.length} matched parlays`);
+
+  // One-time cleanup: promote orphaned 'quoted' orders to 'lost'.
+  // The previous matched-parlay classification bug filtered most true
+  // outbid events out of the 'lost' branch (as 'other_sp'), leaving our
+  // order status stuck at 'quoted' forever. Those quotes never received
+  // a confirmation, so by definition they were outbid. Any quote older
+  // than 30 min with status still 'quoted' is safe to mark lost.
+  // Newly-submitted quotes legitimately sit at 'quoted' for seconds —
+  // the 30-min threshold skips those. Does not invent winning-odds data
+  // (we don't have it for historical events).
+  {
+    const STALE_QUOTE_MINUTES = 30;
+    const cutoff = Date.now() - STALE_QUOTE_MINUTES * 60 * 1000;
+    let promoted = 0;
+    for (const o of Object.values(orders)) {
+      if (o.status !== 'quoted') continue;
+      const quotedMs = o.quotedAt ? new Date(o.quotedAt).getTime() : null;
+      if (quotedMs == null || quotedMs > cutoff) continue;
+      o.status = 'lost';
+      o.lostAt = new Date().toISOString();
+      o.meta = o.meta || {};
+      o.meta.lostAt = o.lostAt;
+      o.meta.lostReason = 'orphaned-quote-cleanup';
+      promoted++;
+      // Fire-and-forget persistence — don't block boot on Supabase writes.
+      db.saveOrder(o).catch(() => {});
+    }
+    if (promoted > 0) {
+      log.info('DB', `Orphaned-quote cleanup: promoted ${promoted} stale 'quoted' orders to 'lost'`);
+    }
+  }
 
   // Load declines in background — the declines table is too large for a
   // synchronous startup query. Positions and P&L don't depend on it.
