@@ -5500,14 +5500,29 @@
     const balanceCls = balanceNum != null && balanceNum < 500 ? 'negative'
                      : balanceNum != null && balanceNum < 2000 ? '' : 'positive';
 
+    // Cash to Deploy = PX balance − currently-deployed risk. PX's balance
+    // field reports TOTAL account value (matched_wager_balance = 0 in the
+    // payload confirms PX lumps matched stakes into the overall balance,
+    // not a separate locked bucket). Showing Balance and Deployed as two
+    // separate columns previously created the illusion of total ≈ 1.5x
+    // account because they double-counted the matched-stake portion.
+    // Real "cash free to bet" = balance − deployed.
+    const cashFree = (balanceNum != null && !isNaN(balanceNum)) ? (balanceNum - portRisk) : null;
+    const cashFreeStr = cashFree != null ? fmtDollar(cashFree) : '-';
+    const cashFreeCls = cashFree == null ? ''
+      : cashFree < 500 ? 'negative'
+      : cashFree < 2000 ? ''
+      : 'positive';
+
     const html = `<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">
       <div class="stat-bar" style="gap:6px 18px;">
         ${stat('P&L', pnlStr, pnlCls)}
         ${stat('ROI', roiStr, roiCls, 'Settled P&L / settled risk')}
         ${stat('Active', active)}
-        ${stat('Deployed', portStr, portCls)}
+        ${stat('Deployed', portStr, portCls, 'Risk locked in open confirmed parlays (included in Account Balance)')}
         ${stat('To Win', fmtDollar(totalToWin), 'positive')}
-        ${stat('Cash Available', balanceStr, balanceCls, 'PX available cash (excludes amount locked in open parlays)')}
+        ${stat('Account Balance', balanceStr, balanceCls, 'Total PX account balance — includes the Deployed amount')}
+        ${stat('Cash to Deploy', cashFreeStr, cashFreeCls, 'Account Balance − Deployed = real cash free for new parlays')}
         ${stat('Filled', confirmed)}
       </div>
     </div>`;

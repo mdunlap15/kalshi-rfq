@@ -1423,6 +1423,20 @@ function isOrderStalePhantom(order) {
   const now = Date.now();
   const cutoff = STALE_PHANTOM_HOURS * 3600 * 1000;
 
+  // NEW: treat 'confirmed' orders with no orderUuid older than 10 min
+  // as phantoms. Under Alec's confirmed PX event model, a real fill
+  // produces BOTH order.matched (without orderUuid) AND order.finalized
+  // (with orderUuid). If 10 min have passed since we promoted to
+  // 'confirmed' via the matched path but order.finalized never showed
+  // up, the fill was almost certainly not actually placed on PX and
+  // it's inflating our Deployed number. Exclude from risk.
+  //
+  // 10 min is generous — in practice finalize arrives within seconds.
+  if (order.status === 'confirmed' && !order.orderUuid) {
+    const ca = order.confirmedAt;
+    if (ca && (now - new Date(ca).getTime()) > 10 * 60 * 1000) return true;
+  }
+
   let latestStart = 0;
   let hasAnyTime = false;
   for (const leg of legs) {
