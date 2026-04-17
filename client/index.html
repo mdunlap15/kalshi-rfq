@@ -2430,6 +2430,17 @@
       ? `${totalFills} filled of ${totalSubmitted} quoted (${(totalFills/totalSubmitted*100).toFixed(1)}%)`
       : '';
 
+    // Color thresholds: combine absolute floors/ceilings with
+    // relative-to-overall-mean. Green requires cell % meaningfully
+    // above the session mean AND at least somewhat good absolutely.
+    // Red = well below mean OR catastrophic absolute rate. Adapts to
+    // whatever baseline the session settles at (3% mean → green at
+    // 15%, red below 1.3%) without calling a relatively-better-than-
+    // dismal cell "good".
+    const overallRatePct = totalSubmitted > 0 ? (totalFills / totalSubmitted * 100) : 0;
+    const greenAt = Math.max(overallRatePct * 1.5, 15);
+    const redAt = Math.min(overallRatePct * 0.5, 5);
+
     let html = '';
     // Session-scoped data — the counters live in memory and reset on
     // boot. Show when this window started so the operator knows.
@@ -2443,14 +2454,15 @@
       + '<strong>Fill %</strong> = parlays PX filled with our offer &divide; parlays we quoted &mdash; this measures <em>auction</em> outcomes, not settlement. '
       + 'A fill means we won the RFQ auction (PX chose our price); whether we profit depends on how the legs play out. '
       + 'PX only notifies us privately on our own fills, so auction losses are inferred from quotes that never matched &mdash; we don\'t see competitors\' prices. '
-      + 'Parlays tagged <em>Multi</em> span multiple sports.'
+      + 'Parlays tagged <em>Multi</em> span multiple sports. '
+      + '<span style="color:var(--text2);">Colors adapt to this session\'s overall rate (' + overallRatePct.toFixed(1) + '%): '
+      + '<span style="color:var(--green);">green</span> &ge; ' + greenAt.toFixed(1) + '%, '
+      + '<span style="color:var(--red);">red</span> &le; ' + redAt.toFixed(1) + '%, amber in between.</span>'
       + '</div>';
     html += '<div style="overflow-x:auto; padding:0 12px 12px;"><table style="font-size:13px; min-width:680px; border-collapse:separate; border-spacing:3px;">';
     html += '<tr><th style="text-align:left; padding:6px 12px;">Sport</th>';
     for (const b of legBuckets) html += '<th style="text-align:center; padding:6px 12px;">' + b.label + '</th>';
     html += '<th style="text-align:center; padding:6px 12px; color:var(--text3);">Row total</th></tr>';
-    // Helper to build a single sport/sub-league row. Used for both the
-    // top-level canonical-sport row and the indented sub-league detail rows.
     // Build a single row (top-level sport OR sub-league detail). Sub-rows
     // go in the SAME outer table — not nested — so columns align automatically.
     // Visibility of sub-rows is controlled by a shared CSS class tied to
@@ -2487,9 +2499,16 @@
         rowSubmitted += c.submitted;
         rowFills += c.fills;
         const wr = c.submitted > 0 ? (c.fills / c.submitted * 100) : 0;
-        const wrColor = wr >= 50 ? 'rgba(63,185,80,0.18)' : wr >= 25 ? 'rgba(210,153,34,0.18)' : 'rgba(248,81,73,0.18)';
-        const wrTextColor = wr >= 50 ? 'var(--green)' : wr >= 25 ? 'var(--amber)' : 'var(--red)';
-        const tooltip = c.fills + ' filled / ' + c.submitted + ' quoted';
+        // Combined absolute + relative color scheme (see greenAt/redAt above).
+        const wrColor = wr >= greenAt ? 'rgba(63,185,80,0.18)'
+                      : wr <= redAt   ? 'rgba(248,81,73,0.18)'
+                      : 'rgba(210,153,34,0.18)';
+        const wrTextColor = wr >= greenAt ? 'var(--green)'
+                          : wr <= redAt   ? 'var(--red)'
+                          : 'var(--amber)';
+        const relDelta = wr - overallRatePct;
+        const relStr = (relDelta >= 0 ? '+' : '') + relDelta.toFixed(1) + 'pp vs overall ' + overallRatePct.toFixed(1) + '%';
+        const tooltip = c.fills + ' filled / ' + c.submitted + ' quoted · ' + relStr;
         const wrFontSize = isSubRow ? '16px' : '22px';
         const nFontSize = isSubRow ? '12px' : '14px';
         row += '<td style="padding:8px 12px; text-align:center; background:' + wrColor + '; border-radius:4px;" title="' + tooltip + '">'
