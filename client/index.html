@@ -2361,6 +2361,107 @@
     html += dateRangeLine(entries, 'matchedAt', 'Covers') || '';
     html += '<div style="margin-bottom:12px;"></div>';
 
+    // === GAP BY SPORT × LEG COUNT — where we're competitive vs where we're getting outbid ===
+    // For each (sport, legCountBucket) cell: count, win rate, and average
+    // gap on LOSSES. gapProb > 0 on a loss means we were tighter than the
+    // winning SP — i.e. how much looser we'd need to be to compete in that
+    // bucket. Negative means we were already looser and still lost (a
+    // different problem — speed, slots, or something else).
+    html += '<div style="font-size:13px; font-weight:600; color:var(--text2); margin-bottom:6px;">Gap by Sport &times; Leg Count</div>';
+    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:8px;">'
+      + 'Each cell shows <strong>win %</strong> (N parlays) over <strong>avg gap on losses</strong> — positive means we were tighter than the winning SP; loosen to compete. Parlays tagged <em>Multi</em> span multiple sports.'
+      + '</div>';
+    const legBuckets = [
+      { label: '2 legs', min: 2, max: 2 },
+      { label: '3 legs', min: 3, max: 3 },
+      { label: '4 legs', min: 4, max: 4 },
+      { label: '5-6 legs', min: 5, max: 6 },
+      { label: '7+ legs', min: 7, max: Infinity },
+    ];
+    const byCell = {};
+    const sportsSeen = new Set();
+    for (const e of entries) {
+      const legs = e.legs || [];
+      const sports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
+      const sport = sports.length === 0 ? 'Unknown' : sports.length === 1 ? sports[0] : 'Multi';
+      sportsSeen.add(sport);
+      const bucket = legBuckets.find(b => e.legCount >= b.min && e.legCount <= b.max);
+      if (!bucket) continue;
+      const cellKey = sport + '|' + bucket.label;
+      if (!byCell[cellKey]) byCell[cellKey] = { n: 0, wins: 0, lossGapSum: 0, lossGapN: 0 };
+      byCell[cellKey].n++;
+      if (e.won) byCell[cellKey].wins++;
+      else { byCell[cellKey].lossGapSum += e.gapProb; byCell[cellKey].lossGapN++; }
+    }
+    const sportRows = [...sportsSeen].sort((a, b) => {
+      // Count cells row-wise to sort by most-data first (most actionable)
+      const na = legBuckets.reduce((s, bu) => s + (byCell[a + '|' + bu.label]?.n || 0), 0);
+      const nb = legBuckets.reduce((s, bu) => s + (byCell[b + '|' + bu.label]?.n || 0), 0);
+      return nb - na;
+    });
+    html += '<div style="overflow-x:auto; margin-bottom:16px;"><table style="font-size:11px; min-width:520px;">';
+    html += '<tr><th style="text-align:left; padding:4px 10px;">Sport</th>';
+    for (const b of legBuckets) html += '<th style="text-align:center; padding:4px 10px;">' + b.label + '</th>';
+    html += '<th style="text-align:center; padding:4px 10px; color:var(--text3);">Row total</th></tr>';
+    for (const sp of sportRows) {
+      let rowN = 0, rowWins = 0;
+      html += '<tr><td style="padding:4px 10px; font-weight:600;">' + sportLabel(sp) + '</td>';
+      for (const b of legBuckets) {
+        const c = byCell[sp + '|' + b.label];
+        if (!c || c.n === 0) {
+          html += '<td style="padding:4px 10px; text-align:center; color:var(--text3);">&mdash;</td>';
+          continue;
+        }
+        rowN += c.n;
+        rowWins += c.wins;
+        const wr = c.n > 0 ? (c.wins / c.n * 100) : 0;
+        const avgLossGap = c.lossGapN > 0 ? (c.lossGapSum / c.lossGapN) : null;
+        // Color-code cells: green if we're winning >=50%, amber 25-50%, red <25%.
+        // Background uses a low alpha so text stays legible on dark theme.
+        const wrColor = wr >= 50 ? 'rgba(63,185,80,0.15)' : wr >= 25 ? 'rgba(210,153,34,0.15)' : 'rgba(248,81,73,0.15)';
+        const wrTextColor = wr >= 50 ? 'var(--green)' : wr >= 25 ? 'var(--amber)' : 'var(--red)';
+        const gapText = avgLossGap != null
+          ? (avgLossGap >= 0 ? '+' : '') + avgLossGap.toFixed(2) + 'pp'
+          : '&mdash;';
+        const gapColor = avgLossGap != null
+          ? (avgLossGap > 2 ? 'var(--red)' : avgLossGap > 0.5 ? 'var(--amber)' : 'var(--text3)')
+          : 'var(--text3)';
+        html += '<td style="padding:4px 10px; text-align:center; background:' + wrColor + ';" title="' + c.wins + ' matched / ' + c.n + ' quoted. Avg gap on losses: ' + gapText + '">'
+          + '<div style="color:' + wrTextColor + '; font-weight:600;">' + wr.toFixed(0) + '%</div>'
+          + '<div style="color:var(--text3); font-size:10px;">(' + c.n + ')</div>'
+          + '<div style="color:' + gapColor + '; font-size:10px;">' + gapText + '</div>'
+          + '</td>';
+      }
+      const rowWr = rowN > 0 ? (rowWins / rowN * 100).toFixed(0) + '%' : '-';
+      html += '<td style="padding:4px 10px; text-align:center; color:var(--text3);">'
+        + '<div style="color:var(--text2);">' + rowWr + '</div>'
+        + '<div style="font-size:10px;">(' + rowN + ')</div>'
+        + '</td></tr>';
+    }
+    // Column totals footer
+    html += '<tr style="border-top:1px solid var(--border);"><td style="padding:4px 10px; color:var(--text3);">Col total</td>';
+    for (const b of legBuckets) {
+      let colN = 0, colWins = 0;
+      for (const sp of sportRows) {
+        const c = byCell[sp + '|' + b.label];
+        if (!c) continue;
+        colN += c.n;
+        colWins += c.wins;
+      }
+      const colWr = colN > 0 ? (colWins / colN * 100).toFixed(0) + '%' : '-';
+      html += '<td style="padding:4px 10px; text-align:center; color:var(--text3);">'
+        + '<div style="color:var(--text2);">' + colWr + '</div>'
+        + '<div style="font-size:10px;">(' + colN + ')</div>'
+        + '</td>';
+    }
+    const gTotal = entries.length;
+    const gWins = wins.length;
+    const gWr = gTotal > 0 ? (gWins / gTotal * 100).toFixed(0) + '%' : '-';
+    html += '<td style="padding:4px 10px; text-align:center; color:var(--text2); font-weight:600;">'
+      + gWr + '<div style="font-size:10px; color:var(--text3); font-weight:400;">(' + gTotal + ')</div>'
+      + '</td></tr>';
+    html += '</table></div>';
+
     // === DETAIL TABLE with search, filter, sort ===
     const compSearch = (window._compSearch || '').toLowerCase();
     const compOutcomeFilter = window._compOutcomeFilter || '';
