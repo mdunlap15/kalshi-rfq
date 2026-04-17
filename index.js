@@ -128,6 +128,26 @@ async function startup() {
       } catch (err) {
         log.warn('Startup', `    ✗ PX reconcile failed: ${err.message}`);
       }
+      // Ghost-confirmed reconcile runs after the full reconcile has
+      // established the order baseline. Initial pass immediately, then
+      // every 5 minutes. Flags orders our tracker shows 'confirmed' but
+      // PX doesn't know about (or has already closed) as phantoms so
+      // they stop inflating the Deployed number.
+      try {
+        const ghost = await orderTracker.reconcileGhostConfirmed(px);
+        if (ghost.ghostsFound > 0 || ghost.orderUuidFilledIn > 0 || ghost.settledFound > 0) {
+          log.info('Startup', `    ✓ Ghost reconcile: ${ghost.ghostsFound} phantoms, ${ghost.orderUuidFilledIn} uuids filled in, ${ghost.settledFound} PX-settled`);
+        }
+      } catch (err) {
+        log.warn('Startup', `    ✗ Ghost reconcile failed: ${err.message}`);
+      }
+      setInterval(async () => {
+        try {
+          await orderTracker.reconcileGhostConfirmed(px);
+        } catch (err) {
+          log.warn('GhostReconcile', `Periodic reconcile failed: ${err.message}`);
+        }
+      }, 5 * 60 * 1000);
     }
   })();
   // Don't await — let startup continue to odds/lines/WS immediately

@@ -1419,12 +1419,16 @@ const STALE_PHANTOM_HOURS = 12;
  * semantic regardless of how recently.
  */
 function isOrderStalePhantom(order) {
+  // Active PX cross-check (reconcileGhostConfirmed) sets meta.phantom=true
+  // on orders PX doesn't recognize. Respect that first — it's the most
+  // authoritative signal we have.
+  if (order.meta && order.meta.phantom) return true;
+
   const legs = order.legs || order.meta?.legs || [];
   const now = Date.now();
   const cutoff = STALE_PHANTOM_HOURS * 3600 * 1000;
 
-  // NEW: treat 'confirmed' orders with no orderUuid older than 10 min
-  // as phantoms. Under Alec's confirmed PX event model, a real fill
+  // Treat 'confirmed' orders with no orderUuid older than 10 min as phantoms. Under Alec's confirmed PX event model, a real fill
   // produces BOTH order.matched (without orderUuid) AND order.finalized
   // (with orderUuid). If 10 min have passed since we promoted to
   // 'confirmed' via the matched path but order.finalized never showed
@@ -3517,6 +3521,113 @@ async function deleteUnknownSettledOrders() {
   return { deleted, parlayIds };
 }
 
+/**
+ * Lightweight periodic reconcile specifically for ghost 'confirmed' orders.
+ * Our in-memory tracker can accumulate ghosts in two ways:
+ *   1) order.matched arrived and promoted status to 'confirmed' (per the
+ *      Alec event-model fix) but order.finalized never followed, so we
+ *      have no orderUuid and no way to verify PX actually placed the bet.
+ *   2) order.finalized arrived, but PX later settled/voided the bet and
+ *      we missed the settlement event — so we still show 'confirmed'
+ *      while PX has it closed.
+ *
+ * This function cross-checks each tracker-confirmed order against PX's
+ * current order list and:
+ *   - If an order has an orderUuid and PX shows it settled → promote to
+ *     settled_* locally (triggers P&L recording).
+ *   - If an order has an orderUuid and PX doesn't have it at all → mark
+ *     as phantom (excluded from deployed risk).
+ *   - If an order has no orderUuid and PX's list has no matching parlay_id
+ *     after 10 min → mark as phantom.
+ *
+ * Designed to run every ~5 min. px.fetchOrders is paginated but capped
+ * at 1000 recent orders — sufficient since stale-phantom filter already
+ * excludes anything with game-start >12h old.
+ */
+async function reconcileGhostConfirmed(px) {
+  const startedAt = Date.now();
+  let pxOrders;
+  try {
+    pxOrders = await px.fetchOrders(1000);
+  } catch (err) {
+    log.warn('GhostReconcile', `Could not fetch PX orders: ${err.message}`);
+    return { checked: 0, ghostsFound: 0, settledFound: 0, err: err.message };
+  }
+  // Index PX orders two ways for fast lookup.
+  const pxByUuid = {};
+  const pxByParlayId = {};
+  for (const po of pxOrders) {
+    const uuid = po.order_uuid || po.orderUuid;
+    const pid = po.p_id || po.parlay_id || po.parlayId;
+    if (uuid) pxByUuid[uuid] = po;
+    if (pid) {
+      if (!pxByParlayId[pid]) pxByParlayId[pid] = [];
+      pxByParlayId[pid].push(po);
+    }
+  }
+
+  let checked = 0, ghostsFound = 0, settledFound = 0, orderUuidFilledIn = 0;
+  const phantomIds = [];
+  for (const order of Object.values(orders)) {
+    if (order.status !== 'confirmed') continue;
+    // Skip very-fresh confirmations — give the finalize event time to arrive.
+    if (order.confirmedAt && (Date.now() - new Date(order.confirmedAt).getTime()) < 60 * 1000) continue;
+    checked++;
+
+    if (order.orderUuid) {
+      const px = pxByUuid[order.orderUuid];
+      if (!px) {
+        // Our tracker has an orderUuid that PX doesn't recognize. Mark phantom.
+        order.meta = order.meta || {};
+        order.meta.phantom = true;
+        order.meta.phantomReason = 'orderUuid-not-in-px';
+        order.meta.phantomMarkedAt = new Date().toISOString();
+        phantomIds.push(order.parlayId);
+        ghostsFound++;
+        db.saveOrder(order).catch(() => {});
+        continue;
+      }
+      // PX knows this order. If PX shows it's settled/voided, demote our copy.
+      const pxStatus = (px.status || '').toLowerCase();
+      if (pxStatus && pxStatus !== 'confirmed' && pxStatus !== 'matched' && pxStatus !== 'pending') {
+        log.info('GhostReconcile', `PX says ${order.parlayId.substring(0,8)} is '${pxStatus}' but our tracker has 'confirmed' — demoting`);
+        settledFound++;
+        // Leave actual settlement-event handling to the normal path; just flag.
+        order.meta = order.meta || {};
+        order.meta.pxStatusMismatch = pxStatus;
+        order.meta.pxStatusMismatchAt = new Date().toISOString();
+        db.saveOrder(order).catch(() => {});
+      }
+    } else {
+      // No orderUuid yet — try to fill in from PX by parlayId match.
+      const candidates = pxByParlayId[order.parlayId] || [];
+      if (candidates.length > 0) {
+        const pxMatch = candidates[0];
+        if (pxMatch.order_uuid) {
+          order.orderUuid = pxMatch.order_uuid;
+          ordersByUuid[pxMatch.order_uuid] = order.parlayId;
+          orderUuidFilledIn++;
+          db.saveOrder(order).catch(() => {});
+        }
+        continue;
+      }
+      // No match at all. If confirmedAt > 10 min ago it's a phantom.
+      if (order.confirmedAt && (Date.now() - new Date(order.confirmedAt).getTime()) > 10 * 60 * 1000) {
+        order.meta = order.meta || {};
+        order.meta.phantom = true;
+        order.meta.phantomReason = 'no-uuid-and-no-px-match';
+        order.meta.phantomMarkedAt = new Date().toISOString();
+        phantomIds.push(order.parlayId);
+        ghostsFound++;
+        db.saveOrder(order).catch(() => {});
+      }
+    }
+  }
+  const elapsedMs = Date.now() - startedAt;
+  log.info('GhostReconcile', `Checked ${checked} confirmed orders in ${elapsedMs}ms — ghosts: ${ghostsFound}, orderUuids filled in: ${orderUuidFilledIn}, PX-status-mismatches: ${settledFound}`);
+  return { checked, ghostsFound, orderUuidFilledIn, settledFound, phantomIds, elapsedMs };
+}
+
 module.exports = {
   recordQuote,
   updateOrderLatency,
@@ -3533,6 +3644,7 @@ module.exports = {
   revertBogusSettlements,
   reconcileSettlements,
   fullPxReconcile,
+  reconcileGhostConfirmed,
   backfillUnknownSports,
   backfillFromExport,
   deleteUnknownSettledOrders,
