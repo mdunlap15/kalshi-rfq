@@ -2355,15 +2355,16 @@
     const el = document.getElementById('win-rate-heatmap');
     if (!el) return;
     const sumEl = document.getElementById('win-rate-heatmap-summary');
-    // Fill rate = fills / quotes-submitted. Numerator comes from
-    // intel.competitive.entries (all wins under Alec's model). Denominator
-    // comes from the full orders map — every row there = a quote we
-    // submitted. Using competitive.entries for both (as the previous
-    // version did) always produced 100% because numerator == denominator.
-    const entries = intel?.competitive?.entries || [];
-    const allOrders = ordersData?.recentOrders || [];
-    if (allOrders.length === 0 && entries.length === 0) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need quoted parlays to measure fill rate</div></div>';
+    // Authoritative fill-rate data source: intel.sessionFillBuckets.
+    // This is a session-scoped per-(rawSport, legCount) counter that
+    // increments at quote-submission time (denominator) and at
+    // match-event time (numerator). Resets on each boot — the orders
+    // map is NOT usable as a denominator because loadFromDb skips the
+    // 50K+ unfilled 'quoted' rows, biasing fill rate toward 100%.
+    const buckets = intel?.sessionFillBuckets || {};
+    const bucketKeys = Object.keys(buckets);
+    if (bucketKeys.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Session has no submitted quotes yet — fill-rate data accumulates starting at boot.</div></div>';
       if (sumEl) sumEl.textContent = '';
       return;
     }
@@ -2386,52 +2387,32 @@
     const bySubCell = {};
     const subLeaguesPerSport = {};
     const sportsSeen = new Set();
-    // A quote counts as filled if PX accepted our offer. 'confirmed' and
-    // 'settled_*' are obvious. 'lost' is ambiguous in our data:
-    //   - legacy pre-fix misclassification → actually a fill (has
-    //     meta.winningOdds populated by the old recordMatchedParlay)
-    //   - orphaned-quote-cleanup → NOT a fill (stuck at 'quoted' >30 min
-    //     so cleanup flipped to 'lost'; identified by meta.lostReason)
-    const isFilled = (o) => {
-      if (o.status === 'confirmed') return true;
-      if (o.status && o.status.startsWith('settled_')) return true;
-      if (o.status === 'lost') {
-        const reason = o.meta?.lostReason;
-        if (reason === 'orphaned-quote-cleanup') return false;
-        return true; // legacy misclassification → treat as fill
-      }
-      return false;
-    };
-    const addCell = (dict, key, filled) => {
+    const addCell = (dict, key, submittedCount, filledCount) => {
       if (!dict[key]) dict[key] = { submitted: 0, fills: 0 };
-      dict[key].submitted++;
-      if (filled) dict[key].fills++;
+      dict[key].submitted += submittedCount;
+      dict[key].fills += filledCount;
     };
-    for (const o of allOrders) {
-      // Only count quotes we actually submitted (skip reconstructed-only
-      // orders that never hit the quote path).
-      if (!o.quotedAt && o.meta && o.meta.reconstructed) continue;
-      const legs = o.legs || o.meta?.legs || [];
-      if (legs.length === 0) continue;
-      const rawSports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
-      const canonSports = [...new Set(rawSports.map(canonicalSport))];
-      const canonSport = canonSports.length === 0 ? 'Unknown'
-        : canonSports.length === 1 ? canonSports[0]
-        : 'Multi';
+    // Iterate intel.sessionFillBuckets. Keys are "rawSport|legCount";
+    // values are { submitted, filled }. Canonicalize + bucket here so
+    // the backend stays sport-agnostic.
+    for (const bucketKey of bucketKeys) {
+      const [rawSport, legCountStr] = bucketKey.split('|');
+      const legCount = parseInt(legCountStr, 10);
+      if (!legCount) continue;
+      const { submitted, filled } = buckets[bucketKey];
+      const canonSport = rawSport === 'Multi' ? 'Multi'
+        : rawSport === 'Unknown' ? 'Unknown'
+        : canonicalSport(rawSport);
       sportsSeen.add(canonSport);
-      const bucket = legBuckets.find(b => legs.length >= b.min && legs.length <= b.max);
+      const bucket = legBuckets.find(b => legCount >= b.min && legCount <= b.max);
       if (!bucket) continue;
-      const filled = isFilled(o);
-      addCell(byCell, canonSport + '|' + bucket.label, filled);
-      // Sub-league tracking only for single-sport parlays. Multi-sport
-      // parlays skip drill-down entirely — breaking Multi into every
-      // permutation (NBA+MLB, MLB+NHL, etc.) produces 30+ noisy buckets
-      // with N=1 or N=2 each, which isn't a useful detail view.
-      if (rawSports.length === 1) {
-        const subLeague = sportLabel(rawSports[0]);
+      addCell(byCell, canonSport + '|' + bucket.label, submitted, filled);
+      // Sub-league drill — only for real single-sport entries.
+      if (rawSport !== 'Multi' && rawSport !== 'Unknown') {
+        const subLeague = sportLabel(rawSport);
         if (!subLeaguesPerSport[canonSport]) subLeaguesPerSport[canonSport] = new Set();
         subLeaguesPerSport[canonSport].add(subLeague);
-        addCell(bySubCell, canonSport + '|' + subLeague + '|' + bucket.label, filled);
+        addCell(bySubCell, canonSport + '|' + subLeague + '|' + bucket.label, submitted, filled);
       }
     }
     const sportRows = [...sportsSeen].sort((a, b) => {
@@ -2450,9 +2431,13 @@
       : '';
 
     let html = '';
-    // Time-range indicator so the operator knows what window the heatmap covers.
-    const rangeStr = dateRangeLine(entries, 'time', 'Covers');
-    if (rangeStr) html += '<div style="padding:8px 12px 0; font-size:14px; color:var(--text3);">' + rangeStr + '</div>';
+    // Session-scoped data — the counters live in memory and reset on
+    // boot. Show when this window started so the operator knows.
+    const sessionStart = intel?.sessionStartedAt;
+    if (sessionStart) {
+      const sessionStartStr = new Date(sessionStart).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      html += '<div style="padding:8px 12px 0; font-size:14px; color:var(--text3);">This session &mdash; since ' + sessionStartStr + '</div>';
+    }
     html += '<div style="font-size:14px; color:var(--text3); padding:8px 12px; line-height:1.5;">'
       + 'Each cell: <strong>fill %</strong> &middot; <strong>n = parlays we quoted</strong> in that bucket. '
       + '<strong>Fill %</strong> = parlays PX filled with our offer &divide; parlays we quoted &mdash; this measures <em>auction</em> outcomes, not settlement. '

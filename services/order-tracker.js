@@ -25,6 +25,39 @@ const marketStats = {
   missedNoQuote: 0, // matched event received for a parlay we didn't quote (rare)
 };
 
+// Session-only fill-rate counters. The orders map is NOT a reliable
+// denominator for fill rate: loadFromDb skips the 50K+ unfilled 'quoted'
+// rows, so the orders map is heavily biased toward historical fills →
+// every fill-rate computation over it rounds near 100%.
+//
+// These counters track only quotes submitted and fills received THIS
+// SESSION (reset on each boot). Keyed by rawSport|legCount so the
+// frontend can canonicalize + bucket however it wants.
+//
+// Shape: sessionFillBuckets['basketball_nba|2'] = { submitted: 5, filled: 2 }
+//        sessionFillBuckets['Multi|3']           = { submitted: 10, filled: 1 }
+const sessionFillBuckets = {};
+function fillBucketKeys(legs) {
+  const rawSports = [...new Set((legs || []).map(l => l.sport).filter(Boolean))];
+  const key = rawSports.length === 0 ? 'Unknown'
+    : rawSports.length === 1 ? rawSports[0]
+    : 'Multi';
+  const legCount = (legs || []).length;
+  return [key + '|' + legCount];
+}
+function recordFillBucketSubmission(legs) {
+  for (const k of fillBucketKeys(legs)) {
+    if (!sessionFillBuckets[k]) sessionFillBuckets[k] = { submitted: 0, filled: 0 };
+    sessionFillBuckets[k].submitted++;
+  }
+}
+function recordFillBucketFill(legs) {
+  for (const k of fillBucketKeys(legs)) {
+    if (!sessionFillBuckets[k]) sessionFillBuckets[k] = { submitted: 0, filled: 0 };
+    sessionFillBuckets[k].filled++;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // DECLINE TRACKING
 // ---------------------------------------------------------------------------
@@ -299,6 +332,10 @@ function getPendingGameRisk(gameKey) {
 function recordQuote(parlayId, legs, offeredOdds, maxRisk, fairParlayProb, meta) {
   stats.totalQuotes++;
   stats.sessionQuotes++;
+  // Session-accurate submission count for fill-rate tracking. Must be
+  // before the orders[] mutation so double-quotes for the same parlayId
+  // (shouldn't happen but just in case) are each counted once.
+  recordFillBucketSubmission(legs);
 
   orders[parlayId] = {
     parlayId,
@@ -731,6 +768,9 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
   if (weQuoted) {
     outcome = 'won';
     matchedWonIds.add(parlayId);
+    // Session-accurate fill count for fill-rate tracking. Uses the legs
+    // from our original quote so sport/leg-count match the submission entry.
+    recordFillBucketFill(ourQuote.legs || []);
     // weQuoted here is a misnamed legacy counter — it's really "matched
     // events we received". True quote-submission count lives in
     // rfqStages.submitted on the websocket side. Keep incrementing for
@@ -1186,6 +1226,12 @@ function buildRiskLimitMissedVolume() {
 function getMarketIntel(limit = 50) {
   return {
     stats: { ...marketStats },
+    // Session-scoped fill-rate counters keyed by rawSport|legCount.
+    // Authoritative denominator for fill rate — orders map can't be used
+    // because loadFromDb skips unfilled 'quoted' rows. Resets on boot;
+    // sessionStartedAt tells the dashboard what window this covers.
+    sessionFillBuckets: { ...sessionFillBuckets },
+    sessionStartedAt: stats.startedAt,
     declines: {
       total: declineStats.total,
       reasons: { ...declineStats.reasons },
