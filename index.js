@@ -822,41 +822,43 @@ function startStatusServer() {
     try {
       const pxOrders = await px.fetchOrders(limit);
       const byStatus = {};
-      const byDay = {};
-      let totalStakeIn = 0;      // sum of our confirmed stakes (SP risk)
-      let totalPxProfit = 0;     // sum of PX-reported profit (our net from settled orders)
+      const bySettlementStatus = {};
+      let totalStakeIn = 0;
+      let totalPxProfit = 0;
+      let sumPositive = 0;  // sum of profit on wins only
+      let sumNegative = 0;  // sum of profit on losses only (how much we paid out net)
+      let sumWinStakes = 0, sumLossStakes = 0, sumPushStakes = 0;
+      let countWin = 0, countLoss = 0, countPush = 0, countOther = 0;
       let unsettled = 0;
-      let settlementSamples = [];
+      let samples = { wins: [], losses: [], pushes: [], other: [] };
       for (const po of pxOrders) {
         const st = (po.status || 'unknown').toLowerCase();
         byStatus[st] = (byStatus[st] || 0) + 1;
-        // PX typically carries a settlement-related field. Try common names.
         const pxProfit = po.profit ?? po.net_profit ?? po.settlement_profit ?? po.payout ?? null;
         const stake = po.stake ?? po.confirmed_stake ?? po.matched_stake ?? 0;
-        // Only count settled outcomes in P&L total
+        const settlementStatus = (po.settlement_status || po.settlementStatus || '').toLowerCase();
         const isSettled = /settled|won|lost|push/.test(st);
         if (isSettled) {
-          if (pxProfit != null) totalPxProfit += Number(pxProfit);
+          bySettlementStatus[settlementStatus || '(none)'] = (bySettlementStatus[settlementStatus || '(none)'] || 0) + 1;
+          const profit = pxProfit != null ? Number(pxProfit) : 0;
+          totalPxProfit += profit;
           totalStakeIn += Number(stake);
-          const rawDay = po.settled_at || po.updated_at || po.created_at || '';
-          // PX occasionally returns dates as Date objects or numeric
-          // timestamps — coerce to string before substring.
-          const dayStr = typeof rawDay === 'string' ? rawDay
-            : rawDay instanceof Date ? rawDay.toISOString()
-            : typeof rawDay === 'number' ? new Date(rawDay).toISOString()
-            : String(rawDay);
-          const day = dayStr.substring(0, 10);
-          if (day) {
-            if (!byDay[day]) byDay[day] = { count: 0, profit: 0 };
-            byDay[day].count++;
-            if (pxProfit != null) byDay[day].profit += Number(pxProfit);
-          }
-          if (settlementSamples.length < 5) settlementSamples.push({
+          if (/won|win/.test(settlementStatus)) { countWin++; sumWinStakes += Number(stake); if (profit > 0) sumPositive += profit; }
+          else if (/lost|loss/.test(settlementStatus)) { countLoss++; sumLossStakes += Number(stake); if (profit < 0) sumNegative += profit; }
+          else if (/push/.test(settlementStatus)) { countPush++; sumPushStakes += Number(stake); }
+          else { countOther++; }
+
+          const group = /won|win/.test(settlementStatus) ? 'wins'
+                      : /lost|loss/.test(settlementStatus) ? 'losses'
+                      : /push/.test(settlementStatus) ? 'pushes'
+                      : 'other';
+          if (samples[group].length < 5) samples[group].push({
             uuid: po.order_uuid?.substring(0, 8),
             status: st,
+            settlementStatus,
             stake,
-            pxProfit,
-            availableFields: Object.keys(po).filter(k => /profit|payout|settle|pnl|return/i.test(k)),
+            profit: pxProfit,
+            availableFields: Object.keys(po).filter(k => /profit|payout|settle|pnl|return|stake/i.test(k)),
           });
         } else {
           unsettled++;
@@ -866,12 +868,20 @@ function startStatusServer() {
         ok: true,
         pxTotalOrders: pxOrders.length,
         statusBreakdown: byStatus,
+        settlementStatusBreakdown: bySettlementStatus,
         unsettledCount: unsettled,
+        counts: { wins: countWin, losses: countLoss, pushes: countPush, other: countOther },
         totalStakeIn: Math.round(totalStakeIn * 100) / 100,
         totalPxProfit: Math.round(totalPxProfit * 100) / 100,
-        settlementSamples,
-        dailyPnL: Object.fromEntries(Object.entries(byDay).sort().map(([d, v]) => [d, { count: v.count, profit: Math.round(v.profit * 100) / 100 }])),
-        note: 'totalPxProfit sums the profit/payout field on every settled order as PX reports it. If this matches our tracker runningPnL, our settlement logic is accurate. If it differs, the delta is where our tracker is wrong.',
+        sumProfitOnWins: Math.round(sumPositive * 100) / 100,
+        sumProfitOnLosses: Math.round(sumNegative * 100) / 100,
+        sumStakesByOutcome: {
+          wins: Math.round(sumWinStakes * 100) / 100,
+          losses: Math.round(sumLossStakes * 100) / 100,
+          pushes: Math.round(sumPushStakes * 100) / 100,
+        },
+        samples,
+        note: 'totalPxProfit = sum of all profit fields. If settlementStatusBreakdown shows only "won" and no "lost", PX\'s profit field may only be populated on wins and losses subtract from balance separately — in which case net P&L = sumProfitOnWins - sumLossStakes.',
       });
     } catch (err) {
       res.status(500).json({ error: err.message });
