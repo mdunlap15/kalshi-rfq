@@ -1614,6 +1614,13 @@ function addExposure(order) {
       selection: leg.selection,
       market: leg.market || leg.marketType,
       teamKey: key,
+      // Passed through so the dashboard can render the exact
+      // "<Team> <±Spread>" / "Over <Total>" label instead of the
+      // ambiguous "spread away" / "total over" shape.
+      teamName: leg.team || leg.teamName || name,
+      line: leg.line,
+      homeTeam: leg.homeTeam,
+      awayTeam: leg.awayTeam,
     });
 
     // Team-level tracking (for dashboard display) — keyed by team+event

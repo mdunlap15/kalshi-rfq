@@ -3757,8 +3757,33 @@
       let detail = '<table style="width:100%; font-size:11px;">';
       detail += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Selection</th><th style="text-align:left; padding:2px 6px;">Legs</th><th style="text-align:right; padding:2px 6px;">Weighted Risk</th><th style="text-align:right; padding:2px 6px;">My Risk</th><th style="text-align:right; padding:2px 6px;">To Win</th></tr>';
       for (const p of (g.parlays || [])) {
-        const sel = (p.market || '') + (p.selection ? ' ' + p.selection : '');
-        detail += '<tr><td style="padding:2px 6px;">' + sel + '</td>';
+        // Build a specific "<Team> <±Line>" label. Prefer the concrete
+        // teamName from backend; fall back to home/away resolution when
+        // selection tells us which side without a team name.
+        const mkt = (p.market || '').toLowerCase();
+        let labelTeam = p.teamName || '';
+        if (!labelTeam) {
+          if (p.selection === 'home') labelTeam = p.homeTeam || '';
+          else if (p.selection === 'away') labelTeam = p.awayTeam || '';
+          else if (p.selection === 'over' || p.selection === 'under') {
+            labelTeam = (p.selection.charAt(0).toUpperCase() + p.selection.slice(1));
+          }
+        }
+        let sel;
+        if (mkt === 'total') {
+          // formatSelection doesn't handle simple "over/under + line" without
+          // the parenthetical game context, so format directly.
+          const side = (p.selection || '').charAt(0).toUpperCase() + (p.selection || '').slice(1);
+          sel = side + (p.line != null ? ' ' + p.line : '');
+        } else if (mkt === 'spread') {
+          sel = formatSelection(labelTeam || '?', 'spread', p.line);
+        } else if (mkt === 'moneyline') {
+          sel = (labelTeam || '?') + ' ML';
+        } else {
+          // Fallback for unknown market types — keep old shape
+          sel = (p.market || '') + (p.selection ? ' ' + p.selection : '');
+        }
+        detail += '<tr><td style="padding:2px 6px;">' + escapeHtml(sel) + '</td>';
         detail += '<td style="padding:2px 6px;">' + p.legCount + '-leg</td>';
         detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.weightedRisk) + '</td>';
         detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.payout) + '</td>';
