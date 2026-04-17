@@ -2787,7 +2787,8 @@
     // ones from PX reconcile. These are real positions with real exposure.
     const positions = allOrders.filter(o => o.status === 'confirmed');
 
-    if (countEl) countEl.textContent = positions.length > 0 ? positions.length + ' active' : '';
+    window._openPositionsCount = positions.length;
+    updatePositionsCountBadge();
 
     if (positions.length === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No open positions</div></div>';
@@ -3072,20 +3073,26 @@
 
   function renderSettled(data) {
     const el = document.getElementById('settled-table');
-    // The #settled-table card on the Orders tab was replaced by the month-
-    // grouped Daily Volume view; the same data lives on the Portfolio tab
-    // via renderPortfolio. If the container isn't present, skip — previously
-    // this function threw on el.innerHTML, aborting the rest of the refresh
-    // (renderMarketIntel, renderCompetitiveness, renderAnalytics, etc.)
-    // which is why Analytics and Market Intel stopped populating.
-    if (!el) return;
     const countEl = document.getElementById('settled-count');
     const orders = data.recentOrders || [];
 
-    // Merge into state
+    // Merge into state FIRST — the settledState.orders map is also the
+    // source for the Export CSV modal (getFilteredExportRows) and must
+    // stay populated even when the #settled-table DOM element isn't
+    // present. Previously the null-element guard ran before this merge,
+    // leaving settledState.orders empty so CSV export returned only
+    // open positions (Settled Positions export had 0 settled rows).
     for (const o of orders) {
       if (o.parlayId && o.status?.startsWith('settled_')) settledState.orders[o.parlayId] = o;
     }
+    if (typeof updatePositionsCountBadge === 'function') updatePositionsCountBadge();
+
+    // The #settled-table card on the Orders tab was replaced by the
+    // month-grouped Daily Volume view. If the container isn't present,
+    // skip the rendering portion — state merge above already ran, so
+    // Portfolio tab's renderPortfolioSettled and Export CSV still see
+    // the full settled history.
+    if (!el) return;
 
     const settled = Object.values(settledState.orders)
       .sort((a, b) => {
@@ -8293,6 +8300,7 @@
     const settledEl = document.getElementById('portfolio-settled');
     const openBtn = document.getElementById('pos-tab-open');
     const settledBtn = document.getElementById('pos-tab-settled');
+    window._positionsActiveTab = tab;
     if (tab === 'open') {
       if (openEl) openEl.style.display = 'block';
       if (settledEl) settledEl.style.display = 'none';
@@ -8303,6 +8311,20 @@
       if (settledEl) settledEl.style.display = 'block';
       if (openBtn) { openBtn.style.borderBottomColor = 'transparent'; openBtn.style.color = 'var(--text3)'; }
       if (settledBtn) { settledBtn.style.borderBottomColor = 'var(--accent)'; settledBtn.style.color = 'var(--text)'; }
+    }
+    updatePositionsCountBadge();
+  }
+
+  function updatePositionsCountBadge() {
+    const countEl = document.getElementById('positions-count');
+    if (!countEl) return;
+    const tab = window._positionsActiveTab || 'open';
+    if (tab === 'open') {
+      const n = window._openPositionsCount || 0;
+      countEl.textContent = n > 0 ? n + ' active' : '';
+    } else {
+      const n = Object.keys(settledState.orders || {}).length;
+      countEl.textContent = n > 0 ? n + ' settled' : '';
     }
   }
 
