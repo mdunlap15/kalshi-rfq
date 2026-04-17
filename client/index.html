@@ -1755,7 +1755,7 @@
     // Stats bar — these are QUOTE-level outcomes (did we win the RFQ auction?)
     const overallRange = formatDateRange(intel.recentMatched || [], 'matchedAt');
     const rangeBadge = overallRange ? '<span style="color:var(--text3); font-weight:400; margin-left:10px;">· Covers: <span style="color:var(--text2);">' + overallRange + '</span></span>' : '';
-    let html = `<div style="margin-bottom:6px; font-size:11px; color:var(--text3); font-style:italic;">Quote auction outcomes (whether our offer was accepted)${rangeBadge}</div>
+    let html = `<div style="margin-bottom:6px; font-size:13px; color:var(--text3); font-style:italic; line-height:1.5;">Quote auction outcomes (whether our offer was accepted)${rangeBadge}</div>
     <div style="display:flex; gap:20px; flex-wrap:wrap; margin-bottom:16px; font-size:13px;">
       <span><span style="color:var(--text3)">Matched (all SPs):</span> <strong>${s.totalMatched || 0}</strong></span>
       <span><span style="color:var(--text3)">We Quoted:</span> <strong>${s.weQuoted || 0}</strong> (${intel.coverageRate || '-'})</span>
@@ -1957,7 +1957,7 @@
         const dSortArrow = (col) => dSortCol === col ? (dSortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
         const dSortClick = (col, align) => 'onclick="window._declineSortCol=window._declineSortCol===\'' + col + '\'?window._declineSortCol:\'' + col + '\'; if(window._declineSortCol===\'' + col + '\'){window._declineSortDir=(window._declineSortDir||-1)*-1;} else {window._declineSortCol=\'' + col + '\'; window._declineSortDir=-1;} renderMarketIntel(window._lastIntelData||{})" style="cursor:pointer;' + (align?'text-align:'+align+';':'') + '"';
         const dFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
-        html += '<div style="font-size:11px; color:var(--text3); margin:8px 0 4px;">Each row = a line we weren\'t tracking when an RFQ referenced it, so the whole parlay was declined.</div>';
+        html += '<div style="font-size:13px; color:var(--text3); margin:8px 0 4px; line-height:1.5;">Each row = a line we weren\'t tracking when an RFQ referenced it, so the whole parlay was declined.</div>';
         html += '<div style="padding:6px 0; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); margin-bottom:6px;">'
           + '<input type="text" placeholder="Search event..." value="' + (window._declineSearch || '') + '" id="decline-search" oninput="window._declineSearch=this.value; rerenderWithFocus(()=>renderMarketIntel(window._lastIntelData||{}))" style="' + dFSel + ' width:160px;">'
           + '<select onchange="window._declineCatFilter=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + dFSel + '">'
@@ -2123,7 +2123,7 @@
       const nmSortClick = (col) => 'onclick="window._nmSortCol=window._nmSortCol===\'' + col + '\'?window._nmSortCol:\'' + col + '\'; if(window._nmSortCol===\'' + col + '\'){window._nmSortDir=(window._nmSortDir||-1)*-1;} else {window._nmSortCol=\'' + col + '\'; window._nmSortDir=-1;} renderMarketIntel(window._lastIntelData||{})" style="cursor:pointer;"';
 
       html += subSection('intel-near-miss', 'Near Misses (all legs known, could not price)', d.nearMissCount || allNearMisses.length, false);
-      html += `<div style="padding:6px 12px; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border);">All legs were registered, but a specific blocker stopped pricing. Click a row to see which leg caused the miss.${(() => { const r = formatDateRange(allNearMisses, 'time'); return r ? ' <span style="color:var(--text2);">· Covers: ' + r + '</span>' : ''; })()}</div>`;
+      html += `<div style="padding:6px 12px; font-size:13px; color:var(--text3); border-bottom:1px solid var(--border); line-height:1.5;">All legs were registered, but a specific blocker stopped pricing. Click a row to see which leg caused the miss.${(() => { const r = formatDateRange(allNearMisses, 'time'); return r ? ' <span style="color:var(--text2);">· Covers: ' + r + '</span>' : ''; })()}</div>`;
       html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">'
         + '<input type="text" placeholder="Search team, detail, sport..." value="' + (window._nmSearch || '') + '" id="nm-search" oninput="window._nmSearch=this.value; rerenderWithFocus(()=>renderMarketIntel(window._lastIntelData||{}))" style="' + nmFSel + ' width:200px;">'
         + '<select onchange="window._nmReasonFilter=this.value; renderMarketIntel(window._lastIntelData||{})" style="' + nmFSel + '">'
@@ -2393,27 +2393,30 @@
     });
 
     let html = '';
-    html += '<div style="font-size:11px; color:var(--text3); padding:8px 12px;">'
+    // Time-range indicator so the operator knows what window the heatmap covers.
+    const rangeStr = dateRangeLine(entries, 'time', 'Covers');
+    if (rangeStr) html += '<div style="padding:8px 12px 0; font-size:13px; color:var(--text3);">' + rangeStr + '</div>';
+    html += '<div style="font-size:13px; color:var(--text3); padding:8px 12px; line-height:1.5;">'
       + 'Each cell shows <strong>win %</strong> (N parlays) over <strong>avg gap on losses</strong> — positive means we were tighter than the winning SP; loosen to compete. Parlays tagged <em>Multi</em> span multiple sports.'
       + '</div>';
-    html += '<div style="overflow-x:auto; padding:0 12px 12px;"><table style="font-size:11px; min-width:520px;">';
-    html += '<tr><th style="text-align:left; padding:4px 10px;">Sport</th>';
-    for (const b of legBuckets) html += '<th style="text-align:center; padding:4px 10px;">' + b.label + '</th>';
-    html += '<th style="text-align:center; padding:4px 10px; color:var(--text3);">Row total</th></tr>';
+    html += '<div style="overflow-x:auto; padding:0 12px 12px;"><table style="font-size:13px; min-width:680px; border-collapse:separate; border-spacing:3px;">';
+    html += '<tr><th style="text-align:left; padding:6px 12px;">Sport</th>';
+    for (const b of legBuckets) html += '<th style="text-align:center; padding:6px 12px;">' + b.label + '</th>';
+    html += '<th style="text-align:center; padding:6px 12px; color:var(--text3);">Row total</th></tr>';
     for (const sp of sportRows) {
       let rowN = 0, rowWins = 0;
-      html += '<tr><td style="padding:4px 10px; font-weight:600;">' + sportLabel(sp) + '</td>';
+      html += '<tr><td style="padding:8px 12px; font-weight:600; font-size:14px;">' + sportLabel(sp) + '</td>';
       for (const b of legBuckets) {
         const c = byCell[sp + '|' + b.label];
         if (!c || c.n === 0) {
-          html += '<td style="padding:4px 10px; text-align:center; color:var(--text3);">&mdash;</td>';
+          html += '<td style="padding:8px 12px; text-align:center; color:var(--text3);">&mdash;</td>';
           continue;
         }
         rowN += c.n;
         rowWins += c.wins;
         const wr = c.n > 0 ? (c.wins / c.n * 100) : 0;
         const avgLossGap = c.lossGapN > 0 ? (c.lossGapSum / c.lossGapN) : null;
-        const wrColor = wr >= 50 ? 'rgba(63,185,80,0.15)' : wr >= 25 ? 'rgba(210,153,34,0.15)' : 'rgba(248,81,73,0.15)';
+        const wrColor = wr >= 50 ? 'rgba(63,185,80,0.18)' : wr >= 25 ? 'rgba(210,153,34,0.18)' : 'rgba(248,81,73,0.18)';
         const wrTextColor = wr >= 50 ? 'var(--green)' : wr >= 25 ? 'var(--amber)' : 'var(--red)';
         const gapText = avgLossGap != null
           ? (avgLossGap >= 0 ? '+' : '') + avgLossGap.toFixed(2) + 'pp'
@@ -2421,19 +2424,19 @@
         const gapColor = avgLossGap != null
           ? (avgLossGap > 2 ? 'var(--red)' : avgLossGap > 0.5 ? 'var(--amber)' : 'var(--text3)')
           : 'var(--text3)';
-        html += '<td style="padding:4px 10px; text-align:center; background:' + wrColor + ';" title="' + c.wins + ' matched / ' + c.n + ' quoted. Avg gap on losses: ' + gapText + '">'
-          + '<div style="color:' + wrTextColor + '; font-weight:600;">' + wr.toFixed(0) + '%</div>'
-          + '<div style="color:var(--text3); font-size:10px;">(' + c.n + ')</div>'
-          + '<div style="color:' + gapColor + '; font-size:10px;">' + gapText + '</div>'
+        html += '<td style="padding:8px 12px; text-align:center; background:' + wrColor + '; border-radius:4px;" title="' + c.wins + ' matched / ' + c.n + ' quoted. Avg gap on losses: ' + gapText + '">'
+          + '<div style="color:' + wrTextColor + '; font-weight:700; font-size:18px; line-height:1.2;">' + wr.toFixed(0) + '%</div>'
+          + '<div style="color:var(--text2); font-size:12px; line-height:1.4;">n=' + c.n + '</div>'
+          + '<div style="color:' + gapColor + '; font-size:12px; line-height:1.4;">' + gapText + '</div>'
           + '</td>';
       }
       const rowWr = rowN > 0 ? (rowWins / rowN * 100).toFixed(0) + '%' : '-';
-      html += '<td style="padding:4px 10px; text-align:center; color:var(--text3);">'
-        + '<div style="color:var(--text2);">' + rowWr + '</div>'
-        + '<div style="font-size:10px;">(' + rowN + ')</div>'
+      html += '<td style="padding:8px 12px; text-align:center; color:var(--text3);">'
+        + '<div style="color:var(--text2); font-weight:600; font-size:16px; line-height:1.2;">' + rowWr + '</div>'
+        + '<div style="font-size:12px; line-height:1.4;">n=' + rowN + '</div>'
         + '</td></tr>';
     }
-    html += '<tr style="border-top:1px solid var(--border);"><td style="padding:4px 10px; color:var(--text3);">Col total</td>';
+    html += '<tr style="border-top:1px solid var(--border);"><td style="padding:8px 12px; color:var(--text3); font-weight:600;">Col total</td>';
     for (const b of legBuckets) {
       let colN = 0, colWins = 0;
       for (const sp of sportRows) {
@@ -2443,15 +2446,16 @@
         colWins += c.wins;
       }
       const colWr = colN > 0 ? (colWins / colN * 100).toFixed(0) + '%' : '-';
-      html += '<td style="padding:4px 10px; text-align:center; color:var(--text3);">'
-        + '<div style="color:var(--text2);">' + colWr + '</div>'
-        + '<div style="font-size:10px;">(' + colN + ')</div>'
+      html += '<td style="padding:8px 12px; text-align:center; color:var(--text3);">'
+        + '<div style="color:var(--text2); font-weight:600; font-size:16px; line-height:1.2;">' + colWr + '</div>'
+        + '<div style="font-size:12px; line-height:1.4;">n=' + colN + '</div>'
         + '</td>';
     }
     const gTotal = entries.length;
     const gWr = gTotal > 0 ? (wins.length / gTotal * 100).toFixed(0) + '%' : '-';
-    html += '<td style="padding:4px 10px; text-align:center; color:var(--text2); font-weight:600;">'
-      + gWr + '<div style="font-size:10px; color:var(--text3); font-weight:400;">(' + gTotal + ')</div>'
+    html += '<td style="padding:8px 12px; text-align:center; color:var(--text2); font-weight:700;">'
+      + '<div style="font-size:16px; line-height:1.2;">' + gWr + '</div>'
+      + '<div style="font-size:12px; color:var(--text3); font-weight:400; line-height:1.4;">n=' + gTotal + '</div>'
       + '</td></tr>';
     html += '</table></div>';
     el.innerHTML = html;
