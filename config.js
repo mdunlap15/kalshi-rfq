@@ -20,8 +20,22 @@ const config = {
     defaultVig: parseFloat(process.env.DEFAULT_VIG) || 0.001,
     // Per-sport vig overrides. Keyed by odds-feed sport key.
     // Falls back to defaultVig if sport not listed.
-    // Adjustable at runtime via POST /config/vig.
-    vigBySport: {},
+    // Bootstrapped from VIG_BY_SPORT env var (JSON-encoded map) so values
+    // survive Railway redeploys. Still adjustable at runtime via POST
+    // /config/vig — runtime POSTs override the env-var defaults until the
+    // next restart, at which point the env-var values take over again.
+    vigBySport: (() => {
+      if (!process.env.VIG_BY_SPORT) return {};
+      try {
+        const parsed = JSON.parse(process.env.VIG_BY_SPORT);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+        console.warn('VIG_BY_SPORT must be a JSON object — got', typeof parsed, '— ignoring');
+        return {};
+      } catch (e) {
+        console.warn('Invalid VIG_BY_SPORT JSON, ignoring:', e.message);
+        return {};
+      }
+    })(),
     // Heavy-favorite vig ramp. For legs with fairProb > 0.5, vig is computed as:
     //   vig = max(vigFavoriteFloor, baseVig + vigFavoriteSlope * (fairProb - 0.5))
     // Tunable at runtime via Railway env vars without code changes.
