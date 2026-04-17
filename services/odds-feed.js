@@ -529,8 +529,12 @@ async function fetchOddsForSport(sport, opts) {
   {
     const byKeyDate = {};
     const toDelete = [];
+    // Use the alias map so abbreviation/full-name pairs like "BOS Red Sox"
+    // and "Boston Red Sox" collapse to the same consolidation key.
+    const aliasedKey = (home, away) =>
+      applyTeamAlias(normalizeTeamName(home)) + '|' + applyTeamAlias(normalizeTeamName(away));
     for (const [eid, ev] of Object.entries(eventMap)) {
-      const key = normalizeEventKey(ev.homeTeam, ev.awayTeam);
+      const key = aliasedKey(ev.homeTeam, ev.awayTeam);
       const date = ev.commenceTime ? new Date(ev.commenceTime).toISOString().substring(0, 10) : '';
       if (!date) continue;
       const kd = key + '|' + date;
@@ -1825,6 +1829,7 @@ const ODDS_API_TEAM_ALIASES = {
   'chicago ws': 'chicago white sox',
   'as': 'oakland athletics',         // "A's" → normalized "as" → needs mapping
   'oakland as': 'oakland athletics', // belt-and-suspenders
+  'bos red sox': 'boston red sox',   // SharpAPI occasionally uses city-abbreviation form
   // NHL city-abbreviation overrides — mirrors TEAM_NAME_OVERRIDES in
   // line-manager.js for the reverse direction. Kept in sync so warming
   // succeeds even when SharpAPI uses the abbreviation form.
