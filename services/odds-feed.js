@@ -92,6 +92,7 @@ const LEAGUE_MAP = {
   'baseball_mlb': { param: 'league', value: 'mlb' },
   'icehockey_nhl': { param: 'league', value: 'nhl' },
   'soccer': { param: 'sport', value: 'soccer' },
+  'mma_mixed_martial_arts': { param: 'league', value: 'ufc' },
 };
 // NOTE: tennis removed from LEAGUE_MAP — SharpAPI returns events but zero bookmaker
 // odds for tennis. Routed through The Odds API fallback instead (dynamic tournament discovery).
@@ -200,11 +201,14 @@ const ODDS_API_FALLBACK = {
     markets: 'h2h,outrights',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
-  'mma_mixed_martial_arts': {
-    oddsApiSport: 'mma_mixed_martial_arts',
-    markets: 'h2h',
-    bookmakers: ODDS_API_BOOKMAKERS,
-  },
+  // MMA moved to SharpAPI (league=ufc) — see LEAGUE_MAP. SharpAPI has 3 books
+  // (Pinnacle + DK + FD) on our tier vs The Odds API's 3, and posts fighters
+  // earlier. Keep entry commented for reference in case of SharpAPI regression.
+  // 'mma_mixed_martial_arts': {
+  //   oddsApiSport: 'mma_mixed_martial_arts',
+  //   markets: 'h2h',
+  //   bookmakers: ODDS_API_BOOKMAKERS,
+  // },
   'boxing_boxing': {
     oddsApiSport: 'boxing_boxing',
     markets: 'h2h',
@@ -253,6 +257,7 @@ async function fetchOddsForSport(sport, opts) {
     'basketball_nba': ['moneyline', 'point_spread', 'total_points', 'team_total'],
     'tennis': ['moneyline', 'point_spread', 'total_points'],
     'soccer': ['moneyline', 'point_spread', 'total_goals', 'team_total'],
+    'mma_mixed_martial_arts': ['moneyline'],
   }[sport] || ['moneyline', 'point_spread', 'total_points', 'team_total'];
 
   log.info('OddsFeed', `Fetching ${liveMode ? 'LIVE ' : ''}${mapping.value} odds from SharpAPI (${marketTypesList.length} market types)...`);
