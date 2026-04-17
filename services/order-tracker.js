@@ -865,6 +865,10 @@ function recordDecline(reason, detail) {
         parlayId: detail.parlayId,
         knownLegs: detail.knownLegs || [],
         unknownLegs: detail.unknownLegs || [],
+        // Granular per-leg categorization (player_prop, alt_spread, team_total,
+        // sub_game, etc.) for the legs we couldn't register. Lets the dashboard
+        // render meaningful "why" info when knownLegs is empty.
+        unknownCategories: detail.unknownCategories || [],
         time: new Date().toISOString(),
         legCount: (detail.legs || []).length,
       });
