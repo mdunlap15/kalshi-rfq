@@ -69,6 +69,13 @@ const config = {
       'tennis': 4,
       'basketball_wnba': 5,
       'golf_pga_championship': 5,
+      // Golf matchups come from DataGolf and only refresh on the main 10-min
+      // cycle (not in the SharpAPI delta or Odds-API fast-refresh loops), so
+      // the effective worst-case cache age is ~10 min + fetch time. A 25-min
+      // threshold gives a 15-min buffer over the refresh interval — matchup
+      // lines between comparable golfers are stable enough that a somewhat
+      // older consensus is still tradeable.
+      'golf_matchups': 25,
     },
     // Confirmation-time re-price drift threshold. If current fair prob drifts
     // by more than this fraction from the original quote, reject the confirm.
