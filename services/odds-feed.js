@@ -517,6 +517,41 @@ async function fetchOddsForSport(sport, opts) {
     }
   }
 
+  // Consolidate events that describe the same physical game. SharpAPI can
+  // return the same matchup under different event_ids across its per-
+  // market-type queries (e.g. moneyline event_id differs from totals
+  // event_id), and the Odds-API supplement may also create a synthetic
+  // event if SharpAPI's event_id wasn't the one in teamDateToEventId.
+  // Result: same game appears twice in eventMap, with markets split
+  // between entries — bettor RFQs miss h2h/totals depending on which
+  // entry wins the cache lookup. Merge any events sharing the same
+  // (normalizedKey, commence date) into the first one seen.
+  {
+    const byKeyDate = {};
+    const toDelete = [];
+    for (const [eid, ev] of Object.entries(eventMap)) {
+      const key = normalizeEventKey(ev.homeTeam, ev.awayTeam);
+      const date = ev.commenceTime ? new Date(ev.commenceTime).toISOString().substring(0, 10) : '';
+      if (!date) continue;
+      const kd = key + '|' + date;
+      if (byKeyDate[kd] == null) {
+        byKeyDate[kd] = eid;
+      } else {
+        const primary = eventMap[byKeyDate[kd]];
+        // Merge odds rows from the duplicate into the primary entry,
+        // preserving row-level book/market_type data. Downstream parse
+        // step de-dups via getBookPairs so identical rows don't inflate
+        // consensus counts.
+        for (const row of (ev.odds || [])) primary.odds.push(row);
+        toDelete.push(eid);
+      }
+    }
+    for (const eid of toDelete) delete eventMap[eid];
+    if (toDelete.length > 0) {
+      log.info('OddsFeed', `Consolidated ${toDelete.length} duplicate ${mapping.value} events (merged into primary entries)`);
+    }
+  }
+
   // Parse into our cache format
   // Store as array per team pair to handle back-to-back series and doubleheaders
   const parsed = {};
