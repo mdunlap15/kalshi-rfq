@@ -6216,15 +6216,18 @@
       const d = byDay[day];
       const pnlCls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
       const dayId = 'dv-' + day.replace(/-/g, '');
-      svg += '<tr onclick="document.getElementById(\'' + dayId + '\').style.display = document.getElementById(\'' + dayId + '\').style.display === \'none\' ? \'table-row\' : \'none\'" style="cursor:pointer;">';
+      // Use the global expandedRows tracker so auto-refreshes don't collapse
+      // open day rows. toggleDetailRow updates the Set on click.
+      const dayExpanded = expandedRows.has(dayId);
+      svg += '<tr onclick="toggleDetailRow(\'' + dayId + '\')" style="cursor:pointer;">';
       svg += '<td>&#9654; ' + day + '</td>';
       svg += '<td style="text-align:right">' + d.count + '</td>';
       svg += '<td style="text-align:right">' + fmtDollar(d.risk) + '</td>';
       svg += '<td style="text-align:right; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
       svg += '<td style="text-align:right">' + d.settled + '</td>';
       svg += '<td style="text-align:right" class="' + pnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
-      // Expandable detail row
-      svg += '<tr id="' + dayId + '" style="display:none;"><td colspan="6" style="padding:0;">';
+      // Expandable detail row — initial display reflects persisted expansion
+      svg += '<tr id="' + dayId + '" style="display:' + (dayExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
       svg += '<table style="font-size:10px; width:100%; background:var(--surface2); margin:0;">';
       svg += '<tr style="color:var(--text3);"><th style="padding:2px 6px;">Time</th><th style="padding:2px 6px;">Selections</th><th style="padding:2px 6px;text-align:center;">Legs</th><th style="padding:2px 6px;text-align:right;">Odds</th><th style="padding:2px 6px;text-align:right;">Stake</th><th style="padding:2px 6px;text-align:right;">P&L</th><th style="padding:2px 6px;text-align:center;">Result</th></tr>';
       const dayOrders = d.orders
