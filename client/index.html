@@ -562,13 +562,13 @@
           </div>
         </div>
 
+        <!-- Daily Volume & P&L — grouped by month, months collapsed by default -->
         <div class="card">
           <div class="card-header" onclick="toggleCard(this)">
-            <span><span class="toggle-icon">&#9660;</span>Settled Positions (Wager Log)</span>
-            <span id="settled-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+            <span><span class="toggle-icon">&#9660;</span>Daily Volume & P&L</span>
           </div>
-          <div class="card-body" style="padding: 0;">
-            <div id="settled-table"><div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div></div>
+          <div class="card-body" id="orders-daily-volume" style="padding: 0;">
+            <div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>
           </div>
         </div>
       </div>
@@ -6020,6 +6020,7 @@
     const allQuoted = ownOrders.filter(o => o.offeredOdds);
 
     renderChartDailyVolume(ownOrders);
+    renderOrdersDailyVolume(ownOrders);
     renderChartParlayVsBooks(allQuoted);
     renderChartCumulPnlRoi(settled);
     renderChartPnlSport(settled);
@@ -6401,6 +6402,185 @@
 
     el.innerHTML = svg;
   }
+
+  // ===================== ORDERS TAB: DAILY VOLUME & P&L (by month) =====================
+  // Same data shape as renderChartDailyVolume (Analytics tab), but grouped as
+  // Month → Day → Parlay with all rows collapsed by default. Uses the shared
+  // expandedRows Set so open state survives auto-refresh. Namespaces the row
+  // IDs with "odvm-" / "odvd-" so they don't collide with the Analytics
+  // version's "dv-" IDs if both tabs render simultaneously.
+  function renderOrdersDailyVolume(allOrders) {
+    const el = document.getElementById('orders-daily-volume');
+    if (!el) return;
+    window._odvLastOrders = allOrders;
+    if (!window._odvSort) window._odvSort = {};
+
+    // Same confirmed-only filter as renderChartDailyVolume.
+    const confirmed = allOrders.filter(o =>
+      (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
+      && (o.quotedAt || !(o.meta && o.meta.reconstructed))
+    );
+    if (confirmed.length < 1) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>';
+      return;
+    }
+
+    // Bucket orders by day (YYYY-MM-DD)
+    const byDay = {};
+    for (const o of confirmed) {
+      const day = (o.confirmedAt || o.quotedAt || '').substring(0, 10);
+      if (!day) continue;
+      if (!byDay[day]) byDay[day] = { volume: 0, risk: 0, toWin: 0, pnl: 0, count: 0, settled: 0, orders: [] };
+      byDay[day].count++;
+      byDay[day].orders.push(o);
+      byDay[day].risk += (o.confirmedStake || 0);
+      byDay[day].toWin += o.confirmedStake && o.offeredOdds ? calcSpProfit(o.confirmedStake, o.offeredOdds) : 0;
+      if (o.pnl != null) {
+        byDay[day].pnl += o.pnl;
+        byDay[day].settled++;
+      }
+    }
+
+    // Roll days up into months (YYYY-MM)
+    const byMonth = {};
+    for (const [day, d] of Object.entries(byDay)) {
+      const month = day.substring(0, 7);
+      if (!byMonth[month]) byMonth[month] = { count: 0, risk: 0, toWin: 0, pnl: 0, settled: 0, days: [] };
+      byMonth[month].count += d.count;
+      byMonth[month].risk += d.risk;
+      byMonth[month].toWin += d.toWin;
+      byMonth[month].pnl += d.pnl;
+      byMonth[month].settled += d.settled;
+      byMonth[month].days.push(day);
+    }
+
+    const months = Object.keys(byMonth).sort().reverse(); // newest month first
+
+    let html = '<div style="overflow-x:auto;"><table style="font-size:12px; width:100%;">';
+    html += '<tr><th style="padding:4px 10px;">Month</th>'
+      + '<th style="text-align:right; padding:4px 10px;">Fills</th>'
+      + '<th style="text-align:right; padding:4px 10px;">My Risk</th>'
+      + '<th style="text-align:right; padding:4px 10px;">To Win</th>'
+      + '<th style="text-align:right; padding:4px 10px;">Settled</th>'
+      + '<th style="text-align:right; padding:4px 10px;">P&L</th></tr>';
+
+    for (const month of months) {
+      const m = byMonth[month];
+      const mPnlCls = m.pnl > 0 ? 'positive' : m.pnl < 0 ? 'negative' : 'neutral';
+      const monthId = 'odvm-' + month.replace(/-/g, '');
+      const monthExpanded = expandedRows.has(monthId);
+      html += '<tr onclick="toggleDetailRow(\'' + monthId + '\')" style="cursor:pointer;">';
+      html += '<td style="padding:4px 10px; font-weight:600;">&#9654; ' + month + '</td>';
+      html += '<td style="padding:4px 10px; text-align:right;">' + m.count + '</td>';
+      html += '<td style="padding:4px 10px; text-align:right;">' + fmtDollar(m.risk) + '</td>';
+      html += '<td style="padding:4px 10px; text-align:right; color:var(--green);">' + fmtDollar(m.toWin) + '</td>';
+      html += '<td style="padding:4px 10px; text-align:right;">' + m.settled + '</td>';
+      html += '<td style="padding:4px 10px; text-align:right;" class="' + mPnlCls + '">' + fmtPnl(m.pnl) + '</td></tr>';
+
+      // Month detail row: daily breakdown
+      html += '<tr id="' + monthId + '" style="display:' + (monthExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
+      html += '<table style="font-size:11px; width:100%; background:var(--surface2); margin:0;">';
+      html += '<tr style="color:var(--text3);">'
+        + '<th style="text-align:left; padding:2px 10px;">Date</th>'
+        + '<th style="text-align:right; padding:2px 10px;">Fills</th>'
+        + '<th style="text-align:right; padding:2px 10px;">My Risk</th>'
+        + '<th style="text-align:right; padding:2px 10px;">To Win</th>'
+        + '<th style="text-align:right; padding:2px 10px;">Settled</th>'
+        + '<th style="text-align:right; padding:2px 10px;">P&L</th></tr>';
+
+      const monthDays = [...m.days].sort().reverse();
+      for (const day of monthDays) {
+        const d = byDay[day];
+        const dPnlCls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
+        const dayId = 'odvd-' + day.replace(/-/g, '');
+        const dayExpanded = expandedRows.has(dayId);
+        html += '<tr onclick="event.stopPropagation(); toggleDetailRow(\'' + dayId + '\')" style="cursor:pointer;">';
+        html += '<td style="padding:2px 10px;">&#9654; ' + day + '</td>';
+        html += '<td style="padding:2px 10px; text-align:right;">' + d.count + '</td>';
+        html += '<td style="padding:2px 10px; text-align:right;">' + fmtDollar(d.risk) + '</td>';
+        html += '<td style="padding:2px 10px; text-align:right; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
+        html += '<td style="padding:2px 10px; text-align:right;">' + d.settled + '</td>';
+        html += '<td style="padding:2px 10px; text-align:right;" class="' + dPnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
+
+        // Day detail row: parlay breakdown (sortable)
+        html += '<tr id="' + dayId + '" style="display:' + (dayExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
+        html += '<table style="font-size:10px; width:100%; background:var(--surface3); margin:0;">';
+        const sortState = window._odvSort[dayId] || { col: 'time', dir: 1 };
+        const arrow = (col) => sortState.col === col ? (sortState.dir > 0 ? ' &#9650;' : ' &#9660;') : '';
+        const hClick = (col) => 'onclick="event.stopPropagation(); window._odvSortClick(\'' + dayId + '\',\'' + col + '\')" style="cursor:pointer;"';
+        html += '<tr style="color:var(--text3);">'
+          + '<th ' + hClick('time') + ' style="padding:2px 10px;">Time' + arrow('time') + '</th>'
+          + '<th ' + hClick('selections') + ' style="padding:2px 10px;">Selections' + arrow('selections') + '</th>'
+          + '<th ' + hClick('legs') + ' style="padding:2px 10px;text-align:center;">Legs' + arrow('legs') + '</th>'
+          + '<th ' + hClick('odds') + ' style="padding:2px 10px;text-align:right;">Odds' + arrow('odds') + '</th>'
+          + '<th ' + hClick('stake') + ' style="padding:2px 10px;text-align:right;">Stake' + arrow('stake') + '</th>'
+          + '<th ' + hClick('pnl') + ' style="padding:2px 10px;text-align:right;">P&L' + arrow('pnl') + '</th>'
+          + '<th ' + hClick('result') + ' style="padding:2px 10px;text-align:center;">Result' + arrow('result') + '</th>'
+          + '</tr>';
+        const rows = d.orders.filter(o => o.pnl != null).map(o => {
+          const legs = o.legs || o.meta?.legs || [];
+          const selections = legs.map(l => {
+            const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
+            return name.length > 30 ? name.substring(0, 28) + '..' : name;
+          }).join(', ');
+          const timeStr = (o.confirmedAt || '').substring(11, 16) || '--:--';
+          const oddsNum = o.confirmedOdds || o.offeredOdds || 0;
+          const result = o.settlementResult || (o.status || '').replace('settled_', '') || '-';
+          return {
+            o, legs,
+            time: timeStr,
+            timeSort: o.settledAt || o.confirmedAt || '',
+            selections, legCount: legs.length, oddsNum,
+            oddsStr: oddsNum ? (oddsNum > 0 ? '+' + oddsNum : '' + oddsNum) : '-',
+            stake: o.confirmedStake || 0,
+            pnl: o.pnl,
+            result,
+          };
+        });
+        rows.sort((a, b) => {
+          let av, bv;
+          switch (sortState.col) {
+            case 'selections': return sortState.dir * a.selections.localeCompare(b.selections);
+            case 'legs':   av = a.legCount; bv = b.legCount; break;
+            case 'odds':   av = a.oddsNum;  bv = b.oddsNum;  break;
+            case 'stake':  av = a.stake;    bv = b.stake;    break;
+            case 'pnl':    av = a.pnl;      bv = b.pnl;      break;
+            case 'result': return sortState.dir * a.result.localeCompare(b.result);
+            case 'time':
+            default:       av = a.timeSort; bv = b.timeSort; return sortState.dir * av.localeCompare(bv);
+          }
+          return sortState.dir * (av - bv);
+        });
+        for (const r of rows) {
+          const pnlCls2 = r.pnl > 0 ? 'positive' : r.pnl < 0 ? 'negative' : 'neutral';
+          const resultColor = r.result === 'won' ? 'var(--green)' : r.result === 'lost' ? 'var(--red)' : 'var(--text3)';
+          html += '<tr style="border-top:1px solid var(--border);">';
+          html += '<td style="padding:2px 10px;white-space:nowrap;">' + r.time + '</td>';
+          html += '<td style="padding:2px 10px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + r.selections.replace(/"/g, '&quot;') + '">' + r.selections + '</td>';
+          html += '<td style="padding:2px 10px;text-align:center;">' + r.legCount + '</td>';
+          html += '<td style="padding:2px 10px;text-align:right;">' + r.oddsStr + '</td>';
+          html += '<td style="padding:2px 10px;text-align:right;">' + fmtDollar(r.stake) + '</td>';
+          html += '<td style="padding:2px 10px;text-align:right;" class="' + pnlCls2 + '">' + fmtPnl(r.pnl) + '</td>';
+          html += '<td style="padding:2px 10px;text-align:center;color:' + resultColor + ';">' + r.result.charAt(0).toUpperCase() + r.result.slice(1) + '</td>';
+          html += '</tr>';
+        }
+        html += '</table></td></tr>';
+      }
+      html += '</table></td></tr>';
+    }
+    html += '</table></div>';
+    el.innerHTML = html;
+  }
+
+  // Click handler mirrors _dvSortClick but targets the Orders-tab state.
+  window._odvSortClick = function(dayId, col) {
+    if (!window._odvSort) window._odvSort = {};
+    const cur = window._odvSort[dayId] || { col: 'time', dir: 1 };
+    if (cur.col === col) cur.dir = cur.dir > 0 ? -1 : 1;
+    else { cur.col = col; cur.dir = 1; }
+    window._odvSort[dayId] = cur;
+    if (window._odvLastOrders) renderOrdersDailyVolume(window._odvLastOrders);
+  };
 
   // ===================== PARLAY PRICING vs. BOOKS =====================
   // Cross-book scatter: each parlay produces one dot per series (mine + 4 books).
