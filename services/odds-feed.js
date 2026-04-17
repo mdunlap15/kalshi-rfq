@@ -1833,31 +1833,73 @@ async function resolveOddsApiEventId(sport, homeTeam, awayTeam, targetTime) {
     'soccer_uefa_champs_league': 'soccer_uefa_champions',
     'soccer_uefa_europa_league': 'soccer_uefa_europa_league',
   };
+  // Dynamic sports (e.g. tennis) use tournament-specific Odds API keys that
+  // rotate over time. For these, we discover active tournaments and fetch
+  // events per tournament, tagging each event with its own sport key. Static
+  // sports use the map above directly.
+  const fallback = ODDS_API_FALLBACK[sport];
+  const isDynamic = !!(fallback && fallback.dynamic && fallback.sportPrefix);
   const oddsApiSport = oddsApiSportMap[sport];
-  if (!oddsApiSport) return null;
+  if (!oddsApiSport && !isDynamic) return null;
 
   // Check cache
   const cached = oddsApiEventIdCache[sport];
   if (!cached || (Date.now() - cached.fetchedAt) > ODDS_API_EVENT_ID_TTL_MS) {
-    // Fetch events list (lightweight — no odds, just event metadata)
-    const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events?apiKey=${theOddsApiKey}`;
     try {
-      const resp = await abortableFetch(url);
-      if (!resp.ok) {
-        log.warn('OddsFeed', `Odds API events list failed (${resp.status}) for ${sport}`);
-        return null;
-      }
-      const data = await resp.json();
-      oddsApiEventIdCache[sport] = {
-        fetchedAt: Date.now(),
-        events: (data || []).map(e => ({
+      let events = [];
+      if (isDynamic) {
+        // Discover active tournaments, then fetch events for each. Tag each
+        // event with its tournament sport key so fetchAltLines can build the
+        // correct /v4/sports/{key}/events/{id}/odds URL.
+        const sportsResp = await abortableFetch(
+          `https://api.the-odds-api.com/v4/sports/?apiKey=${theOddsApiKey}`
+        );
+        if (!sportsResp.ok) {
+          log.warn('OddsFeed', `Odds API sports list failed (${sportsResp.status}) for ${sport}`);
+          return null;
+        }
+        const allSports = await sportsResp.json();
+        const active = allSports.filter(s => s.key.startsWith(fallback.sportPrefix) && s.active);
+        for (const t of active) {
+          try {
+            const r = await abortableFetch(
+              `https://api.the-odds-api.com/v4/sports/${t.key}/events?apiKey=${theOddsApiKey}`
+            );
+            if (!r.ok) continue;
+            const data = await r.json();
+            for (const e of (data || [])) {
+              events.push({
+                id: e.id,
+                home: e.home_team,
+                away: e.away_team,
+                commence: e.commence_time,
+                oddsApiSport: t.key,
+              });
+            }
+          } catch (err) {
+            log.warn('OddsFeed', `Odds API events fetch failed for ${t.key}: ${err.message}`);
+          }
+        }
+        log.debug('OddsFeed', `Cached ${events.length} Odds API event IDs across ${active.length} ${sport} tournaments`);
+      } else {
+        // Static path — single sport key
+        const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events?apiKey=${theOddsApiKey}`;
+        const resp = await abortableFetch(url);
+        if (!resp.ok) {
+          log.warn('OddsFeed', `Odds API events list failed (${resp.status}) for ${sport}`);
+          return null;
+        }
+        const data = await resp.json();
+        events = (data || []).map(e => ({
           id: e.id,
           home: e.home_team,
           away: e.away_team,
           commence: e.commence_time,
-        })),
-      };
-      log.debug('OddsFeed', `Cached ${data.length} Odds API event IDs for ${sport}`);
+          oddsApiSport,
+        }));
+        log.debug('OddsFeed', `Cached ${events.length} Odds API event IDs for ${sport}`);
+      }
+      oddsApiEventIdCache[sport] = { fetchedAt: Date.now(), events };
     } catch (err) {
       log.warn('OddsFeed', `Odds API events list error for ${sport}: ${err.message}`);
       return null;
@@ -1936,7 +1978,9 @@ async function resolveOddsApiEventId(sport, homeTeam, awayTeam, targetTime) {
     }
   }
 
-  return { eventId: chosen.id, oddsApiSport };
+  // For dynamic sports, each cached event carries its own tournament sport
+  // key. Fall back to the static map value for non-dynamic sports.
+  return { eventId: chosen.id, oddsApiSport: chosen.oddsApiSport || oddsApiSport };
 }
 
 async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
