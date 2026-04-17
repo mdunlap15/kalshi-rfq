@@ -1748,13 +1748,17 @@ function avg(arr) {
 // ---------------------------------------------------------------------------
 // { 'eventKey': { fetchedAt, altSpreads: { [line]: { home, away } }, altTotals: { [line]: { over, under } } } }
 const altLinesCache = {};
-// 30 min TTL — alt-line values move slower than primary lines and we'd rather
-// serve a slightly stale cached alt than pay a 30-100ms on-demand fetch on
-// the RFQ hot path. Was 10 min, but that caused constant re-fetching of the
-// same events and pushed decline→price p50 to 31ms (vs ~1ms warm). 30 min is
-// safe because the primary-line market check in getFairProb already verifies
-// the line hasn't moved meaningfully.
-const ALT_LINES_TTL_MS = 30 * 60 * 1000;
+// 10 min TTL. Earlier today this was bumped to 30 min as a latency optimization
+// (fewer cache misses → fewer on-demand Odds API fetches). Real-world observation
+// showed this correlated with a confirmation drought: 0 successful matches in 2
+// hours after the bump, vs normal ~4% confirm rate. Stale alt lines beyond 10
+// minutes apparently make our offered prices uncompetitive enough that bettors
+// consistently pick other SPs. Reverted to 10 min — accepts a latency cost
+// (more cache misses) in exchange for fresher prices that stay in the running.
+//
+// The 60s warm loop and boot pre-warm (both added in 0caa4d3) remain — they
+// fetch MORE often, not less. No fill-rate risk from those.
+const ALT_LINES_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Fetch alternate spreads and totals for a specific event from The Odds API.
