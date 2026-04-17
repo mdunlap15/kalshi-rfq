@@ -2115,6 +2115,7 @@ const SPORTS_WITH_ALT_MARKETS = new Set([
   'baseball_mlb',
   'icehockey_nhl',
   'americanfootball_nfl', 'americanfootball_ncaaf',
+  'tennis',
 ]);
 
 // Only pre-warm events starting within this window — avoids wasting API calls
