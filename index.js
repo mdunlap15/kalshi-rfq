@@ -838,7 +838,14 @@ function startStatusServer() {
         if (isSettled) {
           if (pxProfit != null) totalPxProfit += Number(pxProfit);
           totalStakeIn += Number(stake);
-          const day = (po.settled_at || po.updated_at || po.created_at || '').substring(0, 10);
+          const rawDay = po.settled_at || po.updated_at || po.created_at || '';
+          // PX occasionally returns dates as Date objects or numeric
+          // timestamps — coerce to string before substring.
+          const dayStr = typeof rawDay === 'string' ? rawDay
+            : rawDay instanceof Date ? rawDay.toISOString()
+            : typeof rawDay === 'number' ? new Date(rawDay).toISOString()
+            : String(rawDay);
+          const day = dayStr.substring(0, 10);
           if (day) {
             if (!byDay[day]) byDay[day] = { count: 0, profit: 0 };
             byDay[day].count++;
