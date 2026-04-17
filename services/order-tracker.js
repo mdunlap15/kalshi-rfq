@@ -16,8 +16,13 @@ const marketStats = {
   totalMatched: 0,
   weQuoted: 0,
   weWon: 0,
-  weLost: 0, // quoted but another SP won
-  missedNoQuote: 0, // didn't quote at all
+  // weLost: kept for back-compat with historical DB rows, but no longer
+  // incremented. Per Alec (PX): order.matched events are private and only
+  // fire on our own wins; we cannot observe losses via this path. Any
+  // legacy 'lost' entries loaded from DB are misclassified wins from the
+  // pre-fix era. Downstream aggregations filter them out.
+  weLost: 0,
+  missedNoQuote: 0, // matched event received for a parlay we didn't quote (rare)
 };
 
 // ---------------------------------------------------------------------------
@@ -709,42 +714,49 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     };
   });
 
+  // Classification under PX's confirmed event model (Alec, Apr 2026):
+  //   "You will receive the information privately and matched odds will be
+  //    the odds that are accepted and confirmed. [...] No you wouldn't be
+  //    seeing when another SP wins only your own."
+  //
+  // So every order.matched event we receive = our own win. There is no
+  // 'lost' outcome observable via this path — losses are inferrable only
+  // from quotes that never matched (handled via the orphaned-quote
+  // cleanup in loadFromDb).
+  //
+  // matched_odds is the FINAL confirmed odds (post-drift re-confirmation).
+  // Our original offeredOdds may differ slightly if drift moved the price.
+  // Either way the event means we won.
   let outcome;
-  if (weQuoted && ourQuote.status === 'confirmed') {
+  if (weQuoted) {
     outcome = 'won';
     matchedWonIds.add(parlayId);
+    // weQuoted here is a misnamed legacy counter — it's really "matched
+    // events we received". True quote-submission count lives in
+    // rfqStages.submitted on the websocket side. Keep incrementing for
+    // back-compat but do so in the won branch only.
     marketStats.weWon++;
     marketStats.weQuoted++;
-  } else if (weQuoted) {
-    // Check if this broadcast is actually another SP's fill on a parlay we also quoted.
-    // If the matched odds/stake don't match what we offered, it's another SP — not us losing.
-    const ourOdds = Math.abs(ourQuote.offeredOdds || 0);
-    const broadcastOdds = Math.abs(matchedOdds || 0);
-    const isOurFill = Math.abs(ourOdds - broadcastOdds) < 2; // within rounding
-    if (!isOurFill) {
-      // Another SP's fill — we might still win our portion
-      log.debug('Market', `Other SP fill on parlay we quoted: our=${ourQuote.offeredOdds}, matched=${matchedOdds}`);
-      outcome = 'other_sp';
-      marketStats.totalMatched--; // don't count as a separate match for us
-      // Don't change our order status — we might still get confirmed
-    } else {
-      outcome = 'lost'; // we quoted at similar odds but didn't win
-      marketStats.weLost++;
-    }
-    marketStats.weQuoted++;
-    if (outcome === 'lost') {
-      // Update order status to 'lost' so dashboard reflects it
-      ourQuote.status = 'lost';
-      ourQuote.lostAt = new Date().toISOString();
-      ourQuote.winningOdds = matchedOdds != null ? -matchedOdds : null;
-      ourQuote.winningStake = matchedStake;
-      ourQuote.meta = ourQuote.meta || {};
-      ourQuote.meta.winningOdds = ourQuote.winningOdds;
-      ourQuote.meta.winningStake = ourQuote.winningStake;
-      ourQuote.meta.lostAt = ourQuote.lostAt;
-      db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(outbid) failed: ${err.message}`));
+    // If order.finalized hasn't fired yet (or doesn't fire), promote the
+    // quote to 'confirmed' here. matched_odds IS the confirmed price.
+    if (ourQuote.status !== 'confirmed') {
+      ourQuote.status = 'confirmed';
+      if (matchedOdds != null) {
+        // PX sends matched_odds in bettor-side convention; our format is
+        // SP-side (negated). Store the confirmed price in our format.
+        ourQuote.confirmedOdds = -matchedOdds;
+      } else {
+        ourQuote.confirmedOdds = ourQuote.offeredOdds;
+      }
+      if (matchedStake != null) ourQuote.confirmedStake = matchedStake;
+      ourQuote.confirmedAt = ourQuote.confirmedAt || new Date().toISOString();
+      db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(won via matched) failed: ${err.message}`));
     }
   } else {
+    // order.matched without a corresponding quote on our side — should not
+    // happen under Alec's model but handle gracefully as "missed" so we
+    // don't crash. Downstream consumers treat this as a market-intel entry
+    // for a parlay we didn't participate in.
     outcome = 'missed';
     marketStats.missedNoQuote++;
   }
@@ -1234,24 +1246,37 @@ function getMarketIntel(limit = 50) {
       }
       return bySport;
     })(),
-    // Competitive analysis — compare our quotes to winning prices
+    // Competitive/drift entries — every matched event is a WIN under Alec's
+    // confirmed event model. The "gap" metric that used to compare our
+    // odds to a competitor's is actually drift (originalOdds vs final
+    // confirmed odds after any re-confirmation). We keep the field name
+    // for UI compatibility but its meaning is narrower.
+    //
+    // Historical entries with outcome='lost' or outcome='other_sp' are
+    // misclassified from the pre-fix era — exclude them from the live
+    // view so fill-rate and drift numbers aren't polluted. A separate
+    // DB migration can retroactively relabel those rows, but filtering
+    // here means the operator sees clean numbers immediately.
     competitive: (() => {
-      const quoted = matchedParlays.filter(m => m.weQuoted && m.ourAmericanOdds != null && m.matchedAmericanOdds != null);
+      const quoted = matchedParlays.filter(m =>
+        m.weQuoted
+        && m.ourAmericanOdds != null
+        && m.matchedAmericanOdds != null
+        && m.outcome !== 'lost'  // legacy misclassification
+        && m.outcome !== 'other_sp'  // ditto
+      );
       if (quoted.length === 0) return { entries: [], summary: null };
 
       const entries = quoted.map(m => {
         const ourOdds = Number(m.ourAmericanOdds);
         const winOdds = Number(m.matchedAmericanOdds);
-        // Store precise decimal odds for detailed comparison
         const ourDecimal = m.ourDecimalOdds || (ourOdds >= 100 ? 1 + ourOdds/100 : ourOdds < -100 ? 1 + 100/Math.abs(ourOdds) : null);
         const winDecimal = m.winDecimalOdds || (winOdds >= 100 ? 1 + winOdds/100 : winOdds < -100 ? 1 + 100/Math.abs(winOdds) : null);
-        // Convert to implied probability for proper comparison
         const ourProb = americanToProb(ourOdds);
         const winProb = americanToProb(winOdds);
-        // Gap in probability points — positive means we were tighter (less generous)
+        // gapProb now represents DRIFT: positive = final confirmed price
+        // was tighter than what we originally offered.
         const gapProb = ourProb - winProb;
-        // Gap in odds — how many odds points apart
-        const won = m.outcome === 'won';
         return {
           parlayId: m.parlayId,
           teams: (m.legs || []).map(l => l.team).filter(t => t !== 'Unknown').join(', '),
@@ -1264,28 +1289,23 @@ function getMarketIntel(limit = 50) {
           ourProb: Math.round(ourProb * 10000) / 100,
           winProb: Math.round(winProb * 10000) / 100,
           gapProb: Math.round(gapProb * 10000) / 100,
-          won,
+          won: true,  // every entry is a win under Alec's model
           stake: m.matchedStake,
           time: m.matchedAt,
         };
       }).sort((a, b) => (b.time || '').localeCompare(a.time || ''));
 
-      // Summary stats
-      const wins = entries.filter(e => e.won);
-      const losses = entries.filter(e => !e.won);
-      const avgGapWins = wins.length > 0 ? wins.reduce((s, e) => s + e.gapProb, 0) / wins.length : null;
-      const avgGapLosses = losses.length > 0 ? losses.reduce((s, e) => s + e.gapProb, 0) / losses.length : null;
-      const avgGapAll = entries.reduce((s, e) => s + e.gapProb, 0) / entries.length;
+      const avgDrift = entries.length > 0 ? entries.reduce((s, e) => s + e.gapProb, 0) / entries.length : 0;
 
       return {
         entries,
         summary: {
           totalQuoted: entries.length,
-          wins: wins.length,
-          losses: losses.length,
-          avgGapAll: Math.round(avgGapAll * 100) / 100,
-          avgGapWins: avgGapWins != null ? Math.round(avgGapWins * 100) / 100 : null,
-          avgGapLosses: avgGapLosses != null ? Math.round(avgGapLosses * 100) / 100 : null,
+          wins: entries.length,
+          losses: 0,  // not observable via this event path
+          avgGapAll: Math.round(avgDrift * 100) / 100,
+          avgGapWins: Math.round(avgDrift * 100) / 100,
+          avgGapLosses: null,
         },
       };
     })(),
@@ -4308,20 +4328,32 @@ async function loadFromDb() {
     log.warn('DB', `Golf backfill failed: ${err.message}`);
   }
 
-  // Load matched parlays (paginated in loadMatchedParlays)
+  // Load matched parlays (paginated in loadMatchedParlays).
+  // Per Alec (PX): order.matched events are private — only fire on our own
+  // wins. Legacy DB rows with outcome='lost' or 'other_sp' are
+  // misclassified wins from before this was clarified. Count them in
+  // totalMatched (they really did happen) but don't inflate weLost or
+  // miscategorize the win counter.
   const dbMatched = await db.loadMatchedParlays(10000);
+  let legacyMisclassified = 0;
   for (const m of dbMatched) {
     matchedParlays.push(m);
     marketStats.totalMatched++;
     if (m.weQuoted) {
       marketStats.weQuoted++;
-      if (m.outcome === 'won') marketStats.weWon++;
-      else if (m.outcome === 'lost') marketStats.weLost++;
+      if (m.outcome === 'won') {
+        marketStats.weWon++;
+      } else if (m.outcome === 'lost' || m.outcome === 'other_sp') {
+        // Legacy misclassified — treat as won for the counter so fill-rate
+        // math reflects reality. weLost stays at 0.
+        marketStats.weWon++;
+        legacyMisclassified++;
+      }
     } else {
       marketStats.missedNoQuote++;
     }
   }
-  log.info('DB', `Loaded ${dbMatched.length} matched parlays`);
+  log.info('DB', `Loaded ${dbMatched.length} matched parlays${legacyMisclassified > 0 ? ` (${legacyMisclassified} legacy 'lost'/'other_sp' rows re-counted as wins per PX event-model clarification)` : ''}`);
 
   // Load declines in background — the declines table is too large for a
   // synchronous startup query. Positions and P&L don't depend on it.
