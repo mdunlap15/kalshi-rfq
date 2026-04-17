@@ -813,6 +813,64 @@ function startStatusServer() {
     }
   });
 
+  // PX-native ledger: pulls the full order history from PX and computes
+  // net settlement P&L using ONLY PX's own status/stake/profit fields —
+  // no tracker interpretation. Use this to reconcile against our
+  // runningPnL when account-balance vs tracker-P&L disagree.
+  app.get('/debug/px-ledger', async (req, res) => {
+    const limit = parseInt(req.query.limit) || 50000;
+    try {
+      const pxOrders = await px.fetchOrders(limit);
+      const byStatus = {};
+      const byDay = {};
+      let totalStakeIn = 0;      // sum of our confirmed stakes (SP risk)
+      let totalPxProfit = 0;     // sum of PX-reported profit (our net from settled orders)
+      let unsettled = 0;
+      let settlementSamples = [];
+      for (const po of pxOrders) {
+        const st = (po.status || 'unknown').toLowerCase();
+        byStatus[st] = (byStatus[st] || 0) + 1;
+        // PX typically carries a settlement-related field. Try common names.
+        const pxProfit = po.profit ?? po.net_profit ?? po.settlement_profit ?? po.payout ?? null;
+        const stake = po.stake ?? po.confirmed_stake ?? po.matched_stake ?? 0;
+        // Only count settled outcomes in P&L total
+        const isSettled = /settled|won|lost|push/.test(st);
+        if (isSettled) {
+          if (pxProfit != null) totalPxProfit += Number(pxProfit);
+          totalStakeIn += Number(stake);
+          const day = (po.settled_at || po.updated_at || po.created_at || '').substring(0, 10);
+          if (day) {
+            if (!byDay[day]) byDay[day] = { count: 0, profit: 0 };
+            byDay[day].count++;
+            if (pxProfit != null) byDay[day].profit += Number(pxProfit);
+          }
+          if (settlementSamples.length < 5) settlementSamples.push({
+            uuid: po.order_uuid?.substring(0, 8),
+            status: st,
+            stake,
+            pxProfit,
+            availableFields: Object.keys(po).filter(k => /profit|payout|settle|pnl|return/i.test(k)),
+          });
+        } else {
+          unsettled++;
+        }
+      }
+      res.json({
+        ok: true,
+        pxTotalOrders: pxOrders.length,
+        statusBreakdown: byStatus,
+        unsettledCount: unsettled,
+        totalStakeIn: Math.round(totalStakeIn * 100) / 100,
+        totalPxProfit: Math.round(totalPxProfit * 100) / 100,
+        settlementSamples,
+        dailyPnL: Object.fromEntries(Object.entries(byDay).sort().map(([d, v]) => [d, { count: v.count, profit: Math.round(v.profit * 100) / 100 }])),
+        note: 'totalPxProfit sums the profit/payout field on every settled order as PX reports it. If this matches our tracker runningPnL, our settlement logic is accurate. If it differs, the delta is where our tracker is wrong.',
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Diagnostic: force a full fetchOddsForSport for a specific sport
   app.get('/debug/force-fetch', async (req, res) => {
     try {
