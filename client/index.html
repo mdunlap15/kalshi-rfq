@@ -2407,9 +2407,11 @@
     const rangeStr = dateRangeLine(entries, 'time', 'Covers');
     if (rangeStr) html += '<div style="padding:8px 12px 0; font-size:14px; color:var(--text3);">' + rangeStr + '</div>';
     html += '<div style="font-size:14px; color:var(--text3); padding:8px 12px; line-height:1.5;">'
-      + 'Each cell: <strong>win %</strong> · <strong>n=total parlays</strong> · <strong>% of losses at tied odds</strong> · <strong>avg gap on non-tied losses</strong>. '
-      + 'High tied-% means price isn\'t the problem — you\'re matching the winner\'s integer odds and losing on speed / tiebreaker. '
-      + 'A positive non-tie gap means the few real outbids beat you by that many probability points; loosening by that much would compete on those. '
+      + 'Each cell: <strong>win %</strong> (our fill rate) &middot; <strong>n = parlays we quoted</strong>. '
+      + 'Win % = matched events we received / total quotes we submitted. '
+      + '<span style="color:var(--amber);">Note:</span> PX only sends matched broadcasts for our own wins — '
+      + 'we can\'t directly see competitors\' winning prices when outbid. The "loss gap" metric has been '
+      + 'removed pending verification of PX\'s event model with Alec. '
       + 'Parlays tagged <em>Multi</em> span multiple sports.'
       + '</div>';
     html += '<div style="overflow-x:auto; padding:0 12px 12px;"><table style="font-size:13px; min-width:680px; border-collapse:separate; border-spacing:3px;">';
@@ -2428,29 +2430,16 @@
         rowN += c.n;
         rowWins += c.wins;
         const wr = c.n > 0 ? (c.wins / c.n * 100) : 0;
-        const tiedPct = c.losses > 0 ? (c.tiedLosses / c.losses * 100) : null;
-        const nonTieAvgGap = c.nonTieGapN > 0 ? (c.nonTieGapSum / c.nonTieGapN) : null;
         const wrColor = wr >= 50 ? 'rgba(63,185,80,0.18)' : wr >= 25 ? 'rgba(210,153,34,0.18)' : 'rgba(248,81,73,0.18)';
         const wrTextColor = wr >= 50 ? 'var(--green)' : wr >= 25 ? 'var(--amber)' : 'var(--red)';
-        const tiedText = tiedPct != null ? tiedPct.toFixed(0) + '% tied' : 'no losses';
-        // Gap on non-tied losses: dash if no non-ties, else signed pp.
-        // Color red if positive (we were tighter; loosen to compete),
-        // green if negative (we were already looser — speed/tiebreaker problem),
-        // grey if only a few samples or near zero.
-        const gapText = nonTieAvgGap != null
-          ? (nonTieAvgGap >= 0 ? '+' : '') + nonTieAvgGap.toFixed(2) + 'pp'
-          : '&mdash;';
-        const gapColor = nonTieAvgGap != null
-          ? (nonTieAvgGap > 0.5 ? 'var(--amber)' : nonTieAvgGap > 0 ? 'var(--text2)' : 'var(--green)')
-          : 'var(--text3)';
-        const tooltip = c.wins + ' matched / ' + c.n + ' quoted. '
-          + 'Losses: ' + c.losses + ' (' + c.tiedLosses + ' tied, ' + c.nonTieGapN + ' non-tied). '
-          + 'Non-tie avg gap: ' + (nonTieAvgGap != null ? nonTieAvgGap.toFixed(3) + 'pp' : 'n/a');
+        // tiedPct / nonTieAvgGap dropped from display — see card intro.
+        // The underlying numbers are captured in the tooltip for auditing
+        // in case Alec's event-model answer reopens the interpretation.
+        const tooltip = c.wins + ' matched / ' + c.n + ' quoted.'
+          + (c.losses > 0 ? ' Losses recorded: ' + c.losses + ' (' + c.tiedLosses + ' tied, ' + c.nonTieGapN + ' non-tied — pending event-model verification).' : '');
         html += '<td style="padding:8px 12px; text-align:center; background:' + wrColor + '; border-radius:4px;" title="' + tooltip + '">'
-          + '<div style="color:' + wrTextColor + '; font-weight:700; font-size:18px; line-height:1.2;">' + wr.toFixed(0) + '%</div>'
+          + '<div style="color:' + wrTextColor + '; font-weight:700; font-size:22px; line-height:1.2;">' + wr.toFixed(0) + '%</div>'
           + '<div style="color:var(--text2); font-size:14px; line-height:1.4;">n=' + c.n + '</div>'
-          + '<div style="color:var(--text2); font-size:14px; line-height:1.4;">' + tiedText + '</div>'
-          + '<div style="color:' + gapColor + '; font-size:14px; line-height:1.4;">' + gapText + '</div>'
           + '</td>';
       }
       // Row-total cell — white text so it stands out as a summary column
