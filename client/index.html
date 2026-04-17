@@ -2371,29 +2371,53 @@
       { label: '5-6 legs', min: 5, max: 6 },
       { label: '7+ legs', min: 7, max: Infinity },
     ];
+    // Two levels of aggregation:
+    //   byCell            — keyed by (canonicalSport, legBucket). Top-level rows.
+    //   bySubCell         — keyed by (canonicalSport, subLeague, legBucket) for
+    //                        drill-down detail inside a canonical-sport row.
+    // Mirrors the P&L by Sport canonicalization: MLB, Baseball, baseball_mlb
+    // all roll up under "MLB"; all soccer_* leagues + "Soccer" roll up under
+    // "Soccer" but are individually visible when the row is expanded.
     const byCell = {};
+    const bySubCell = {};
+    const subLeaguesPerSport = {};  // canonSport -> Set of raw sub-league labels
     const sportsSeen = new Set();
+    const addCell = (dict, key, e) => {
+      if (!dict[key]) dict[key] = { n: 0, wins: 0, losses: 0, tiedLosses: 0, nonTieGapSum: 0, nonTieGapN: 0 };
+      dict[key].n++;
+      if (e.won) dict[key].wins++;
+      else {
+        dict[key].losses++;
+        if (e.ourOdds === e.winOdds) dict[key].tiedLosses++;
+        else {
+          dict[key].nonTieGapSum += e.gapProb;
+          dict[key].nonTieGapN++;
+        }
+      }
+    };
     for (const e of entries) {
       const legs = e.legs || [];
-      const sports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
-      const sport = sports.length === 0 ? 'Unknown' : sports.length === 1 ? sports[0] : 'Multi';
-      sportsSeen.add(sport);
+      const rawSports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
+      const canonSports = [...new Set(rawSports.map(canonicalSport))];
+      // Mixed-sport parlays remain their own bucket; single-sport parlays
+      // collapse every variant ("Baseball", "MLB", "baseball_mlb") under
+      // one canonical label.
+      const canonSport = canonSports.length === 0 ? 'Unknown'
+        : canonSports.length === 1 ? canonSports[0]
+        : 'Multi';
+      sportsSeen.add(canonSport);
       const bucket = legBuckets.find(b => e.legCount >= b.min && e.legCount <= b.max);
       if (!bucket) continue;
-      const cellKey = sport + '|' + bucket.label;
-      if (!byCell[cellKey]) byCell[cellKey] = { n: 0, wins: 0, losses: 0, tiedLosses: 0, nonTieGapSum: 0, nonTieGapN: 0 };
-      byCell[cellKey].n++;
-      if (e.won) byCell[cellKey].wins++;
-      else {
-        byCell[cellKey].losses++;
-        // Tie = same integer American odds. Average the gap only over the
-        // non-tied subset so the metric isn't diluted by the tied majority
-        // (which rounds to ~0pp because ties are definitionally 0pp gaps).
-        if (e.ourOdds === e.winOdds) byCell[cellKey].tiedLosses++;
-        else {
-          byCell[cellKey].nonTieGapSum += e.gapProb;
-          byCell[cellKey].nonTieGapN++;
-        }
+      addCell(byCell, canonSport + '|' + bucket.label, e);
+      // Sub-league tracking only for single-sport parlays. Multi-sport
+      // parlays skip drill-down entirely — breaking Multi into every
+      // permutation (NBA+MLB, MLB+NHL, etc.) produces 30+ noisy buckets
+      // with N=1 or N=2 each, which isn't a useful detail view.
+      if (rawSports.length === 1) {
+        const subLeague = sportLabel(rawSports[0]);
+        if (!subLeaguesPerSport[canonSport]) subLeaguesPerSport[canonSport] = new Set();
+        subLeaguesPerSport[canonSport].add(subLeague);
+        addCell(bySubCell, canonSport + '|' + subLeague + '|' + bucket.label, e);
       }
     }
     const sportRows = [...sportsSeen].sort((a, b) => {
@@ -2407,24 +2431,36 @@
     const rangeStr = dateRangeLine(entries, 'time', 'Covers');
     if (rangeStr) html += '<div style="padding:8px 12px 0; font-size:14px; color:var(--text3);">' + rangeStr + '</div>';
     html += '<div style="font-size:14px; color:var(--text3); padding:8px 12px; line-height:1.5;">'
-      + 'Each cell: <strong>win %</strong> (our fill rate) &middot; <strong>n = parlays we quoted</strong>. '
-      + 'Win % = matched events we received / total quotes we submitted. '
-      + '<span style="color:var(--amber);">Note:</span> PX only sends matched broadcasts for our own wins — '
-      + 'we can\'t directly see competitors\' winning prices when outbid. The "loss gap" metric has been '
-      + 'removed pending verification of PX\'s event model with Alec. '
+      + 'Each cell: <strong>fill %</strong> &middot; <strong>n = parlays we quoted</strong> in that bucket. '
+      + '<strong>Fill %</strong> = parlays PX filled with our offer &divide; parlays we quoted &mdash; this measures <em>auction</em> outcomes, not settlement. '
+      + 'A fill means we won the RFQ auction (PX chose our price); whether we profit depends on how the legs play out. '
+      + 'PX only notifies us privately on our own fills, so auction losses are inferred from quotes that never matched &mdash; we don\'t see competitors\' prices. '
       + 'Parlays tagged <em>Multi</em> span multiple sports.'
       + '</div>';
     html += '<div style="overflow-x:auto; padding:0 12px 12px;"><table style="font-size:13px; min-width:680px; border-collapse:separate; border-spacing:3px;">';
     html += '<tr><th style="text-align:left; padding:6px 12px;">Sport</th>';
     for (const b of legBuckets) html += '<th style="text-align:center; padding:6px 12px;">' + b.label + '</th>';
     html += '<th style="text-align:center; padding:6px 12px; color:var(--text3);">Row total</th></tr>';
-    for (const sp of sportRows) {
+    // Helper to build a single sport/sub-league row. Used for both the
+    // top-level canonical-sport row and the indented sub-league detail rows.
+    const buildRow = (sp, label, { isSubRow = false, hasDrilldown = false, rowId = null, expanded = false, cellSource = byCell, subKey = null } = {}) => {
       let rowN = 0, rowWins = 0;
-      html += '<tr><td style="padding:8px 12px; font-weight:600; font-size:14px;">' + sportLabel(sp) + '</td>';
+      const indent = isSubRow ? '24px' : '12px';
+      const labelWeight = isSubRow ? '400' : '600';
+      const labelSize = isSubRow ? '13px' : '14px';
+      const labelColor = isSubRow ? 'var(--text3)' : 'var(--text)';
+      const arrow = hasDrilldown
+        ? (expanded ? '<span style="display:inline-block; width:12px; color:var(--text3); margin-right:4px;">&#9660;</span>'
+                    : '<span style="display:inline-block; width:12px; color:var(--text3); margin-right:4px;">&#9654;</span>')
+        : '<span style="display:inline-block; width:16px;"></span>';
+      const onClick = hasDrilldown ? ' onclick="toggleDetailRow(\'' + rowId + '\')" style="cursor:pointer;"' : '';
+      let row = '<tr' + onClick + '><td style="padding:8px ' + indent + '; font-weight:' + labelWeight + '; font-size:' + labelSize + '; color:' + labelColor + ';">'
+        + arrow + label + '</td>';
       for (const b of legBuckets) {
-        const c = byCell[sp + '|' + b.label];
+        const cellKey = subKey ? (sp + '|' + subKey + '|' + b.label) : (sp + '|' + b.label);
+        const c = cellSource[cellKey];
         if (!c || c.n === 0) {
-          html += '<td style="padding:8px 12px; text-align:center; color:var(--text3);">&mdash;</td>';
+          row += '<td style="padding:8px 12px; text-align:center; color:var(--text3);">&mdash;</td>';
           continue;
         }
         rowN += c.n;
@@ -2432,22 +2468,48 @@
         const wr = c.n > 0 ? (c.wins / c.n * 100) : 0;
         const wrColor = wr >= 50 ? 'rgba(63,185,80,0.18)' : wr >= 25 ? 'rgba(210,153,34,0.18)' : 'rgba(248,81,73,0.18)';
         const wrTextColor = wr >= 50 ? 'var(--green)' : wr >= 25 ? 'var(--amber)' : 'var(--red)';
-        // tiedPct / nonTieAvgGap dropped from display — see card intro.
-        // The underlying numbers are captured in the tooltip for auditing
-        // in case Alec's event-model answer reopens the interpretation.
-        const tooltip = c.wins + ' matched / ' + c.n + ' quoted.'
-          + (c.losses > 0 ? ' Losses recorded: ' + c.losses + ' (' + c.tiedLosses + ' tied, ' + c.nonTieGapN + ' non-tied — pending event-model verification).' : '');
-        html += '<td style="padding:8px 12px; text-align:center; background:' + wrColor + '; border-radius:4px;" title="' + tooltip + '">'
-          + '<div style="color:' + wrTextColor + '; font-weight:700; font-size:22px; line-height:1.2;">' + wr.toFixed(0) + '%</div>'
-          + '<div style="color:var(--text2); font-size:14px; line-height:1.4;">n=' + c.n + '</div>'
+        const tooltip = c.wins + ' fills / ' + c.n + ' quoted.';
+        const wrFontSize = isSubRow ? '16px' : '22px';
+        const nFontSize = isSubRow ? '12px' : '14px';
+        row += '<td style="padding:8px 12px; text-align:center; background:' + wrColor + '; border-radius:4px;" title="' + tooltip + '">'
+          + '<div style="color:' + wrTextColor + '; font-weight:700; font-size:' + wrFontSize + '; line-height:1.2;">' + wr.toFixed(0) + '%</div>'
+          + '<div style="color:var(--text2); font-size:' + nFontSize + '; line-height:1.4;">n=' + c.n + '</div>'
           + '</td>';
       }
-      // Row-total cell — white text so it stands out as a summary column
       const rowWr = rowN > 0 ? (rowWins / rowN * 100).toFixed(0) + '%' : '-';
-      html += '<td style="padding:8px 12px; text-align:center; color:var(--text);">'
-        + '<div style="color:var(--text); font-weight:600; font-size:16px; line-height:1.2;">' + rowWr + '</div>'
-        + '<div style="color:var(--text); font-size:14px; line-height:1.4;">n=' + rowN + '</div>'
+      const totalSize = isSubRow ? '14px' : '16px';
+      const totalN = isSubRow ? '12px' : '14px';
+      row += '<td style="padding:8px 12px; text-align:center; color:var(--text);">'
+        + '<div style="color:var(--text); font-weight:600; font-size:' + totalSize + '; line-height:1.2;">' + rowWr + '</div>'
+        + '<div style="color:var(--text); font-size:' + totalN + '; line-height:1.4;">n=' + rowN + '</div>'
         + '</td></tr>';
+      return row;
+    };
+
+    for (const sp of sportRows) {
+      const subLeagues = [...(subLeaguesPerSport[sp] || new Set())];
+      // Only show drill-down when there's >1 sub-league AND the sole sub-league
+      // isn't the same label as the canonical sport (which happens for
+      // single-sport leagues like NBA -> "NBA", MLB -> "MLB").
+      const canonicalIsOnlySub = subLeagues.length === 1 && subLeagues[0] === sp;
+      const hasDrilldown = subLeagues.length > 1 && !canonicalIsOnlySub;
+      const rowId = 'wrh-' + sp.replace(/\s+/g, '-').toLowerCase();
+      const expanded = expandedRows.has(rowId);
+      html += buildRow(sp, sportLabel(sp), { hasDrilldown, rowId, expanded });
+      // Sub-league detail row (hidden unless row is expanded)
+      if (hasDrilldown) {
+        html += '<tr id="' + rowId + '" style="display:' + (expanded ? 'table-row' : 'none') + ';"><td colspan="' + (legBuckets.length + 2) + '" style="padding:0; background:var(--surface2);"><table style="width:100%; font-size:12px; border-collapse:separate; border-spacing:3px;">';
+        // Order sub-leagues by their total parlay count, descending
+        const sortedSubs = [...subLeagues].sort((a, b) => {
+          const an = legBuckets.reduce((s, bu) => s + (bySubCell[sp + '|' + a + '|' + bu.label]?.n || 0), 0);
+          const bn = legBuckets.reduce((s, bu) => s + (bySubCell[sp + '|' + b + '|' + bu.label]?.n || 0), 0);
+          return bn - an;
+        });
+        for (const sub of sortedSubs) {
+          html += buildRow(sp, sub, { isSubRow: true, cellSource: bySubCell, subKey: sub });
+        }
+        html += '</table></td></tr>';
+      }
     }
     // Col-total footer row — uppercase label to match the TH headers
     // (th text-transform:uppercase is applied by the app's global CSS), and
