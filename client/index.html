@@ -807,7 +807,7 @@
         <div class="card">
           <div class="card-header">
             <span>Win Rate by Sport &amp; Leg Count</span>
-            <span id="win-rate-heatmap-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+            <span id="win-rate-heatmap-summary" style="color: var(--text3); font-weight: 400; font-size: 14px;"></span>
           </div>
           <div class="card-body" id="win-rate-heatmap">
             <div class="empty-state"><div class="icon">-</div><div>Need quoted &amp; matched parlays to compare</div></div>
@@ -2395,8 +2395,8 @@
     let html = '';
     // Time-range indicator so the operator knows what window the heatmap covers.
     const rangeStr = dateRangeLine(entries, 'time', 'Covers');
-    if (rangeStr) html += '<div style="padding:8px 12px 0; font-size:13px; color:var(--text3);">' + rangeStr + '</div>';
-    html += '<div style="font-size:13px; color:var(--text3); padding:8px 12px; line-height:1.5;">'
+    if (rangeStr) html += '<div style="padding:8px 12px 0; font-size:14px; color:var(--text3);">' + rangeStr + '</div>';
+    html += '<div style="font-size:14px; color:var(--text3); padding:8px 12px; line-height:1.5;">'
       + 'Each cell shows <strong>win %</strong> (N parlays) over <strong>avg gap on losses</strong> — positive means we were tighter than the winning SP; loosen to compete. Parlays tagged <em>Multi</em> span multiple sports.'
       + '</div>';
     html += '<div style="overflow-x:auto; padding:0 12px 12px;"><table style="font-size:13px; min-width:680px; border-collapse:separate; border-spacing:3px;">';
@@ -2426,17 +2426,21 @@
           : 'var(--text3)';
         html += '<td style="padding:8px 12px; text-align:center; background:' + wrColor + '; border-radius:4px;" title="' + c.wins + ' matched / ' + c.n + ' quoted. Avg gap on losses: ' + gapText + '">'
           + '<div style="color:' + wrTextColor + '; font-weight:700; font-size:18px; line-height:1.2;">' + wr.toFixed(0) + '%</div>'
-          + '<div style="color:var(--text2); font-size:12px; line-height:1.4;">n=' + c.n + '</div>'
-          + '<div style="color:' + gapColor + '; font-size:12px; line-height:1.4;">' + gapText + '</div>'
+          + '<div style="color:var(--text2); font-size:14px; line-height:1.4;">n=' + c.n + '</div>'
+          + '<div style="color:' + gapColor + '; font-size:14px; line-height:1.4;">' + gapText + '</div>'
           + '</td>';
       }
+      // Row-total cell — white text so it stands out as a summary column
       const rowWr = rowN > 0 ? (rowWins / rowN * 100).toFixed(0) + '%' : '-';
-      html += '<td style="padding:8px 12px; text-align:center; color:var(--text3);">'
-        + '<div style="color:var(--text2); font-weight:600; font-size:16px; line-height:1.2;">' + rowWr + '</div>'
-        + '<div style="font-size:12px; line-height:1.4;">n=' + rowN + '</div>'
+      html += '<td style="padding:8px 12px; text-align:center; color:var(--text);">'
+        + '<div style="color:var(--text); font-weight:600; font-size:16px; line-height:1.2;">' + rowWr + '</div>'
+        + '<div style="color:var(--text); font-size:14px; line-height:1.4;">n=' + rowN + '</div>'
         + '</td></tr>';
     }
-    html += '<tr style="border-top:1px solid var(--border);"><td style="padding:8px 12px; color:var(--text3); font-weight:600;">Col total</td>';
+    // Col-total footer row — uppercase label to match the TH headers
+    // (th text-transform:uppercase is applied by the app's global CSS), and
+    // white text in the cells so the summary row visually anchors the table.
+    html += '<tr style="border-top:1px solid var(--border);"><td style="padding:8px 12px; color:var(--text); font-weight:600; text-transform:uppercase; font-size:13px;">Col total</td>';
     for (const b of legBuckets) {
       let colN = 0, colWins = 0;
       for (const sp of sportRows) {
@@ -2446,16 +2450,16 @@
         colWins += c.wins;
       }
       const colWr = colN > 0 ? (colWins / colN * 100).toFixed(0) + '%' : '-';
-      html += '<td style="padding:8px 12px; text-align:center; color:var(--text3);">'
-        + '<div style="color:var(--text2); font-weight:600; font-size:16px; line-height:1.2;">' + colWr + '</div>'
-        + '<div style="font-size:12px; line-height:1.4;">n=' + colN + '</div>'
+      html += '<td style="padding:8px 12px; text-align:center; color:var(--text);">'
+        + '<div style="color:var(--text); font-weight:600; font-size:16px; line-height:1.2;">' + colWr + '</div>'
+        + '<div style="color:var(--text); font-size:14px; line-height:1.4;">n=' + colN + '</div>'
         + '</td>';
     }
     const gTotal = entries.length;
     const gWr = gTotal > 0 ? (wins.length / gTotal * 100).toFixed(0) + '%' : '-';
-    html += '<td style="padding:8px 12px; text-align:center; color:var(--text2); font-weight:700;">'
+    html += '<td style="padding:8px 12px; text-align:center; color:var(--text); font-weight:700;">'
       + '<div style="font-size:16px; line-height:1.2;">' + gWr + '</div>'
-      + '<div style="font-size:12px; color:var(--text3); font-weight:400; line-height:1.4;">n=' + gTotal + '</div>'
+      + '<div style="font-size:14px; color:var(--text); font-weight:400; line-height:1.4;">n=' + gTotal + '</div>'
       + '</td></tr>';
     html += '</table></div>';
     el.innerHTML = html;
