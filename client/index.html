@@ -5866,8 +5866,18 @@
     const maxPh = opts.maxPlaceholder || 'Max';
     const step = opts.step || 'any';
     const width = opts.width || '70px';
-    return '<input type="number" step="' + step + '" placeholder="' + minPh + '" value="' + minV + '" oninput="' + stateKey + '.' + minField + '=this.value; ' + rerenderFn + '" style="' + style + ' width:' + width + ';" title="' + opts.title + ' min">' +
-           '<input type="number" step="' + step + '" placeholder="' + maxPh + '" value="' + maxV + '" oninput="' + stateKey + '.' + maxField + '=this.value; ' + rerenderFn + '" style="' + style + ' width:' + width + ';" title="' + opts.title + ' max">';
+    // Unique IDs so rerenderWithFocus can restore focus to the exact input
+    // the user was typing in. Without these, re-render destroyed the
+    // element on every keystroke and focus got lost — operator had to
+    // click back in to continue typing.
+    const minId = 'rf-' + stateKey + '-' + minField;
+    const maxId = 'rf-' + stateKey + '-' + maxField;
+    // Wrap the caller's rerender in rerenderWithFocus so focus + selection
+    // survive the re-render pass. rerenderFn is a JS expression string
+    // (e.g. 'posRerender()'), wrapped into a callback.
+    const rerenderWrapped = "rerenderWithFocus(function(){ " + rerenderFn + " })";
+    return '<input type="number" id="' + minId + '" step="' + step + '" placeholder="' + minPh + '" value="' + minV + '" oninput="' + stateKey + '.' + minField + '=this.value; ' + rerenderWrapped + '" style="' + style + ' width:' + width + ';" title="' + opts.title + ' min">' +
+           '<input type="number" id="' + maxId + '" step="' + step + '" placeholder="' + maxPh + '" value="' + maxV + '" oninput="' + stateKey + '.' + maxField + '=this.value; ' + rerenderWrapped + '" style="' + style + ' width:' + width + ';" title="' + opts.title + ' max">';
   }
 
   // -----------------------------------------------------------------------
@@ -8525,20 +8535,30 @@
     const active = document.activeElement;
     const id = active?.id || '';
     const tag = active?.tagName;
-    const selStart = active?.selectionStart;
-    const selEnd = active?.selectionEnd;
-    const val = active?.value;
-    // Find by matching placeholder + value as fallback
+    // selectionStart/End throw on <input type="number"> in some browsers;
+    // guard by reading only when the element supports them (text/search).
+    let selStart = null, selEnd = null;
+    try {
+      if (active && ['text','search','url','tel','password'].includes(active.type)) {
+        selStart = active.selectionStart;
+        selEnd = active.selectionEnd;
+      }
+    } catch (_) { /* ignore */ }
     const placeholder = active?.placeholder || '';
 
     renderFn();
 
-    // Restore focus
-    requestAnimationFrame(() => {
+    // Restore focus SYNCHRONOUSLY. We previously waited for rAF, but
+    // rAF gets throttled or skipped entirely in background / hidden tabs
+    // and — more importantly — even in foreground tabs, a quick series
+    // of keystrokes can race the rAF callback such that the next input
+    // event destroys the target before focus is restored. The DOM is
+    // already updated after renderFn() returns, so we can refocus
+    // immediately without waiting for a paint.
+    const tryFocus = () => {
       let target = null;
       if (id) target = document.getElementById(id);
       if (!target && tag === 'INPUT' && placeholder) {
-        // Find input with same placeholder
         const inputs = document.querySelectorAll('input[placeholder]');
         for (const inp of inputs) {
           if (inp.placeholder === placeholder) { target = inp; break; }
@@ -8550,7 +8570,17 @@
           try { target.setSelectionRange(selStart, selEnd); } catch(e) {}
         }
       }
-    });
+      return !!target;
+    };
+    // First pass: synchronous (DOM already updated by renderFn)
+    const syncOk = tryFocus();
+    // Second pass via rAF as a safety net when the DOM is replaced
+    // asynchronously by some consumers (e.g. microtask-batched renders).
+    if (!syncOk) {
+      requestAnimationFrame(() => {
+        tryFocus();
+      });
+    }
   }
 
   /** Get effective leg result: PX settlement is authoritative; inferredResult
