@@ -105,6 +105,10 @@ const ODDS_API_BOOKMAKERS = 'pinnacle,draftkings,fanduel';
 // Minimum 2 books required per alt line to ensure de-vig accuracy.
 const ALT_LINES_BOOKMAKERS = 'pinnacle,draftkings,fanduel,bovada,betonlineag,betrivers,williamhill_us,unibet_us,superbook,betmgm,espnbet,hardrockbet,fliff,betus,lowvig,pointsbetus,wynnbet';
 const ALT_LINES_MIN_BOOKS = 2; // Require at least 2 books for each alt line value
+// …unless Pinnacle is the sole book. Pinnacle is sharp enough that we trust
+// its line/price alone when no other book has posted that alt. Tennis alt
+// totals, for example, only come from Pinnacle among the books we poll.
+const ALT_LINES_PINNACLE_ALONE_OK = true;
 
 // Sports that use The Odds API as fallback (SharpAPI free tier doesn't cover them)
 const ODDS_API_FALLBACK = {
@@ -2102,13 +2106,19 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
     // Preserve byBook raw odds through the consolidation so per-book
     // accessors can look up the exact alt line even when consensus is too
     // thin to de-vig.
+    // Accept gate: ≥ MIN_BOOKS, OR Pinnacle alone (sharp enough to trust).
+    const hasPinnacle = (byBook) => !!byBook.pinnacle;
+    const bookCountOk = (bookCount, byBook) =>
+      bookCount >= ALT_LINES_MIN_BOOKS ||
+      (ALT_LINES_PINNACLE_ALONE_OK && bookCount >= 1 && hasPinnacle(byBook));
+
     let skippedThinSpreads = 0, skippedThinTotals = 0;
     for (const [lineKey, lineData] of Object.entries(result.altSpreads)) {
       const bookCount = lineData.books.size;
       const byBook = lineData.byBook;
       const homeProbs = lineData.probs.filter(p => p.isHome).map(p => p.prob);
       const awayProbs = lineData.probs.filter(p => !p.isHome).map(p => p.prob);
-      if (homeProbs.length > 0 && awayProbs.length > 0 && bookCount >= ALT_LINES_MIN_BOOKS) {
+      if (homeProbs.length > 0 && awayProbs.length > 0 && bookCountOk(bookCount, byBook)) {
         const [fh, fa] = deVig2Way(avg(homeProbs), avg(awayProbs));
         result.altSpreads[lineKey] = { home: fh, away: fa, books: bookCount, byBook };
       } else {
@@ -2128,7 +2138,7 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
       const byBook = lineData.byBook;
       const overProbs = lineData.probs.filter(p => p.isOver).map(p => p.prob);
       const underProbs = lineData.probs.filter(p => !p.isOver).map(p => p.prob);
-      if (overProbs.length > 0 && underProbs.length > 0 && bookCount >= ALT_LINES_MIN_BOOKS) {
+      if (overProbs.length > 0 && underProbs.length > 0 && bookCountOk(bookCount, byBook)) {
         const [fo, fu] = deVig2Way(avg(overProbs), avg(underProbs));
         result.altTotals[lineKey] = { over: fo, under: fu, books: bookCount, byBook };
       } else {
