@@ -2583,6 +2583,48 @@ function startStatusServer() {
     res.json({ events: oddsFeed.getAllCachedEvents() });
   });
 
+  // TEMPORARY: probe The Odds API's raw MLB response to see which games it
+  // currently has available. Lets us diagnose why the Odds-API supplement
+  // isn't filling SharpAPI's gaps (esp. for games >24h out). Remove after
+  // MLB coverage fix is shipped.
+  app.get('/debug-odds-api-mlb', async (req, res) => {
+    const key = process.env.THE_ODDS_API_KEY;
+    if (!key) return res.status(500).json({ ok: false, error: 'THE_ODDS_API_KEY not set' });
+    try {
+      const url = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds`
+        + `?apiKey=${key}`
+        + `&regions=us,eu`
+        + `&markets=h2h,spreads,totals`
+        + `&bookmakers=pinnacle,draftkings,fanduel`
+        + `&oddsFormat=american`;
+      const resp = await fetch(url);
+      const status = resp.status;
+      if (!resp.ok) {
+        const text = await resp.text();
+        return res.json({ ok: false, status, body: text.slice(0, 500) });
+      }
+      const events = await resp.json();
+      // Trim to the info we actually need: matchup + commence time + which books have h2h
+      const summary = events.map(e => ({
+        home: e.home_team,
+        away: e.away_team,
+        commenceTime: e.commence_time,
+        books: (e.bookmakers || []).map(b => b.key),
+        hasH2h: (e.bookmakers || []).some(b => (b.markets || []).some(m => m.key === 'h2h')),
+        hasSpreads: (e.bookmakers || []).some(b => (b.markets || []).some(m => m.key === 'spreads')),
+        hasTotals: (e.bookmakers || []).some(b => (b.markets || []).some(m => m.key === 'totals')),
+      }));
+      res.json({
+        ok: true,
+        requestsRemaining: resp.headers.get('x-requests-remaining'),
+        totalEvents: events.length,
+        events: summary,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // TEMPORARY: probe SharpAPI reference endpoints to discover which sports
   // and leagues are supported on our current tier. Used to determine if we
   // can route MMA through SharpAPI (currently goes to The Odds API fallback).
