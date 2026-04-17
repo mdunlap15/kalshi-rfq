@@ -441,19 +441,20 @@ function startStatusServer() {
       },
       portfolio: (() => {
         // Account-based P&L is the SOURCE OF TRUTH for the dashboard.
-        // PX's /balance endpoint returns the AVAILABLE balance — cash
-        // not currently locked in open parlays. Total account value is
-        // therefore liveBalance + currentRisk (add back the deployed
-        // amount). accountPnL = (liveBalance + currentRisk) - startingBankroll.
-        // If liveBalance hasn't been fetched yet (or returned 0),
-        // accountPnL is null and the dashboard shows '—' rather than a
-        // misleading number. The tracker's runningPnL is exposed under
-        // orders.runningPnL for comparison/debugging but is NOT the
-        // headline number.
+        // PX's /balance endpoint returns the TOTAL account balance —
+        // matched_wager_balance and unmatched_wager_balance both return
+        // 0 in the /balance payload, confirming PX lumps matched stakes
+        // into the top-level `balance` field rather than reporting them
+        // as a separate locked bucket. So:
+        //   accountValue  == liveBalance   (NOT liveBalance + currentRisk)
+        //   accountPnL    == liveBalance - startingBankroll
+        // The previous formula added currentRisk back on top, which
+        // double-counted the matched stakes and produced a misleading
+        // P&L (operator reported +$17,067 when real P&L was ~+$2,731).
         const liveBal = config.pricing.liveBankroll;
         const currentRisk = orderTracker.getTotalPortfolioRisk();
         const startingBankroll = config.pricing.startingBankroll;
-        const accountValue = (liveBal && liveBal > 0) ? (liveBal + currentRisk) : null;
+        const accountValue = (liveBal && liveBal > 0) ? liveBal : null;
         const accountPnL = accountValue != null ? (accountValue - startingBankroll) : null;
         return {
           bankroll: getBankroll(),
