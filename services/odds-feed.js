@@ -2637,6 +2637,60 @@ function getDraftKingsOdds(sport, homeTeam, awayTeam, marketType, selection, tar
  * Only called when the requested line matches our cached primary (the dangerous case).
  * Returns { ok: true } if line is confirmed, or { ok: false, currentLine } if moved.
  */
+// Per-(sport, market) cache for verifyLineWithPinnacle's full events-list fetch.
+// Key: `${oddsApiSport}|${market}` (market is "spreads" or "totals").
+// Value: { fetchedAt, events } — events is the raw array from The Odds API.
+//
+// Why this matters: previously every spread/total RFQ made a fresh HTTPS
+// call to The Odds API to verify the primary line. That's 20-30ms added to
+// decline→price on every such RFQ. With a modest TTL we answer from cache
+// instantly for most RFQs; a few per 30s window still pay the network cost.
+//
+// TTL calibration: line verifications are catching BIG moves (>1 point
+// diff). Primary lines rarely move that much in 30 seconds — the stalePriceMinutes
+// guard elsewhere catches slower drift. So 30s stale is safe for this check.
+//
+// If a single request is in flight, concurrent callers wait on its promise
+// (inFlight map) — prevents N simultaneous RFQs from all firing duplicate
+// fetches at once.
+const _pinVerifyCache = {};
+const _pinVerifyInFlight = {};
+const PIN_VERIFY_TTL_MS = 30 * 1000;
+
+async function _fetchPinVerifyEvents(oddsApiSport, market, theOddsApiKey) {
+  const cacheKey = oddsApiSport + '|' + market;
+  const cached = _pinVerifyCache[cacheKey];
+  if (cached && (Date.now() - cached.fetchedAt) < PIN_VERIFY_TTL_MS) {
+    return cached.events;
+  }
+  // Coalesce concurrent fetches on the same key.
+  if (_pinVerifyInFlight[cacheKey]) {
+    return _pinVerifyInFlight[cacheKey];
+  }
+  const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
+    + `?apiKey=${theOddsApiKey}`
+    + `&regions=eu`
+    + `&markets=${market}`
+    + `&bookmakers=pinnacle`
+    + `&oddsFormat=american`;
+  const promise = (async () => {
+    try {
+      const resp = await abortableFetch(url);
+      if (!resp.ok) return null;
+      const events = await resp.json();
+      _pinVerifyCache[cacheKey] = { fetchedAt: Date.now(), events };
+      return events;
+    } catch (err) {
+      log.debug('OddsFeed', `Pin verify events fetch failed: ${err.message}`);
+      return null;
+    } finally {
+      delete _pinVerifyInFlight[cacheKey];
+    }
+  })();
+  _pinVerifyInFlight[cacheKey] = promise;
+  return promise;
+}
+
 async function verifyLineWithPinnacle(sport, homeTeam, awayTeam, marketType, cachedLine) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   const oddsApiSport = PINNACLE_SPORT_MAP[sport] || ODDS_API_FALLBACK[sport]?.oddsApiSport;
@@ -2644,17 +2698,9 @@ async function verifyLineWithPinnacle(sport, homeTeam, awayTeam, marketType, cac
 
   try {
     const market = marketType === 'spreads' ? 'spreads' : 'totals';
-    const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
-      + `?apiKey=${theOddsApiKey}`
-      + `&regions=eu`
-      + `&markets=${market}`
-      + `&bookmakers=pinnacle`
-      + `&oddsFormat=american`;
+    const events = await _fetchPinVerifyEvents(oddsApiSport, market, theOddsApiKey);
+    if (!events) return { ok: true }; // fetch failed, allow
 
-    const resp = await abortableFetch(url);
-    if (!resp.ok) return { ok: true }; // API error, allow
-
-    const events = await resp.json();
     // Find matching event
     const key = normalizeEventKey(homeTeam, awayTeam);
     for (const event of events) {
