@@ -982,7 +982,7 @@
       renderPositions(orders);
       renderSettled(orders);
       renderMarketIntel(intel);
-      renderWinRateHeatmap(intel);
+      renderWinRateHeatmap(intel, orders);
       renderCompetitiveness(intel);
       renderAnalytics(orders, intel);
       renderHistory(orders);
@@ -2351,18 +2351,22 @@
   // Quote Competitiveness card on Portfolio. Operationalizes Alec's
   // feedback: each cell answers "where are we getting outbid?" and "how
   // much looser would we need to be to compete in that bucket?"
-  function renderWinRateHeatmap(intel) {
+  function renderWinRateHeatmap(intel, ordersData) {
     const el = document.getElementById('win-rate-heatmap');
     if (!el) return;
     const sumEl = document.getElementById('win-rate-heatmap-summary');
+    // Fill rate = fills / quotes-submitted. Numerator comes from
+    // intel.competitive.entries (all wins under Alec's model). Denominator
+    // comes from the full orders map — every row there = a quote we
+    // submitted. Using competitive.entries for both (as the previous
+    // version did) always produced 100% because numerator == denominator.
     const entries = intel?.competitive?.entries || [];
-    if (entries.length === 0) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need quoted &amp; matched parlays to compare</div></div>';
+    const allOrders = ordersData?.recentOrders || [];
+    if (allOrders.length === 0 && entries.length === 0) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need quoted parlays to measure fill rate</div></div>';
       if (sumEl) sumEl.textContent = '';
       return;
     }
-    const wins = entries.filter(e => e.won);
-    if (sumEl) sumEl.textContent = `${wins.length} matched · ${entries.length - wins.length} outbid of ${entries.length}`;
 
     const legBuckets = [
       { label: '2 legs', min: 2, max: 2 },
@@ -2372,43 +2376,53 @@
       { label: '7+ legs', min: 7, max: Infinity },
     ];
     // Two levels of aggregation:
-    //   byCell            — keyed by (canonicalSport, legBucket). Top-level rows.
-    //   bySubCell         — keyed by (canonicalSport, subLeague, legBucket) for
-    //                        drill-down detail inside a canonical-sport row.
-    // Mirrors the P&L by Sport canonicalization: MLB, Baseball, baseball_mlb
-    // all roll up under "MLB"; all soccer_* leagues + "Soccer" roll up under
-    // "Soccer" but are individually visible when the row is expanded.
+    //   byCell    — (canonicalSport, legBucket) → { submitted, fills }
+    //   bySubCell — (canonicalSport, subLeague, legBucket) → same
+    // "submitted" = any quote we put in. "fills" = any quote PX accepted.
+    // A quote counts as "filled" if status is 'confirmed', starts with
+    // 'settled_', or is the legacy 'lost' marker (which we now know were
+    // misclassified wins per Alec's event model).
     const byCell = {};
     const bySubCell = {};
-    const subLeaguesPerSport = {};  // canonSport -> Set of raw sub-league labels
+    const subLeaguesPerSport = {};
     const sportsSeen = new Set();
-    const addCell = (dict, key, e) => {
-      if (!dict[key]) dict[key] = { n: 0, wins: 0, losses: 0, tiedLosses: 0, nonTieGapSum: 0, nonTieGapN: 0 };
-      dict[key].n++;
-      if (e.won) dict[key].wins++;
-      else {
-        dict[key].losses++;
-        if (e.ourOdds === e.winOdds) dict[key].tiedLosses++;
-        else {
-          dict[key].nonTieGapSum += e.gapProb;
-          dict[key].nonTieGapN++;
-        }
+    // A quote counts as filled if PX accepted our offer. 'confirmed' and
+    // 'settled_*' are obvious. 'lost' is ambiguous in our data:
+    //   - legacy pre-fix misclassification → actually a fill (has
+    //     meta.winningOdds populated by the old recordMatchedParlay)
+    //   - orphaned-quote-cleanup → NOT a fill (stuck at 'quoted' >30 min
+    //     so cleanup flipped to 'lost'; identified by meta.lostReason)
+    const isFilled = (o) => {
+      if (o.status === 'confirmed') return true;
+      if (o.status && o.status.startsWith('settled_')) return true;
+      if (o.status === 'lost') {
+        const reason = o.meta?.lostReason;
+        if (reason === 'orphaned-quote-cleanup') return false;
+        return true; // legacy misclassification → treat as fill
       }
+      return false;
     };
-    for (const e of entries) {
-      const legs = e.legs || [];
+    const addCell = (dict, key, filled) => {
+      if (!dict[key]) dict[key] = { submitted: 0, fills: 0 };
+      dict[key].submitted++;
+      if (filled) dict[key].fills++;
+    };
+    for (const o of allOrders) {
+      // Only count quotes we actually submitted (skip reconstructed-only
+      // orders that never hit the quote path).
+      if (!o.quotedAt && o.meta && o.meta.reconstructed) continue;
+      const legs = o.legs || o.meta?.legs || [];
+      if (legs.length === 0) continue;
       const rawSports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
       const canonSports = [...new Set(rawSports.map(canonicalSport))];
-      // Mixed-sport parlays remain their own bucket; single-sport parlays
-      // collapse every variant ("Baseball", "MLB", "baseball_mlb") under
-      // one canonical label.
       const canonSport = canonSports.length === 0 ? 'Unknown'
         : canonSports.length === 1 ? canonSports[0]
         : 'Multi';
       sportsSeen.add(canonSport);
-      const bucket = legBuckets.find(b => e.legCount >= b.min && e.legCount <= b.max);
+      const bucket = legBuckets.find(b => legs.length >= b.min && legs.length <= b.max);
       if (!bucket) continue;
-      addCell(byCell, canonSport + '|' + bucket.label, e);
+      const filled = isFilled(o);
+      addCell(byCell, canonSport + '|' + bucket.label, filled);
       // Sub-league tracking only for single-sport parlays. Multi-sport
       // parlays skip drill-down entirely — breaking Multi into every
       // permutation (NBA+MLB, MLB+NHL, etc.) produces 30+ noisy buckets
@@ -2417,14 +2431,23 @@
         const subLeague = sportLabel(rawSports[0]);
         if (!subLeaguesPerSport[canonSport]) subLeaguesPerSport[canonSport] = new Set();
         subLeaguesPerSport[canonSport].add(subLeague);
-        addCell(bySubCell, canonSport + '|' + subLeague + '|' + bucket.label, e);
+        addCell(bySubCell, canonSport + '|' + subLeague + '|' + bucket.label, filled);
       }
     }
     const sportRows = [...sportsSeen].sort((a, b) => {
-      const na = legBuckets.reduce((s, bu) => s + (byCell[a + '|' + bu.label]?.n || 0), 0);
-      const nb = legBuckets.reduce((s, bu) => s + (byCell[b + '|' + bu.label]?.n || 0), 0);
+      const na = legBuckets.reduce((s, bu) => s + (byCell[a + '|' + bu.label]?.submitted || 0), 0);
+      const nb = legBuckets.reduce((s, bu) => s + (byCell[b + '|' + bu.label]?.submitted || 0), 0);
       return nb - na;
     });
+
+    // Summary for card header: total fills / total submissions
+    const totalSubmitted = sportRows.reduce((s, sp) =>
+      s + legBuckets.reduce((x, bu) => x + (byCell[sp + '|' + bu.label]?.submitted || 0), 0), 0);
+    const totalFills = sportRows.reduce((s, sp) =>
+      s + legBuckets.reduce((x, bu) => x + (byCell[sp + '|' + bu.label]?.fills || 0), 0), 0);
+    if (sumEl) sumEl.textContent = totalSubmitted > 0
+      ? `${totalFills} filled of ${totalSubmitted} quoted (${(totalFills/totalSubmitted*100).toFixed(1)}%)`
+      : '';
 
     let html = '';
     // Time-range indicator so the operator knows what window the heatmap covers.
@@ -2443,9 +2466,13 @@
     html += '<th style="text-align:center; padding:6px 12px; color:var(--text3);">Row total</th></tr>';
     // Helper to build a single sport/sub-league row. Used for both the
     // top-level canonical-sport row and the indented sub-league detail rows.
-    const buildRow = (sp, label, { isSubRow = false, hasDrilldown = false, rowId = null, expanded = false, cellSource = byCell, subKey = null } = {}) => {
-      let rowN = 0, rowWins = 0;
-      const indent = isSubRow ? '24px' : '12px';
+    // Build a single row (top-level sport OR sub-league detail). Sub-rows
+    // go in the SAME outer table — not nested — so columns align automatically.
+    // Visibility of sub-rows is controlled by a shared CSS class tied to
+    // the parent sport's drill key.
+    const buildRow = (sp, label, { isSubRow = false, hasDrilldown = false, rowId = null, expanded = false, cellSource = byCell, subKey = null, drillKey = null } = {}) => {
+      let rowSubmitted = 0, rowFills = 0;
+      const indent = isSubRow ? '28px' : '12px';
       const labelWeight = isSubRow ? '400' : '600';
       const labelSize = isSubRow ? '13px' : '14px';
       const labelColor = isSubRow ? 'var(--text3)' : 'var(--text)';
@@ -2453,62 +2480,65 @@
         ? (expanded ? '<span style="display:inline-block; width:12px; color:var(--text3); margin-right:4px;">&#9660;</span>'
                     : '<span style="display:inline-block; width:12px; color:var(--text3); margin-right:4px;">&#9654;</span>')
         : '<span style="display:inline-block; width:16px;"></span>';
-      const onClick = hasDrilldown ? ' onclick="toggleDetailRow(\'' + rowId + '\')" style="cursor:pointer;"' : '';
-      let row = '<tr' + onClick + '><td style="padding:8px ' + indent + '; font-weight:' + labelWeight + '; font-size:' + labelSize + '; color:' + labelColor + ';">'
+      const trAttrs = [];
+      if (hasDrilldown) {
+        trAttrs.push('id="' + rowId + '"');
+        trAttrs.push('onclick="window._toggleHeatmapDrill(\'' + drillKey + '\',\'' + rowId + '\')"');
+        trAttrs.push('style="cursor:pointer;"');
+      } else if (isSubRow) {
+        trAttrs.push('class="wrh-sub wrh-sub-' + drillKey + '"');
+        trAttrs.push('style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface2);"');
+      }
+      let row = '<tr ' + trAttrs.join(' ') + '>'
+        + '<td style="padding:8px ' + indent + '; font-weight:' + labelWeight + '; font-size:' + labelSize + '; color:' + labelColor + ';">'
         + arrow + label + '</td>';
       for (const b of legBuckets) {
         const cellKey = subKey ? (sp + '|' + subKey + '|' + b.label) : (sp + '|' + b.label);
         const c = cellSource[cellKey];
-        if (!c || c.n === 0) {
+        if (!c || c.submitted === 0) {
           row += '<td style="padding:8px 12px; text-align:center; color:var(--text3);">&mdash;</td>';
           continue;
         }
-        rowN += c.n;
-        rowWins += c.wins;
-        const wr = c.n > 0 ? (c.wins / c.n * 100) : 0;
+        rowSubmitted += c.submitted;
+        rowFills += c.fills;
+        const wr = c.submitted > 0 ? (c.fills / c.submitted * 100) : 0;
         const wrColor = wr >= 50 ? 'rgba(63,185,80,0.18)' : wr >= 25 ? 'rgba(210,153,34,0.18)' : 'rgba(248,81,73,0.18)';
         const wrTextColor = wr >= 50 ? 'var(--green)' : wr >= 25 ? 'var(--amber)' : 'var(--red)';
-        const tooltip = c.wins + ' fills / ' + c.n + ' quoted.';
+        const tooltip = c.fills + ' filled / ' + c.submitted + ' quoted';
         const wrFontSize = isSubRow ? '16px' : '22px';
         const nFontSize = isSubRow ? '12px' : '14px';
         row += '<td style="padding:8px 12px; text-align:center; background:' + wrColor + '; border-radius:4px;" title="' + tooltip + '">'
           + '<div style="color:' + wrTextColor + '; font-weight:700; font-size:' + wrFontSize + '; line-height:1.2;">' + wr.toFixed(0) + '%</div>'
-          + '<div style="color:var(--text2); font-size:' + nFontSize + '; line-height:1.4;">n=' + c.n + '</div>'
+          + '<div style="color:var(--text2); font-size:' + nFontSize + '; line-height:1.4;">n=' + c.submitted + '</div>'
           + '</td>';
       }
-      const rowWr = rowN > 0 ? (rowWins / rowN * 100).toFixed(0) + '%' : '-';
+      const rowWr = rowSubmitted > 0 ? (rowFills / rowSubmitted * 100).toFixed(0) + '%' : '-';
       const totalSize = isSubRow ? '14px' : '16px';
       const totalN = isSubRow ? '12px' : '14px';
       row += '<td style="padding:8px 12px; text-align:center; color:var(--text);">'
         + '<div style="color:var(--text); font-weight:600; font-size:' + totalSize + '; line-height:1.2;">' + rowWr + '</div>'
-        + '<div style="color:var(--text); font-size:' + totalN + '; line-height:1.4;">n=' + rowN + '</div>'
+        + '<div style="color:var(--text); font-size:' + totalN + '; line-height:1.4;">n=' + rowSubmitted + '</div>'
         + '</td></tr>';
       return row;
     };
 
     for (const sp of sportRows) {
       const subLeagues = [...(subLeaguesPerSport[sp] || new Set())];
-      // Only show drill-down when there's >1 sub-league AND the sole sub-league
-      // isn't the same label as the canonical sport (which happens for
-      // single-sport leagues like NBA -> "NBA", MLB -> "MLB").
       const canonicalIsOnlySub = subLeagues.length === 1 && subLeagues[0] === sp;
       const hasDrilldown = subLeagues.length > 1 && !canonicalIsOnlySub;
-      const rowId = 'wrh-' + sp.replace(/\s+/g, '-').toLowerCase();
+      const drillKey = sp.replace(/\s+/g, '-').toLowerCase();
+      const rowId = 'wrh-' + drillKey;
       const expanded = expandedRows.has(rowId);
-      html += buildRow(sp, sportLabel(sp), { hasDrilldown, rowId, expanded });
-      // Sub-league detail row (hidden unless row is expanded)
+      html += buildRow(sp, sportLabel(sp), { hasDrilldown, rowId, drillKey, expanded });
       if (hasDrilldown) {
-        html += '<tr id="' + rowId + '" style="display:' + (expanded ? 'table-row' : 'none') + ';"><td colspan="' + (legBuckets.length + 2) + '" style="padding:0; background:var(--surface2);"><table style="width:100%; font-size:12px; border-collapse:separate; border-spacing:3px;">';
-        // Order sub-leagues by their total parlay count, descending
         const sortedSubs = [...subLeagues].sort((a, b) => {
-          const an = legBuckets.reduce((s, bu) => s + (bySubCell[sp + '|' + a + '|' + bu.label]?.n || 0), 0);
-          const bn = legBuckets.reduce((s, bu) => s + (bySubCell[sp + '|' + b + '|' + bu.label]?.n || 0), 0);
+          const an = legBuckets.reduce((s, bu) => s + (bySubCell[sp + '|' + a + '|' + bu.label]?.submitted || 0), 0);
+          const bn = legBuckets.reduce((s, bu) => s + (bySubCell[sp + '|' + b + '|' + bu.label]?.submitted || 0), 0);
           return bn - an;
         });
         for (const sub of sortedSubs) {
-          html += buildRow(sp, sub, { isSubRow: true, cellSource: bySubCell, subKey: sub });
+          html += buildRow(sp, sub, { isSubRow: true, cellSource: bySubCell, subKey: sub, drillKey, expanded });
         }
-        html += '</table></td></tr>';
       }
     }
     // Col-total footer row — uppercase label to match the TH headers
@@ -2516,28 +2546,46 @@
     // white text in the cells so the summary row visually anchors the table.
     html += '<tr style="border-top:1px solid var(--border);"><td style="padding:8px 12px; color:var(--text); font-weight:600; text-transform:uppercase; font-size:13px;">Col total</td>';
     for (const b of legBuckets) {
-      let colN = 0, colWins = 0;
+      let colSub = 0, colFills = 0;
       for (const sp of sportRows) {
         const c = byCell[sp + '|' + b.label];
         if (!c) continue;
-        colN += c.n;
-        colWins += c.wins;
+        colSub += c.submitted;
+        colFills += c.fills;
       }
-      const colWr = colN > 0 ? (colWins / colN * 100).toFixed(0) + '%' : '-';
+      const colWr = colSub > 0 ? (colFills / colSub * 100).toFixed(0) + '%' : '-';
       html += '<td style="padding:8px 12px; text-align:center; color:var(--text);">'
         + '<div style="color:var(--text); font-weight:600; font-size:16px; line-height:1.2;">' + colWr + '</div>'
-        + '<div style="color:var(--text); font-size:14px; line-height:1.4;">n=' + colN + '</div>'
+        + '<div style="color:var(--text); font-size:14px; line-height:1.4;">n=' + colSub + '</div>'
         + '</td>';
     }
-    const gTotal = entries.length;
-    const gWr = gTotal > 0 ? (wins.length / gTotal * 100).toFixed(0) + '%' : '-';
+    const gWr = totalSubmitted > 0 ? (totalFills / totalSubmitted * 100).toFixed(0) + '%' : '-';
     html += '<td style="padding:8px 12px; text-align:center; color:var(--text); font-weight:700;">'
       + '<div style="font-size:16px; line-height:1.2;">' + gWr + '</div>'
-      + '<div style="font-size:14px; color:var(--text); font-weight:400; line-height:1.4;">n=' + gTotal + '</div>'
+      + '<div style="font-size:14px; color:var(--text); font-weight:400; line-height:1.4;">n=' + totalSubmitted + '</div>'
       + '</td></tr>';
     html += '</table></div>';
     el.innerHTML = html;
   }
+
+  // Toggle heatmap drill-down rows as a group. The sub-rows share a CSS
+  // class tied to the parent sport (wrh-sub-<drillKey>); this function
+  // flips display on all of them together and persists the open state
+  // via the shared expandedRows Set so auto-refreshes don't collapse.
+  window._toggleHeatmapDrill = function(drillKey, rowId) {
+    const subRows = document.querySelectorAll('.wrh-sub-' + drillKey);
+    if (!subRows.length) return;
+    const opening = subRows[0].style.display === 'none';
+    for (const r of subRows) r.style.display = opening ? 'table-row' : 'none';
+    if (opening) expandedRows.add(rowId);
+    else expandedRows.delete(rowId);
+    // Flip the arrow on the parent row too
+    const parent = document.getElementById(rowId);
+    if (parent) {
+      const arrow = parent.querySelector('td:first-child span');
+      if (arrow) arrow.innerHTML = opening ? '&#9660;' : '&#9654;';
+    }
+  };
 
   function renderCompetitiveness(intel) {
     const el = document.getElementById('comp-section');
