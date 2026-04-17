@@ -1567,7 +1567,10 @@
         const wrColor = (b.won + b.lost) > 0 ? (b.won > b.lost ? 'var(--green)' : 'var(--amber)') : 'var(--text3)';
         const bucketId = 'lat-bucket-' + bi;
         const isExpanded = expandedRows.has(bucketId);
-        const parlays = b.parlays || [];
+        // Only show WON parlays in the expanded detail. Unknown / lost rows
+        // don't help answer "what won at this latency?" and just clutter the
+        // table.
+        const parlays = (b.parlays || []).filter(p => p.outcome === 'won');
         const hasDetails = parlays.length > 0;
         const cursor = hasDetails ? 'cursor:pointer;' : '';
         const onclick = hasDetails ? ' onclick="toggleDetailRow(\'' + bucketId + '\')"' : '';
@@ -1581,7 +1584,7 @@
           + '</tr>';
         if (hasDetails) {
           let detail = '<div style="padding:6px 10px; background:var(--surface2); font-size:11px;">';
-          detail += '<div style="color:var(--text3); margin-bottom:4px;">' + parlays.length + ' parlay' + (parlays.length === 1 ? '' : 's') + ' in this bucket</div>';
+          detail += '<div style="color:var(--text3); margin-bottom:4px;">' + parlays.length + ' won parlay' + (parlays.length === 1 ? '' : 's') + ' in this bucket</div>';
           detail += '<table style="width:100%; font-size:11px;">'
             + '<tr style="color:var(--text3);">'
             + '<th style="text-align:left; padding:2px 6px;">Time</th>'
