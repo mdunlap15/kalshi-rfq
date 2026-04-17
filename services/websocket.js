@@ -779,7 +779,21 @@ async function handleConfirm(data) {
 }
 
 /**
- * Handle order matched (broadcast — all SPs see this when any parlay gets filled).
+ * Handle order matched.
+ *
+ * Channel/delivery open question (Apr 2026): Alec from PX said "you would
+ * only be able to see your own wagers and traffic through this" — implying
+ * matched broadcasts may only reach the winning SP. Our codebase historically
+ * treated these as market-wide broadcasts; the 98% tied-odds phenomenon in
+ * the data is consistent with Alec's model (matched_odds == ourOdds because
+ * the event is only fired on our own wins).
+ *
+ * The diagnostic log below captures enough signal to verify Alec's model:
+ * each event now includes our own offeredOdds and the order status AT
+ * EVENT TIME (before recordMatchedParlay mutates it). If every event shows
+ * matched_odds matching our offered odds within the rounding tolerance,
+ * Alec's model holds and we should never see loss events via this path.
+ * Any event where odds differ or we had no prior quote is a counterexample.
  */
 function handleOrderMatched(data) {
   const payload = data.payload || data;
@@ -790,9 +804,23 @@ function handleOrderMatched(data) {
 
   const lineManager = require('./line-manager');
   const hadQuote = orderTracker.findByParlayId(parlayId);
+  // Snapshot pre-classification state so the log reflects what arrived,
+  // not what recordMatchedParlay mutated our own order record to.
+  const ourOddsAtEvent = hadQuote?.offeredOdds ?? null;
+  const ourStatusAtEvent = hadQuote?.status ?? null;
+  const oddsDeltaAbs = (ourOddsAtEvent != null && matchedOdds != null)
+    ? Math.abs(Math.abs(ourOddsAtEvent) - Math.abs(matchedOdds))
+    : null;
+
   const entry = orderTracker.recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineManager);
 
-  log.info('Market', `Matched: parlay=${(parlayId||'').substring(0,8)}, odds=${matchedOdds}, stake=$${matchedStake}, legs=${legs.length}, outcome=${entry.outcome}, hadQuote=${!!hadQuote}, totalOrders=${orderTracker.getStats().totalOrders}`);
+  log.info('Market', `Matched: parlay=${(parlayId||'').substring(0,8)}, `
+    + `odds=${matchedOdds}, ourOdds=${ourOddsAtEvent ?? 'n/a'}, `
+    + `oddsDelta=${oddsDeltaAbs ?? 'n/a'}, `
+    + `stake=$${matchedStake}, legs=${legs.length}, `
+    + `outcome=${entry.outcome}, hadQuote=${!!hadQuote}, `
+    + `ourStatusPreEvent=${ourStatusAtEvent ?? 'n/a'}, `
+    + `totalOrders=${orderTracker.getStats().totalOrders}`);
 }
 
 /**
