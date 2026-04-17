@@ -2913,6 +2913,13 @@
 
   function renderSettled(data) {
     const el = document.getElementById('settled-table');
+    // The #settled-table card on the Orders tab was replaced by the month-
+    // grouped Daily Volume view; the same data lives on the Portfolio tab
+    // via renderPortfolio. If the container isn't present, skip — previously
+    // this function threw on el.innerHTML, aborting the rest of the refresh
+    // (renderMarketIntel, renderCompetitiveness, renderAnalytics, etc.)
+    // which is why Analytics and Market Intel stopped populating.
+    if (!el) return;
     const countEl = document.getElementById('settled-count');
     const orders = data.recentOrders || [];
 
