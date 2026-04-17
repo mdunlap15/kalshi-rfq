@@ -1561,17 +1561,65 @@
         + '<th style="text-align:right; padding:4px 10px;">Unknown</th>'
         + '<th style="text-align:right; padding:4px 10px;">Win rate</th>'
         + '</tr>';
-      for (const b of buckets) {
+      for (let bi = 0; bi < buckets.length; bi++) {
+        const b = buckets[bi];
         const wr = b.winRate || '-';
         const wrColor = (b.won + b.lost) > 0 ? (b.won > b.lost ? 'var(--green)' : 'var(--amber)') : 'var(--text3)';
-        html += '<tr>'
-          + '<td style="padding:4px 10px; color:var(--text2); font-size:12px;">' + b.label + '</td>'
+        const bucketId = 'lat-bucket-' + bi;
+        const isExpanded = expandedRows.has(bucketId);
+        const parlays = b.parlays || [];
+        const hasDetails = parlays.length > 0;
+        const cursor = hasDetails ? 'cursor:pointer;' : '';
+        const onclick = hasDetails ? ' onclick="toggleDetailRow(\'' + bucketId + '\')"' : '';
+        html += '<tr style="' + cursor + '"' + onclick + '>'
+          + '<td style="padding:4px 10px; color:var(--text2); font-size:12px;">' + (hasDetails ? '&#9654; ' : '') + b.label + '</td>'
           + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + b.quoted + '</td>'
           + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--green);">' + b.won + '</td>'
           + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--red);">' + b.lost + '</td>'
           + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--text3);">' + b.unknown + '</td>'
           + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:' + wrColor + ';">' + wr + '</td>'
           + '</tr>';
+        if (hasDetails) {
+          let detail = '<div style="padding:6px 10px; background:var(--surface2); font-size:11px;">';
+          detail += '<div style="color:var(--text3); margin-bottom:4px;">' + parlays.length + ' parlay' + (parlays.length === 1 ? '' : 's') + ' in this bucket</div>';
+          detail += '<table style="width:100%; font-size:11px;">'
+            + '<tr style="color:var(--text3);">'
+            + '<th style="text-align:left; padding:2px 6px;">Time</th>'
+            + '<th style="text-align:right; padding:2px 6px;">Latency</th>'
+            + '<th style="text-align:right; padding:2px 6px;">Our Odds</th>'
+            + '<th style="text-align:right; padding:2px 6px;">Win Odds</th>'
+            + '<th style="text-align:right; padding:2px 6px;">Stake</th>'
+            + '<th style="text-align:left; padding:2px 6px;">Outcome</th>'
+            + '<th style="text-align:left; padding:2px 6px;">Selections</th>'
+            + '</tr>';
+          // Sort: won first (most interesting per user), then lost, then unknown
+          const sorted = [...parlays].sort((a, b) => {
+            const order = { won: 0, lost: 1, unknown: 2 };
+            return (order[a.outcome] || 2) - (order[b.outcome] || 2);
+          });
+          for (const p of sorted) {
+            const t = p.time ? new Date(p.time).toLocaleTimeString() : '-';
+            const odds = p.offeredOdds != null ? (p.offeredOdds > 0 ? '+' : '') + p.offeredOdds : '-';
+            const winOdds = p.matchedAmericanOdds != null ? (p.matchedAmericanOdds > 0 ? '+' : '') + p.matchedAmericanOdds : '-';
+            const stake = p.matchedStake != null ? '$' + Number(p.matchedStake).toFixed(2) : '-';
+            const outcomeColor = p.outcome === 'won' ? 'var(--green)' : p.outcome === 'lost' ? 'var(--red)' : 'var(--text3)';
+            const selections = p.legs && p.legs.length > 0
+              ? formatParlaySelections(p.legs)
+              : (p.legCount != null ? p.legCount + ' legs (no detail)' : '-');
+            const selShort = selections.length > 60 ? selections.substring(0, 57) + '...' : selections;
+            detail += '<tr>'
+              + '<td style="padding:2px 6px; color:var(--text3);">' + t + '</td>'
+              + '<td style="padding:2px 6px; text-align:right; font-variant-numeric:tabular-nums;">' + p.elapsed + 'ms</td>'
+              + '<td style="padding:2px 6px; text-align:right; font-variant-numeric:tabular-nums;">' + odds + '</td>'
+              + '<td style="padding:2px 6px; text-align:right; font-variant-numeric:tabular-nums; color:var(--text3);">' + winOdds + '</td>'
+              + '<td style="padding:2px 6px; text-align:right; font-variant-numeric:tabular-nums;">' + stake + '</td>'
+              + '<td style="padding:2px 6px; color:' + outcomeColor + '; font-weight:600;">' + capFirst(p.outcome) + '</td>'
+              + '<td style="padding:2px 6px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + selections.replace(/"/g, '&quot;') + '">' + selShort + '</td>'
+              + '</tr>';
+          }
+          detail += '</table></div>';
+          html += '<tr id="' + bucketId + '" style="display:' + (isExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">' + detail + '</td></tr>';
+        }
       }
       html += '</table>';
     }
@@ -4027,6 +4075,19 @@
     else expandedRows.delete(id);
   }
 
+  // Per-day sort handler for Daily Volume parlay-detail tables. Clicking a
+  // header column toggles direction if same column, otherwise switches column
+  // and resets to ascending. Re-renders Daily Volume in place using cached
+  // orders so we don't need a server round-trip.
+  window._dvSortClick = function(dayId, col) {
+    if (!window._dvSort) window._dvSort = {};
+    const cur = window._dvSort[dayId] || { col: 'time', dir: 1 };
+    if (cur.col === col) cur.dir = cur.dir > 0 ? -1 : 1;
+    else { cur.col = col; cur.dir = 1; }
+    window._dvSort[dayId] = cur;
+    if (window._dvLastOrders) renderChartDailyVolume(window._dvLastOrders);
+  };
+
   // -----------------------------------------------------------------------
   // PORTFOLIO TAB
   // -----------------------------------------------------------------------
@@ -5403,13 +5464,16 @@
   function formatParlaySelections(legs) {
     try {
       if (!legs || legs.length === 0) return '-';
-      // If EVERY leg is unresolved (reconstructed from PX order list where
-      // neither lineManager nor PX fetchMarkets could provide team data),
-      // show a human-readable fallback that includes leg count and event IDs
-      // instead of "?, ?". Preserves user's ability to identify/audit the
-      // parlay without cluttering the table with placeholder chars.
+      // Resolve each leg's display name with broad fallbacks. PX-backfilled
+      // orders have selection/pxEventName but no team/teamName, so without
+      // these fallbacks we'd misclassify them as fully unresolved.
+      const resolveName = (l) => {
+        return l.team || l.teamName || l.selection || l.pxEventName || '';
+      };
+      // Only if EVERY leg has no usable name do we show the historical
+      // fallback summary instead of "?, ?".
       const allUnknown = legs.every(l => {
-        const n = l.team || l.teamName || '';
+        const n = resolveName(l);
         return !n || n === '?' || n === 'unknown';
       });
       if (allUnknown) {
@@ -5418,14 +5482,14 @@
         return 'Historical parlay (' + legs.length + ' legs)' + eventTag;
       }
       return legs.map(l => {
-        const name = l.team || l.teamName || '?';
+        const name = resolveName(l) || '?';
         const mkt = l.market || l.marketType || '';
         const line = l.line;
         return formatSelection(name, mkt, line);
       }).join(', ');
     } catch (e) {
       // Fallback if formatting fails
-      return (legs || []).map(l => l.team || l.teamName || '?').join(', ');
+      return (legs || []).map(l => l.team || l.teamName || l.selection || l.pxEventName || '?').join(', ');
     }
   }
 
@@ -6069,6 +6133,10 @@
   function renderChartDailyVolume(allOrders) {
     const el = document.getElementById('chart-daily-volume');
     if (!el) return;
+    // Cache latest data so per-day sort header clicks can re-render without
+    // refetching from the server.
+    window._dvLastOrders = allOrders;
+    if (!window._dvSort) window._dvSort = {}; // dayId -> {col, dir}
 
     // Group confirmed orders by day.
     // Exclude reconstructed orders we never actually quoted (quotedAt is null
@@ -6229,30 +6297,67 @@
       // Expandable detail row — initial display reflects persisted expansion
       svg += '<tr id="' + dayId + '" style="display:' + (dayExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
       svg += '<table style="font-size:10px; width:100%; background:var(--surface2); margin:0;">';
-      svg += '<tr style="color:var(--text3);"><th style="padding:2px 6px;">Time</th><th style="padding:2px 6px;">Selections</th><th style="padding:2px 6px;text-align:center;">Legs</th><th style="padding:2px 6px;text-align:right;">Odds</th><th style="padding:2px 6px;text-align:right;">Stake</th><th style="padding:2px 6px;text-align:right;">P&L</th><th style="padding:2px 6px;text-align:center;">Result</th></tr>';
-      const dayOrders = d.orders
-        .filter(o => o.pnl != null)
-        .sort((a, b) => (a.settledAt || a.confirmedAt || '').localeCompare(b.settledAt || b.confirmedAt || ''));
-      for (const o of dayOrders) {
+      // Per-day sort state (default: time ascending)
+      const sortState = window._dvSort[dayId] || { col: 'time', dir: 1 };
+      const arrow = (col) => sortState.col === col ? (sortState.dir > 0 ? ' &#9650;' : ' &#9660;') : '';
+      const hClick = (col) => 'onclick="event.stopPropagation(); window._dvSortClick(\'' + dayId + '\',\'' + col + '\')" style="cursor:pointer;"';
+      svg += '<tr style="color:var(--text3);">'
+        + '<th ' + hClick('time') + ' style="padding:2px 6px; cursor:pointer;">Time' + arrow('time') + '</th>'
+        + '<th ' + hClick('selections') + ' style="padding:2px 6px; cursor:pointer;">Selections' + arrow('selections') + '</th>'
+        + '<th ' + hClick('legs') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Legs' + arrow('legs') + '</th>'
+        + '<th ' + hClick('odds') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">Odds' + arrow('odds') + '</th>'
+        + '<th ' + hClick('stake') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">Stake' + arrow('stake') + '</th>'
+        + '<th ' + hClick('pnl') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">P&L' + arrow('pnl') + '</th>'
+        + '<th ' + hClick('result') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Result' + arrow('result') + '</th>'
+        + '</tr>';
+      // Build display rows once, then sort by the requested column
+      const rows = d.orders.filter(o => o.pnl != null).map(o => {
         const legs = o.legs || o.meta?.legs || [];
         const selections = legs.map(l => {
           const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
           return name.length > 30 ? name.substring(0, 28) + '..' : name;
         }).join(', ');
-        const time = (o.confirmedAt || '').substring(11, 16) || '--:--';
-        const odds = o.confirmedOdds || o.offeredOdds;
-        const oddsStr = odds ? (odds > 0 ? '+' + odds : '' + odds) : '-';
-        const pnlCls2 = o.pnl > 0 ? 'positive' : o.pnl < 0 ? 'negative' : 'neutral';
+        const timeStr = (o.confirmedAt || '').substring(11, 16) || '--:--';
+        const oddsNum = o.confirmedOdds || o.offeredOdds || 0;
         const result = o.settlementResult || (o.status || '').replace('settled_', '') || '-';
-        const resultColor = result === 'won' ? 'var(--green)' : result === 'lost' ? 'var(--red)' : 'var(--text3)';
+        return {
+          o, legs,
+          time: timeStr,
+          timeSort: o.settledAt || o.confirmedAt || '',
+          selections,
+          legCount: legs.length,
+          oddsNum,
+          oddsStr: oddsNum ? (oddsNum > 0 ? '+' + oddsNum : '' + oddsNum) : '-',
+          stake: o.confirmedStake || 0,
+          pnl: o.pnl,
+          result,
+        };
+      });
+      rows.sort((a, b) => {
+        let av, bv;
+        switch (sortState.col) {
+          case 'selections': av = a.selections; bv = b.selections; return sortState.dir * av.localeCompare(bv);
+          case 'legs':       av = a.legCount;   bv = b.legCount;   break;
+          case 'odds':       av = a.oddsNum;    bv = b.oddsNum;    break;
+          case 'stake':      av = a.stake;      bv = b.stake;      break;
+          case 'pnl':        av = a.pnl;        bv = b.pnl;        break;
+          case 'result':     av = a.result;     bv = b.result;     return sortState.dir * av.localeCompare(bv);
+          case 'time':
+          default:           av = a.timeSort;   bv = b.timeSort;   return sortState.dir * av.localeCompare(bv);
+        }
+        return sortState.dir * (av - bv);
+      });
+      for (const r of rows) {
+        const pnlCls2 = r.pnl > 0 ? 'positive' : r.pnl < 0 ? 'negative' : 'neutral';
+        const resultColor = r.result === 'won' ? 'var(--green)' : r.result === 'lost' ? 'var(--red)' : 'var(--text3)';
         svg += '<tr style="border-top:1px solid var(--border);">';
-        svg += '<td style="padding:2px 6px;white-space:nowrap;">' + time + '</td>';
-        svg += '<td style="padding:2px 6px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + selections.replace(/"/g, '&quot;') + '">' + selections + '</td>';
-        svg += '<td style="padding:2px 6px;text-align:center;">' + legs.length + '</td>';
-        svg += '<td style="padding:2px 6px;text-align:right;">' + oddsStr + '</td>';
-        svg += '<td style="padding:2px 6px;text-align:right;">' + fmtDollar(o.confirmedStake || 0) + '</td>';
-        svg += '<td style="padding:2px 6px;text-align:right;" class="' + pnlCls2 + '">' + fmtPnl(o.pnl) + '</td>';
-        svg += '<td style="padding:2px 6px;text-align:center;color:' + resultColor + ';">' + result.charAt(0).toUpperCase() + result.slice(1) + '</td>';
+        svg += '<td style="padding:2px 6px;white-space:nowrap;">' + r.time + '</td>';
+        svg += '<td style="padding:2px 6px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + r.selections.replace(/"/g, '&quot;') + '">' + r.selections + '</td>';
+        svg += '<td style="padding:2px 6px;text-align:center;">' + r.legCount + '</td>';
+        svg += '<td style="padding:2px 6px;text-align:right;">' + r.oddsStr + '</td>';
+        svg += '<td style="padding:2px 6px;text-align:right;">' + fmtDollar(r.stake) + '</td>';
+        svg += '<td style="padding:2px 6px;text-align:right;" class="' + pnlCls2 + '">' + fmtPnl(r.pnl) + '</td>';
+        svg += '<td style="padding:2px 6px;text-align:center;color:' + resultColor + ';">' + r.result.charAt(0).toUpperCase() + r.result.slice(1) + '</td>';
         svg += '</tr>';
       }
       svg += '</table></td></tr>';
@@ -7486,10 +7591,25 @@
 
     const highlightUnregistered = opts.highlightUnregistered || false;
     const highlightBlocker = opts.highlightBlocker || false;
+    // Some PX-backfilled legs have startTime stored as raw Excel serial
+    // numbers (days since 1899-12-30) instead of ISO strings. Detect and
+    // convert; everything else passes through unchanged.
+    function parseLegStart(val) {
+      if (val == null) return null;
+      // Excel serials land in a small numeric range (e.g. 46122 ≈ Apr 2026).
+      // JS ms-since-epoch values are >1e12 and ISO strings are strings.
+      if (typeof val === 'number' && val > 0 && val < 100000) {
+        const ms = (val - 25569) * 86400 * 1000;
+        return new Date(ms);
+      }
+      const d = new Date(val);
+      return isNaN(d.getTime()) ? null : d;
+    }
     for (const l of legs) {
       // Determine game timing: upcoming, in-progress, or completed
       const now = Date.now();
-      const startMs = l.startTime ? new Date(l.startTime).getTime() : null;
+      const startDate = parseLegStart(l.startTime);
+      const startMs = startDate ? startDate.getTime() : null;
       const isUpcoming = startMs && startMs > now;
       // Games typically last: MLB ~3.5h, NBA ~2.5h, NHL ~2.5h, soccer ~2h, tennis ~3h
       const isLikelyInProgress = startMs && !isUpcoming && (now - startMs) < 4 * 3600 * 1000;
@@ -7513,7 +7633,7 @@
       else if (ls === 'upcoming') { lIcon = '&#9679;'; lColor = 'var(--text3)'; lTitle = 'Upcoming'; }
       else { lIcon = '&#9679;'; lColor = 'var(--text3)'; lTitle = 'Pending'; }
 
-      const eventTime = l.startTime ? new Date(l.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '-';
+      const eventTime = startDate ? startDate.toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '-';
 
       // Odds columns
       const pinOdds = l.pinnacleOdds != null ? (l.pinnacleOdds >= 0 ? '+' : '') + l.pinnacleOdds : '-';
@@ -7539,7 +7659,9 @@
       if (showStatus) h += '<td style="padding:' + pad + '; color:' + lColor + '; font-size:14px; text-align:center; width:40px;" title="' + lTitle + '">' + lIcon + '</td>';
       if (showSport) h += '<td style="padding:' + pad + ';">' + sportPill(l.sport || 'unknown') + '</td>';
       const mkt = l.market || l.marketType || '';
-      let teamLabel = formatSelection(l.team || l.teamName || '?', mkt, l.line);
+      // Same broad fallback as formatParlaySelections — PX-backfilled legs
+      // carry selection/pxEventName but lack team/teamName.
+      let teamLabel = formatSelection(l.team || l.teamName || l.selection || l.pxEventName || '?', mkt, l.line);
 
       // Golf matchups: append opponent + event + round context so the
       // display answers "who is this golfer playing against, in what

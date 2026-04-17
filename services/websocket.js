@@ -993,6 +993,36 @@ function recordResponseTime(parlayId, elapsed, offeredOdds, stages) {
   if (responseTimes.length > MAX_RESPONSE_TIMES) responseTimes.pop();
 }
 
+/**
+ * Seed the in-memory responseTimes buffer from a persisted source
+ * (typically order-tracker.getRecentLatencyRecords). Called once at boot
+ * after orders are loaded so the Latency Monitor + win-rate-by-bucket
+ * report is non-empty immediately on a fresh deploy. Records that already
+ * exist in the buffer (matched by parlayId) are skipped — live in-flight
+ * RFQs always win over rehydrated history.
+ */
+function seedResponseTimes(records) {
+  if (!Array.isArray(records) || records.length === 0) return 0;
+  const existing = new Set(responseTimes.map(r => r.parlayId));
+  let added = 0;
+  for (const r of records) {
+    if (!r || r.elapsed == null || existing.has(r.parlayId)) continue;
+    responseTimes.push({
+      parlayId: r.parlayId,
+      elapsed: r.elapsed,
+      offeredOdds: r.offeredOdds,
+      time: r.time,
+      stages: r.stages || null,
+    });
+    existing.add(r.parlayId);
+    added++;
+  }
+  // Newest first, trim to the rolling cap
+  responseTimes.sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+  if (responseTimes.length > MAX_RESPONSE_TIMES) responseTimes.length = MAX_RESPONSE_TIMES;
+  return added;
+}
+
 // ---------------------------------------------------------------------------
 // LATENCY BREAKDOWN — per-stage percentiles + win-rate-by-bucket
 // ---------------------------------------------------------------------------
@@ -1069,11 +1099,11 @@ function getLatencyBreakdown() {
   try {
     const orderTracker = require('./order-tracker');
     const matched = orderTracker.getMatchedParlays ? orderTracker.getMatchedParlays() : [];
-    // Map parlayId -> outcome
-    const outcomeByParlay = new Map();
+    // Map parlayId -> {outcome, ...details} for joining + expansion details
+    const matchedByParlay = new Map();
     for (const m of matched) {
       if (!m.parlayId) continue;
-      outcomeByParlay.set(m.parlayId, m.outcome); // 'won' | 'lost' | undefined
+      matchedByParlay.set(m.parlayId, m);
     }
     const buckets = [
       { label: '<30ms', min: 0, max: 30 },
@@ -1083,15 +1113,34 @@ function getLatencyBreakdown() {
       { label: '100-150ms', min: 100, max: 150 },
       { label: '150-250ms', min: 150, max: 250 },
       { label: '>250ms', min: 250, max: Infinity },
-    ].map(b => ({ ...b, quoted: 0, won: 0, lost: 0, unknown: 0 }));
+    ].map(b => ({ ...b, quoted: 0, won: 0, lost: 0, unknown: 0, parlays: [] }));
     for (const r of responseTimes) {
       const bucket = buckets.find(b => r.elapsed >= b.min && r.elapsed < b.max);
       if (!bucket) continue;
       bucket.quoted++;
-      const outcome = outcomeByParlay.get(r.parlayId);
+      const m = matchedByParlay.get(r.parlayId);
+      const outcome = m ? m.outcome : undefined;
       if (outcome === 'won') bucket.won++;
       else if (outcome === 'lost') bucket.lost++;
       else bucket.unknown++;
+      // Per-parlay detail for click-to-expand on the dashboard. Trim to the
+      // fields the UI needs so the payload doesn't balloon.
+      bucket.parlays.push({
+        parlayId: r.parlayId,
+        time: r.time,
+        elapsed: r.elapsed,
+        offeredOdds: r.offeredOdds,
+        outcome: outcome || 'unknown',
+        legs: m ? (m.legs || []).map(l => ({
+          sport: l.sport,
+          team: l.team || l.teamName || l.selection,
+          market: l.market || l.marketType,
+          line: l.line,
+        })) : [],
+        legCount: m ? m.legCount : null,
+        matchedAmericanOdds: m ? m.matchedAmericanOdds : null,
+        matchedStake: m ? m.matchedStake : null,
+      });
     }
     winRateBuckets = buckets.map(b => ({
       ...b,
@@ -1211,6 +1260,7 @@ module.exports = {
   getState,
   getResponseTimeStats,
   getLatencyBreakdown,
+  seedResponseTimes,
   captureBaseline,
   getBaseline,
   wasRfqReceived,

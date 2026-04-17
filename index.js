@@ -118,6 +118,14 @@ async function startup() {
   const dbAndReconcile = (async () => {
     try {
       await orderTracker.loadFromDb();
+      // Rehydrate the Latency Monitor's rolling buffer from persisted
+      // submitLatencyMs values so the report is non-empty after a deploy.
+      try {
+        const seeded = websocket.seedResponseTimes(orderTracker.getRecentLatencyRecords(500));
+        if (seeded > 0) log.info('Startup', `    ✓ Latency monitor seeded with ${seeded} historical records`);
+      } catch (err) {
+        log.warn('Startup', `    ⚠ Latency seed failed: ${err.message}`);
+      }
     } catch (err) {
       log.warn('Startup', `    ⚠ DB load failed: ${err.message}`);
     }

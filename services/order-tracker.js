@@ -338,6 +338,31 @@ function updateOrderLatency(parlayId, submitLatencyMs, stageTimings) {
   db.saveOrder(order).catch(() => {});
 }
 
+/**
+ * Return the most recent N orders that carry persisted submit-latency data,
+ * shaped for the websocket responseTimes buffer. Used at boot to seed the
+ * Latency Monitor so its data survives restarts/redeploys.
+ */
+function getRecentLatencyRecords(limit = 500) {
+  const records = [];
+  for (const o of Object.values(orders)) {
+    const elapsed = o.meta && o.meta.submitLatencyMs;
+    if (elapsed == null) continue;
+    const time = o.quotedAt || o.confirmedAt || (o.meta && o.meta.quotedAt) || null;
+    if (!time) continue;
+    records.push({
+      parlayId: o.parlayId,
+      elapsed,
+      offeredOdds: o.offeredOdds || null,
+      time,
+      stages: (o.meta && o.meta.stageTimings) || null,
+    });
+  }
+  // Newest first, then trim to limit
+  records.sort((a, b) => (b.time || '').localeCompare(a.time || ''));
+  return records.slice(0, limit);
+}
+
 function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) {
   const order = orders[parlayId];
   if (order) {
@@ -3408,6 +3433,7 @@ async function deleteUnknownSettledOrders() {
 module.exports = {
   recordQuote,
   updateOrderLatency,
+  getRecentLatencyRecords,
   recordConfirmation,
   recordRejection,
   recordFinalized,
