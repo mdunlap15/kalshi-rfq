@@ -455,7 +455,14 @@ function startStatusServer() {
         const currentRisk = orderTracker.getTotalPortfolioRisk();
         const startingBankroll = config.pricing.startingBankroll;
         const accountValue = (liveBal && liveBal > 0) ? liveBal : null;
-        const accountPnL = accountValue != null ? (accountValue - startingBankroll) : null;
+        // Only compute account-based P&L when startingBankroll was
+        // explicitly set (env var present). Otherwise leave null so
+        // the dashboard falls back to the tracker's runningPnL —
+        // avoids the sandbox-era $20K default silently anchoring
+        // production P&L to the wrong baseline.
+        const accountPnL = (accountValue != null && startingBankroll != null)
+          ? (accountValue - startingBankroll)
+          : null;
         return {
           bankroll: getBankroll(),
           balance: liveBal || getBankroll(),

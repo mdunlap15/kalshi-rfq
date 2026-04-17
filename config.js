@@ -90,7 +90,15 @@ const config = {
     // of truth — this number anchors the P&L calculation to a known origin.
     // PX does NOT separately deduct SP risk from balance, so balance alone
     // is the total account value.
-    startingBankroll: parseFloat(process.env.STARTING_BANKROLL) || 20000,
+    // startingBankroll anchors the account-based P&L calculation
+    // (balance − starting). If env var is NOT set, leave as null so the
+    // dashboard falls back to the tracker's runningPnL (derived from
+    // real settled outcomes, not an arbitrary anchor) — defaulting to
+    // $20K was a sandbox-era assumption and silently made prod P&L off
+    // by (real-initial − $20K).
+    startingBankroll: process.env.STARTING_BANKROLL != null && process.env.STARTING_BANKROLL !== ''
+      ? parseFloat(process.env.STARTING_BANKROLL)
+      : null,
     maxDrawdownPct: parseFloat(process.env.MAX_DRAWDOWN_PCT) || 100,
     maxRiskPerParlayPct: parseFloat(process.env.MAX_RISK_PER_PARLAY_PCT) || 5,
     maxExposurePerGamePct: parseFloat(process.env.MAX_EXPOSURE_PER_GAME_PCT) || 10,
