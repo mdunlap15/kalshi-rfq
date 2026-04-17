@@ -2583,6 +2583,43 @@ function startStatusServer() {
     res.json({ events: oddsFeed.getAllCachedEvents() });
   });
 
+  // TEMPORARY: probe SharpAPI reference endpoints to discover which sports
+  // and leagues are supported on our current tier. Used to determine if we
+  // can route MMA through SharpAPI (currently goes to The Odds API fallback).
+  // Remove after MMA routing decision is made.
+  app.get('/debug-sharp-leagues', async (req, res) => {
+    const apiKey = process.env.SHARP_ODDS_API_KEY || process.env.ODDS_API_KEY;
+    if (!apiKey) return res.status(500).json({ ok: false, error: 'no api key' });
+    const base = 'https://api.sharpapi.io/api/v1';
+    const out = {};
+    for (const path of ['/sports', '/leagues']) {
+      try {
+        const r = await fetch(base + path, { headers: { 'X-API-Key': apiKey } });
+        const status = r.status;
+        const body = status === 200 ? await r.json() : await r.text();
+        out[path] = { status, body };
+      } catch (err) {
+        out[path] = { error: err.message };
+      }
+    }
+    // Also try a direct MMA/UFC probe — guess common league keys
+    const guesses = ['ufc', 'mma', 'mma_ufc', 'ufc_mma'];
+    out.leagueGuesses = {};
+    for (const g of guesses) {
+      try {
+        const url = `${base}/odds?league=${g}&market=moneyline&limit=5`;
+        const r = await fetch(url, { headers: { 'X-API-Key': apiKey } });
+        const status = r.status;
+        const body = status === 200 ? await r.json() : await r.text();
+        const rows = (body && body.data) ? body.data.length : null;
+        out.leagueGuesses[g] = { status, rows, sampleText: typeof body === 'string' ? body.slice(0, 200) : null };
+      } catch (err) {
+        out.leagueGuesses[g] = { error: err.message };
+      }
+    }
+    res.json({ ok: true, out });
+  });
+
   // Full event detail — returns cached markets (all books) for a specific
   // event by team-name substring match. Used to audit stale/wrong Pinnacle
   // values in quoted parlays.
