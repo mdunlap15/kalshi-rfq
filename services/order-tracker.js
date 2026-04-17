@@ -37,6 +37,24 @@ const marketStats = {
 // Shape: sessionFillBuckets['basketball_nba|2'] = { submitted: 5, filled: 2 }
 //        sessionFillBuckets['Multi|3']           = { submitted: 10, filled: 1 }
 const sessionFillBuckets = {};
+// Rolling timestamped event log so the dashboard can aggregate fill
+// rates over windows wider than the current session (24h / 7d / 30d).
+// Entries: { t: ms, key: 'rawSport|legCount', kind: 'submit' | 'fill' }.
+// Capped at MAX_FILL_BUCKET_EVENTS and pruned to FILL_BUCKET_WINDOW_MS
+// on each write so memory stays bounded (~60B * 300k ≈ 18MB worst case).
+// Restarts wipe this — windows that cross a restart will be partial.
+const fillBucketEvents = [];
+const FILL_BUCKET_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_FILL_BUCKET_EVENTS = 300000;
+function pruneFillBucketEvents() {
+  const cutoff = Date.now() - FILL_BUCKET_WINDOW_MS;
+  let dropTo = 0;
+  while (dropTo < fillBucketEvents.length && fillBucketEvents[dropTo].t < cutoff) dropTo++;
+  if (dropTo > 0) fillBucketEvents.splice(0, dropTo);
+  if (fillBucketEvents.length > MAX_FILL_BUCKET_EVENTS) {
+    fillBucketEvents.splice(0, fillBucketEvents.length - MAX_FILL_BUCKET_EVENTS);
+  }
+}
 function fillBucketKeys(legs) {
   const rawSports = [...new Set((legs || []).map(l => l.sport).filter(Boolean))];
   const key = rawSports.length === 0 ? 'Unknown'
@@ -46,16 +64,22 @@ function fillBucketKeys(legs) {
   return [key + '|' + legCount];
 }
 function recordFillBucketSubmission(legs) {
+  const now = Date.now();
   for (const k of fillBucketKeys(legs)) {
     if (!sessionFillBuckets[k]) sessionFillBuckets[k] = { submitted: 0, filled: 0 };
     sessionFillBuckets[k].submitted++;
+    fillBucketEvents.push({ t: now, key: k, kind: 'submit' });
   }
+  pruneFillBucketEvents();
 }
 function recordFillBucketFill(legs) {
+  const now = Date.now();
   for (const k of fillBucketKeys(legs)) {
     if (!sessionFillBuckets[k]) sessionFillBuckets[k] = { submitted: 0, filled: 0 };
     sessionFillBuckets[k].filled++;
+    fillBucketEvents.push({ t: now, key: k, kind: 'fill' });
   }
+  pruneFillBucketEvents();
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,6 +1255,35 @@ function getMarketIntel(limit = 50) {
     // because loadFromDb skips unfilled 'quoted' rows. Resets on boot;
     // sessionStartedAt tells the dashboard what window this covers.
     sessionFillBuckets: { ...sessionFillBuckets },
+    // Pre-aggregated fill-rate buckets for each dashboard timeframe
+    // selector. Computed from the rolling fillBucketEvents log so the
+    // client doesn't need to ship/parse the raw events (can be hundreds
+    // of thousands of entries). Shape mirrors sessionFillBuckets:
+    //   { 'rawSport|legCount': { submitted, filled } }
+    fillBucketsByWindow: (() => {
+      pruneFillBucketEvents();
+      const now = Date.now();
+      const cutoffs = {
+        '24h': now - 24 * 60 * 60 * 1000,
+        '7d':  now - 7 * 24 * 60 * 60 * 1000,
+        '30d': now - 30 * 24 * 60 * 60 * 1000,
+      };
+      const out = { '24h': {}, '7d': {}, '30d': {} };
+      // Single backward pass — stop once we're past 30d (array is
+      // chronological by insertion).
+      for (let i = fillBucketEvents.length - 1; i >= 0; i--) {
+        const ev = fillBucketEvents[i];
+        if (ev.t < cutoffs['30d']) break;
+        for (const label of ['30d', '7d', '24h']) {
+          if (ev.t < cutoffs[label]) continue;
+          const b = out[label];
+          if (!b[ev.key]) b[ev.key] = { submitted: 0, filled: 0 };
+          if (ev.kind === 'submit') b[ev.key].submitted++;
+          else if (ev.kind === 'fill') b[ev.key].filled++;
+        }
+      }
+      return out;
+    })(),
     sessionStartedAt: stats.startedAt,
     declines: {
       total: declineStats.total,

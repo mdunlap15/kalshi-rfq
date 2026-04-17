@@ -807,7 +807,15 @@
         <div class="card">
           <div class="card-header">
             <span>Win Rate by Sport &amp; Leg Count</span>
-            <span id="win-rate-heatmap-summary" style="color: var(--text3); font-weight: 400; font-size: 14px;"></span>
+            <span style="display:flex; align-items:center; gap:12px;">
+              <span id="win-rate-heatmap-tf" style="display:inline-flex; gap:0; border:1px solid var(--border); border-radius:4px; overflow:hidden;">
+                <button type="button" class="wrh-tf-btn" data-tf="session" onclick="setWinRateHeatmapTimeframe('session')" style="background:var(--accent); color:var(--text); border:0; padding:4px 10px; font-size:12px; cursor:pointer;">Session</button>
+                <button type="button" class="wrh-tf-btn" data-tf="24h" onclick="setWinRateHeatmapTimeframe('24h')" style="background:transparent; color:var(--text3); border:0; padding:4px 10px; font-size:12px; cursor:pointer;">24h</button>
+                <button type="button" class="wrh-tf-btn" data-tf="7d" onclick="setWinRateHeatmapTimeframe('7d')" style="background:transparent; color:var(--text3); border:0; padding:4px 10px; font-size:12px; cursor:pointer;">7d</button>
+                <button type="button" class="wrh-tf-btn" data-tf="30d" onclick="setWinRateHeatmapTimeframe('30d')" style="background:transparent; color:var(--text3); border:0; padding:4px 10px; font-size:12px; cursor:pointer;">30d</button>
+              </span>
+              <span id="win-rate-heatmap-summary" style="color: var(--text3); font-weight: 400; font-size: 14px;"></span>
+            </span>
           </div>
           <div class="card-body" id="win-rate-heatmap">
             <div class="empty-state"><div class="icon">-</div><div>Need quoted &amp; matched parlays to compare</div></div>
@@ -982,6 +990,8 @@
       renderPositions(orders);
       renderSettled(orders);
       renderMarketIntel(intel);
+      window._lastIntel = intel;
+      window._lastOrders = orders;
       renderWinRateHeatmap(intel, orders);
       renderCompetitiveness(intel);
       renderAnalytics(orders, intel);
@@ -2361,10 +2371,16 @@
     // match-event time (numerator). Resets on each boot — the orders
     // map is NOT usable as a denominator because loadFromDb skips the
     // 50K+ unfilled 'quoted' rows, biasing fill rate toward 100%.
-    const buckets = intel?.sessionFillBuckets || {};
+    const tf = window._winRateHeatmapTf || 'session';
+    const buckets = tf === 'session'
+      ? (intel?.sessionFillBuckets || {})
+      : (intel?.fillBucketsByWindow?.[tf] || {});
     const bucketKeys = Object.keys(buckets);
     if (bucketKeys.length === 0) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Session has no submitted quotes yet — fill-rate data accumulates starting at boot.</div></div>';
+      const emptyMsg = tf === 'session'
+        ? 'Session has no submitted quotes yet — fill-rate data accumulates starting at boot.'
+        : 'No quotes in the last ' + tf + '. (Windows reset when the server restarts — data only goes back as far as the current uptime.)';
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>' + emptyMsg + '</div></div>';
       if (sumEl) sumEl.textContent = '';
       return;
     }
@@ -2442,12 +2458,17 @@
     const redAt = Math.min(overallRatePct * 0.5, 5);
 
     let html = '';
-    // Session-scoped data — the counters live in memory and reset on
-    // boot. Show when this window started so the operator knows.
+    // Show the window label + origin so the operator knows the scope.
+    // All windows (including 24h/7d/30d) are capped by server uptime —
+    // the rolling event log resets on restart.
     const sessionStart = intel?.sessionStartedAt;
+    const windowLabel = tf === 'session' ? 'This session' : 'Last ' + tf;
     if (sessionStart) {
       const sessionStartStr = new Date(sessionStart).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-      html += '<div style="padding:8px 12px 0; font-size:14px; color:var(--text3);">This session &mdash; since ' + sessionStartStr + '</div>';
+      const suffix = tf === 'session'
+        ? ' &mdash; since ' + sessionStartStr
+        : ' <span style="color:var(--text3);">(since boot at ' + sessionStartStr + ')</span>';
+      html += '<div style="padding:8px 12px 0; font-size:14px; color:var(--text3);">' + windowLabel + suffix + '</div>';
     }
     html += '<div style="font-size:14px; color:var(--text3); padding:8px 12px; line-height:1.5;">'
       + 'Each cell: <strong>fill %</strong> &middot; <strong>n = parlays we quoted</strong> in that bucket. '
@@ -2576,6 +2597,18 @@
   // class tied to the parent sport (wrh-sub-<drillKey>); this function
   // flips display on all of them together and persists the open state
   // via the shared expandedRows Set so auto-refreshes don't collapse.
+  window.setWinRateHeatmapTimeframe = function(tf) {
+    window._winRateHeatmapTf = tf;
+    // Update button styling
+    const btns = document.querySelectorAll('#win-rate-heatmap-tf .wrh-tf-btn');
+    btns.forEach(b => {
+      const active = b.getAttribute('data-tf') === tf;
+      b.style.background = active ? 'var(--accent)' : 'transparent';
+      b.style.color = active ? 'var(--text)' : 'var(--text3)';
+    });
+    if (window._lastIntel) renderWinRateHeatmap(window._lastIntel, window._lastOrders);
+  };
+
   window._toggleHeatmapDrill = function(drillKey, rowId) {
     const subRows = document.querySelectorAll('.wrh-sub-' + drillKey);
     if (!subRows.length) return;
