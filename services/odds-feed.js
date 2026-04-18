@@ -701,14 +701,17 @@ async function supplementMlbF5Markets(parsedEvents) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   if (!theOddsApiKey) return;
 
-  // F5 moneyline + run_line now come from SharpAPI (primary) — see the
-  // parse block for baseball_mlb that attaches markets.h2h_f5 /
-  // markets.spreads_f5. Only totals_1st_5_innings is still sourced here
-  // because SharpAPI returns 0 rows for that market (probed live).
+  // F5 coverage from SharpAPI is thin: only BetMGM populates F5 ML +
+  // run-line, and totals are absent entirely (probed live). Pull all
+  // three F5 markets from The Odds API here so Pinnacle/DK/FanDuel
+  // cover every event. Odds API books take priority over SharpAPI's
+  // BetMGM — sharper books → better consensus fair. When a match
+  // can't be found (event not in Odds API), SharpAPI's BetMGM data
+  // stays in place as fallback.
   const url = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds`
     + `?apiKey=${theOddsApiKey}`
     + `&regions=us,eu`
-    + `&markets=totals_1st_5_innings`
+    + `&markets=h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings`
     + `&bookmakers=pinnacle,draftkings,fanduel`
     + `&oddsFormat=american`;
 
@@ -721,12 +724,11 @@ async function supplementMlbF5Markets(parsedEvents) {
   if (remaining != null) log.debug('OddsFeed', `The Odds API usage (MLB F5): ${remaining} remaining`);
 
   const events = await resp.json();
-  let matched = 0;
+  let h2hCount = 0, spreadCount = 0, totalCount = 0;
   for (const event of events) {
     const entry = findParsedEntryFuzzy(parsedEvents, event.home_team, event.away_team);
     if (!entry) continue;
     const eventArr = Array.isArray(entry) ? entry : [entry];
-    // Match by date to handle back-to-back games
     const evDate = event.commence_time ? new Date(event.commence_time).toISOString().substring(0, 10) : '';
     const matchedEv = eventArr.find(e => {
       const d = e.commenceTime ? new Date(e.commenceTime).toISOString().substring(0, 10) : '';
@@ -734,30 +736,62 @@ async function supplementMlbF5Markets(parsedEvents) {
     }) || eventArr[0];
     if (!matchedEv) continue;
 
-    // F5 totals only — SharpAPI already populated h2h_f5 and spreads_f5
-    // upstream. Don't overwrite them from this supplement.
+    const h2hPairs = [];
+    const spreadPairs = [];
     const totalPairs = [];
     for (const book of (event.bookmakers || [])) {
       for (const m of (book.markets || [])) {
-        if (m.key !== 'totals_1st_5_innings') continue;
-        const over = m.outcomes?.find(o => o.name === 'Over');
-        const under = m.outcomes?.find(o => o.name === 'Under');
-        if (over && under) {
-          totalPairs.push({
-            book: book.key,
-            over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
-            under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
-          });
+        if (m.key === 'h2h_1st_5_innings') {
+          // h2h outcomes carry team names — match to home/away.
+          const homeOut = m.outcomes?.find(o => o.name === event.home_team);
+          const awayOut = m.outcomes?.find(o => o.name === event.away_team);
+          if (homeOut && awayOut) {
+            h2hPairs.push({
+              book: book.key,
+              home: { odds_probability: americanToImpliedProb(homeOut.price), odds_american: homeOut.price },
+              away: { odds_probability: americanToImpliedProb(awayOut.price), odds_american: awayOut.price },
+            });
+          }
+        } else if (m.key === 'spreads_1st_5_innings') {
+          // spreads outcomes: one row per team with a `point` (team's handicap).
+          // Pair the home+away outcomes; each book posts ONE primary spread line.
+          const homeOut = m.outcomes?.find(o => o.name === event.home_team);
+          const awayOut = m.outcomes?.find(o => o.name === event.away_team);
+          if (homeOut && awayOut) {
+            spreadPairs.push({
+              book: book.key,
+              home: { odds_probability: americanToImpliedProb(homeOut.price), odds_american: homeOut.price, point: homeOut.point, line: homeOut.point },
+              away: { odds_probability: americanToImpliedProb(awayOut.price), odds_american: awayOut.price, point: awayOut.point, line: awayOut.point },
+            });
+          }
+        } else if (m.key === 'totals_1st_5_innings') {
+          const over = m.outcomes?.find(o => o.name === 'Over');
+          const under = m.outcomes?.find(o => o.name === 'Under');
+          if (over && under) {
+            totalPairs.push({
+              book: book.key,
+              over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
+              under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
+            });
+          }
         }
       }
     }
 
+    if (h2hPairs.length > 0) {
+      const m = buildConsensusMoneyline(h2hPairs);
+      if (m) { matchedEv.markets.h2h_f5 = m; h2hCount++; }
+    }
+    if (spreadPairs.length > 0) {
+      const s = buildConsensusSpread(spreadPairs);
+      if (s) { matchedEv.markets.spreads_f5 = s; spreadCount++; }
+    }
     if (totalPairs.length > 0) {
       matchedEv.markets.totals_f5 = buildConsensusTotals(totalPairs);
-      matched++;
+      totalCount++;
     }
   }
-  log.info('OddsFeed', `MLB F5: attached to ${matched} events`);
+  log.info('OddsFeed', `MLB F5 supplement: h2h on ${h2hCount}, spread on ${spreadCount}, total on ${totalCount} events`);
 }
 
 /**
@@ -2073,10 +2107,17 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
   }
   const { eventId, oddsApiSport } = resolved;
 
+  // MLB events get F5 alt markets appended. PX registers F5 alt total
+  // lines (3, 3.5, 4, 5, 5.5) that the bulk supplement doesn't cover
+  // — without these, every off-primary F5 total RFQ declines with
+  // "no totals_f5 quote".
+  const mlbF5Markets = sport === 'baseball_mlb'
+    ? ',alternate_spreads_1st_5_innings,alternate_totals_1st_5_innings'
+    : '';
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events/${eventId}/odds`
     + `?apiKey=${theOddsApiKey}`
     + `&regions=us,eu`
-    + `&markets=alternate_spreads,alternate_totals`
+    + `&markets=alternate_spreads,alternate_totals${mlbF5Markets}`
     + `&bookmakers=${ALT_LINES_BOOKMAKERS}`
     + `&oddsFormat=american`;
 
@@ -2091,10 +2132,54 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
     }
 
     const data = await resp.json();
-    const result = { fetchedAt: Date.now(), altSpreads: {}, altTotals: {} };
+    const result = { fetchedAt: Date.now(), altSpreads: {}, altTotals: {}, altSpreadsF5: {}, altTotalsF5: {} };
 
     for (const book of (data.bookmakers || [])) {
       for (const market of (book.markets || [])) {
+        if (market.key === 'alternate_spreads_1st_5_innings') {
+          // F5 alt spreads. Same signed-home-point keying as full-game
+          // alternate_spreads. Reuses the home/away team-name matching
+          // block just below via a helper to avoid duplication.
+          for (const o of (market.outcomes || [])) {
+            const normOutcome = normalizeTeamName(o.name);
+            const normHome = normalizeTeamName(homeTeam);
+            const normAway = normalizeTeamName(awayTeam);
+            const normDataHome = data.home_team ? normalizeTeamName(data.home_team) : '';
+            const homeMatch = normOutcome === normHome || normOutcome === normDataHome
+              || normHome.includes(normOutcome) || normOutcome.includes(normHome)
+              || (normDataHome && (normDataHome.includes(normOutcome) || normOutcome.includes(normDataHome)));
+            const awayMatch = normOutcome === normAway
+              || normAway.includes(normOutcome) || normOutcome.includes(normAway);
+            if (homeMatch === awayMatch) continue;
+            const isHome = homeMatch;
+            const homePoint = isHome ? o.point : -o.point;
+            const lineKey = String(homePoint);
+            if (!result.altSpreadsF5[lineKey]) {
+              result.altSpreadsF5[lineKey] = { probs: [], books: new Set(), byBook: {}, homePoint };
+            }
+            const prob = americanToImpliedProb(o.price);
+            result.altSpreadsF5[lineKey].probs.push({ isHome, prob, point: o.point });
+            result.altSpreadsF5[lineKey].books.add(book.key);
+            if (!result.altSpreadsF5[lineKey].byBook[book.key]) result.altSpreadsF5[lineKey].byBook[book.key] = {};
+            result.altSpreadsF5[lineKey].byBook[book.key][isHome ? 'home' : 'away'] = o.price;
+          }
+          continue;
+        }
+        if (market.key === 'alternate_totals_1st_5_innings') {
+          for (const o of (market.outcomes || [])) {
+            const lineKey = o.point;
+            if (!result.altTotalsF5[lineKey]) {
+              result.altTotalsF5[lineKey] = { probs: [], books: new Set(), byBook: {} };
+            }
+            const isOver = o.name === 'Over';
+            const prob = americanToImpliedProb(o.price);
+            result.altTotalsF5[lineKey].probs.push({ isOver, prob });
+            result.altTotalsF5[lineKey].books.add(book.key);
+            if (!result.altTotalsF5[lineKey].byBook[book.key]) result.altTotalsF5[lineKey].byBook[book.key] = {};
+            result.altTotalsF5[lineKey].byBook[book.key][isOver ? 'over' : 'under'] = o.price;
+          }
+          continue;
+        }
         if (market.key === 'alternate_spreads') {
           // CRITICAL: key by SIGNED home point, not abs. Otherwise both
           // "home -1.5 / away +1.5" and "home +1.5 / away -1.5" (two
@@ -2216,9 +2301,45 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
       }
     }
 
+    // F5 alt spreads + totals (MLB only). Identical consolidation as
+    // the full-game loops above — de-vig per line with the same
+    // min-books + Pinnacle-alone gate, keep byBook stubs for missing
+    // consensus so per-book accessors still resolve.
+    for (const [lineKey, lineData] of Object.entries(result.altSpreadsF5)) {
+      const bookCount = lineData.books.size;
+      const byBook = lineData.byBook;
+      const homeProbs = lineData.probs.filter(p => p.isHome).map(p => p.prob);
+      const awayProbs = lineData.probs.filter(p => !p.isHome).map(p => p.prob);
+      if (homeProbs.length > 0 && awayProbs.length > 0 && bookCountOk(bookCount, byBook)) {
+        const [fh, fa] = deVig2Way(avg(homeProbs), avg(awayProbs));
+        result.altSpreadsF5[lineKey] = { home: fh, away: fa, books: bookCount, byBook };
+      } else if (Object.keys(byBook).length > 0) {
+        result.altSpreadsF5[lineKey] = { home: null, away: null, books: bookCount, byBook };
+      } else {
+        delete result.altSpreadsF5[lineKey];
+      }
+    }
+    for (const [lineKey, lineData] of Object.entries(result.altTotalsF5)) {
+      const bookCount = lineData.books.size;
+      const byBook = lineData.byBook;
+      const overProbs = lineData.probs.filter(p => p.isOver).map(p => p.prob);
+      const underProbs = lineData.probs.filter(p => !p.isOver).map(p => p.prob);
+      if (overProbs.length > 0 && underProbs.length > 0 && bookCountOk(bookCount, byBook)) {
+        const [fo, fu] = deVig2Way(avg(overProbs), avg(underProbs));
+        result.altTotalsF5[lineKey] = { over: fo, under: fu, books: bookCount, byBook };
+      } else if (Object.keys(byBook).length > 0) {
+        result.altTotalsF5[lineKey] = { over: null, under: null, books: bookCount, byBook };
+      } else {
+        delete result.altTotalsF5[lineKey];
+      }
+    }
+
     altLinesCache[key] = result;
     const skippedNote = (skippedThinSpreads + skippedThinTotals) > 0 ? ` (skipped ${skippedThinSpreads} spreads + ${skippedThinTotals} totals with <${ALT_LINES_MIN_BOOKS} books)` : '';
-    log.info('OddsFeed', `Cached alt lines: ${Object.keys(result.altSpreads).length} spreads, ${Object.keys(result.altTotals).length} totals${skippedNote}`);
+    const f5Note = (Object.keys(result.altSpreadsF5).length || Object.keys(result.altTotalsF5).length) > 0
+      ? `, F5: ${Object.keys(result.altSpreadsF5).length} spreads + ${Object.keys(result.altTotalsF5).length} totals`
+      : '';
+    log.info('OddsFeed', `Cached alt lines: ${Object.keys(result.altSpreads).length} spreads, ${Object.keys(result.altTotals).length} totals${f5Note}${skippedNote}`);
     return result;
   } catch (err) {
     log.error('OddsFeed', `Alt lines error: ${err.message}`);
@@ -2679,13 +2800,25 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
   }
 
   const market = event.markets[marketType];
-  if (!market) return null;
+  if (!market) {
+    // Primary cache miss for F5 spread/total. Fall through to the alt
+    // cache (may have been populated by fetchAltLines). If alt data
+    // isn't there either, getFairProbAsync will trigger the per-event
+    // fetch and retry — this path just handles warm-cache alt hits.
+    if ((marketType === 'spreads_f5' || marketType === 'totals_f5') && line != null) {
+      const altKey = normalizeEventKey(homeTeam, awayTeam);
+      return getAltLineFairProb(altKey, marketType, selection, line);
+    }
+    return null;
+  }
 
-  if (marketType === 'spreads' || marketType === 'totals') {
-    // CRITICAL: spreads/totals MUST have a line value to price correctly.
-    // Without a line, we can't distinguish Over 4.5 from Over 8.5 — returning
-    // the primary fair prob would be catastrophically wrong for alt lines.
-    // (Root cause of +377 mispricing on Over 4.5 + Under 5.5 parlay, 2026-04-12)
+  if (marketType === 'spreads' || marketType === 'totals' || marketType === 'spreads_f5' || marketType === 'totals_f5') {
+    // CRITICAL: spreads/totals (full-game OR F5) MUST have a line value
+    // to price correctly. Without a line, we can't distinguish Over 4.5
+    // from Over 5.5 — returning the primary fair prob would be
+    // catastrophically wrong for alt lines. (Root cause of +377
+    // mispricing on full-game Over 4.5 + Under 5.5 parlay, 2026-04-12;
+    // and the current F5 totals_f5 5.5 alt-line decline cluster.)
     if (line == null) {
       log.warn('OddsFeed', `getFairProb: null line for ${marketType} ${selection} ${homeTeam} vs ${awayTeam} — declining to avoid primary-line contamination`);
       return null;
@@ -3133,14 +3266,24 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
   const syncResult = getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, targetTime);
   if (syncResult != null) return syncResult;
 
-  // If it's a spread/total with a line mismatch, try fetching alt lines.
-  // NOTE: earlier iteration added a 150ms timeout here which regressed p95/p99
-  // and caused +308 price failures because the warm cycle wasn't effectively
-  // populating the cache. Reverted to unconditional await until warming is
-  // debugged / cache hit rate is high enough for a timeout to be safe.
-  if ((marketType === 'spreads' || marketType === 'totals') && line != null) {
+  // If it's a spread/total (full-game OR F5) with a line mismatch, try
+  // fetching alt lines. For F5, the per-event fetchAltLines call now
+  // includes alternate_spreads_1st_5_innings + alternate_totals_1st_5_innings
+  // so RFQs for non-primary F5 lines (e.g. O 5.5 when DK primary is 4.5)
+  // can still be priced. NOTE: earlier iteration added a 150ms timeout
+  // here which regressed p95/p99 and caused +308 price failures because
+  // the warm cycle wasn't effectively populating the cache. Reverted to
+  // unconditional await until warming is debugged / cache hit rate is
+  // high enough for a timeout to be safe.
+  const isSpreadOrTotal = marketType === 'spreads' || marketType === 'totals'
+                         || marketType === 'spreads_f5' || marketType === 'totals_f5';
+  if (isSpreadOrTotal && line != null) {
     const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
-    if (event) {
+    // For F5, an event with NO primary F5 market can still have alts —
+    // SharpAPI may skip F5 but the Odds API alt endpoint carries them.
+    // So we proceed to fetchAltLines even when the event has no F5
+    // primary cached, as long as we have an event record at all.
+    if (event || marketType === 'spreads_f5' || marketType === 'totals_f5') {
       await fetchAltLines(sport, homeTeam, awayTeam, targetTime);
       const key = normalizeEventKey(homeTeam, awayTeam);
       // Pass SIGNED line (not abs) so alt-line lookup routes to the correct
@@ -3148,7 +3291,10 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
       const altProb = getAltLineFairProb(key, marketType, selection, line);
       if (altProb != null) {
         // Same directional sanity checks as getFairProb (see comments there).
-        const market = event.markets[marketType];
+        // `event` may be null for F5 fallthrough (no primary market cached);
+        // skip the sanity block in that case — F5 line ranges are narrow
+        // and rarely trigger the lineDiff >= 2.0 guard anyway.
+        const market = event ? event.markets[marketType] : null;
         if (marketType === 'totals' && market?.line != null) {
           const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
           if (lineDiff >= 2.0) {
@@ -3218,32 +3364,35 @@ function getAltLineFairProb(eventKey, marketType, selection, line) {
     return null;
   }
 
-  if (marketType === 'spreads') {
+  // Route F5 alt markets to altSpreadsF5 / altTotalsF5 buckets (MLB only).
+  const isF5 = marketType === 'spreads_f5' || marketType === 'totals_f5';
+  if (marketType === 'spreads' || marketType === 'spreads_f5') {
     const homePoint = spreadHomePoint(line, selection);
     if (homePoint == null) {
       log.debug('AltLine', `MISS homePoint null: ${eventKey} ${selection} line=${line}`);
       return null;
     }
     const lineKey = String(homePoint);
-    const lineData = alt.altSpreads[lineKey];
+    const bucket = isF5 ? alt.altSpreadsF5 : alt.altSpreads;
+    const lineData = bucket?.[lineKey];
     if (!lineData) {
-      const availableKeys = Object.keys(alt.altSpreads).slice(0, 10).join(', ');
-      log.debug('AltLine', `MISS spread: ${eventKey} ${selection} line=${line} homePoint=${lineKey} — not in cache. Available: [${availableKeys}]`);
+      const availableKeys = Object.keys(bucket || {}).slice(0, 10).join(', ');
+      log.debug('AltLine', `MISS ${marketType}: ${eventKey} ${selection} line=${line} homePoint=${lineKey} — not in cache. Available: [${availableKeys}]`);
       return null;
     }
     const fairProb = selection === 'home' ? (lineData.home || null) : (selection === 'away' ? (lineData.away || null) : null);
-    log.debug('AltLine', `HIT spread: ${eventKey} ${selection} line=${line} homePoint=${lineKey} fair=${fairProb?.toFixed(4) ?? 'null'} books=${lineData.books}`);
+    log.debug('AltLine', `HIT ${marketType}: ${eventKey} ${selection} line=${line} homePoint=${lineKey} fair=${fairProb?.toFixed(4) ?? 'null'} books=${lineData.books}`);
     return fairProb;
-  } else if (marketType === 'totals') {
-    // Totals have no sign — over/under don't swap direction.
-    const lineData = alt.altTotals[Math.abs(line)];
+  } else if (marketType === 'totals' || marketType === 'totals_f5') {
+    const bucket = isF5 ? alt.altTotalsF5 : alt.altTotals;
+    const lineData = bucket?.[Math.abs(line)];
     if (!lineData) {
-      const availableKeys = Object.keys(alt.altTotals).slice(0, 10).join(', ');
-      log.debug('AltLine', `MISS total: ${eventKey} ${selection} line=${line} — not in cache. Available: [${availableKeys}]`);
+      const availableKeys = Object.keys(bucket || {}).slice(0, 10).join(', ');
+      log.debug('AltLine', `MISS ${marketType}: ${eventKey} ${selection} line=${line} — not in cache. Available: [${availableKeys}]`);
       return null;
     }
     const fairProb = selection === 'over' ? (lineData.over || null) : (selection === 'under' ? (lineData.under || null) : null);
-    log.debug('AltLine', `HIT total: ${eventKey} ${selection} line=${line} fair=${fairProb?.toFixed(4) ?? 'null'} books=${lineData.books}`);
+    log.debug('AltLine', `HIT ${marketType}: ${eventKey} ${selection} line=${line} fair=${fairProb?.toFixed(4) ?? 'null'} books=${lineData.books}`);
     return fairProb;
   }
 
