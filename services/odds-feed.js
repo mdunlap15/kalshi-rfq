@@ -3555,6 +3555,33 @@ function getLiveCacheStatus() {
   return status;
 }
 
+/**
+ * Golf matchup lookup. DataGolf publishes BOTH round_matchups (R1/R2/R3/R4
+ * specific) and tournament_matchups (full 72-hole head-to-heads) — often
+ * for the same two players. These have materially different fair probs,
+ * so we cannot price a round RFQ against tournament odds or vice versa.
+ *
+ * Each cache entry is tagged with matchupType ('round' | 'tournament') and,
+ * for rounds, roundNum (1-4). Caller passes the desired roundNum (null =>
+ * tournament) and we filter the array to the single matching entry.
+ */
+function getGolfMatchupEvent(homeTeam, awayTeam, roundNum) {
+  const cache = oddsCache['golf_matchups'];
+  if (!cache || !cache.events) return null;
+  const key = normalizeEventKey(homeTeam, awayTeam);
+  const entry = cache.events[key];
+  if (!entry) return null;
+  const events = Array.isArray(entry) ? entry : [entry];
+  if (events.length === 0) return null;
+  const isTournament = roundNum == null;
+  // Prefer an entry whose matchupType + roundNum match the request.
+  const match = events.find(e => {
+    if (isTournament) return e.matchupType === 'tournament' || e.roundNum == null;
+    return e.matchupType === 'round' && e.roundNum === roundNum;
+  });
+  return match || null;
+}
+
 function getEventMarkets(sport, homeTeam, awayTeam, targetTime) {
   const sportCache = oddsCache[sport];
   if (!sportCache) return null;
@@ -4342,6 +4369,7 @@ module.exports = {
   startAltLineWarmLoop,
   getAltLinesWarmStats,
   getEventMarkets,
+  getGolfMatchupEvent,
   getLiveEventMarkets,
   getLiveFairProb,
   getLiveCacheStatus,

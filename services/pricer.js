@@ -100,6 +100,33 @@ function getSeriesFairProb(lineInfo) {
 }
 
 /**
+ * Golf matchup legs: route through the round-aware DataGolf accessor so
+ * a round RFQ ("R1 RBC Heritage") is priced against round_matchups odds
+ * and a tournament RFQ is priced against tournament_matchups odds. The
+ * generic oddsFeed path keys purely on player-pair and would pick
+ * whichever entry was pushed to the cache first when both exist — a
+ * material mispricing risk.
+ *
+ * Returns null for non-golf legs; caller falls back to the normal path.
+ */
+function getGolfMatchupFairProb(lineInfo) {
+  const sport = (lineInfo?.oddsApiSport || lineInfo?.sport || '').toLowerCase();
+  if (!sport.includes('golf')) return null;
+  const mt = lineInfo?.marketType || '';
+  if (mt !== 'moneyline') return null; // golf matchups are h2h only
+  const event = oddsFeed.getGolfMatchupEvent(
+    lineInfo.homeTeam, lineInfo.awayTeam, lineInfo.roundNum ?? null
+  );
+  if (!event) return null;
+  const h2h = event.markets?.h2h;
+  if (!h2h) return null;
+  const sel = lineInfo.oddsApiSelection;
+  const side = sel === 'home' ? h2h.home : sel === 'away' ? h2h.away : null;
+  if (!side || side.fairProb == null) return null;
+  return side.fairProb;
+}
+
+/**
  * MMA moneyline legs: route directly to the DK scraper cache rather than
  * the shared odds-feed cache. Context: SharpAPI rarely covers MMA h2h
  * reliably, so the DK scraper is the source of truth. DK data IS merged
@@ -324,6 +351,11 @@ async function priceParlay(legs) {
     // refreshes. Route directly to dkScraper (see getMmaFairProb).
     const mmaFair = getMmaFairProb(s.lineInfo);
     if (mmaFair != null) return Promise.resolve(mmaFair);
+
+    // Golf matchup legs: route through the round-aware DataGolf lookup
+    // so we price a round RFQ against round odds (not tournament h2h).
+    const golfFair = getGolfMatchupFairProb(s.lineInfo);
+    if (golfFair != null) return Promise.resolve(golfFair);
 
     if (s.lineInfo.isDNB) {
       // Draw-No-Bet is sync (derives from cached 3-way h2h).
@@ -898,6 +930,11 @@ async function priceParlay(legs) {
           fanduelDNBProb: l.fanduelDNBProb != null ? Math.round(l.fanduelDNBProb * 10000) / 10000 : null,
           kalshiDNBProb: l.kalshiDNBProb != null ? Math.round(l.kalshiDNBProb * 10000) / 10000 : null,
           draftkingsDNBProb: l.draftkingsDNBProb != null ? Math.round(l.draftkingsDNBProb * 10000) / 10000 : null,
+          // Golf matchup metadata — drives the R1/R2/Tournament tag in the
+          // dashboard. Null on non-golf legs.
+          roundNum: l.lineInfo.roundNum ?? null,
+          matchupType: l.lineInfo.matchupType ?? null,
+          tournamentName: l.lineInfo.tournamentName ?? null,
           sport: l.lineInfo.sport,
           homeTeam: l.lineInfo.homeTeam,
           awayTeam: l.lineInfo.awayTeam,

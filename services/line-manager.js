@@ -801,7 +801,24 @@ async function seedAllLines() {
         // it defaults to midnight UTC which is 8pm ET the PREVIOUS day, causing
         // false "event started" declines all day until SharpAPI loads real
         // tip-off times. Fall back to odds cache only if PX has no scheduled.
-        const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxScheduled);
+        // Golf matchups: parse the round from the PX event name
+        // ("R1 RBC Heritage" → round 1; no R-prefix → tournament). Use
+        // the round-aware cache accessor so we price a round RFQ against
+        // round odds, not against the tournament-long h2h.
+        let oddsEvt;
+        let golfRoundNum = null;
+        let golfMatchupType = null;
+        if (sportKey === 'golf_matchups') {
+          const nameRoundMatch = /\bR(?:ound\s*)?([1-4])\b/i.exec(event.name || '');
+          golfRoundNum = nameRoundMatch ? parseInt(nameRoundMatch[1], 10) : null;
+          golfMatchupType = golfRoundNum ? 'round' : 'tournament';
+          oddsEvt = oddsFeed.getGolfMatchupEvent(matchedHome, matchedAway, golfRoundNum);
+          // If the round-specific lookup failed but a tournament entry
+          // exists (or vice versa), don't silently fall through to the
+          // wrong-type entry. Leave oddsEvt null so the line is skipped.
+        } else {
+          oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxScheduled);
+        }
         const startTime = event.scheduled || oddsEvt?.commenceTime || null;
 
         lineIndex[sel.lineId] = {
@@ -824,7 +841,8 @@ async function seedAllLines() {
           // Golf-specific metadata from DataGolf (tournament name, round).
           // Undefined for non-golf sports — harmless to always copy.
           tournamentName: oddsEvt?.eventName || null,
-          roundNum: oddsEvt?.roundNum || null,
+          roundNum: golfRoundNum ?? oddsEvt?.roundNum ?? null,
+          matchupType: golfMatchupType ?? oddsEvt?.matchupType ?? null,
         };
       }
     }
@@ -1272,7 +1290,19 @@ async function resolveUnknownLine(rfqLeg) {
           }
 
           const pxTime = event.scheduled || null;
-          const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxTime);
+          // Golf matchups: route through the round-aware accessor so we
+          // don't confuse a round RFQ with a tournament matchup.
+          let oddsEvt;
+          let golfRoundNum = null;
+          let golfMatchupType = null;
+          if (sportKey === 'golf_matchups') {
+            const nameRoundMatch = /\bR(?:ound\s*)?([1-4])\b/i.exec(event.name || '');
+            golfRoundNum = nameRoundMatch ? parseInt(nameRoundMatch[1], 10) : null;
+            golfMatchupType = golfRoundNum ? 'round' : 'tournament';
+            oddsEvt = oddsFeed.getGolfMatchupEvent(matchedHome, matchedAway, golfRoundNum);
+          } else {
+            oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxTime);
+          }
           // PX scheduled is authoritative; odds cache is unreliable (midnight UTC placeholder).
           const startTime = event.scheduled || oddsEvt?.commenceTime || null;
 
@@ -1308,7 +1338,8 @@ async function resolveUnknownLine(rfqLeg) {
             onDemand: true,
             // Golf-specific metadata from DataGolf cache
             tournamentName: oddsEvt?.eventName || null,
-            roundNum: oddsEvt?.roundNum || null,
+            roundNum: golfRoundNum ?? oddsEvt?.roundNum ?? null,
+            matchupType: golfMatchupType ?? oddsEvt?.matchupType ?? null,
           };
           break;
         }

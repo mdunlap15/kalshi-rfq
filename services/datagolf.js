@@ -184,6 +184,7 @@ async function fetchGolfMatchupsCache() {
           commenceTime: null,
           eventName: matchup.eventName,
           roundNum: matchup.roundNum,
+          matchupType: 'round',
           markets: matchup.markets,
         });
 
@@ -195,6 +196,7 @@ async function fetchGolfMatchupsCache() {
           commenceTime: null,
           eventName: matchup.eventName,
           roundNum: matchup.roundNum,
+          matchupType: 'round',
           markets: {
             h2h: {
               home: matchup.markets.h2h.away, // swapped
@@ -223,6 +225,8 @@ async function fetchGolfMatchupsCache() {
           awayTeam: matchup.awayTeam,
           commenceTime: null,
           eventName: matchup.eventName,
+          roundNum: null,
+          matchupType: 'tournament',
           markets: matchup.markets,
         });
         if (!parsed[keyBA]) parsed[keyBA] = [];
@@ -231,6 +235,8 @@ async function fetchGolfMatchupsCache() {
           awayTeam: matchup.homeTeam,
           commenceTime: null,
           eventName: matchup.eventName,
+          roundNum: null,
+          matchupType: 'tournament',
           markets: {
             h2h: {
               home: matchup.markets.h2h.away,

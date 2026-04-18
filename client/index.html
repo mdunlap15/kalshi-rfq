@@ -3609,6 +3609,8 @@
     }
 
     el.innerHTML = html;
+    // Restore any detail-table sort the user set before this re-render.
+    if (window.reapplyInlineTableSorts) window.reapplyInlineTableSorts();
   }
 
   // -----------------------------------------------------------------------
@@ -4192,6 +4194,8 @@
     }
 
     el.innerHTML = html;
+    // Restore any detail-table sort the user set before this re-render.
+    if (window.reapplyInlineTableSorts) window.reapplyInlineTableSorts();
   }
 
   // -----------------------------------------------------------------------
@@ -4493,49 +4497,86 @@
     else expandedRows.delete(id);
   }
 
-  // Generic in-place sorter for the expandable detail tables inside
-  // Team Exposure / Game Exposure rows. Called from <th onclick=...>
-  // with the clicked element + column index + whether to parse as a
-  // number. Direction toggles on repeat clicks. Stops propagation so
-  // clicking a header doesn't collapse the parent detail row.
-  window.sortInlineTable = function(ev, th, colIdx, asNumber) {
-    if (ev) { ev.stopPropagation(); ev.preventDefault(); }
-    const table = th.closest('table');
+  // Persistent sort state for the expandable detail tables inside
+  // Team Exposure / Game Exposure rows. Keyed by the parent detail-row
+  // id so that state survives auto-refresh (which rebuilds the HTML and
+  // destroys DOM dataset). After each Team/Game Exposure render,
+  // reapplyInlineTableSorts() walks saved state and re-sorts each
+  // still-existing table in place.
+  window._inlineTableSort = {};
+
+  // Read a cell value for sort comparison. asNumber strips $ and % and
+  // pulls the first numeric substring; otherwise date-looking strings
+  // parse to epoch ms, falling back to lowercase string compare.
+  function _inlineCellValue(cell, asNumber) {
+    if (!cell) return asNumber ? -Infinity : '';
+    const text = cell.textContent || '';
+    if (asNumber) {
+      const m = text.replace(/[\$,%]/g, '').match(/-?\d+(\.\d+)?/);
+      return m ? parseFloat(m[0]) : -Infinity;
+    }
+    const t = Date.parse(text);
+    if (!isNaN(t) && /\d{1,2}[\/\-]\d{1,2}/.test(text)) return t;
+    return text.toLowerCase();
+  }
+
+  // Core sort — reorders rows in place and paints the arrow on the
+  // selected header. Does NOT flip direction; the flip is decided by
+  // the click handler and recorded in _inlineTableSort.
+  function _applyInlineSort(table, colIdx, asNumber, dir) {
     if (!table || !table.rows.length) return;
     const headerRow = table.rows[0];
-    const curDir = th.dataset.sortDir === 'asc' ? 'desc' : 'asc';
     for (const h of headerRow.cells) {
       h.dataset.sortDir = '';
       const a = h.querySelector('.sort-arrow');
       if (a) a.remove();
     }
-    th.dataset.sortDir = curDir;
-    const arrow = document.createElement('span');
-    arrow.className = 'sort-arrow';
-    arrow.textContent = curDir === 'asc' ? ' \u25B2' : ' \u25BC';
-    arrow.style.cssText = 'color:var(--accent); font-size:9px; margin-left:2px;';
-    th.appendChild(arrow);
-    const getVal = (row) => {
-      const cell = row.cells[colIdx];
-      if (!cell) return asNumber ? -Infinity : '';
-      const text = cell.textContent || '';
-      if (asNumber) {
-        const m = text.replace(/[\$,%]/g, '').match(/-?\d+(\.\d+)?/);
-        return m ? parseFloat(m[0]) : -Infinity;
-      }
-      const t = Date.parse(text);
-      if (!isNaN(t) && /\d{1,2}[\/\-]\d{1,2}/.test(text)) return t;
-      return text.toLowerCase();
-    };
+    const th = headerRow.cells[colIdx];
+    if (th) {
+      th.dataset.sortDir = dir;
+      const arrow = document.createElement('span');
+      arrow.className = 'sort-arrow';
+      arrow.textContent = dir === 'asc' ? ' \u25B2' : ' \u25BC';
+      arrow.style.cssText = 'color:var(--accent); font-size:9px; margin-left:2px;';
+      th.appendChild(arrow);
+    }
     const rows = Array.from(table.rows).slice(1);
     rows.sort((a, b) => {
-      const va = getVal(a), vb = getVal(b);
+      const va = _inlineCellValue(a.cells[colIdx], asNumber);
+      const vb = _inlineCellValue(b.cells[colIdx], asNumber);
       if (va === vb) return 0;
-      return (va < vb ? -1 : 1) * (curDir === 'asc' ? 1 : -1);
+      return (va < vb ? -1 : 1) * (dir === 'asc' ? 1 : -1);
     });
     const parent = rows[0]?.parentNode;
     if (!parent) return;
     for (const r of rows) parent.appendChild(r);
+  }
+
+  // Click handler — toggles direction, saves to _inlineTableSort
+  // keyed on the enclosing detail-row id so it survives re-render.
+  window.sortInlineTable = function(ev, th, colIdx, asNumber) {
+    if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+    const table = th.closest('table');
+    if (!table) return;
+    const detailRow = table.closest('tr[id]');
+    const key = detailRow ? detailRow.id : null;
+    const prev = key ? window._inlineTableSort[key] : null;
+    const dir = (prev && prev.colIdx === colIdx && prev.dir === 'asc') ? 'desc' : 'asc';
+    if (key) window._inlineTableSort[key] = { colIdx, asNumber, dir };
+    _applyInlineSort(table, colIdx, asNumber, dir);
+  };
+
+  // Re-apply saved sorts after a re-render so auto-refresh doesn't
+  // reset ordering. Called at the tail of renderTeamExposure and
+  // renderGameExposure.
+  window.reapplyInlineTableSorts = function() {
+    for (const [rowId, st] of Object.entries(window._inlineTableSort || {})) {
+      const detailRow = document.getElementById(rowId);
+      if (!detailRow) continue;
+      const table = detailRow.querySelector('table');
+      if (!table) continue;
+      _applyInlineSort(table, st.colIdx, st.asNumber, st.dir);
+    }
   };
 
   // Per-day sort handler for Daily Volume parlay-detail tables. Clicking a
@@ -5997,7 +6038,17 @@
         // 'first_5_innings_*' / '*_f5' / 'first_half_*' / '*_h1'.
         const isF5 = /first_5|first_five|_f5\b/i.test(mkt);
         const isH1 = /first_half|1st_half|_h1\b/i.test(mkt);
-        const periodTag = isF5 ? 'F5 ' : isH1 ? 'H1 ' : '';
+        // Golf matchup round/tournament tag — "R1 " for round_matchups,
+        // "Tourn " for tournament_matchups. Makes it impossible to
+        // confuse a round-specific leg with a full-tournament matchup.
+        const sportStr = (l.sport || l.oddsApiSport || '').toString();
+        const isGolfMatchup = /golf/i.test(sportStr) && /matchup/i.test(sportStr);
+        let golfTag = '';
+        if (isGolfMatchup) {
+          if (l.roundNum) golfTag = 'R' + l.roundNum + ' ';
+          else if (l.matchupType === 'tournament') golfTag = 'Tourn ';
+        }
+        const periodTag = isF5 ? 'F5 ' : isH1 ? 'H1 ' : golfTag;
         // Bare over/under legs (F5 totals, MMA Total Rounds, etc.) arrive
         // with name='Over' and no game context. Build 'AWAY @ HOME side line'
         // using the leg's homeTeam/awayTeam fields so the row title actually
@@ -8740,18 +8791,35 @@
 
       // Golf matchups: append opponent + event + round context so the
       // display answers "who is this golfer playing against, in what
-      // tournament, which round?"
+      // tournament, which round/tournament-long?"
       if (l.sport === 'golf_matchups') {
         const self = l.team || l.teamName || '';
         // The opponent is whichever of homeTeam/awayTeam isn't the selection
         const opponent = (l.homeTeam && l.homeTeam !== self) ? l.homeTeam
                        : (l.awayTeam && l.awayTeam !== self) ? l.awayTeam
                        : null;
-        const rounds = l.roundNum != null ? ('R' + l.roundNum) : '';
-        const tourn = l.tournamentName ? (rounds ? rounds + ' ' + l.tournamentName : l.tournamentName) : rounds;
+        // Round/tournament tag. Prefer l.roundNum (server-side, from line
+        // seeding); fall back to l.matchupType. Always display one of
+        // R1/R2/R3/R4 or "Tournament" so the leg can never be read as
+        // "generic matchup" — confusing those has direct pricing impact.
+        let scope = '';
+        if (l.roundNum) scope = 'R' + l.roundNum;
+        else if (l.matchupType === 'tournament') scope = 'Tournament';
+        else if (l.matchupType === 'round') scope = 'Round';
+        const tourn = l.tournamentName
+          ? (scope ? scope + ' ' + l.tournamentName : l.tournamentName)
+          : scope;
         const ctx = (opponent ? ('vs ' + opponent) : '') + (tourn ? (opponent ? ' · ' + tourn : tourn) : '');
         if (ctx) {
-          teamLabel += ' <span style="color:var(--text3); font-size:10px;">' + ctx + '</span>';
+          const scopeColor = scope === 'Tournament' ? 'var(--purple)' : 'var(--accent)';
+          // Bold + color the scope prefix so it reads first at a glance.
+          const ctxHtml = (opponent ? ('vs ' + escapeHtml(opponent)) : '')
+            + (tourn
+                ? ((opponent ? ' · ' : '')
+                   + '<span style="color:' + scopeColor + '; font-weight:600;">' + escapeHtml(scope) + '</span>'
+                   + (l.tournamentName ? ' ' + escapeHtml(l.tournamentName) : ''))
+                : '');
+          teamLabel += ' <span style="color:var(--text3); font-size:10px;">' + ctxHtml + '</span>';
         }
       }
 
