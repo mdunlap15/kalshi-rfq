@@ -28,7 +28,9 @@ const SPORT_CONFIGS = {
   },
   nhl: {
     url: 'https://sportsbook.draftkings.com/leagues/hockey/nhl?category=series-props&subcategory=winner',
-    subcategoryId: '18082',
+    // NHL uses a different subcategoryId than NBA (18082) despite the
+    // same URL layout. Probed live: 8 series return under 17803.
+    subcategoryId: '17803',
   },
 };
 
