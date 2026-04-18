@@ -366,13 +366,14 @@ async function startup() {
   // boot and refresh every 10 min. Pricer's getSeriesFairProb() reads
   // from this cache synchronously via dkScraper.lookupSeriesFairProb().
   (async () => {
-    for (const sport of ['nba', 'nhl']) {
-      try {
-        await dkScraper.fetchSeriesWinners(sport);
-      } catch (err) {
+    // Run NBA + NHL series pre-warm in parallel to halve the cold-cache
+    // window at boot. Previously serial — when NBA's Puppeteer fetch ran
+    // long, NHL series RFQs arriving early got a "no fair value" decline.
+    await Promise.all(['nba', 'nhl'].map(sport =>
+      dkScraper.fetchSeriesWinners(sport).catch(err => {
         log.warn('DkScraper', `Initial ${sport.toUpperCase()} fetch failed: ${err.message}`);
-      }
-    }
+      })
+    ));
     // Prime MMA cache + merge into oddsCache so line-manager picks up
     // UFC Fight Night fights The Odds API doesn't carry.
     try {
@@ -383,13 +384,11 @@ async function startup() {
     }
   })();
   setInterval(async () => {
-    for (const sport of ['nba', 'nhl']) {
-      try {
-        await dkScraper.fetchSeriesWinners(sport, { force: true });
-      } catch (err) {
+    await Promise.all(['nba', 'nhl'].map(sport =>
+      dkScraper.fetchSeriesWinners(sport, { force: true }).catch(err => {
         log.warn('DkScraper', `Periodic ${sport.toUpperCase()} refresh failed: ${err.message}`);
-      }
-    }
+      })
+    ));
     try {
       await dkScraper.fetchMmaFightOdds({ force: true });
       await oddsFeed.mergeDkMmaFights();
