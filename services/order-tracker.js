@@ -3657,17 +3657,59 @@ async function reconcileGhostConfirmed(px) {
   }
 
   let checked = 0, ghostsFound = 0, settledFound = 0, orderUuidFilledIn = 0;
+  // Phantom-flag age threshold. PX's /parlay/sp/orders/ is paginated and
+  // server-side-capped (observed: ~475 rows returned for limit=1000), so
+  // absence from a single fetch is NOT reliable evidence of a ghost —
+  // recent real confirmations were being misclassified, hiding $20K+ of
+  // real deployed risk. Only flag phantom when the order is genuinely
+  // old: any real fill should have settled (and been removed from the
+  // 'confirmed' set) well within this window.
+  const PHANTOM_MIN_AGE_MS = 48 * 60 * 60 * 1000; // 48h
   const phantomIds = [];
+  let autoCleared = 0;
   for (const order of Object.values(orders)) {
     if (order.status !== 'confirmed') continue;
     // Skip very-fresh confirmations — give the finalize event time to arrive.
     if (order.confirmedAt && (Date.now() - new Date(order.confirmedAt).getTime()) < 60 * 1000) continue;
     checked++;
+    const ageMs = order.confirmedAt ? (Date.now() - new Date(order.confirmedAt).getTime()) : Infinity;
+    const wasPhantom = !!(order.meta && order.meta.phantom);
+    // Un-flag any previously-phantom order that is still within the
+    // grace window. The prior version of this function over-flagged
+    // under truncated PX responses; this step recovers DB rows that
+    // were incorrectly marked in past runs.
+    if (wasPhantom && ageMs < PHANTOM_MIN_AGE_MS) {
+      delete order.meta.phantom;
+      delete order.meta.phantomReason;
+      delete order.meta.phantomMarkedAt;
+      autoCleared++;
+      db.saveOrder(order).catch(() => {});
+    }
 
     if (order.orderUuid) {
       const px = pxByUuid[order.orderUuid];
-      if (!px) {
-        // Our tracker has an orderUuid that PX doesn't recognize. Mark phantom.
+      if (px) {
+        // PX knows this order. Auto-clear any prior phantom flag.
+        if (wasPhantom) {
+          delete order.meta.phantom;
+          delete order.meta.phantomReason;
+          delete order.meta.phantomMarkedAt;
+          autoCleared++;
+          db.saveOrder(order).catch(() => {});
+        }
+        // If PX shows it's settled/voided, demote our copy.
+        const pxStatus = (px.status || '').toLowerCase();
+        if (pxStatus && pxStatus !== 'confirmed' && pxStatus !== 'matched' && pxStatus !== 'pending') {
+          log.info('GhostReconcile', `PX says ${order.parlayId.substring(0,8)} is '${pxStatus}' but our tracker has 'confirmed' — demoting`);
+          settledFound++;
+          order.meta = order.meta || {};
+          order.meta.pxStatusMismatch = pxStatus;
+          order.meta.pxStatusMismatchAt = new Date().toISOString();
+          db.saveOrder(order).catch(() => {});
+        }
+      } else if (ageMs >= PHANTOM_MIN_AGE_MS) {
+        // PX's paginated list didn't return this order AND it's older
+        // than the grace window. Now safe to flag.
         order.meta = order.meta || {};
         order.meta.phantom = true;
         order.meta.phantomReason = 'orderUuid-not-in-px';
@@ -3675,19 +3717,9 @@ async function reconcileGhostConfirmed(px) {
         phantomIds.push(order.parlayId);
         ghostsFound++;
         db.saveOrder(order).catch(() => {});
-        continue;
       }
-      // PX knows this order. If PX shows it's settled/voided, demote our copy.
-      const pxStatus = (px.status || '').toLowerCase();
-      if (pxStatus && pxStatus !== 'confirmed' && pxStatus !== 'matched' && pxStatus !== 'pending') {
-        log.info('GhostReconcile', `PX says ${order.parlayId.substring(0,8)} is '${pxStatus}' but our tracker has 'confirmed' — demoting`);
-        settledFound++;
-        // Leave actual settlement-event handling to the normal path; just flag.
-        order.meta = order.meta || {};
-        order.meta.pxStatusMismatch = pxStatus;
-        order.meta.pxStatusMismatchAt = new Date().toISOString();
-        db.saveOrder(order).catch(() => {});
-      }
+      // else: absent from PX list but still within grace window — do
+      // nothing. Don't flag, don't clear an existing flag.
     } else {
       // No orderUuid yet — try to fill in from PX by parlayId match.
       const candidates = pxByParlayId[order.parlayId] || [];
@@ -3697,12 +3729,20 @@ async function reconcileGhostConfirmed(px) {
           order.orderUuid = pxMatch.order_uuid;
           ordersByUuid[pxMatch.order_uuid] = order.parlayId;
           orderUuidFilledIn++;
+          // Found in PX — also auto-clear any stale phantom flag.
+          if (wasPhantom) {
+            delete order.meta.phantom;
+            delete order.meta.phantomReason;
+            delete order.meta.phantomMarkedAt;
+            autoCleared++;
+          }
           db.saveOrder(order).catch(() => {});
         }
         continue;
       }
-      // No match at all. If confirmedAt > 10 min ago it's a phantom.
-      if (order.confirmedAt && (Date.now() - new Date(order.confirmedAt).getTime()) > 10 * 60 * 1000) {
+      // No match at all. Only flag phantom if order is beyond grace
+      // window — same rationale as UUID branch above.
+      if (ageMs >= PHANTOM_MIN_AGE_MS) {
         order.meta = order.meta || {};
         order.meta.phantom = true;
         order.meta.phantomReason = 'no-uuid-and-no-px-match';
@@ -3714,8 +3754,8 @@ async function reconcileGhostConfirmed(px) {
     }
   }
   const elapsedMs = Date.now() - startedAt;
-  log.info('GhostReconcile', `Checked ${checked} confirmed orders in ${elapsedMs}ms — ghosts: ${ghostsFound}, orderUuids filled in: ${orderUuidFilledIn}, PX-status-mismatches: ${settledFound}`);
-  return { checked, ghostsFound, orderUuidFilledIn, settledFound, phantomIds, elapsedMs };
+  log.info('GhostReconcile', `Checked ${checked} confirmed orders in ${elapsedMs}ms — ghosts: ${ghostsFound}, auto-cleared phantoms: ${autoCleared}, orderUuids filled in: ${orderUuidFilledIn}, PX-status-mismatches: ${settledFound}`);
+  return { checked, ghostsFound, autoCleared, orderUuidFilledIn, settledFound, phantomIds, elapsedMs };
 }
 
 module.exports = {
