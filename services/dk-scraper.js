@@ -16,11 +16,25 @@ const log = require('./logger');
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const NAV_TIMEOUT_MS = 60000;
 const POST_NAV_WAIT_MS = 10000;
-const TARGET_URL = 'https://sportsbook.draftkings.com/leagues/basketball/nba?category=series-props&subcategory=winner';
-const SUBCATEGORY_ID = '18082';
 
-let cache = null; // { at, data }
-let inFlight = null;
+// DK sport-specific config. Both NBA and NHL playoffs use the same
+// series-props / winner subcategory layout; only the URL slug differs.
+// The subcategoryId in the intercepted XHR is the same value for both
+// (DK reuses it across sports) — we key the capture filter on the URL.
+const SPORT_CONFIGS = {
+  nba: {
+    url: 'https://sportsbook.draftkings.com/leagues/basketball/nba?category=series-props&subcategory=winner',
+    subcategoryId: '18082',
+  },
+  nhl: {
+    url: 'https://sportsbook.draftkings.com/leagues/hockey/nhl?category=series-props&subcategory=winner',
+    subcategoryId: '18082',
+  },
+};
+
+// Per-sport cache & in-flight dedupe.
+const cacheBySport = {}; // sport -> { at, data }
+const inFlightBySport = {};
 
 let _puppeteer = null;
 function puppeteer() {
@@ -42,10 +56,14 @@ function puppeteer() {
  *     }, ...]
  *   }
  */
-async function fetchNbaSeriesWinners({ force = false } = {}) {
+async function fetchSeriesWinners(sport, { force = false } = {}) {
+  const cfg = SPORT_CONFIGS[sport];
+  if (!cfg) throw new Error(`Unknown sport '${sport}' — supported: ${Object.keys(SPORT_CONFIGS).join(', ')}`);
+  const cache = cacheBySport[sport];
   if (!force && cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.data;
-  if (inFlight) return inFlight;
-  inFlight = (async () => {
+  if (inFlightBySport[sport]) return inFlightBySport[sport];
+
+  inFlightBySport[sport] = (async () => {
     const startedAt = Date.now();
     const browser = await puppeteer().launch({
       headless: true,
@@ -65,7 +83,7 @@ async function fetchNbaSeriesWinners({ force = false } = {}) {
       page.on('response', async (resp) => {
         const url = resp.url();
         if (!url.includes('sportsbook-nash.draftkings.com')) return;
-        if (!url.includes(SUBCATEGORY_ID)) return;
+        if (!url.includes(cfg.subcategoryId)) return;
         try {
           const ct = resp.headers()['content-type'] || '';
           if (!ct.includes('json')) return;
@@ -74,21 +92,71 @@ async function fetchNbaSeriesWinners({ force = false } = {}) {
         } catch { /* ignore */ }
       });
 
-      await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+      await page.goto(cfg.url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
       await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
 
-      if (captured.length === 0) throw new Error('DK scraper: no series winner payload captured');
+      if (captured.length === 0) throw new Error(`DK scraper: no ${sport.toUpperCase()} series winner payload captured`);
 
       const parsed = parseSeriesData(captured[0]);
-      cache = { at: Date.now(), data: parsed };
-      log.info('DkScraper', `NBA series winners: ${parsed.series.length} series (${Date.now() - startedAt}ms)`);
+      parsed.sport = sport;
+      cacheBySport[sport] = { at: Date.now(), data: parsed };
+      log.info('DkScraper', `${sport.toUpperCase()} series winners: ${parsed.series.length} series (${Date.now() - startedAt}ms)`);
       return parsed;
     } finally {
       await browser.close();
-      inFlight = null;
+      delete inFlightBySport[sport];
     }
-  })().catch(err => { inFlight = null; throw err; });
-  return inFlight;
+  })().catch(err => { delete inFlightBySport[sport]; throw err; });
+  return inFlightBySport[sport];
+}
+
+// Back-compat alias for the existing /nba-series-prices endpoint.
+function fetchNbaSeriesWinners(opts) { return fetchSeriesWinners('nba', opts); }
+function fetchNhlSeriesWinners(opts) { return fetchSeriesWinners('nhl', opts); }
+
+/**
+ * Normalize a team name for robust matching across sources (PX's leg
+ * label like "Cleveland Cavaliers (Series)" vs DK's "CLE Cavaliers"
+ * vs odds-feed's "Cleveland Cavaliers"). Strips punctuation, casing,
+ * the "(Series)" suffix, and common prefix city abbreviations.
+ */
+function normalizeTeamName(name) {
+  if (!name) return '';
+  return String(name)
+    .replace(/\(series\)/ig, '')
+    .replace(/[.,]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Look up the de-vigged fair probability for a team's series winner,
+ * given a sport and a team name. Returns null if no series cache is
+ * warm or no match is found.
+ *
+ * Match strategies in order:
+ *   1) exact normalized equality
+ *   2) DK label (e.g. "CLE Cavaliers") contains the full PX name
+ *      (after stripping "(Series)") — rare but covers edge cases
+ *   3) last-N-words match (e.g. "Cavaliers" → "CLE Cavaliers")
+ */
+function lookupSeriesFairProb(sport, teamName) {
+  const cache = cacheBySport[sport];
+  if (!cache || !cache.data) return null;
+  const target = normalizeTeamName(teamName);
+  if (!target) return null;
+  const targetLast = target.split(' ').pop();
+  for (const s of cache.data.series) {
+    for (const t of s.teams) {
+      const candidate = normalizeTeamName(t.name);
+      if (candidate === target) return { fairProb: t.fairProb, decimalOdds: t.decimalOdds, americanOdds: t.americanOdds, source: 'dk', eventName: s.eventName };
+      if (candidate.endsWith(' ' + target) || target.endsWith(' ' + candidate)) return { fairProb: t.fairProb, decimalOdds: t.decimalOdds, americanOdds: t.americanOdds, source: 'dk', eventName: s.eventName };
+      const candLast = candidate.split(' ').pop();
+      if (candLast && candLast === targetLast) return { fairProb: t.fairProb, decimalOdds: t.decimalOdds, americanOdds: t.americanOdds, source: 'dk', eventName: s.eventName };
+    }
+  }
+  return null;
 }
 
 /**
@@ -118,10 +186,20 @@ function parseSeriesData(payload) {
         teams: [],
       };
     }
-    const decimal = parseFloat(sel.displayOdds?.decimal) || sel.trueOdds || null;
+    // Prefer trueOdds (full precision) over displayOdds.decimal (rounded
+    // to 2dp, which silently shifts american equivalents — e.g. true
+    // 1.1818 → DK shows −550, but display "1.18" naively converts to
+    // −556). trueOdds matches the american odds DK publishes.
+    const trueDec = typeof sel.trueOdds === 'number' ? sel.trueOdds : null;
+    const displayDec = parseFloat(sel.displayOdds?.decimal) || null;
+    const decimal = trueDec || displayDec;
+    const american = sel.displayOdds?.american
+      ? parseInt(String(sel.displayOdds.american).replace(/[−–—]/g, '-').replace(/[^\-0-9]/g, ''), 10)
+      : null;
     seriesByEvent[event.id].teams.push({
       name: sel.label,
       decimalOdds: decimal,
+      americanOdds: Number.isFinite(american) ? american : null,
       impliedProb: decimal && decimal > 0 ? 1 / decimal : null,
     });
   }
@@ -142,4 +220,11 @@ function parseSeriesData(payload) {
 
 function round(n, dp) { const f = Math.pow(10, dp); return Math.round(n * f) / f; }
 
-module.exports = { fetchNbaSeriesWinners, parseSeriesData };
+module.exports = {
+  fetchSeriesWinners,
+  fetchNbaSeriesWinners,
+  fetchNhlSeriesWinners,
+  parseSeriesData,
+  lookupSeriesFairProb,
+  normalizeTeamName,
+};

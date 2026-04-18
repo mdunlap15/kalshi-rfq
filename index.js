@@ -361,6 +361,29 @@ async function startup() {
   refreshDbPnL();
   setInterval(refreshDbPnL, 2 * 60 * 1000);
 
+  // Pre-warm DK series prices (NBA + NHL). Puppeteer takes ~15s per
+  // sport — too slow to run inline when an RFQ arrives — so fetch at
+  // boot and refresh every 10 min. Pricer's getSeriesFairProb() reads
+  // from this cache synchronously via dkScraper.lookupSeriesFairProb().
+  (async () => {
+    for (const sport of ['nba', 'nhl']) {
+      try {
+        await dkScraper.fetchSeriesWinners(sport);
+      } catch (err) {
+        log.warn('DkScraper', `Initial ${sport.toUpperCase()} fetch failed: ${err.message}`);
+      }
+    }
+  })();
+  setInterval(async () => {
+    for (const sport of ['nba', 'nhl']) {
+      try {
+        await dkScraper.fetchSeriesWinners(sport, { force: true });
+      } catch (err) {
+        log.warn('DkScraper', `Periodic ${sport.toUpperCase()} refresh failed: ${err.message}`);
+      }
+    }
+  }, 10 * 60 * 1000);
+
   // Initial balance fetch — timeout: 10s
   try {
     const bal = await withTimeout(() => px.fetchBalance(), 10000, 'Balance fetch');
@@ -819,12 +842,21 @@ function startStatusServer() {
   // net settlement P&L using ONLY PX's own status/stake/profit fields —
   // no tracker interpretation. Use this to reconcile against our
   // runningPnL when account-balance vs tracker-P&L disagree.
-  // DK-scraped NBA playoff series winner odds. Bypasses Akamai via
+  // DK-scraped playoff series winner odds. Bypasses Akamai via
   // Puppeteer (our feeds don't carry per-series markets).
   app.get('/nba-series-prices', async (req, res) => {
     try {
       const force = req.query.force === '1' || req.query.force === 'true';
       const data = await dkScraper.fetchNbaSeriesWinners({ force });
+      res.json({ ok: true, ...data });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+  app.get('/nhl-series-prices', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const data = await dkScraper.fetchNhlSeriesWinners({ force });
       res.json({ ok: true, ...data });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });

@@ -3,6 +3,26 @@ const log = require('./logger');
 const lineManager = require('./line-manager');
 const oddsFeed = require('./odds-feed');
 const orderTracker = require('./order-tracker');
+const dkScraper = require('./dk-scraper');
+
+/**
+ * Detect a series-winner leg and look up its fair probability from the
+ * DK scraper cache. PX sends these as moneyline legs with team names
+ * like "Cleveland Cavaliers (Series)" / "Edmonton Oilers (Series)",
+ * which don't match any odds-feed h2h market. Returns null if the leg
+ * isn't a series bet or the DK cache doesn't contain the team.
+ */
+function getSeriesFairProb(lineInfo) {
+  const teamName = lineInfo?.teamName || '';
+  if (!/\(series\)/i.test(teamName)) return null;
+  const sport = (lineInfo.oddsApiSport || lineInfo.sport || '').toLowerCase();
+  const sportKey = sport.includes('nba') || sport.includes('basketball') ? 'nba'
+                 : sport.includes('nhl') || sport.includes('icehockey') || sport.includes('hockey') ? 'nhl'
+                 : null;
+  if (!sportKey) return null;
+  const hit = dkScraper.lookupSeriesFairProb(sportKey, teamName);
+  return hit ? hit.fairProb : null;
+}
 
 /**
  * Convert decimal odds to American odds (integer).
@@ -174,6 +194,12 @@ async function priceParlay(legs) {
   // hits the Pinnacle supplement cache / Odds API. Running these in parallel caps
   // pricing time at a single worst-case fetch regardless of leg count.
   const fairProbPromises = legStates.map(s => {
+    // Series-winner legs: PX sends them as moneyline with team="Team (Series)".
+    // Our odds feeds don't carry series markets, so bypass oddsFeed and
+    // look up from the DK scraper cache (fetched out-of-band).
+    const seriesFair = getSeriesFairProb(s.lineInfo);
+    if (seriesFair != null) return Promise.resolve(seriesFair);
+
     if (s.lineInfo.isDNB) {
       // Draw-No-Bet is sync (derives from cached 3-way h2h).
       return Promise.resolve(oddsFeed.getDNBFairProb(
