@@ -113,7 +113,7 @@ function invalidateToken() {
 // GENERIC REQUEST WRAPPER
 // ---------------------------------------------------------------------------
 
-async function pxFetch(endpoint, method = 'GET', body = null, useBaseUrl = true, opts = {}) {
+async function pxFetch(endpoint, method = 'GET', body = null, useBaseUrl = true) {
   const token = await login();
   const url = useBaseUrl ? `${config.px.baseUrl}${endpoint}` : endpoint;
 
@@ -130,16 +130,6 @@ async function pxFetch(endpoint, method = 'GET', body = null, useBaseUrl = true,
   }
 
   const resp = await fetch(url, options);
-
-  // skipBodyParse: hot-path optimization for fire-and-forget-style submits
-  // where we don't read the response body. We still need to drain/cancel
-  // the body so undici releases the socket for keep-alive reuse, but we
-  // skip the JSON.parse() cost (2-5ms on submit responses under load).
-  // Errors still parse text for useful messaging.
-  if (opts.skipBodyParse && resp.status !== 401 && resp.ok) {
-    try { await resp.body?.cancel(); } catch {}
-    return { ok: true, status: resp.status };
-  }
 
   if (resp.status === 401) {
     // Token expired — try to get a fresh one and retry ONCE.
@@ -337,10 +327,8 @@ async function submitOffer(callbackUrl, parlayId, offers) {
   return pxFetch(callbackUrl, 'POST', {
     parlay_id: parlayId,
     offers,
-  }, false, { skipBodyParse: true }).then(data => {
-    // No log on success — every submit hit was logging the response body
-    // on the ACK path; keeping it silent removes parse + stringify +
-    // stdout overhead from the hot return path.
+  }, false).then(data => {
+    log.info('PX-Offer', `Response for ${parlayId}: ${JSON.stringify(data).substring(0, 300)}`);
     return data;
   }).catch(err => {
     log.error('PX-Offer', `Failed to submit offer for ${parlayId}: ${err.message}`);
