@@ -2961,6 +2961,40 @@ function startStatusServer() {
   // TEMPORARY: diagnose why tennis lines aren't registering despite
   // tennis events being in the odds cache. Returns PX's tennis event
   // list + current odds-cache teams + per-event registered status.
+  // TEMPORARY: probe The Odds API for MLB F5 markets to see which
+  // games actually have F5 h2h / spreads / totals vs missing.
+  app.get('/debug-oapi-mlb-f5', async (req, res) => {
+    const key = process.env.THE_ODDS_API_KEY;
+    if (!key) return res.status(500).json({ error: 'no key' });
+    const url = 'https://api.the-odds-api.com/v4/sports/baseball_mlb/odds'
+      + '?apiKey=' + key
+      + '&regions=us,eu'
+      + '&markets=h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings'
+      + '&bookmakers=pinnacle,draftkings,fanduel'
+      + '&oddsFormat=american';
+    try {
+      const r = await fetch(url);
+      const body = await r.json();
+      const summary = body.map(e => {
+        const mkTypes = {};
+        for (const b of (e.bookmakers || [])) {
+          for (const m of (b.markets || [])) {
+            if (!mkTypes[m.key]) mkTypes[m.key] = new Set();
+            mkTypes[m.key].add(b.key);
+          }
+        }
+        return {
+          home: e.home_team, away: e.away_team,
+          commenceTime: e.commence_time,
+          markets: Object.fromEntries(Object.entries(mkTypes).map(([k, v]) => [k, [...v]])),
+        };
+      });
+      res.json({ ok: true, status: r.status, eventCount: body.length, events: summary });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // TEMPORARY: dump raw PX market names/types for a given event so we
   // can see what PX actually publishes for series spread markets.
   app.get('/debug-px-markets', async (req, res) => {
