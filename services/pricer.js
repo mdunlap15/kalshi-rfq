@@ -13,14 +13,22 @@ const dkScraper = require('./dk-scraper');
  * isn't a series bet or the DK cache doesn't contain the team.
  */
 function getSeriesFairProb(lineInfo) {
+  // Trigger on either the tagged marketType (line-manager seed/virtual
+  // registration path) OR a "(Series)" suffix in the team name (raw
+  // PX labels that slipped through without retagging).
   const teamName = lineInfo?.teamName || '';
-  if (!/\(series\)/i.test(teamName)) return null;
+  const isSeries = lineInfo?.marketType === 'series_winner'
+    || lineInfo?.oddsApiMarket === 'series_winner'
+    || /\(series\)/i.test(teamName);
+  if (!isSeries) return null;
   const sport = (lineInfo.oddsApiSport || lineInfo.sport || '').toLowerCase();
   const sportKey = sport.includes('nba') || sport.includes('basketball') ? 'nba'
                  : sport.includes('nhl') || sport.includes('icehockey') || sport.includes('hockey') ? 'nhl'
                  : null;
   if (!sportKey) return null;
-  const hit = dkScraper.lookupSeriesFairProb(sportKey, teamName);
+  // Strip any "(Series)" suffix before the DK team-name match.
+  const bareTeam = teamName.replace(/\s*\(series\)\s*/ig, '').trim();
+  const hit = dkScraper.lookupSeriesFairProb(sportKey, bareTeam || teamName);
   return hit ? hit.fairProb : null;
 }
 

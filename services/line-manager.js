@@ -475,19 +475,29 @@ async function seedAllLines() {
       }
     }
 
+    // Series-winner events (NHL-style: a separate PX event named
+    // "Series Winner - X vs Y" rather than a sub-market of the game).
+    // We price these against the DK scraper cache, not the odds feed,
+    // so skip the odds-api match and use competitor names directly.
+    const isSeriesEvent = /^\s*series\s*winner\b/i.test(event.name || '');
     if (!matchedHome || !matchedAway) {
-      unmatchedEvents.push({
-        pxEvent: event.name,
-        pxHome: homeComp.name,
-        pxAway: awayComp.name,
-      });
-      continue;
+      if (isSeriesEvent) {
+        matchedHome = homeComp.name;
+        matchedAway = awayComp.name;
+      } else {
+        unmatchedEvents.push({
+          pxEvent: event.name,
+          pxHome: homeComp.name,
+          pxAway: awayComp.name,
+        });
+        continue;
+      }
     }
 
     // Verify this home/away pair exists as an actual Odds API event
     const pxScheduled = event.scheduled || null;
     const oddsEvent = matchedOddsEvent || oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxScheduled);
-    if (!oddsEvent) {
+    if (!oddsEvent && !isSeriesEvent) {
       const oddsEventReversed = oddsFeed.getEventMarkets(sportKey, matchedAway, matchedHome, pxScheduled);
       if (!oddsEventReversed) {
         unmatchedEvents.push({
@@ -538,11 +548,22 @@ async function seedAllLines() {
     // would always decline at price time with 'no odds data'.
     const isCombatSport = sportKey === 'mma_mixed_martial_arts' || sportKey === 'boxing_boxing';
 
+    // Series-winner markets are structurally 2-way moneylines (team vs
+    // team with decimal odds). They get priced from the DK scraper
+    // cache rather than the odds feed. Allow them through the seed
+    // filter when the market name contains "series winner".
+    const seriesWinnerNamePat = /\bseries\s*winner\b/i;
+
     const mainMarkets = markets.filter(m => {
+      const isSeriesMarket = seriesWinnerNamePat.test(m.name || '');
       const supportedBase = isCombatSport
         ? ['moneyline']
         : ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
       if (!supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type) && !FIRST_HALF_MARKET_TYPES.includes(m.type)) return false;
+      // Series markets bypass the sub-game/prop filter and the name-
+      // allowlist check. Still must be type=moneyline (single-leg team
+      // winner, not a prop compound).
+      if (isSeriesMarket) return m.type === 'moneyline';
       // Exclude anything matching half/quarter/prop patterns
       if (excludePatterns.test(m.name)) return false;
       // Allow F5 markets by name pattern
@@ -606,9 +627,15 @@ async function seedAllLines() {
       // PX labels the 2-way soccer ML market as "Moneyline (2 Way)".
       // Also catch explicit "Draw No Bet" / "DNB" / "Moneyline 2W" variants.
       const isDNB = market.type === 'moneyline' && /\b2\s*[\s\-_]?way\b|draw\s*no\s*bet|\bdnb\b|\b2w\b/i.test(market.name || '');
+      const isSeriesMarket = seriesWinnerNamePat.test(market.name || '');
 
       for (const sel of parsed) {
         totalLines++;
+        // Tag series-winner selections so downstream (pricer) can route
+        // them to the DK scraper cache instead of oddsFeed.
+        if (isSeriesMarket && sel.marketType === 'moneyline') {
+          sel.marketType = 'series_winner';
+        }
 
         // Per-selection bounds check for spread/total/team_total alt lines.
         // The market-level filter above accepts the market if ANY selection
@@ -625,7 +652,23 @@ async function seedAllLines() {
         let oddsApiSelection = null;
         let oddsApiMarket = MARKET_TYPE_MAP[sel.marketType];
 
-        if (sel.marketType === 'moneyline') {
+        if (sel.marketType === 'series_winner') {
+          // Series-winner: same team→home/away mapping as moneyline.
+          // Team names in PX selections sometimes carry a "(Series)"
+          // suffix (e.g. "Cleveland Cavaliers (Series)"); strip it
+          // before matching. Keep the suffix on the stored teamName
+          // so the pricer can recognize the leg type via name, too.
+          const cleanTeam = (sel.teamName || '').replace(/\s*\(series\)\s*/ig, '').trim();
+          if (matchTeamName(cleanTeam, [matchedHome])) {
+            oddsApiSelection = 'home';
+          } else if (matchTeamName(cleanTeam, [matchedAway])) {
+            oddsApiSelection = 'away';
+          }
+          // series_winner has no oddsApiMarket (not in MARKET_TYPE_MAP);
+          // set a sentinel so the !oddsApiMarket gate below doesn't
+          // reject it. Pricer skips oddsFeed for this marketType.
+          oddsApiMarket = 'series_winner';
+        } else if (sel.marketType === 'moneyline') {
           // Match team to home/away
           if (matchTeamName(sel.teamName, [matchedHome])) {
             oddsApiSelection = 'home';
@@ -906,18 +949,29 @@ async function resolveUnknownLine(rfqLeg) {
     }
   }
   if (!matchedHome || !matchedAway) {
-    // Log what we tried to match for debugging
-    const sportKeys = possibleSportKeys.join(',');
-    const pxHome = homeComp?.name || '?';
-    const pxAway = awayComp?.name || '?';
-    const oddsApiEvents = oddsFeed.getAllCachedEvents();
-    const sportsAvail = possibleSportKeys.map(k => {
-      const evts = oddsApiEvents.filter(e => e.sport === k);
-      return k + ':' + evts.length;
-    }).join(', ');
-    log.info('Lines', `Cannot resolve ${lineId}: no odds feed match for "${event.name}" (PX: ${pxHome} vs ${pxAway}, sports: [${sportsAvail}], keys: ${sportKeys})`);
-    resolveUnknownLine._lastFailure = { lineId, reason: 'no_odds_match', eventName: event.name, sport: event.sport || event.sportName, pxHome, pxAway, sportKeys, sportsAvail };
-    return null;
+    // Series-winner events (NHL-style separate PX event named
+    // "Series Winner - X vs Y") won't match odds-feed game events
+    // because no game event exists for just the series. Skip the
+    // match requirement and use competitor names directly — pricer
+    // will route this leg to the DK scraper cache.
+    if (/^\s*series\s*winner\b/i.test(event.name || '')) {
+      matchedHome = homeComp.name;
+      matchedAway = awayComp.name;
+      sportKey = possibleSportKeys[0];
+    } else {
+      // Log what we tried to match for debugging
+      const sportKeys = possibleSportKeys.join(',');
+      const pxHome = homeComp?.name || '?';
+      const pxAway = awayComp?.name || '?';
+      const oddsApiEvents = oddsFeed.getAllCachedEvents();
+      const sportsAvail = possibleSportKeys.map(k => {
+        const evts = oddsApiEvents.filter(e => e.sport === k);
+        return k + ':' + evts.length;
+      }).join(', ');
+      log.info('Lines', `Cannot resolve ${lineId}: no odds feed match for "${event.name}" (PX: ${pxHome} vs ${pxAway}, sports: [${sportsAvail}], keys: ${sportKeys})`);
+      resolveUnknownLine._lastFailure = { lineId, reason: 'no_odds_match', eventName: event.name, sport: event.sport || event.sportName, pxHome, pxAway, sportKeys, sportsAvail };
+      return null;
+    }
   }
 
   const promise = (async () => {
@@ -935,7 +989,12 @@ async function resolveUnknownLine(rfqLeg) {
 
       // First pass: find which market contains this line_id (any type)
       // so we can log unsupported market types for diagnostics.
-      const SUPPORTED_TYPES = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance', ...F5_MARKET_TYPES, ...FIRST_HALF_MARKET_TYPES];
+      const SUPPORTED_TYPES = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance', 'series_winner', ...F5_MARKET_TYPES, ...FIRST_HALF_MARKET_TYPES];
+      // Series winner markets are structurally moneylines but named
+      // "Series Winner". resolveUnknownLine compares market.type
+      // against SUPPORTED_TYPES for initial skip; for series markets
+      // we accept type='moneyline' and detect by name pattern below.
+      const seriesWinnerNamePat = /\bseries\s*winner\b/i;
       let unsupportedMarketInfo = null;
       for (const market of markets || []) {
         if (SUPPORTED_TYPES.includes(market.type)) continue;
@@ -1059,8 +1118,14 @@ async function resolveUnknownLine(rfqLeg) {
         // sel.line against the sport bounds and rejects only that one.
         const isF5Market = f5NamePat.test(market.name || '');
         const parsed = px.parseMarketSelections(market);
+        const isSeriesMarket = seriesWinnerNamePat.test(market.name || '');
         for (const sel of parsed) {
           if (sel.lineId !== lineId) continue;
+          // Retag series-winner moneyline selections so the pricer
+          // routes them to the DK scraper.
+          if (isSeriesMarket && sel.marketType === 'moneyline') {
+            sel.marketType = 'series_winner';
+          }
           // Per-selection bound check: rejects the specific out-of-range
           // alt line the RFQ asked about (e.g. Rangers -6.5) while leaving
           // siblings like Rangers -1.5 intact for future resolves.
@@ -1074,8 +1139,13 @@ async function resolveUnknownLine(rfqLeg) {
           }
           // Determine oddsApiSelection
           let oddsApiSelection = null;
-          const oddsApiMarket = MARKET_TYPE_MAP[sel.marketType];
-          if (sel.marketType === 'moneyline') {
+          let oddsApiMarket = MARKET_TYPE_MAP[sel.marketType];
+          if (sel.marketType === 'series_winner') {
+            const cleanTeam = (sel.teamName || '').replace(/\s*\(series\)\s*/ig, '').trim();
+            if (matchTeamName(cleanTeam, [matchedHome])) oddsApiSelection = 'home';
+            else if (matchTeamName(cleanTeam, [matchedAway])) oddsApiSelection = 'away';
+            oddsApiMarket = 'series_winner';
+          } else if (sel.marketType === 'moneyline') {
             if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
             else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
           } else if (sel.marketType === 'spread') {
