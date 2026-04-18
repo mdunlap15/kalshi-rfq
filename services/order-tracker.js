@@ -3638,7 +3638,12 @@ async function reconcileGhostConfirmed(px) {
   const startedAt = Date.now();
   let pxOrders;
   try {
-    pxOrders = await px.fetchOrders(1000);
+    // Pull all-history. PX's total order count in prod reached 2,151+
+    // (most 'rejected' — counter-offers we didn't take). limit=1000 only
+    // returned the 1000 most-recent, which cut off most of our older
+    // still-confirmed parlays so they never got reconciled. 10,000 covers
+    // growth headroom; fetchOrders short-circuits when PX returns fewer.
+    pxOrders = await px.fetchOrders(10000);
   } catch (err) {
     log.warn('GhostReconcile', `Could not fetch PX orders: ${err.message}`);
     return { checked: 0, ghostsFound: 0, settledFound: 0, err: err.message };
@@ -3697,16 +3702,43 @@ async function reconcileGhostConfirmed(px) {
           autoCleared++;
           db.saveOrder(order).catch(() => {});
         }
-        // If PX shows it's settled/voided, demote our copy.
+        // If PX shows it's settled/voided, demote our copy and — critically —
+        // run recordSettlement so tracker P&L, runningPnL, and the confirmed
+        // list all reflect reality. Previously we only set a flag, so
+        // losses silently accumulated as 'confirmed' (PX never emits
+        // order.matched for SP losses per Alec's event model).
         const pxStatus = (px.status || '').toLowerCase();
-        if (pxStatus && pxStatus !== 'confirmed' && pxStatus !== 'matched' && pxStatus !== 'pending') {
-          log.info('GhostReconcile', `PX says ${order.parlayId.substring(0,8)} is '${pxStatus}' but our tracker has 'confirmed' — demoting`);
+        const pxSettlement = (px.settlement_status || px.settlementStatus || '').toLowerCase();
+        if (pxStatus === 'settled' && (pxSettlement === 'won' || pxSettlement === 'lost' || pxSettlement === 'push')) {
+          const result = pxSettlement === 'push' ? 'push' : pxSettlement;
+          const pxProfit = px.profit != null ? Number(px.profit) : 0;
+          log.info('GhostReconcile', `PX settled ${order.parlayId.substring(0,8)} as ${result} (profit=${pxProfit}) — promoting tracker status`);
+          recordSettlement(order.orderUuid, result, pxProfit);
           settledFound++;
+        } else if (pxStatus === 'rejected' || pxStatus === 'failed') {
+          // Not a real fill on PX — scrub our confirmed status so it stops
+          // inflating Deployed and the Open Positions list.
+          log.info('GhostReconcile', `PX ${pxStatus} ${order.parlayId.substring(0,8)} — demoting from confirmed (never a real fill)`);
+          order.status = 'rejected';
+          order.meta = order.meta || {};
+          order.meta.pxRejectedOrFailed = pxStatus;
+          order.meta.pxRejectedAt = new Date().toISOString();
+          // Strip confirmedStake so Deployed and Open Positions ignore it
+          // (status='rejected' is filtered out of those views already, but
+          // clearing the stake makes the intent explicit).
+          db.saveOrder(order).catch(() => {});
+          settledFound++;
+        } else if (pxStatus && pxStatus !== 'confirmed' && pxStatus !== 'matched' && pxStatus !== 'pending' && pxStatus !== 'finalized') {
+          // Unknown PX status (e.g. 'voided' variants we don't handle) —
+          // flag for investigation but don't auto-demote.
+          log.info('GhostReconcile', `PX says ${order.parlayId.substring(0,8)} is '${pxStatus}' (settlement=${pxSettlement}) — flagging`);
           order.meta = order.meta || {};
           order.meta.pxStatusMismatch = pxStatus;
           order.meta.pxStatusMismatchAt = new Date().toISOString();
           db.saveOrder(order).catch(() => {});
         }
+        // pxStatus === 'finalized' WITHOUT settlement_status = still waiting
+        // for outcome → leave as 'confirmed' in our tracker.
       } else if (ageMs >= PHANTOM_MIN_AGE_MS) {
         // PX's paginated list didn't return this order AND it's older
         // than the grace window. Now safe to flag.
