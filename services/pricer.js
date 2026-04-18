@@ -51,6 +51,19 @@ function getSeriesFairProb(lineInfo) {
       return null;
     }
   }
+  // NBA heavy-favorite hard cap. Decline legs whose fair prob implies
+  // American odds stronger than the configured cap (default -1000). Our
+  // 2-way de-vig (even with favorite-share cap) can't recover the true
+  // shape of DK -2000+ books, and the $ impact of any residual error is
+  // outsized per offer.
+  if (sportKey === 'nba') {
+    const capOdds = config.pricing.nbaSeriesFavoriteCapAmericanOdds || -1000;
+    const capProb = capOdds < 0 ? (-capOdds) / (-capOdds + 100) : 100 / (capOdds + 100);
+    if (hit.fairProb >= capProb) {
+      log.info('Pricing', `NBA series favorite over cap — declining: ${teamName} fair ${hit.fairProb.toFixed(4)} >= cap ${capProb.toFixed(4)} (${capOdds})`);
+      return null;
+    }
+  }
   return hit.fairProb;
 }
 

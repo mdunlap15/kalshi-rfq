@@ -51,6 +51,15 @@ const config = {
     // baseVig + favorite ramp, so extreme favorites still pay more.
     // Default 0.05 (5%); tunable via VIG_SERIES_MIN env var.
     vigSeriesMin: parseFloat(process.env.VIG_SERIES_MIN) || 0.05,
+    // Hard cap on NBA series_winner favorite pricing. If our fair prob
+    // for an NBA series favorite exceeds this threshold (default 1000/1100
+    // = 0.9091, corresponding to American -1000), decline the leg rather
+    // than quote. Even with capped de-vig, a small error at these extremes
+    // has outsized $ impact per offer, and DK's posted line (-2000+) runs
+    // well beyond what our 2-way de-vig can ever recover. Tunable via
+    // NBA_SERIES_FAV_CAP_ODDS env var (in American odds, e.g. -1500 for
+    // looser cap, -800 for tighter).
+    nbaSeriesFavoriteCapAmericanOdds: parseInt(process.env.NBA_SERIES_FAV_CAP_ODDS) || -1000,
     // Cap the favorite side's share of the book's overround during
     // 2-way de-vig. Proportional de-vig (share = favImplied/sumImplied)
     // over-corrects heavy favorites — on DK -3000/+1300 it strips ~4pp
