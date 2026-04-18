@@ -884,6 +884,37 @@ function startStatusServer() {
       res.status(500).json({ ok: false, error: err.message });
     }
   });
+  // Series spread + total-games cache views. fetchSeriesMarkets warms
+  // all three (winner / spread / total-games) in one Puppeteer run, so
+  // these endpoints share the same cache and Puppeteer cost.
+  app.get('/nba-series-spreads', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const data = await dkScraper.fetchSeriesMarkets('nba', { force });
+      res.json({ ok: true, fetchedAt: data.fetchedAt, sport: data.sport, spreads: data.spreads });
+    } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  });
+  app.get('/nhl-series-spreads', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const data = await dkScraper.fetchSeriesMarkets('nhl', { force });
+      res.json({ ok: true, fetchedAt: data.fetchedAt, sport: data.sport, spreads: data.spreads });
+    } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  });
+  app.get('/nba-series-totals', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const data = await dkScraper.fetchSeriesMarkets('nba', { force });
+      res.json({ ok: true, fetchedAt: data.fetchedAt, sport: data.sport, totals: data.totals });
+    } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  });
+  app.get('/nhl-series-totals', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const data = await dkScraper.fetchSeriesMarkets('nhl', { force });
+      res.json({ ok: true, fetchedAt: data.fetchedAt, sport: data.sport, totals: data.totals });
+    } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  });
   app.get('/mma-fight-odds', async (req, res) => {
     try {
       const force = req.query.force === '1' || req.query.force === 'true';
@@ -2883,7 +2914,14 @@ function startStatusServer() {
   app.get('/debug-tennis-match', async (req, res) => {
     try {
       const pxEvents = await px.fetchSportEvents();
-      const tennisEvents = pxEvents.filter(e => (e.sport_name || '').toLowerCase() === 'tennis');
+      // Dump all distinct sport_name values PX returned so we can see
+      // if tennis is actually empty vs tagged under a different name.
+      const sportNameCounts = {};
+      for (const e of pxEvents) {
+        const n = e.sport_name || '(null)';
+        sportNameCounts[n] = (sportNameCounts[n] || 0) + 1;
+      }
+      const tennisEvents = pxEvents.filter(e => /tennis/i.test(e.sport_name || ''));
       const idx = lineManager.__debugGetLineIndex ? lineManager.__debugGetLineIndex() : {};
       const registeredByEvent = {};
       for (const v of Object.values(idx)) {
@@ -2902,6 +2940,8 @@ function startStatusServer() {
       }));
       res.json({
         ok: true,
+        pxTotalEvents: pxEvents.length,
+        pxSportNameCounts: sportNameCounts,
         pxTennisEventCount: tennisEvents.length,
         registeredEvents: Object.keys(registeredByEvent).length,
         oddsCachedCount: oddsCached.length,

@@ -22,23 +22,46 @@ const dkScraper = require('./dk-scraper');
 // next game yet = we should not quote".
 
 function getSeriesFairProb(lineInfo) {
-  // Trigger on either the tagged marketType (line-manager seed/virtual
-  // registration path) OR a "(Series)" suffix in the team name (raw
-  // PX labels that slipped through without retagging).
+  // Detect which series market this leg belongs to. marketType carries
+  // the line-manager tag for winner/spread/total; oddsApiMarket is a
+  // mirror. We also accept raw PX moneyline legs whose team name still
+  // carries a "(Series)" suffix (legacy path for any that slipped
+  // through the line-manager retag).
   const teamName = lineInfo?.teamName || '';
-  const isSeries = lineInfo?.marketType === 'series_winner'
-    || lineInfo?.oddsApiMarket === 'series_winner'
-    || /\(series\)/i.test(teamName);
-  if (!isSeries) return null;
+  const mt = lineInfo?.marketType;
+  const am = lineInfo?.oddsApiMarket;
+  const hasSeriesTeamSuffix = /\(series\)/i.test(teamName);
+  const isSeriesWinner = mt === 'series_winner' || am === 'series_winner' || (hasSeriesTeamSuffix && (mt === 'moneyline' || !mt));
+  const isSeriesSpread = mt === 'series_spread' || am === 'series_spread';
+  const isSeriesTotal  = mt === 'series_total'  || am === 'series_total';
+  if (!isSeriesWinner && !isSeriesSpread && !isSeriesTotal) return null;
+
   const sport = (lineInfo.oddsApiSport || lineInfo.sport || '').toLowerCase();
   const sportKey = sport.includes('nba') || sport.includes('basketball') ? 'nba'
                  : sport.includes('nhl') || sport.includes('icehockey') || sport.includes('hockey') ? 'nhl'
                  : null;
   if (!sportKey) return null;
-  // Strip any "(Series)" suffix before the DK team-name match.
   const bareTeam = teamName.replace(/\s*\(series\)\s*/ig, '').trim();
-  const hit = dkScraper.lookupSeriesFairProb(sportKey, bareTeam || teamName);
+
+  let hit = null;
+  if (isSeriesWinner) {
+    hit = dkScraper.lookupSeriesFairProb(sportKey, bareTeam || teamName);
+  } else if (isSeriesSpread) {
+    // PX stores spread line as signed (negative for favorite side).
+    // DK cache keys each team's leg by (team, |line|, '+'|'-').
+    const rawLine = lineInfo.line;
+    if (rawLine == null || !Number.isFinite(Number(rawLine))) return null;
+    const absLine = Math.abs(Number(rawLine));
+    const side = Number(rawLine) < 0 ? '-' : '+';
+    hit = dkScraper.lookupSeriesSpreadFairProb(sportKey, bareTeam || teamName, absLine, side);
+  } else if (isSeriesTotal) {
+    const rawLine = lineInfo.line;
+    if (rawLine == null || !Number.isFinite(Number(rawLine))) return null;
+    const side = lineInfo.oddsApiSelection || lineInfo.selection;
+    hit = dkScraper.lookupSeriesTotalFairProb(sportKey, lineInfo.homeTeam, lineInfo.awayTeam, Number(rawLine), side);
+  }
   if (!hit) return null;
+
   // In-play / cooldown guard: decline if the next game in this series
   // has already started and is still within the cooldown window. Our
   // cached DK odds are pre-game and would give a bettor material edge
@@ -47,20 +70,20 @@ function getSeriesFairProb(lineInfo) {
   if (hit.startTime) {
     const t = new Date(hit.startTime).getTime();
     if (Number.isFinite(t) && t <= Date.now()) {
-      log.debug('Pricing', `Series in-play decline: ${teamName} (startTime ${hit.startTime}, ${Math.round((Date.now()-t)/60000)}min ago — DK has not relisted for next game)`);
+      log.debug('Pricing', `Series in-play decline: ${teamName} ${mt || ''} (startTime ${hit.startTime}, ${Math.round((Date.now()-t)/60000)}min ago — DK has not relisted for next game)`);
       return null;
     }
   }
+
   // NBA heavy-favorite hard cap. Decline legs whose fair prob implies
-  // American odds stronger than the configured cap (default -1000). Our
-  // 2-way de-vig (even with favorite-share cap) can't recover the true
-  // shape of DK -2000+ books, and the $ impact of any residual error is
-  // outsized per offer.
-  if (sportKey === 'nba') {
+  // American odds stronger than the configured cap (default -1000).
+  // Applies to series_winner AND series_spread favorites. Totals don't
+  // have a "favorite" concept — over/under legs pass through.
+  if (sportKey === 'nba' && (isSeriesWinner || isSeriesSpread)) {
     const capOdds = config.pricing.nbaSeriesFavoriteCapAmericanOdds || -1000;
     const capProb = capOdds < 0 ? (-capOdds) / (-capOdds + 100) : 100 / (capOdds + 100);
     if (hit.fairProb >= capProb) {
-      log.info('Pricing', `NBA series favorite over cap — declining: ${teamName} fair ${hit.fairProb.toFixed(4)} >= cap ${capProb.toFixed(4)} (${capOdds})`);
+      log.info('Pricing', `NBA series favorite over cap — declining: ${teamName} ${mt || ''} fair ${hit.fairProb.toFixed(4)} >= cap ${capProb.toFixed(4)} (${capOdds})`);
       return null;
     }
   }
@@ -1077,6 +1100,20 @@ function shouldDecline(legs) {
       const otherMarket = entries.find(e => e.market !== 'team_total')?.market || 'other';
       log.info('Pricing', `Declined: team_total + ${otherMarket} on same game ${gameLabel}`);
       return { declined: true, reason: 'correlated legs', detail: `team_total + ${otherMarket} on same game: ${gameLabel}` };
+    }
+
+    // ---- SERIES: mirror single-game correlation rules ----
+    // Block highly-correlated pairs on the same series event. The
+    // duplicate-types check above already handles two series_winner /
+    // two series_spread / two series_total. Here we only need the
+    // cross-type cases.
+    //   BLOCK: series_winner + series_spread (both tied to outcome)
+    //   ALLOW: series_winner OR series_spread + series_total
+    const hasSeriesWinner = types.includes('series_winner');
+    const hasSeriesSpread = types.includes('series_spread');
+    if (hasSeriesWinner && hasSeriesSpread) {
+      log.info('Pricing', `Declined: series_winner + series_spread on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `series winner + series spread on same series: ${gameLabel}` };
     }
 
     // ---- 1ST HALF: block any H1 + full-game on same game ----

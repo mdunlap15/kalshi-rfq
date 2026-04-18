@@ -554,14 +554,21 @@ async function seedAllLines() {
     const isBoxingSport = sportKey === 'boxing_boxing';
     const isCombatSport = isBoxingSport; // only boxing keeps the ML-only restriction
 
-    // Series-winner markets are structurally 2-way moneylines (team vs
-    // team with decimal odds). They get priced from the DK scraper
-    // cache rather than the odds feed. Allow them through the seed
-    // filter when the market name contains "series winner".
+    // Series markets (winner/spread/total-games) are priced from the DK
+    // scraper cache rather than the odds feed. Allow them through the
+    // seed filter when the market name matches. PX uses its standard
+    // moneyline/spread/total types for these — we distinguish by name
+    // and retag marketType in the per-selection loop below.
     const seriesWinnerNamePat = /\bseries\s*winner\b/i;
+    const seriesSpreadNamePat = /\bseries\s*(spread|handicap)\b|\bseries\b[^.]*\bspread\b/i;
+    const seriesTotalNamePat  = /\bseries\s*total\b|\btotal\s*games\b|\bseries\b[^.]*\btotal\b/i;
 
     const mainMarkets = markets.filter(m => {
-      const isSeriesMarket = seriesWinnerNamePat.test(m.name || '');
+      const name = m.name || '';
+      const isSeriesWinner = seriesWinnerNamePat.test(name);
+      const isSeriesSpread = seriesSpreadNamePat.test(name);
+      const isSeriesTotal  = !isSeriesSpread && seriesTotalNamePat.test(name);
+      const isSeriesMarket = isSeriesWinner || isSeriesSpread || isSeriesTotal;
       const supportedBase = isCombatSport
         ? ['moneyline']
         : isMmaSport
@@ -569,9 +576,17 @@ async function seedAllLines() {
           : ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
       if (!supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type) && !FIRST_HALF_MARKET_TYPES.includes(m.type)) return false;
       // Series markets bypass the sub-game/prop filter and the name-
-      // allowlist check. Still must be type=moneyline (single-leg team
-      // winner, not a prop compound).
-      if (isSeriesMarket) return m.type === 'moneyline';
+      // allowlist + bounds checks. Each variant must match the
+      // corresponding PX market.type:
+      //   Series Winner      → type='moneyline'
+      //   Series Spread      → type='spread'
+      //   Series Total Games → type='total'
+      if (isSeriesMarket) {
+        if (isSeriesWinner && m.type === 'moneyline') return true;
+        if (isSeriesSpread && m.type === 'spread') return true;
+        if (isSeriesTotal  && m.type === 'total')  return true;
+        return false;
+      }
       // Exclude anything matching half/quarter/prop patterns
       if (excludePatterns.test(m.name)) return false;
       // Allow F5 markets by name pattern
@@ -635,14 +650,24 @@ async function seedAllLines() {
       // PX labels the 2-way soccer ML market as "Moneyline (2 Way)".
       // Also catch explicit "Draw No Bet" / "DNB" / "Moneyline 2W" variants.
       const isDNB = market.type === 'moneyline' && /\b2\s*[\s\-_]?way\b|draw\s*no\s*bet|\bdnb\b|\b2w\b/i.test(market.name || '');
-      const isSeriesMarket = seriesWinnerNamePat.test(market.name || '');
+      const mName = market.name || '';
+      const isSeriesWinnerMarket = seriesWinnerNamePat.test(mName);
+      const isSeriesSpreadMarket = seriesSpreadNamePat.test(mName);
+      const isSeriesTotalMarket  = !isSeriesSpreadMarket && seriesTotalNamePat.test(mName);
+      const isSeriesMarket = isSeriesWinnerMarket || isSeriesSpreadMarket || isSeriesTotalMarket;
 
       for (const sel of parsed) {
         totalLines++;
-        // Tag series-winner selections so downstream (pricer) can route
-        // them to the DK scraper cache instead of oddsFeed.
-        if (isSeriesMarket && sel.marketType === 'moneyline') {
+        // Tag series selections so downstream (pricer) routes them to
+        // the DK scraper cache instead of oddsFeed. Series markets are
+        // structurally identical to moneyline/spread/total but we use a
+        // distinct marketType so the pricer takes the DK path.
+        if (isSeriesWinnerMarket && sel.marketType === 'moneyline') {
           sel.marketType = 'series_winner';
+        } else if (isSeriesSpreadMarket && sel.marketType === 'spread') {
+          sel.marketType = 'series_spread';
+        } else if (isSeriesTotalMarket && sel.marketType === 'total') {
+          sel.marketType = 'series_total';
         }
 
         // Per-selection bounds check for spread/total/team_total alt lines.
@@ -651,8 +676,11 @@ async function seedAllLines() {
         // (e.g. Rangers -6.5 puck line) while keeping sibling in-range
         // alts registered. team_total uses permissive bounds (see
         // isValidFullGameLine) since their lines are naturally low.
+        // Series markets bypass entirely — series spread lines (±1.5, ±2.5
+        // games) are valid by definition, and series totals (5.5-7.5 games)
+        // fall far below full-game total bounds but are also valid.
         const selMarketType = ['spread', 'total', 'team_total'].includes(sel.marketType) ? sel.marketType : null;
-        if (selMarketType && !isValidFullGameLine(sportKey, selMarketType, sel.line)) {
+        if (selMarketType && !isSeriesMarket && !isValidFullGameLine(sportKey, selMarketType, sel.line)) {
           continue;
         }
 
@@ -676,6 +704,20 @@ async function seedAllLines() {
           // set a sentinel so the !oddsApiMarket gate below doesn't
           // reject it. Pricer skips oddsFeed for this marketType.
           oddsApiMarket = 'series_winner';
+        } else if (sel.marketType === 'series_spread') {
+          // Series-spread: team→home/away plus a signed line (PX stores
+          // negative for favorite, positive for underdog). Pricer uses
+          // teamName + line sign to query the DK scraper cache.
+          const cleanTeam = (sel.teamName || '').replace(/\s*\(series\)\s*/ig, '').trim();
+          if (matchTeamName(cleanTeam, [matchedHome])) oddsApiSelection = 'home';
+          else if (matchTeamName(cleanTeam, [matchedAway])) oddsApiSelection = 'away';
+          oddsApiMarket = 'series_spread';
+        } else if (sel.marketType === 'series_total') {
+          // Series-total: over/under on total games played in the series.
+          // Pricer uses home+away team names (from lineInfo) + line +
+          // over/under to query DK.
+          oddsApiSelection = sel.selection; // 'over' or 'under'
+          oddsApiMarket = 'series_total';
         } else if (sel.marketType === 'moneyline') {
           // Match team to home/away
           if (matchTeamName(sel.teamName, [matchedHome])) {
@@ -997,12 +1039,14 @@ async function resolveUnknownLine(rfqLeg) {
 
       // First pass: find which market contains this line_id (any type)
       // so we can log unsupported market types for diagnostics.
-      const SUPPORTED_TYPES = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance', 'series_winner', ...F5_MARKET_TYPES, ...FIRST_HALF_MARKET_TYPES];
-      // Series winner markets are structurally moneylines but named
-      // "Series Winner". resolveUnknownLine compares market.type
-      // against SUPPORTED_TYPES for initial skip; for series markets
-      // we accept type='moneyline' and detect by name pattern below.
+      const SUPPORTED_TYPES = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance', 'series_winner', 'series_spread', 'series_total', ...F5_MARKET_TYPES, ...FIRST_HALF_MARKET_TYPES];
+      // Series markets (winner/spread/total) are structurally
+      // moneyline/spread/total but named "Series Winner/Spread/Total
+      // Games". resolveUnknownLine accepts the regular PX types and
+      // detects by name pattern below.
       const seriesWinnerNamePat = /\bseries\s*winner\b/i;
+      const seriesSpreadNamePat = /\bseries\s*(spread|handicap)\b|\bseries\b[^.]*\bspread\b/i;
+      const seriesTotalNamePat  = /\bseries\s*total\b|\btotal\s*games\b|\bseries\b[^.]*\btotal\b/i;
       let unsupportedMarketInfo = null;
       for (const market of markets || []) {
         if (SUPPORTED_TYPES.includes(market.type)) continue;
@@ -1126,18 +1170,27 @@ async function resolveUnknownLine(rfqLeg) {
         // sel.line against the sport bounds and rejects only that one.
         const isF5Market = f5NamePat.test(market.name || '');
         const parsed = px.parseMarketSelections(market);
-        const isSeriesMarket = seriesWinnerNamePat.test(market.name || '');
+        const mName = market.name || '';
+        const isSeriesWinnerMarket = seriesWinnerNamePat.test(mName);
+        const isSeriesSpreadMarket = seriesSpreadNamePat.test(mName);
+        const isSeriesTotalMarket  = !isSeriesSpreadMarket && seriesTotalNamePat.test(mName);
+        const isSeriesMarket = isSeriesWinnerMarket || isSeriesSpreadMarket || isSeriesTotalMarket;
         for (const sel of parsed) {
           if (sel.lineId !== lineId) continue;
-          // Retag series-winner moneyline selections so the pricer
-          // routes them to the DK scraper.
-          if (isSeriesMarket && sel.marketType === 'moneyline') {
+          // Retag series selections so the pricer routes them to DK.
+          if (isSeriesWinnerMarket && sel.marketType === 'moneyline') {
             sel.marketType = 'series_winner';
+          } else if (isSeriesSpreadMarket && sel.marketType === 'spread') {
+            sel.marketType = 'series_spread';
+          } else if (isSeriesTotalMarket && sel.marketType === 'total') {
+            sel.marketType = 'series_total';
           }
           // Per-selection bound check: rejects the specific out-of-range
           // alt line the RFQ asked about (e.g. Rangers -6.5) while leaving
-          // siblings like Rangers -1.5 intact for future resolves.
-          if ((sel.marketType === 'total' || sel.marketType === 'spread') && !isF5Market && !isH1ByName) {
+          // siblings like Rangers -1.5 intact for future resolves. Series
+          // markets bypass — series spreads/totals intentionally use lines
+          // outside normal full-game bounds.
+          if ((sel.marketType === 'total' || sel.marketType === 'spread') && !isF5Market && !isH1ByName && !isSeriesMarket) {
             if (!isValidFullGameLine(sportKey, sel.marketType, sel.line)) {
               log.debug('Lines', `resolveUnknownLine: rejecting out-of-bounds selection ${sel.marketType} ${sel.line} for ${sportKey}: ${market.name}`);
               lineFoundInPxMarket = true; // Line exists in PX — block virtual registration
@@ -1153,6 +1206,14 @@ async function resolveUnknownLine(rfqLeg) {
             if (matchTeamName(cleanTeam, [matchedHome])) oddsApiSelection = 'home';
             else if (matchTeamName(cleanTeam, [matchedAway])) oddsApiSelection = 'away';
             oddsApiMarket = 'series_winner';
+          } else if (sel.marketType === 'series_spread') {
+            const cleanTeam = (sel.teamName || '').replace(/\s*\(series\)\s*/ig, '').trim();
+            if (matchTeamName(cleanTeam, [matchedHome])) oddsApiSelection = 'home';
+            else if (matchTeamName(cleanTeam, [matchedAway])) oddsApiSelection = 'away';
+            oddsApiMarket = 'series_spread';
+          } else if (sel.marketType === 'series_total') {
+            oddsApiSelection = sel.selection; // 'over' or 'under'
+            oddsApiMarket = 'series_total';
           } else if (sel.marketType === 'moneyline') {
             if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
             else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
