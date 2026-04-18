@@ -336,6 +336,11 @@ function lookupMmaFairProb(fighterName) {
       };
       if (cand === target) return base;
       if (cand.endsWith(' ' + target) || target.endsWith(' ' + cand)) return base;
+      // Prefix match — handles PX's "Robert Valentin" vs DK's full
+      // three-part "Robert Valentin Frey" (and symmetrically if DK
+      // dropped a middle name). Requires a space boundary so "John"
+      // doesn't match unrelated "Johnson".
+      if (cand.startsWith(target + ' ') || target.startsWith(cand + ' ')) return base;
       const candLast = cand.split(' ').pop();
       if (candLast && candLast === targetLast) return base;
     }
