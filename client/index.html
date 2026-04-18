@@ -5629,15 +5629,13 @@
 
     const html = `<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">
       <div class="stat-bar" style="gap:6px 18px;">
-        ${stat(pnlLabel, pnlStr, pnlCls, pnlTitle)}
-        ${netImpactStr ? stat('Net', netImpactStr, netImpactCls, 'Realized P&L − Open exposure = actual balance change vs starting bankroll') : ''}
-        ${stat('ROI', roiStr, roiCls, 'Realized P&L / total settled stake')}
-        ${stat('Active', active)}
+        ${stat('Balance', balanceStr, balanceCls, 'Total PX account balance — includes the Deployed amount')}
+        ${stat('Cash Available', cashFreeStr, cashFreeCls, 'Balance − Deployed = real cash free for new parlays')}
         ${stat('Deployed', portStr, portCls, 'Stake locked in open parlays (PX finalized/pending)')}
         ${stat('To Win', fmtDollar(totalToWin), 'positive')}
-        ${stat('Account Balance', balanceStr, balanceCls, 'Total PX account balance — includes the Deployed amount')}
-        ${stat('Cash to Deploy', cashFreeStr, cashFreeCls, 'Account Balance − Deployed = real cash free for new parlays')}
-        ${stat('Filled', confirmed)}
+        ${stat(pnlLabel, pnlStr, pnlCls, pnlTitle)}
+        ${stat('ROI', roiStr, roiCls, 'Realized P&L / total settled stake')}
+        ${stat('Open Parlays', confirmed)}
       </div>
     </div>`;
     for (const el of els) el.innerHTML = html;
