@@ -8642,7 +8642,12 @@
       const dkOdds = l.draftkingsOdds != null ? (l.draftkingsOdds >= 0 ? '+' : '') + l.draftkingsOdds : '-';
       const fairProbDisplay = l.displayFairProb || l.fairProb;
       const fairOdds = fairProbDisplay ? decimalToAmerican(1 / fairProbDisplay) : '-';
-      const myOdds = (l.fairProb && vig) ? decimalToAmerican(1 / applyOddsVig(l.fairProb, vig)) : fairOdds;
+      // bookPriceOverride legs (e.g. NBA series heavy favs past -500 FV)
+      // skip vig on the server — quote DK's book price directly. Display
+      // the actual quoted number here, not the ramp-vig recompute.
+      const myOdds = l.bookPriceOverride != null
+        ? decimalToAmerican(1 / l.bookPriceOverride)
+        : ((l.fairProb && vig) ? decimalToAmerican(1 / applyOddsVig(l.fairProb, vig)) : fairOdds);
 
       // Highlight legs that blocked us from quoting
       const isUnregBlocker = highlightUnregistered && l.wasUnregistered;
