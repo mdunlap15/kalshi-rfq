@@ -2236,6 +2236,125 @@ let _lastWarmStats = null;
  *
  * Runs with bounded concurrency so The Odds API isn't hammered.
  */
+// Sports where SharpAPI is the primary feed but occasionally returns
+// events without an h2h market (e.g. books haven't posted moneylines
+// yet even though spreads/totals are up). We backfill via The Odds
+// API on each refresh cycle so the pricer always has a moneyline to
+// quote against, at the cost of ~1 Odds API call per sport per cycle.
+const H2H_BACKFILL_SPORTS = new Set(['baseball_mlb', 'basketball_nba', 'icehockey_nhl']);
+
+async function backfillMissingH2h(sport) {
+  if (!H2H_BACKFILL_SPORTS.has(sport)) return null;
+  const cache = oddsCache[sport];
+  if (!cache || !cache.events) return null;
+
+  const missing = [];
+  for (const [key, entry] of Object.entries(cache.events)) {
+    const events = Array.isArray(entry) ? entry : [entry];
+    for (const ev of events) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      if (ev.markets && ev.markets.h2h && ev.markets.h2h.home && ev.markets.h2h.away) continue;
+      missing.push({ key, ev });
+    }
+  }
+  if (missing.length === 0) return { sport, missing: 0, filled: 0 };
+
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return { sport, missing: missing.length, filled: 0, err: 'no THE_ODDS_API_KEY' };
+
+  const oddsApiSport = PINNACLE_SPORT_MAP[sport] || sport;
+  const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
+    + `?apiKey=${theOddsApiKey}&regions=us,eu&markets=h2h&oddsFormat=american`;
+
+  let filled = 0;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const text = await resp.text();
+      return { sport, missing: missing.length, filled: 0, err: `The Odds API ${resp.status}: ${text.slice(0, 120)}` };
+    }
+    const apiEvents = await resp.json();
+
+    // Index apiEvents by normalized team-pair key (both directions).
+    const byKey = {};
+    for (const e of apiEvents) {
+      const k = normalizeEventKey(e.home_team, e.away_team);
+      const kRev = normalizeEventKey(e.away_team, e.home_team);
+      byKey[k] = e;
+      byKey[kRev] = e;
+    }
+
+    for (const { ev } of missing) {
+      const apiEvent = byKey[normalizeEventKey(ev.homeTeam, ev.awayTeam)]
+                   || byKey[normalizeEventKey(ev.awayTeam, ev.homeTeam)];
+      if (!apiEvent) continue;
+
+      // Collect h2h pairs from every book.
+      const mlPairs = [];
+      for (const book of (apiEvent.bookmakers || [])) {
+        const mk = book.markets?.find(m => m.key === 'h2h');
+        if (!mk) continue;
+        const home = mk.outcomes?.find(o => o.name === apiEvent.home_team);
+        const away = mk.outcomes?.find(o => o.name === apiEvent.away_team);
+        if (home && away) {
+          mlPairs.push({
+            book: book.key,
+            home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price },
+            away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price },
+          });
+        }
+      }
+      if (mlPairs.length === 0) continue;
+
+      // Align apiEvent home/away to OUR event's home/away orientation —
+      // the odds-api sometimes swaps sides vs SharpAPI. If swapped, flip.
+      const apiHomeMatchesOurHome = apiEvent.home_team.toLowerCase().includes(ev.homeTeam.toLowerCase().split(' ').pop())
+                                  || ev.homeTeam.toLowerCase().includes(apiEvent.home_team.toLowerCase().split(' ').pop());
+      const getOur = (pairSide) => apiHomeMatchesOurHome ? pairSide : (pairSide === 'home' ? 'away' : 'home');
+
+      const fairHome = [], fairAway = [];
+      for (const p of mlPairs) {
+        const [fh, fa] = deVig2Way(p.home.odds_probability, p.away.odds_probability);
+        fairHome.push(apiHomeMatchesOurHome ? fh : fa);
+        fairAway.push(apiHomeMatchesOurHome ? fa : fh);
+      }
+      const pinBook = mlPairs.find(p => p.book === 'pinnacle');
+      const fdBook = mlPairs.find(p => p.book === 'fanduel');
+      const dkBook = mlPairs.find(p => p.book === 'draftkings');
+      const dvH = avg(fairHome), dvA = avg(fairAway);
+
+      ev.markets = ev.markets || {};
+      ev.markets.h2h = {
+        home: {
+          rawOdds: apiHomeMatchesOurHome ? mlPairs[0].home.odds_american : mlPairs[0].away.odds_american,
+          impliedProb: apiHomeMatchesOurHome ? mlPairs[0].home.odds_probability : mlPairs[0].away.odds_probability,
+          fairProb: dvH,
+          displayFairProb: dvH,
+        },
+        away: {
+          rawOdds: apiHomeMatchesOurHome ? mlPairs[0].away.odds_american : mlPairs[0].home.odds_american,
+          impliedProb: apiHomeMatchesOurHome ? mlPairs[0].away.odds_probability : mlPairs[0].home.odds_probability,
+          fairProb: dvA,
+          displayFairProb: dvA,
+        },
+        books: mlPairs.length,
+        pinnacle: pinBook ? { home: apiHomeMatchesOurHome ? pinBook.home.odds_american : pinBook.away.odds_american, away: apiHomeMatchesOurHome ? pinBook.away.odds_american : pinBook.home.odds_american } : null,
+        fanduel: fdBook ? { home: apiHomeMatchesOurHome ? fdBook.home.odds_american : fdBook.away.odds_american, away: apiHomeMatchesOurHome ? fdBook.away.odds_american : fdBook.home.odds_american } : null,
+        draftkings: dkBook ? { home: apiHomeMatchesOurHome ? dkBook.home.odds_american : dkBook.away.odds_american, away: apiHomeMatchesOurHome ? dkBook.away.odds_american : dkBook.home.odds_american } : null,
+        kalshi: null,
+        backfilled: true,
+      };
+      filled++;
+    }
+
+    log.info('OddsFeed', `H2H backfill ${sport}: filled ${filled}/${missing.length} missing events from The Odds API`);
+    return { sport, missing: missing.length, filled };
+  } catch (err) {
+    log.warn('OddsFeed', `H2H backfill ${sport} failed: ${err.message}`);
+    return { sport, missing: missing.length, filled, err: err.message };
+  }
+}
+
 async function warmAltLines(sport) {
   if (!SPORTS_WITH_ALT_MARKETS.has(sport)) return { skipped: 'no alt markets' };
 
@@ -3380,6 +3499,16 @@ async function refreshAllSports() {
     });
   }
 
+  // Fire-and-forget h2h backfill for SharpAPI-primary sports where some
+  // events lack moneyline data. One bulk Odds API call per sport —
+  // cheap relative to the per-event alt-line fetches.
+  for (const sport of sportsToRefresh) {
+    if (!H2H_BACKFILL_SPORTS.has(sport)) continue;
+    backfillMissingH2h(sport).catch(err => {
+      log.warn('OddsFeed', `H2H backfill failed for ${sport}: ${err.message}`);
+    });
+  }
+
   return results;
 }
 
@@ -3825,6 +3954,7 @@ module.exports = {
   getDraftKingsOdds,
   getDNBFairProb,
   fetchAltLines,
+  backfillMissingH2h,
   warmAltLines,
   warmAllSports,
   startAltLineWarmLoop,
