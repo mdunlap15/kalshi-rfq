@@ -601,28 +601,30 @@ async function handleRFQ(data) {
       log.debug('RFQ', `[PAUSED] Would offer: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}`);
       updateRfqOutcome(parlayId, 'paused_skip', `would offer ${result.meta.americanOdds}`);
     } else if (callbackUrl) {
-      // Fire-and-forget submit. PX sees our offer the moment the bytes
-      // hit the wire — awaiting the HTTP response would add ~25ms of
-      // round-trip to every RFQ's handler without changing the time
-      // PX actually receives the offer. By not awaiting we:
-      //   (a) let bookkeeping (pending-reservation, signature dedup)
-      //       run in parallel with PX's response, so concurrent RFQs
-      //       on the same game see our reservation 20-30ms sooner;
-      //   (b) measure latency as dispatch time (what matters for
-      //       winning the RFQ auction), not as ACK round-trip.
-      // Errors surface asynchronously in the .catch handler below.
+      // Fire-and-forget submit. Handler returns after dispatch so the
+      // next RFQ isn't parked waiting for PX's ACK round-trip, and
+      // bookkeeping (pending reservation, signature dedup) runs in
+      // parallel with the ACK. BUT we still wait (detached) for the
+      // ACK to record the TRUE round-trip latency on the buffer — the
+      // dashboard should show real network time, not dispatch time.
+      const dispatchMs = Date.now() - startTime;
       const submitPromise = px.submitOffer(callbackUrl, parlayId, [result.offer]);
-      const elapsed = Date.now() - startTime;
-      stageTimings.submit = elapsed;
       rfqStages.submitted++;
-      recordResponseTime(parlayId, elapsed, result.meta.americanOdds, stageTimings);
-      // Persist latency + per-stage timings to the order record so we can
-      // later join with matched-outcome data for a real latency-vs-win-rate
-      // analysis (survives service restarts, unlike the in-memory rolling buffer).
-      orderTracker.updateOrderLatency(parlayId, elapsed, stageTimings);
+      // Seed the record with dispatch timing so it appears immediately.
+      // Will be patched to full round-trip when the ACK lands.
+      stageTimings.submit = dispatchMs;
+      recordResponseTime(parlayId, dispatchMs, result.meta.americanOdds, stageTimings);
+      orderTracker.updateOrderLatency(parlayId, dispatchMs, stageTimings);
       updateRfqOutcome(parlayId, 'submitted', `odds ${result.meta.americanOdds}`);
-      log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms dispatch (resolve=${stageTimings.resolve || 0} decline=${stageTimings.decline || 0} price=${stageTimings.price || 0})`);
-      submitPromise.catch(err => {
+      log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${dispatchMs}ms dispatch (resolve=${stageTimings.resolve || 0} decline=${stageTimings.decline || 0} price=${stageTimings.price || 0})`);
+      submitPromise.then(() => {
+        // Full round-trip finished — upgrade the buffered record so the
+        // dashboard reflects real "PX saw + acknowledged" latency.
+        const roundTripMs = Date.now() - startTime;
+        const patchedStages = { ...stageTimings, submit: roundTripMs };
+        patchResponseTime(parlayId, roundTripMs, patchedStages);
+        orderTracker.updateOrderLatency(parlayId, roundTripMs, patchedStages);
+      }).catch(err => {
         rfqStages.submitError++;
         updateRfqOutcome(parlayId, 'submit_error', err.message);
         offerErrors.unshift({ error: err.message, time: new Date().toISOString(), parlayId, stack: err.stack?.split('\n')[1]?.trim() });
@@ -1074,6 +1076,22 @@ function recordResponseTime(parlayId, elapsed, offeredOdds, stages) {
     stages: stages || null,
   });
   if (responseTimes.length > MAX_RESPONSE_TIMES) responseTimes.pop();
+}
+
+/**
+ * Patch an existing responseTimes entry once the true submit round-trip
+ * arrives asynchronously (fire-and-forget ACK). The initial record holds
+ * dispatch-only timing so the dashboard shows a concrete number right
+ * away; this upgrades it to the full round-trip the moment PX responds.
+ */
+function patchResponseTime(parlayId, elapsed, stages) {
+  for (const entry of responseTimes) {
+    if (entry.parlayId === parlayId) {
+      entry.elapsed = elapsed;
+      if (stages) entry.stages = { ...(entry.stages || {}), ...stages };
+      return;
+    }
+  }
 }
 
 /**
