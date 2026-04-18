@@ -438,15 +438,27 @@ async function priceParlay(legs) {
   // grows ~1.4pp into the long tail where the old step was bleeding.
   const favSlope = config.pricing.vigFavoriteSlope;
   const favFloor = config.pricing.vigFavoriteFloor;
-  function getEffectiveVig(fairProb, sport) {
+  const seriesMinVig = config.pricing.vigSeriesMin || 0;
+  function getEffectiveVig(fairProb, sport, marketType) {
     const baseVig = getBaseVigForSport(sport);
-    if (fairProb <= 0.5) return baseVig;
-    const ramp = baseVig + favSlope * (fairProb - 0.5);
-    return favFloor > 0 ? Math.max(favFloor, ramp) : ramp;
+    let vig;
+    if (fairProb <= 0.5) {
+      vig = baseVig;
+    } else {
+      const ramp = baseVig + favSlope * (fairProb - 0.5);
+      vig = favFloor > 0 ? Math.max(favFloor, ramp) : ramp;
+    }
+    // Series-winner legs get a configurable floor on top of the
+    // normal vig — typically the only SP quoting these on PX, so we
+    // can widen the spread without losing order flow.
+    if (marketType === 'series_winner' && seriesMinVig > 0) {
+      vig = Math.max(vig, seriesMinVig);
+    }
+    return vig;
   }
 
-  function applyOddsVig(fairProb, sport) {
-    const vig = getEffectiveVig(fairProb, sport);
+  function applyOddsVig(fairProb, sport, marketType) {
+    const vig = getEffectiveVig(fairProb, sport, marketType);
     const fairDecimal = 1 / fairProb;
     const payout = fairDecimal - 1; // the profit portion
     const viggedPayout = payout * (1 - vig); // reduce payout by vig %
@@ -478,7 +490,7 @@ async function priceParlay(legs) {
   let vigRateUsed; // informational — the rate applied (for debugging/analytics)
   if (config.pricing.parlayLevelVig) {
     // Parlay-level: single vig application using max per-leg rate.
-    const perLegVigs = pricedLegs.map(l => getEffectiveVig(l.fairProb, l.lineInfo.sport));
+    const perLegVigs = pricedLegs.map(l => getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType));
     const maxVig = perLegVigs.length > 0 ? Math.max(...perLegVigs) : config.pricing.defaultVig;
     const fairDecimal = 1 / fairParlayProb;
     const payout = fairDecimal - 1;
@@ -490,11 +502,11 @@ async function priceParlay(legs) {
     // Per-leg: vig applied to each leg's odds then compounded (legacy).
     offeredImpliedProb = 1;
     for (const leg of pricedLegs) {
-      offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport);
+      offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType);
     }
     vigMode = 'per-leg';
     // For per-leg, expose the AVERAGE per-leg rate as the "used" value.
-    const avgVig = pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport), 0) / Math.max(pricedLegs.length, 1);
+    const avgVig = pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType), 0) / Math.max(pricedLegs.length, 1);
     vigRateUsed = avgVig;
   }
 
@@ -723,7 +735,7 @@ async function priceParlay(legs) {
   // Apply same odds-based vig so PX's recomputed parlay matches our intended price.
   const estimatedPrice = pricedLegs.map(leg => ({
     line_id: leg.lineId,
-    odds: decimalToAmerican(1 / applyOddsVig(leg.fairProb, leg.lineInfo.sport)),
+    odds: decimalToAmerican(1 / applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType)),
   }));
 
   // valid_until in nanoseconds
@@ -755,7 +767,7 @@ async function priceParlay(legs) {
           selection: l.lineInfo.oddsApiSelection,
           line: l.lineInfo.line,
           fairProb: Math.round(l.fairProb * 10000) / 10000,
-          legVig: Math.round(getEffectiveVig(l.fairProb, l.lineInfo.sport) * 10000) / 10000,
+          legVig: Math.round(getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType) * 10000) / 10000,
           displayFairProb: l.displayFairProb ? Math.round(l.displayFairProb * 10000) / 10000 : null,
           pinnacleOdds: l.pinnacleOdds || null,
           fanduelOdds: l.fanduelOdds || null,
@@ -779,7 +791,7 @@ async function priceParlay(legs) {
           roundNum: l.lineInfo.roundNum || null,
         };
       }),
-      vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport), 0) / pricedLegs.length * 10000) / 10000,
+      vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType), 0) / pricedLegs.length * 10000) / 10000,
       // Which vig application mode was used for this quote. Recorded per-quote
       // so /market-intel can split win rate by mode for A/B analysis.
       vigMode,

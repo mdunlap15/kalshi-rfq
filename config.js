@@ -44,6 +44,13 @@ const config = {
     // Floor 0 (off) by default — set e.g. 0.02 to enforce a 2% minimum on favorite legs.
     vigFavoriteSlope: parseFloat(process.env.VIG_FAVORITE_SLOPE) || 0.075,
     vigFavoriteFloor: parseFloat(process.env.VIG_FAVORITE_FLOOR) || 0,
+    // Minimum per-leg vig for series_winner legs (NBA/NHL playoff
+    // series). DK charges ~4-5% per-leg on these and we're typically
+    // the only SP quoting them on PX — so we can widen our spread
+    // without losing flow. Applied as a floor on top of the normal
+    // baseVig + favorite ramp, so extreme favorites still pay more.
+    // Default 0.05 (5%); tunable via VIG_SERIES_MIN env var.
+    vigSeriesMin: parseFloat(process.env.VIG_SERIES_MIN) || 0.05,
     // A/B-testable pricing mode for parlays. When true, vig is applied
     // ONCE at the parlay level using the MAX per-leg effective rate, rather
     // than compounded per-leg. Per-leg compounding penalizes multi-leg
