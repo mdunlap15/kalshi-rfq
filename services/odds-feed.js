@@ -654,6 +654,30 @@ async function fetchOddsForSport(sport, opts) {
  * to the existing event cache as separate market types: h2h_f5, spreads_f5, totals_f5.
  * These are independent from full-game markets and need their own pricing.
  */
+/**
+ * Fuzzy lookup into a parsedEvents map (keyed by normalizeEventKey) that
+ * falls back to last-word team-name matching. Handles the SharpAPI /
+ * Odds-API abbreviation gap (e.g. SharpAPI's "A's", "Chicago WS" vs
+ * Odds-API's "Oakland Athletics", "Chicago White Sox") that otherwise
+ * silently breaks F5/H1 supplement matching.
+ */
+function findParsedEntryFuzzy(parsedEvents, home, away) {
+  const exact = parsedEvents[normalizeEventKey(cleanTeamName(home), cleanTeamName(away))];
+  if (exact) return exact;
+  const lw = (name) => (name || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(Boolean).pop() || '';
+  const homeLW = lw(home), awayLW = lw(away);
+  if (!homeLW || !awayLW) return null;
+  for (const entry of Object.values(parsedEvents)) {
+    const arr = Array.isArray(entry) ? entry : [entry];
+    for (const ev of arr) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      const eh = lw(ev.homeTeam), ea = lw(ev.awayTeam);
+      if ((eh === homeLW && ea === awayLW) || (eh === awayLW && ea === homeLW)) return entry;
+    }
+  }
+  return null;
+}
+
 async function supplementMlbF5Markets(parsedEvents) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   if (!theOddsApiKey) return;
@@ -676,8 +700,7 @@ async function supplementMlbF5Markets(parsedEvents) {
   const events = await resp.json();
   let matched = 0;
   for (const event of events) {
-    const key = normalizeEventKey(cleanTeamName(event.home_team), cleanTeamName(event.away_team));
-    const entry = parsedEvents[key];
+    const entry = findParsedEntryFuzzy(parsedEvents, event.home_team, event.away_team);
     if (!entry) continue;
     const eventArr = Array.isArray(entry) ? entry : [entry];
     // Match by date to handle back-to-back games
@@ -760,8 +783,7 @@ async function supplementNbaH1Markets(parsedEvents) {
   const events = await resp.json();
   let matched = 0;
   for (const event of events) {
-    const key = normalizeEventKey(cleanTeamName(event.home_team), cleanTeamName(event.away_team));
-    const entry = parsedEvents[key];
+    const entry = findParsedEntryFuzzy(parsedEvents, event.home_team, event.away_team);
     if (!entry) continue;
     const eventArr = Array.isArray(entry) ? entry : [entry];
     const evDate = event.commence_time ? new Date(event.commence_time).toISOString().substring(0, 10) : '';

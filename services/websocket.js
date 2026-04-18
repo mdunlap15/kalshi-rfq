@@ -346,7 +346,20 @@ async function handleRFQ(data) {
         const lineId = l.line_id || l.lineId || l;
         const info = lineManager.lookupLine(lineId);
         if (info) {
-          knownLegs.push({ team: info.teamName, market: info.marketType, sport: info.sport, line: info.line });
+          const mt = info.marketType || '';
+          const isTotalLike = mt === 'total' || mt === 'team_total' || /total/.test(mt);
+          const teamWithCtx = isTotalLike && info.homeTeam && info.awayTeam
+            ? `${info.teamName} (${info.awayTeam} @ ${info.homeTeam})`
+            : info.teamName;
+          knownLegs.push({
+            team: teamWithCtx,
+            market: info.marketType,
+            sport: info.sport,
+            line: info.line,
+            homeTeam: info.homeTeam,
+            awayTeam: info.awayTeam,
+            startTime: info.startTime || null,
+          });
         } else {
           unknownLegs.push(lineId);
           // Build specific description with market detail
@@ -534,9 +547,14 @@ async function handleRFQ(data) {
       const knownLegs = legs.map(l => {
         const info = lineManager.lookupLine(l.line_id || l.lineId || l);
         if (!info) return null;
-        // For totals, include game context
+        // For totals (incl. F5 / H1 variants), include game context so
+        // the dashboard doesn't show a bare "Under 4.5" without knowing
+        // which game it refers to.
         let team = info.teamName;
-        if (info.marketType === 'total' && info.homeTeam && info.awayTeam) {
+        const mt = info.marketType || '';
+        const isTotalLike = mt === 'total' || mt === 'team_total'
+          || /total/.test(mt); // catches first_5_innings_total, totals_h1
+        if (isTotalLike && info.homeTeam && info.awayTeam) {
           team = `${team} (${info.awayTeam} @ ${info.homeTeam})`;
         }
         // Flag the specific leg that blocked pricing
@@ -548,6 +566,8 @@ async function handleRFQ(data) {
         return {
           team, market: info.marketType, sport: info.sport, line: info.line,
           homeTeam: info.homeTeam, awayTeam: info.awayTeam,
+          startTime: info.startTime || null,
+          pxEventName: info.pxEventName || null,
           isBlocker,
         };
       }).filter(Boolean);

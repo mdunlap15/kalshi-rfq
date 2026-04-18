@@ -2854,6 +2854,63 @@ function startStatusServer() {
     res.json({ events: oddsFeed.getAllCachedEvents() });
   });
 
+  // TEMPORARY: probe SharpAPI with candidate F5 market-type names to see
+  // which (if any) return data. Answers whether we can drop the Odds-API
+  // F5 supplement in favor of SharpAPI as primary. Remove after confirming.
+  app.get('/debug-sharp-f5', async (req, res) => {
+    const fetch = require('node-fetch');
+    const key = process.env.SHARP_ODDS_API_KEY || process.env.ODDS_API_KEY;
+    const base = process.env.PX_BASE_URL ? undefined : 'https://api.sharpapi.io/api/v1';
+    const baseUrl = 'https://api.sharpapi.io/api/v1';
+    if (!key) return res.status(500).json({ ok: false, error: 'no SHARP_ODDS_API_KEY' });
+    const candidates = [
+      'first_5_innings_moneyline',
+      'first_5_innings_total',
+      'first_5_innings_run_line',
+      'first_5_innings_total_runs',
+      'first_five_innings_moneyline',
+      'first_five_innings_total',
+      'first_five_innings_run_line',
+      '1st_5_innings_moneyline',
+      '1st_5_innings_total',
+      '1st_5_innings_run_line',
+      'f5_moneyline',
+      'f5_total',
+      'f5_run_line',
+      'moneyline_f5',
+      'total_f5',
+      'run_line_f5',
+      'moneyline_first_5_innings',
+      'total_first_5_innings',
+    ];
+    const results = [];
+    for (const mt of candidates) {
+      const url = `${baseUrl}/odds?league=mlb&market=${mt}&live=false&limit=5`;
+      try {
+        const resp = await fetch(url, { headers: { 'X-API-Key': key } });
+        const text = await resp.text();
+        let rowCount = 0;
+        let sample = null;
+        try {
+          const body = JSON.parse(text);
+          rowCount = (body.data || []).length;
+          sample = body.data && body.data[0] ? body.data[0] : null;
+        } catch (_) {}
+        results.push({
+          market: mt,
+          status: resp.status,
+          rows: rowCount,
+          sampleKeys: sample ? Object.keys(sample) : null,
+          bodySnippet: rowCount === 0 ? text.slice(0, 200) : null,
+        });
+      } catch (err) {
+        results.push({ market: mt, error: err.message });
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    res.json({ ok: true, baseUrl, results });
+  });
+
   // TEMPORARY: probe The Odds API's raw MLB response to see which games it
   // currently has available. Lets us diagnose why the Odds-API supplement
   // isn't filling SharpAPI's gaps (esp. for games >24h out). Remove after
