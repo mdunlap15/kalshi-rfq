@@ -113,7 +113,7 @@ const config = {
     // Confirmation-time re-price drift threshold. If current fair prob drifts
     // by more than this fraction from the original quote, reject the confirm.
     confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
-    offerValidSeconds: 120,
+    offerValidSeconds: parseInt(process.env.OFFER_VALID_SECONDS) || 60,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
     bankroll: parseFloat(process.env.BANKROLL) || 0,
     // Override live PX balance with a fixed amount. Set to 0 (or unset) to use live balance.
