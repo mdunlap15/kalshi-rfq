@@ -1800,6 +1800,56 @@ function startStatusServer() {
   });
 
   // Debug: list PX sport events with sport_name grouping (diagnose sport name mismatches)
+  // Dump raw PX market names/types for an event, looked up by a team
+  // substring match against event name + competitors. Primary use: see
+  // what series markets (Series Winner, Series Spread, Series Total
+  // Games, etc.) actually exist on PX so we can confirm our detection
+  // regexes match the exact labels.
+  app.get('/debug-px-event-markets', async (req, res) => {
+    try {
+      const q = (req.query.q || '').toLowerCase().trim();
+      if (!q) return res.status(400).json({ ok: false, error: 'q required' });
+      const allEvents = await px.fetchSportEvents();
+      const candidates = allEvents.filter(e => {
+        const hay = ((e.name || '') + ' ' + (e.competitors || []).map(c => c.name).join(' ')).toLowerCase();
+        return hay.includes(q);
+      });
+      if (candidates.length === 0) return res.status(404).json({ ok: false, error: 'no event matches q' });
+      const results = [];
+      for (const ev of candidates.slice(0, 10)) {
+        let markets = [];
+        try { markets = await px.fetchMarkets(ev.event_id); } catch (e) { markets = [{ error: e.message }]; }
+        results.push({
+          event_id: ev.event_id,
+          name: ev.name,
+          sport_name: ev.sport_name,
+          scheduled: ev.scheduled,
+          competitors: (ev.competitors || []).map(c => ({ name: c.name, side: c.side })),
+          markets: markets.map(m => ({
+            type: m.type,
+            name: m.name,
+            // sample a few selection labels so we can see spread/total line structure
+            sampleSelections: (() => {
+              const labels = [];
+              if (m.selections) {
+                for (const g of m.selections) for (const s of g) if (s.display_name || s.name) labels.push(`${s.display_name || s.name}${s.line != null ? ` (line=${s.line})` : ''}`);
+              }
+              if (m.market_lines) {
+                for (const ml of m.market_lines) {
+                  for (const g of (ml.selections || [])) for (const s of g) if (s.display_name || s.name) labels.push(`${s.display_name || s.name}${s.line != null ? ` (line=${s.line})` : (ml.line != null ? ` (line=${ml.line})` : '')}`);
+                }
+              }
+              return labels.slice(0, 6);
+            })(),
+          })),
+        });
+      }
+      res.json({ ok: true, matchedCount: candidates.length, results });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   app.get('/px-events-debug', async (req, res) => {
     try {
       const allEvents = await px.fetchSportEvents();
