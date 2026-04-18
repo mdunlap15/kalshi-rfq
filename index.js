@@ -2974,7 +2974,12 @@ function startStatusServer() {
       + '&oddsFormat=american';
     try {
       const r = await fetch(url);
-      const body = await r.json();
+      const text = await r.text();
+      let body;
+      try { body = JSON.parse(text); } catch { body = null; }
+      if (!Array.isArray(body)) {
+        return res.json({ ok: false, status: r.status, rawBody: text.slice(0, 800) });
+      }
       const summary = body.map(e => {
         const mkTypes = {};
         for (const b of (e.bookmakers || [])) {
