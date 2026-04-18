@@ -5626,14 +5626,14 @@
     const balanceCls = balanceNum != null && balanceNum < 500 ? 'negative'
                      : balanceNum != null && balanceNum < 2000 ? '' : 'positive';
 
-    // Cash to Deploy = PX balance − currently-deployed risk. PX's balance
-    // field reports TOTAL account value (matched_wager_balance = 0 in the
-    // payload confirms PX lumps matched stakes into the overall balance,
-    // not a separate locked bucket). Showing Balance and Deployed as two
-    // separate columns previously created the illusion of total ≈ 1.5x
-    // account because they double-counted the matched-stake portion.
-    // Real "cash free to bet" = balance − deployed.
-    const cashFree = (balanceNum != null && !isNaN(balanceNum)) ? (balanceNum - portRisk) : null;
+    // Cash Available = PX balance. Empirical reconciliation against the
+    // identity (balance = starting + realized − open stakes) shows PX's
+    // balance field already has open-parlay stakes DEDUCTED — they're
+    // not held at cost as part of balance. Previously we subtracted
+    // Deployed from Balance again, which double-counted: balance already
+    // excludes those stakes, and subtracting them a second time
+    // understated real liquid cash by the Deployed amount.
+    const cashFree = (balanceNum != null && !isNaN(balanceNum)) ? balanceNum : null;
     const cashFreeStr = cashFree != null ? fmtDollar(cashFree) : '-';
     const cashFreeCls = cashFree == null ? ''
       : cashFree < 500 ? 'negative'
