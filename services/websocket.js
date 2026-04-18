@@ -601,11 +601,17 @@ async function handleRFQ(data) {
       log.debug('RFQ', `[PAUSED] Would offer: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}`);
       updateRfqOutcome(parlayId, 'paused_skip', `would offer ${result.meta.americanOdds}`);
     } else if (callbackUrl) {
-      // Removed the pre-submit "Submitting: ..." log entirely — it duplicated
-      // the "Offered" log below and forced a synchronous JSON.stringify of the
-      // offer object on the hot path before every PX call. Savings ≈ 1-3ms
-      // under load depending on stdout back-pressure.
-      await px.submitOffer(callbackUrl, parlayId, [result.offer]);
+      // Fire-and-forget submit. PX sees our offer the moment the bytes
+      // hit the wire — awaiting the HTTP response would add ~25ms of
+      // round-trip to every RFQ's handler without changing the time
+      // PX actually receives the offer. By not awaiting we:
+      //   (a) let bookkeeping (pending-reservation, signature dedup)
+      //       run in parallel with PX's response, so concurrent RFQs
+      //       on the same game see our reservation 20-30ms sooner;
+      //   (b) measure latency as dispatch time (what matters for
+      //       winning the RFQ auction), not as ACK round-trip.
+      // Errors surface asynchronously in the .catch handler below.
+      const submitPromise = px.submitOffer(callbackUrl, parlayId, [result.offer]);
       const elapsed = Date.now() - startTime;
       stageTimings.submit = elapsed;
       rfqStages.submitted++;
@@ -615,7 +621,13 @@ async function handleRFQ(data) {
       // analysis (survives service restarts, unlike the in-memory rolling buffer).
       orderTracker.updateOrderLatency(parlayId, elapsed, stageTimings);
       updateRfqOutcome(parlayId, 'submitted', `odds ${result.meta.americanOdds}`);
-      log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms (resolve=${stageTimings.resolve || 0} decline=${stageTimings.decline || 0} price=${stageTimings.price || 0})`);
+      log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms dispatch (resolve=${stageTimings.resolve || 0} decline=${stageTimings.decline || 0} price=${stageTimings.price || 0})`);
+      submitPromise.catch(err => {
+        rfqStages.submitError++;
+        updateRfqOutcome(parlayId, 'submit_error', err.message);
+        offerErrors.unshift({ error: err.message, time: new Date().toISOString(), parlayId, stack: err.stack?.split('\n')[1]?.trim() });
+        if (offerErrors.length > 50) offerErrors.pop();
+      });
     } else {
       rfqStages.noCallback++;
       updateRfqOutcome(parlayId, 'no_callback');

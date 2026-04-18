@@ -5636,23 +5636,24 @@
     const balanceCls = balanceNum != null && balanceNum < 500 ? 'negative'
                      : balanceNum != null && balanceNum < 2000 ? '' : 'positive';
 
-    // Cash Available = Balance − Deployed. Balance is treated as the
-    // TOTAL account value (including stakes currently locked in open
-    // parlays), so spendable cash = balance minus the locked portion.
-    const cashFree = (balanceNum != null && !isNaN(balanceNum)) ? (balanceNum - portRisk) : null;
-    const cashFreeStr = cashFree != null ? fmtDollar(cashFree) : '-';
-    const cashFreeCls = cashFree == null ? ''
-      : cashFree < 500 ? 'negative'
-      : cashFree < 2000 ? ''
+    // PX's balance field is cash-available, NOT total equity — PX has
+    // already subtracted stakes locked in open parlays. Total equity
+    // (what the account was worth at the start of the day, minus net P&L
+    // since) = balance + deployed.
+    const totalEquity = (balanceNum != null && !isNaN(balanceNum)) ? (balanceNum + portRisk) : null;
+    const totalEquityStr = totalEquity != null ? fmtDollar(totalEquity) : '-';
+    const totalEquityCls = totalEquity == null ? ''
+      : totalEquity < 500 ? 'negative'
+      : totalEquity < 2000 ? ''
       : 'positive';
-    // Percent-of-balance labels for Deployed and Cash Available so the
-    // operator can see at a glance how much of the bankroll is in play.
-    const deployedPct = (balanceNum && balanceNum > 0 && portRisk >= 0)
-      ? Math.round(portRisk / balanceNum * 1000) / 10 : null;
-    const cashPct = (balanceNum && balanceNum > 0 && cashFree != null)
-      ? Math.round(cashFree / balanceNum * 1000) / 10 : null;
+    // Percent-of-total-equity labels so Deployed/Cash Available split
+    // sums to 100%. Denominator is Balance + Deployed, not Balance.
+    const deployedPct = (totalEquity && totalEquity > 0 && portRisk >= 0)
+      ? Math.round(portRisk / totalEquity * 1000) / 10 : null;
+    const cashPct = (totalEquity && totalEquity > 0 && balanceNum != null)
+      ? Math.round(balanceNum / totalEquity * 1000) / 10 : null;
     const deployedStr = portStr + (deployedPct != null ? ` <span style="color:var(--text3); font-size:11px;">[${deployedPct}%]</span>` : '');
-    const cashFreeWithPct = cashFreeStr + (cashPct != null ? ` <span style="color:var(--text3); font-size:11px;">[${cashPct}%]</span>` : '');
+    const cashAvailStr = balanceStr + (cashPct != null ? ` <span style="color:var(--text3); font-size:11px;">[${cashPct}%]</span>` : '');
 
     // Net balance impact = realized P&L − open exposure. Matches the
     // delta between current PX balance and starting bankroll. Only
@@ -5668,9 +5669,9 @@
 
     const html = `<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">
       <div class="stat-bar" style="gap:6px 18px;">
-        ${stat('Balance', balanceStr, balanceCls, 'Total PX account balance = Deployed + Cash Available')}
-        ${stat('Deployed', deployedStr, portCls, 'Stake locked in open parlays')}
-        ${stat('Cash Available', cashFreeWithPct, cashFreeCls, 'Balance − Deployed = real cash free for new parlays')}
+        ${stat('Total Equity', totalEquityStr, totalEquityCls, 'Cash Available + Deployed — approximate account value including stakes locked in open parlays')}
+        ${stat('Deployed', deployedStr, portCls, 'Stake locked in open parlays (% of total equity)')}
+        ${stat('Cash Available', cashAvailStr, balanceCls, 'PX balance — cash free for new parlays (PX already excludes deployed stakes)')}
         ${stat('To Win', fmtDollar(totalToWin), 'positive')}
         ${stat(pnlLabel, pnlStr, pnlCls, pnlTitle)}
         ${stat('ROI', roiStr, roiCls, 'Realized P&L / total settled stake')}

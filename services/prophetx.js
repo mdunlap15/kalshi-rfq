@@ -319,21 +319,21 @@ async function registerWebSocket(socketId) {
 // ---------------------------------------------------------------------------
 
 async function submitOffer(callbackUrl, parlayId, offers) {
-  log.info('PX-Offer', `Submitting offer for parlay ${parlayId}`, {
-    callbackUrl,
-    payload: JSON.stringify({ parlay_id: parlayId, offers }).substring(0, 500),
-  });
-  try {
-    const data = await pxFetch(callbackUrl, 'POST', {
-      parlay_id: parlayId,
-      offers,
-    }, false); // useBaseUrl=false — callbackUrl is absolute
+  // No pre-submit log. Removed because JSON.stringify(offers) + log.info
+  // on the hot path adds 1-3ms (stdout back-pressure dependent), and the
+  // "Offered" log in websocket.js already records this submission. The
+  // response log below is off the critical path — the caller fires this
+  // promise and doesn't await it.
+  return pxFetch(callbackUrl, 'POST', {
+    parlay_id: parlayId,
+    offers,
+  }, false).then(data => {
     log.info('PX-Offer', `Response for ${parlayId}: ${JSON.stringify(data).substring(0, 300)}`);
     return data;
-  } catch (err) {
+  }).catch(err => {
     log.error('PX-Offer', `Failed to submit offer for ${parlayId}: ${err.message}`);
     throw err;
-  }
+  });
 }
 
 async function confirmOrder(callbackUrl, orderUuid, action, confirmedOdds, confirmedStake, priceProbability) {
