@@ -91,6 +91,44 @@ function getSeriesFairProb(lineInfo) {
 }
 
 /**
+ * MMA moneyline legs: route directly to the DK scraper cache rather than
+ * the shared odds-feed cache. Context: SharpAPI rarely covers MMA h2h
+ * reliably, so the DK scraper is the source of truth. DK data IS merged
+ * into oddsCache['mma_mixed_martial_arts'] at startup/refresh, but that
+ * cache appears to get wiped when SharpAPI's UFC refresh runs with zero
+ * matching rows — producing spurious "no h2h quote for X" declines on
+ * fights DK clearly has. Bypassing to dkScraper.lookupMmaFairProb makes
+ * us resilient to that wipe regardless of whether the merge ran, and
+ * mirrors the getSeriesFairProb pattern.
+ *
+ * Returns null when the leg isn't MMA, isn't moneyline, or the fighter
+ * isn't in the DK cache — caller falls back to the oddsFeed path.
+ */
+function getMmaFairProb(lineInfo) {
+  const sport = (lineInfo?.oddsApiSport || lineInfo?.sport || '').toLowerCase();
+  if (!sport.includes('mma')) return null;
+  // DK cache only covers moneyline (h2h) for MMA — total rounds go via
+  // the separate oddsFeed path that the merge ALSO populates.
+  const mt = lineInfo?.marketType || '';
+  const am = lineInfo?.oddsApiMarket || '';
+  if (mt !== 'moneyline' && am !== 'h2h') return null;
+  const fighter = lineInfo?.teamName || '';
+  if (!fighter) return null;
+  const hit = dkScraper.lookupMmaFairProb(fighter);
+  if (!hit) return null;
+  // In-play guard: decline if the fight has already started. DK's odds
+  // are pre-fight and would give a bettor material edge mid-round.
+  if (hit.startTime) {
+    const t = new Date(hit.startTime).getTime();
+    if (Number.isFinite(t) && t <= Date.now()) {
+      log.debug('Pricing', `MMA in-play decline: ${fighter} (startTime ${hit.startTime})`);
+      return null;
+    }
+  }
+  return hit.fairProb;
+}
+
+/**
  * Convert decimal odds to American odds (integer).
  * PX uses American odds throughout its API.
  */
@@ -265,6 +303,12 @@ async function priceParlay(legs) {
     // look up from the DK scraper cache (fetched out-of-band).
     const seriesFair = getSeriesFairProb(s.lineInfo);
     if (seriesFair != null) return Promise.resolve(seriesFair);
+
+    // MMA moneyline legs: DK scraper is the source of truth and the
+    // merged oddsFeed cache is prone to wipe by unrelated SharpAPI
+    // refreshes. Route directly to dkScraper (see getMmaFairProb).
+    const mmaFair = getMmaFairProb(s.lineInfo);
+    if (mmaFair != null) return Promise.resolve(mmaFair);
 
     if (s.lineInfo.isDNB) {
       // Draw-No-Bet is sync (derives from cached 3-way h2h).
