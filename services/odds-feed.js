@@ -2369,7 +2369,15 @@ const WARM_EVENT_MAX_HOURS_AHEAD = 48;
 
 // Concurrency limit: at most N alt-line fetches in flight simultaneously.
 // Keeps us from burying The Odds API rate limiter.
-const WARM_CONCURRENCY = 3;
+const WARM_CONCURRENCY = 2;
+// Inter-request delay inside each warm worker. The Odds API rate-limits
+// (per-key token bucket) and a startup burst across sports × MLB's new
+// F5 alt markets was producing 8+ "Requests are too frequent" 429s per
+// warm cycle. 120ms throttle caps each worker at ~8 req/s; with
+// WARM_CONCURRENCY=2 per sport and ~4 sports warming, peak is ~65 req/s
+// globally — well under the Odds API ~100 req/s ceiling while still
+// completing a full sport warm in under 30s.
+const WARM_REQUEST_DELAY_MS = 120;
 
 // Last warm stats (for /alt-lines-cache-stats)
 let _lastWarmStats = null;
@@ -2658,10 +2666,14 @@ async function warmAltLines(sport) {
 
   let fetched = 0, errors = 0, noMatch = 0;
   const unmatched = []; // up to 5 samples — used to diagnose matching gaps
-  // Bounded-concurrency worker pool
+  // Bounded-concurrency worker pool. Each worker waits WARM_REQUEST_DELAY_MS
+  // between its own fetches to throttle against Odds API's 429 ("Requests
+  // are too frequent"). The first iteration skips the sleep.
   let idx = 0;
   async function worker() {
+    let iter = 0;
     while (idx < candidates.length) {
+      if (iter++ > 0) await new Promise(r => setTimeout(r, WARM_REQUEST_DELAY_MS));
       const i = idx++;
       const c = candidates[i];
       try {

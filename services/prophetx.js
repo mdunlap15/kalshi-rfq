@@ -250,22 +250,47 @@ async function fetchAffiliateTournaments() {
 // SUPPORTED LINES
 // ---------------------------------------------------------------------------
 
+// PX's /parlay/sp/supported-lines accepts at most 1000 line_ids per call
+// (400 invalid_params otherwise). As our line index has grown past 1000
+// we'd silently fail to register any lines — forcing every first-RFQ for
+// a line to pay a round-trip via on-demand registration. Chunk both
+// POST and DELETE to stay under the cap.
+const PX_SUPPORTED_LINES_CHUNK_SIZE = 1000;
+
 async function registerSupportedLines(lineIds) {
   if (!lineIds || lineIds.length === 0) return { success: true, count: 0 };
-  log.info('PX-Lines', `Registering ${lineIds.length} supported lines`);
-  const data = await pxFetch('/parlay/sp/supported-lines', 'POST', {
-    supported_lines: lineIds,
-  });
-  return data;
+  if (lineIds.length <= PX_SUPPORTED_LINES_CHUNK_SIZE) {
+    log.info('PX-Lines', `Registering ${lineIds.length} supported lines`);
+    return pxFetch('/parlay/sp/supported-lines', 'POST', { supported_lines: lineIds });
+  }
+  const chunks = [];
+  for (let i = 0; i < lineIds.length; i += PX_SUPPORTED_LINES_CHUNK_SIZE) {
+    chunks.push(lineIds.slice(i, i + PX_SUPPORTED_LINES_CHUNK_SIZE));
+  }
+  log.info('PX-Lines', `Registering ${lineIds.length} supported lines in ${chunks.length} chunks (cap ${PX_SUPPORTED_LINES_CHUNK_SIZE})`);
+  for (let ci = 0; ci < chunks.length; ci++) {
+    const chunk = chunks[ci];
+    await pxFetch('/parlay/sp/supported-lines', 'POST', { supported_lines: chunk });
+    log.debug('PX-Lines', `  chunk ${ci + 1}/${chunks.length} registered (${chunk.length} lines)`);
+  }
+  return { success: true, count: lineIds.length, chunks: chunks.length };
 }
 
 async function removeSupportedLines(lineIds) {
   if (!lineIds || lineIds.length === 0) return { success: true };
-  log.info('PX-Lines', `Removing ${lineIds.length} supported lines`);
-  const data = await pxFetch('/parlay/sp/supported-lines', 'DELETE', {
-    supported_lines: lineIds,
-  });
-  return data;
+  if (lineIds.length <= PX_SUPPORTED_LINES_CHUNK_SIZE) {
+    log.info('PX-Lines', `Removing ${lineIds.length} supported lines`);
+    return pxFetch('/parlay/sp/supported-lines', 'DELETE', { supported_lines: lineIds });
+  }
+  const chunks = [];
+  for (let i = 0; i < lineIds.length; i += PX_SUPPORTED_LINES_CHUNK_SIZE) {
+    chunks.push(lineIds.slice(i, i + PX_SUPPORTED_LINES_CHUNK_SIZE));
+  }
+  log.info('PX-Lines', `Removing ${lineIds.length} supported lines in ${chunks.length} chunks`);
+  for (const chunk of chunks) {
+    await pxFetch('/parlay/sp/supported-lines', 'DELETE', { supported_lines: chunk });
+  }
+  return { success: true, count: lineIds.length, chunks: chunks.length };
 }
 
 async function getSupportedLines(limit = 100) {
