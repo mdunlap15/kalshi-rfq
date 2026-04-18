@@ -6070,6 +6070,17 @@
   }
 
   /** Check if a date string passes a from/to date filter */
+  // Bucket an ISO timestamp to an ET-local YYYY-MM-DD string. Previously
+  // the Daily Volume chart + table sliced the first 10 chars of the UTC
+  // ISO string, which pushed anything filled after 8pm ET onto the next
+  // day's row.
+  function etDayKey(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    } catch { return ''; }
+  }
+
   function passesDateFilter(dateStr, dateFrom, dateTo) {
     if (!dateFrom && !dateTo) return true;
     if (!dateStr) return false;
@@ -6625,7 +6636,7 @@
 
     const byDay = {};
     for (const o of confirmed) {
-      const day = (o.confirmedAt || o.quotedAt || '').substring(0, 10);
+      const day = etDayKey(o.confirmedAt || o.quotedAt);
       if (!day) continue;
       if (!byDay[day]) byDay[day] = { volume: 0, risk: 0, toWin: 0, pnl: 0, count: 0, settled: 0, orders: [] };
       byDay[day].count++;
@@ -6864,7 +6875,7 @@
     // Bucket orders by day (YYYY-MM-DD)
     const byDay = {};
     for (const o of confirmed) {
-      const day = (o.confirmedAt || o.quotedAt || '').substring(0, 10);
+      const day = etDayKey(o.confirmedAt || o.quotedAt);
       if (!day) continue;
       if (!byDay[day]) byDay[day] = { volume: 0, risk: 0, toWin: 0, pnl: 0, count: 0, settled: 0, orders: [] };
       byDay[day].count++;
