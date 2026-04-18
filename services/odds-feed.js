@@ -2647,8 +2647,36 @@ function getAltLinesWarmStats() {
  * @param {string} targetTime - optional ISO timestamp for time-aware matching
  */
 function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, targetTime) {
-  const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
+  let event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
+  // Reversed-orientation fallback — some cache entries (notably DK-scraped
+  // MMA fights) are stored under (fighterA, fighterB) while the line-manager
+  // registered them as (fighterB, fighterA) based on PX's competitor order.
+  // If the forward lookup misses, try reversed and flip home/away semantics
+  // so the selection still resolves correctly.
+  let orientationFlipped = false;
+  if (!event) {
+    event = getEventMarkets(sport, awayTeam, homeTeam, targetTime);
+    if (event) orientationFlipped = true;
+  }
   if (!event) return null;
+
+  // Flip selection when we found the event under reversed orientation.
+  // - h2h / moneyline: home↔away
+  // - spreads: home↔away + sign of line flips (home -3 ↔ away +3). We
+  //   invert `line` here so downstream alt-line matching stays correct.
+  // - totals: over/under are team-agnostic, no change
+  // - team_totals: home_over↔away_over, home_under↔away_under
+  if (orientationFlipped) {
+    if (marketType === 'h2h') {
+      selection = selection === 'home' ? 'away' : selection === 'away' ? 'home' : selection;
+    } else if (marketType === 'spreads') {
+      selection = selection === 'home' ? 'away' : selection === 'away' ? 'home' : selection;
+      if (line != null) line = -line;
+    } else if (marketType === 'team_totals') {
+      if (selection && selection.startsWith('home_')) selection = 'away_' + selection.slice(5);
+      else if (selection && selection.startsWith('away_')) selection = 'home_' + selection.slice(5);
+    }
+  }
 
   const market = event.markets[marketType];
   if (!market) return null;
