@@ -7083,6 +7083,9 @@
     window._parlayVsBooksRange = '7d'; // '24h' | '3d' | '7d' | '14d' | '30d' | 'all'
   }
   const RANGE_OPTIONS = [
+    // 'session' = current server session (everything since last boot).
+    // ms: null signals "derive cutoff from window._lastIntel.sessionStartedAt".
+    { key: 'session', label: 'Session', ms: null },
     { key: '24h', label: '24h', ms: 24 * 3600 * 1000 },
     { key: '3d',  label: '3d',  ms: 3 * 24 * 3600 * 1000 },
     { key: '7d',  label: '7d',  ms: 7 * 24 * 3600 * 1000 },
@@ -7115,8 +7118,15 @@
     if (allQuoted) {
       window._parlayVsBooksRawQuotes = allQuoted;
       data = [];
-      const rangeOpt = RANGE_OPTIONS.find(r => r.key === window._parlayVsBooksRange) || RANGE_OPTIONS[2];
-      const cutoff = rangeOpt.ms > 0 ? new Date(Date.now() - rangeOpt.ms).toISOString() : null;
+      const rangeOpt = RANGE_OPTIONS.find(r => r.key === window._parlayVsBooksRange) || RANGE_OPTIONS[3];
+      // 'session' range: cutoff = server session start. Null ms = no cutoff
+      // (all). Positive ms = rolling window from now.
+      let cutoff = null;
+      if (rangeOpt.key === 'session' && window._lastIntel?.sessionStartedAt) {
+        cutoff = window._lastIntel.sessionStartedAt;
+      } else if (rangeOpt.ms && rangeOpt.ms > 0) {
+        cutoff = new Date(Date.now() - rangeOpt.ms).toISOString();
+      }
       for (const o of allQuoted) {
         const qDate = o.quotedAt || o.confirmedAt;
         if (cutoff && qDate && qDate < cutoff) continue;
@@ -7231,7 +7241,7 @@
     const filtered = F === 'all' ? data : data.filter(d => F === 'confirmed' ? d.isConfirmed : !d.isConfirmed);
     const confirmedCount = data.filter(d => d.isConfirmed).length;
     html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">'
-      + data.length + ' parlays · ' + confirmedCount + ' confirmed · ' + (R === 'all' ? 'all time' : 'last ' + RANGE_OPTIONS.find(r => r.key === R).label)
+      + data.length + ' parlays · ' + confirmedCount + ' confirmed · ' + (R === 'all' ? 'all time' : R === 'session' ? 'this session' : 'last ' + RANGE_OPTIONS.find(r => r.key === R).label)
       + ' · &#9679; solid = confirmed · &#9675; hollow = not filled · size ∝ stake</div>';
 
     // --- Scatter ---
@@ -7414,8 +7424,13 @@
     if (allQuoted) {
       window._legVsBooksRawQuotes = allQuoted;
       data = [];
-      const rangeOpt = RANGE_OPTIONS.find(r => r.key === window._legVsBooksRange) || RANGE_OPTIONS[2];
-      const cutoff = rangeOpt.ms > 0 ? new Date(Date.now() - rangeOpt.ms).toISOString() : null;
+      const rangeOpt = RANGE_OPTIONS.find(r => r.key === window._legVsBooksRange) || RANGE_OPTIONS[3];
+      let cutoff = null;
+      if (rangeOpt.key === 'session' && window._lastIntel?.sessionStartedAt) {
+        cutoff = window._lastIntel.sessionStartedAt;
+      } else if (rangeOpt.ms && rangeOpt.ms > 0) {
+        cutoff = new Date(Date.now() - rangeOpt.ms).toISOString();
+      }
       for (const o of allQuoted) {
         const qDate = o.quotedAt || o.confirmedAt;
         if (cutoff && qDate && qDate < cutoff) continue;
@@ -7507,7 +7522,7 @@
     const confirmedCount = data.filter(d => d.isConfirmed).length;
     html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">'
       + data.length + ' legs &middot; ' + confirmedCount + ' from confirmed parlays &middot; '
-      + (R === 'all' ? 'all time' : 'last ' + RANGE_OPTIONS.find(r => r.key === R).label)
+      + (R === 'all' ? 'all time' : R === 'session' ? 'this session' : 'last ' + RANGE_OPTIONS.find(r => r.key === R).label)
       + ' &middot; X = leg fair prob (0-100%) &middot; Y = pp above fair (negative = bettor friendlier)</div>';
 
     const W = 900, H = 450, pad = { l: 60, r: 20, t: 25, b: 58 };
