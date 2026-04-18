@@ -12,16 +12,14 @@ const dkScraper = require('./dk-scraper');
  * which don't match any odds-feed h2h market. Returns null if the leg
  * isn't a series bet or the DK cache doesn't contain the team.
  */
-// Decline window around a series game tipoff. DK's series-winner market
-// is suspended while a game is in play AND our cache can be up to 10 min
-// stale; during that window our pre-game odds would overprice whichever
-// team took an early lead. Also pad a few hours AFTER expected game end
-// because DK doesn't instantly repost updated series odds.
-//   in-play   : startTime ≤ now  (game has tipped off)
-//   cooldown  : +6h after startTime (covers regulation + overtime + lag)
-// startTime is DK's series event's next-game tipoff; once DK moves to
-// the next game's tipoff (in the future), we resume quoting.
-const SERIES_DECLINE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+// Decline whenever DK's series event startTime is in the past. That
+// field is the NEXT game's tipoff — as long as it's still showing a
+// past time, the most recent game has already started and DK hasn't
+// relisted the series market yet. A fixed 6h cutoff would incorrectly
+// re-enable us for marathon games (multiple OT, rain delays, etc.)
+// where DK is NOT going to have relisted by then. The safe signal is
+// simply "startTime is still in the past = DK has not moved on to the
+// next game yet = we should not quote".
 
 function getSeriesFairProb(lineInfo) {
   // Trigger on either the tagged marketType (line-manager seed/virtual
@@ -48,12 +46,9 @@ function getSeriesFairProb(lineInfo) {
   // moves startTime forward (post-game to next game), we resume.
   if (hit.startTime) {
     const t = new Date(hit.startTime).getTime();
-    if (Number.isFinite(t)) {
-      const age = Date.now() - t;
-      if (age >= 0 && age < SERIES_DECLINE_COOLDOWN_MS) {
-        log.debug('Pricing', `Series in-play decline: ${teamName} (startTime ${hit.startTime}, age ${Math.round(age/60000)}min)`);
-        return null;
-      }
+    if (Number.isFinite(t) && t <= Date.now()) {
+      log.debug('Pricing', `Series in-play decline: ${teamName} (startTime ${hit.startTime}, ${Math.round((Date.now()-t)/60000)}min ago — DK has not relisted for next game)`);
+      return null;
     }
   }
   return hit.fairProb;
