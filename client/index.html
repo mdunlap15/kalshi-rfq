@@ -982,6 +982,18 @@
       // Fetch settlement drift separately (don't block main refresh)
       fetchJSON('/drift-status').then(d => renderDriftBanner(d)).catch(() => {});
 
+      // Fetch PX-native P&L separately (slow; paginated PX fetch). When
+      // present this becomes the authoritative source for P&L, ROI,
+      // win/loss counts in the Portfolio Summary (the in-memory tracker
+      // misses silent losses because PX only emits order.matched on our
+      // wins per Alec's event model).
+      fetchJSON('/px-pnl').then(p => {
+        if (p && p.ok) {
+          window._pxPnL = p;
+          renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
+        }
+      }).catch(() => {});
+
       renderStatus(status);
       updateNotificationBadge(orders);
       renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
@@ -5501,35 +5513,48 @@
     ].filter(Boolean);
     if (els.length === 0) return;
 
-    // Prefer account-based P&L (PX balance - starting balance) — it's the
-    // canonical source. Fall back to in-memory tracker only if balance
-    // P&L = PX balance + open risk − starting bankroll (account-based).
-    const pnl = portfolio?.accountPnL != null ? portfolio.accountPnL : (orderStats.runningPnL || 0);
-    const wins = orderStats.totalWins || 0;
-    const losses = orderStats.totalLosses || 0;
+    // Prefer PX-native P&L from /px-pnl when available (authoritative —
+    // pulled directly from PX's settlement_status + profit fields; the
+    // in-memory tracker misses silent losses). Fall back to tracker
+    // values only if the PX fetch hasn't populated yet.
+    const pxPnL = window._pxPnL;
+    const pnl = pxPnL?.realizedPnL != null ? pxPnL.realizedPnL
+              : (portfolio?.accountPnL != null ? portfolio.accountPnL : (orderStats.runningPnL || 0));
+    const wins = pxPnL?.counts?.wins ?? (orderStats.totalWins || 0);
+    const losses = pxPnL?.counts?.losses ?? (orderStats.totalLosses || 0);
     const settled = wins + losses;
     const confirmed = orderStats.totalConfirmations || 0;
-    const active = orderStats.activeOrders || 0;
+    const active = pxPnL?.counts?.open ?? (orderStats.activeOrders || 0);
     const winRate = settled > 0 ? Math.round(wins / settled * 100) : null;
 
-    // Use server-computed values that correctly exclude finished orders
-    const portRisk = portfolio?.currentRisk || 0;
+    // Prefer PX-native open exposure when available — it's the true
+    // currently-locked stake (PX finalized/pending orders), whereas the
+    // tracker's currentRisk is filtered through the (unreliable)
+    // phantom-flag heuristic.
+    const portRisk = pxPnL?.openExposure ?? (portfolio?.currentRisk || 0);
     const totalToWin = portfolio?.totalToWin || 0;
     const portLimit = portfolio?.maxDrawdown || 0;
     const portPct = portLimit > 0 ? Math.round(portRisk / portLimit * 100) : 0;
     const portCls = portPct > 90 ? 'negative' : portPct > 70 ? '' : 'positive';
     const portStr = fmtDollar(portRisk);
 
-    // ROI from settled orders
-    let settledPnl = 0;
-    let settledRiskTotal = 0;
-    for (const o of (allOrders || [])) {
-      if (!o.status || !o.status.startsWith('settled_')) continue;
-      settledPnl += (o.pnl || 0);
-      if (o.confirmedStake && o.offeredOdds) settledRiskTotal += calcBettorWager(o.confirmedStake, o.offeredOdds);
-      else if (o.confirmedStake) settledRiskTotal += o.confirmedStake;
+    // ROI: prefer PX-native (realized profit / total settled stake).
+    // Fallback to tracker-computed only when PX data not yet loaded.
+    let roi;
+    if (pxPnL) {
+      const denom = pxPnL.stakes?.totalSettled || 0;
+      roi = denom > 0 ? (pxPnL.realizedPnL / denom) * 100 : null;
+    } else {
+      let settledPnl = 0;
+      let settledRiskTotal = 0;
+      for (const o of (allOrders || [])) {
+        if (!o.status || !o.status.startsWith('settled_')) continue;
+        settledPnl += (o.pnl || 0);
+        if (o.confirmedStake && o.offeredOdds) settledRiskTotal += calcBettorWager(o.confirmedStake, o.offeredOdds);
+        else if (o.confirmedStake) settledRiskTotal += o.confirmedStake;
+      }
+      roi = settledRiskTotal > 0 ? (settledPnl / settledRiskTotal) * 100 : null;
     }
-    const roi = settledRiskTotal > 0 ? (settledPnl / settledRiskTotal) * 100 : null;
     const roiCls = roi != null ? (roi >= 0 ? 'positive' : 'negative') : 'neutral';
     const roiStr = roi != null ? (roi >= 0 ? '+' : '') + roi.toFixed(2) + '%' : '-';
 
@@ -5573,12 +5598,25 @@
       : cashFree < 2000 ? ''
       : 'positive';
 
+    // Net balance impact = realized P&L − open exposure. Matches the
+    // delta between current PX balance and starting bankroll. Only
+    // shown when PX-native data is present.
+    const netImpactStr = pxPnL?.netBalanceImpact != null ? fmtPnl(pxPnL.netBalanceImpact) : null;
+    const netImpactCls = pxPnL?.netBalanceImpact != null
+      ? (pxPnL.netBalanceImpact >= 0 ? 'positive' : 'negative') : 'neutral';
+
+    const pnlLabel = pxPnL ? 'Realized P&L' : 'P&L';
+    const pnlTitle = pxPnL
+      ? 'Sum of PX profit field across all settled orders (authoritative)'
+      : 'Tracker-derived P&L (may be inflated by unsettled losses)';
+
     const html = `<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">
       <div class="stat-bar" style="gap:6px 18px;">
-        ${stat('P&L', pnlStr, pnlCls)}
-        ${stat('ROI', roiStr, roiCls, 'Settled P&L / settled risk')}
+        ${stat(pnlLabel, pnlStr, pnlCls, pnlTitle)}
+        ${netImpactStr ? stat('Net', netImpactStr, netImpactCls, 'Realized P&L − Open exposure = actual balance change vs starting bankroll') : ''}
+        ${stat('ROI', roiStr, roiCls, 'Realized P&L / total settled stake')}
         ${stat('Active', active)}
-        ${stat('Deployed', portStr, portCls, 'Risk locked in open confirmed parlays (included in Account Balance)')}
+        ${stat('Deployed', portStr, portCls, 'Stake locked in open parlays (PX finalized/pending)')}
         ${stat('To Win', fmtDollar(totalToWin), 'positive')}
         ${stat('Account Balance', balanceStr, balanceCls, 'Total PX account balance — includes the Deployed amount')}
         ${stat('Cash to Deploy', cashFreeStr, cashFreeCls, 'Account Balance − Deployed = real cash free for new parlays')}

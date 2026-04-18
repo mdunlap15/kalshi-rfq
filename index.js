@@ -16,6 +16,7 @@ const oddsFeed = require('./services/odds-feed');
 const lineManager = require('./services/line-manager');
 const websocket = require('./services/websocket');
 const orderTracker = require('./services/order-tracker');
+const pxLedger = require('./services/px-ledger');
 const db = require('./services/db');
 const express = require('express');
 const path = require('path');
@@ -817,6 +818,20 @@ function startStatusServer() {
   // net settlement P&L using ONLY PX's own status/stake/profit fields —
   // no tracker interpretation. Use this to reconcile against our
   // runningPnL when account-balance vs tracker-P&L disagree.
+  // Authoritative PX-native P&L. Pulls full order history from PX and
+  // aggregates realized P&L, open exposure, and net balance impact
+  // directly from PX's profit + settlement_status fields. This is the
+  // source of truth — the in-memory tracker misses silent losses.
+  app.get('/px-pnl', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const summary = await pxLedger.getSummary({ force });
+      res.json({ ok: true, ...summary });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/debug/px-ledger', async (req, res) => {
     const limit = parseInt(req.query.limit) || 50000;
     try {
