@@ -1600,7 +1600,12 @@
     html += pctRow('receive → resolve', deltas.receive_to_resolve);
     html += pctRow('resolve → decline', deltas.resolve_to_decline);
     html += pctRow('decline → price', deltas.decline_to_price);
-    html += pctRow('price → submit', deltas.price_to_submit);
+    // Split "price → submit" into two rows:
+    //   price → dispatch: from pricing done to bytes on the wire (what
+    //     actually determines "who wins the auction"). Typically 1-2ms.
+    //   dispatch → submit: PX's round-trip ACK time (pure network).
+    html += pctRow('price → dispatch', deltas.price_to_dispatch);
+    html += pctRow('dispatch → submit', deltas.dispatch_to_submit);
     html += '</table>';
 
     // Win-rate-by-bucket

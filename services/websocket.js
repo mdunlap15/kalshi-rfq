@@ -607,19 +607,25 @@ async function handleRFQ(data) {
       // parallel with the ACK. BUT we still wait (detached) for the
       // ACK to record the TRUE round-trip latency on the buffer — the
       // dashboard should show real network time, not dispatch time.
-      const dispatchMs = Date.now() - startTime;
+      // Dispatch time = from RFQ arrival until bytes on the wire.
+      // Submit time = full round-trip including PX's ACK.
+      // Both are tracked: dispatch = the "when PX saw us" metric that
+      // actually determines who wins the auction; submit = operator-facing
+      // end-to-end number for health-checking network/PX latency.
       const submitPromise = px.submitOffer(callbackUrl, parlayId, [result.offer]);
+      const dispatchMs = Date.now() - startTime;
       rfqStages.submitted++;
-      // Seed the record with dispatch timing so it appears immediately.
-      // Will be patched to full round-trip when the ACK lands.
+      stageTimings.dispatch = dispatchMs;
+      // Seed submit with dispatch too so the record appears immediately.
+      // Patched with the true round-trip when the ACK lands.
       stageTimings.submit = dispatchMs;
       recordResponseTime(parlayId, dispatchMs, result.meta.americanOdds, stageTimings);
       orderTracker.updateOrderLatency(parlayId, dispatchMs, stageTimings);
       updateRfqOutcome(parlayId, 'submitted', `odds ${result.meta.americanOdds}`);
       log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${dispatchMs}ms dispatch (resolve=${stageTimings.resolve || 0} decline=${stageTimings.decline || 0} price=${stageTimings.price || 0})`);
       submitPromise.then(() => {
-        // Full round-trip finished — upgrade the buffered record so the
-        // dashboard reflects real "PX saw + acknowledged" latency.
+        // Full round-trip finished — upgrade submit to real round-trip.
+        // Keep dispatch locked to the earlier value so we can see both.
         const roundTripMs = Date.now() - startTime;
         const patchedStages = { ...stageTimings, submit: roundTripMs };
         patchResponseTime(parlayId, roundTripMs, patchedStages);
@@ -1161,7 +1167,7 @@ function getLatencyBreakdown() {
   const endToEnd = responseTimes.map(r => r.elapsed).sort((a, b) => a - b);
 
   // Per-stage cumulative percentiles
-  const stageKeys = ['resolve', 'decline', 'price', 'submit'];
+  const stageKeys = ['resolve', 'decline', 'price', 'dispatch', 'submit'];
   const stageStats = {};
   for (const k of stageKeys) {
     const vals = withStages
@@ -1177,7 +1183,10 @@ function getLatencyBreakdown() {
     ['receive_to_resolve', null, 'resolve'],
     ['resolve_to_decline', 'resolve', 'decline'],
     ['decline_to_price', 'decline', 'price'],
-    ['price_to_submit', 'price', 'submit'],
+    // Split the old "price → submit" into two stages: the wire-write
+    // time (what actually races against other SPs) vs PX's ACK wait.
+    ['price_to_dispatch', 'price', 'dispatch'],
+    ['dispatch_to_submit', 'dispatch', 'submit'],
   ];
   for (const [name, prev, next] of deltaPairs) {
     const vals = withStages
