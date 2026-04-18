@@ -2854,6 +2854,68 @@ function startStatusServer() {
     res.json({ events: oddsFeed.getAllCachedEvents() });
   });
 
+  // TEMPORARY: probe DK's MMA/UFC page to find the right URL + XHR
+  // subcategory for fight-winner moneylines. Loads the league page in
+  // headless Chromium and reports all nash-API XHRs + category tabs.
+  // Remove after dk-scraper MMA support ships.
+  app.get('/debug-dk-mma-probe', async (req, res) => {
+    const path = req.query.path || '/leagues/mma/ufc';
+    let puppeteer;
+    try { puppeteer = require('puppeteer'); } catch { return res.status(500).json({ error: 'puppeteer not installed' }); }
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    const hits = [];
+    let tabs = [];
+    let seoEvents = [];
+    try {
+      const page = await browser.newPage();
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+      page.on('response', async (resp) => {
+        const url = resp.url();
+        if (!url.includes('sportsbook-nash.draftkings.com')) return;
+        const subMatch = url.match(/subCategoryId%20eq%20%27(\d+)%27/);
+        const entry = { url, subcategoryId: subMatch ? subMatch[1] : null };
+        try {
+          const ct = resp.headers()['content-type'] || '';
+          if (ct.includes('json')) {
+            const data = await resp.json();
+            entry.eventCount = (data.events || []).length;
+            entry.selectionCount = (data.selections || []).length;
+            entry.marketNamesSample = [...new Set((data.markets || []).map(m => m.name || m.marketType?.name).filter(Boolean))].slice(0, 8);
+            entry.firstEvent = data.events?.[0]?.name || null;
+          }
+        } catch {}
+        hits.push(entry);
+      });
+      await page.goto('https://sportsbook.draftkings.com' + path, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await new Promise(r => setTimeout(r, 10000));
+      tabs = await page.evaluate(() => {
+        const out = [];
+        for (const a of document.querySelectorAll('a')) {
+          const h = a.getAttribute('href') || '';
+          const x = (a.textContent || '').trim();
+          if (/category|leagues\//.test(h) && x) out.push({ href: h, txt: x });
+        }
+        return out.slice(0, 40);
+      });
+      // Also collect visible event names on the page
+      seoEvents = await page.evaluate(() => {
+        const out = [];
+        for (const a of document.querySelectorAll('a[href*="/event/"]')) {
+          const h = a.getAttribute('href') || '';
+          const x = (a.textContent || '').trim();
+          if (x) out.push({ href: h, txt: x });
+        }
+        return out.slice(0, 20);
+      });
+    } finally {
+      await browser.close();
+    }
+    res.json({ ok: true, probedPath: path, hits, tabs, seoEventsSample: seoEvents });
+  });
+
   // TEMPORARY: diagnose why most MMA fights aren't being registered.
   // Pulls PX's full MMA event list, cross-checks against the line index
   // and odds-feed events, and reports which ones matched vs didn't.
