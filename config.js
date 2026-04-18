@@ -51,6 +51,12 @@ const config = {
     // baseVig + favorite ramp, so extreme favorites still pay more.
     // Default 0.05 (5%); tunable via VIG_SERIES_MIN env var.
     vigSeriesMin: parseFloat(process.env.VIG_SERIES_MIN) || 0.05,
+    // Minimum per-leg vig for MMA legs (moneyline + total rounds).
+    // MMA is a low-competition market on PX and DK's per-leg vig is
+    // ~4-5%; we can widen without losing flow. Applied as a floor on
+    // top of the normal baseVig + favorite ramp. Tunable via
+    // VIG_MMA_MIN env var.
+    vigMmaMin: parseFloat(process.env.VIG_MMA_MIN) || 0.03,
     // A/B-testable pricing mode for parlays. When true, vig is applied
     // ONCE at the parlay level using the MAX per-leg effective rate, rather
     // than compounded per-leg. Per-leg compounding penalizes multi-leg

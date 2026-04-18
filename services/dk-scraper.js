@@ -164,24 +164,48 @@ async function fetchMmaFightOdds({ force = false } = {}) {
               };
             }
           }
-          const mlMarkets = data.markets.filter(m => m.marketType?.name === 'Moneyline');
-          for (const m of mlMarkets) {
+          const parseSel = (sel) => {
+            const trueDec = typeof sel.trueOdds === 'number' ? sel.trueOdds : null;
+            const decDisplay = parseFloat(sel.displayOdds?.decimal);
+            const decimal = trueDec || decDisplay || null;
+            const american = sel.displayOdds?.american
+              ? parseInt(String(sel.displayOdds.american).replace(/[−–—]/g, '-').replace(/[^\-0-9]/g, ''), 10)
+              : null;
+            return {
+              decimalOdds: decimal,
+              americanOdds: Number.isFinite(american) ? american : null,
+              impliedProb: decimal && decimal > 0 ? 1 / decimal : null,
+            };
+          };
+          for (const m of data.markets) {
+            const name = m.marketType?.name || m.name || '';
             const ev = fightsById[m.eventId];
             if (!ev) continue;
-            for (const sel of data.selections) {
-              if (sel.marketId !== m.id) continue;
-              const trueDec = typeof sel.trueOdds === 'number' ? sel.trueOdds : null;
-              const decDisplay = parseFloat(sel.displayOdds?.decimal);
-              const decimal = trueDec || decDisplay || null;
-              const american = sel.displayOdds?.american
-                ? parseInt(String(sel.displayOdds.american).replace(/[−–—]/g, '-').replace(/[^\-0-9]/g, ''), 10)
-                : null;
-              ev.selections.push({
-                fighter: sel.label,
-                decimalOdds: decimal,
-                americanOdds: Number.isFinite(american) ? american : null,
-                impliedProb: decimal && decimal > 0 ? 1 / decimal : null,
-              });
+            if (name === 'Moneyline') {
+              for (const sel of data.selections) {
+                if (sel.marketId !== m.id) continue;
+                const p = parseSel(sel);
+                ev.selections.push({ fighter: sel.label, ...p });
+              }
+            } else if (name === 'Total Rounds' || /total\s*rounds/i.test(name)) {
+              // DK Total Rounds: each market line has Over/Under outcomes
+              // with a `points` / `label` (e.g. "Over 2.5"). We group by
+              // the rounds line and emit one {line, over, under} per.
+              const byLine = {};
+              for (const sel of data.selections) {
+                if (sel.marketId !== m.id) continue;
+                const p = parseSel(sel);
+                const lineVal = sel.points ?? (typeof sel.label === 'string' ? parseFloat(sel.label.replace(/[^0-9.]/g, '')) : null);
+                const side = /^over\b/i.test(sel.label || '') ? 'over'
+                           : /^under\b/i.test(sel.label || '') ? 'under' : null;
+                if (lineVal == null || !side) continue;
+                if (!byLine[lineVal]) byLine[lineVal] = { line: lineVal };
+                byLine[lineVal][side] = p;
+              }
+              if (!ev.totalsByLine) ev.totalsByLine = {};
+              for (const [ln, pair] of Object.entries(byLine)) {
+                if (pair.over && pair.under) ev.totalsByLine[ln] = pair;
+              }
             }
           }
         } catch { /* ignore */ }
@@ -199,12 +223,28 @@ async function fetchMmaFightOdds({ force = false } = {}) {
         const sumImplied = ev.selections.reduce((s, x) => s + (x.impliedProb || 0), 0);
         if (sumImplied <= 0) continue;
         for (const s of ev.selections) s.fairProb = (s.impliedProb || 0) / sumImplied;
+        // De-vig each total-rounds line pair (over vs under → fair probs).
+        const totals = [];
+        for (const ln of Object.keys(ev.totalsByLine || {}).sort((a, b) => parseFloat(a) - parseFloat(b))) {
+          const t = ev.totalsByLine[ln];
+          const sum = (t.over.impliedProb || 0) + (t.under.impliedProb || 0);
+          if (sum <= 0) continue;
+          const fairOver = (t.over.impliedProb || 0) / sum;
+          const fairUnder = (t.under.impliedProb || 0) / sum;
+          totals.push({
+            line: parseFloat(ln),
+            over: { ...t.over, fairProb: fairOver },
+            under: { ...t.under, fairProb: fairUnder },
+            vig: round(sum - 1, 5),
+          });
+        }
         fights.push({
           eventId: ev.eventId,
           eventName: ev.eventName,
           startTime: ev.startTime,
           vig: round(sumImplied - 1, 5),
           fighters: ev.selections,
+          totals,
         });
       }
       fights.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));

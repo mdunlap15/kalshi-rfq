@@ -454,6 +454,12 @@ async function priceParlay(legs) {
     if (marketType === 'series_winner' && seriesMinVig > 0) {
       vig = Math.max(vig, seriesMinVig);
     }
+    // MMA legs (moneyline + total rounds) — same logic: low-comp
+    // market on PX, we can widen without losing flow.
+    const mmaMinVig = config.pricing.vigMmaMin || 0;
+    if (sport === 'mma_mixed_martial_arts' && mmaMinVig > 0) {
+      vig = Math.max(vig, mmaMinVig);
+    }
     return vig;
   }
 

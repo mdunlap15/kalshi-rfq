@@ -46,6 +46,10 @@ const TOTAL_BOUNDS_BY_SPORT = {
   'soccer_germany_bundesliga': [0.5, 7],
   'soccer_france_ligue_one': [0.5, 7],
   'soccer_usa_nwsl': [0.5, 7],
+  // MMA total rounds — 3-round prelims have 1.5/2.5 lines, 5-round
+  // main events add 3.5/4.5. Range [0.5, 5.5] covers every DK-posted
+  // rounds line.
+  'mma_mixed_martial_arts': [0.5, 5.5],
   'soccer_mexico_ligamx': [0.5, 7],
   'soccer_brazil_campeonato': [0.5, 7],
   'soccer_conmebol_libertadores': [0.5, 7],
@@ -533,7 +537,7 @@ async function seedAllLines() {
     const fullGameNames = {
       moneyline: ['Moneyline', 'Moneyline (2 Way)', 'Moneyline (2-Way)', 'Moneyline (Regulation)', 'Draw No Bet'],
       spread: ['Spread', 'Run Line', 'Puck Line', 'Spread (Regular Time)', 'Game Spread', 'Point Spread'],
-      total: ['Total', 'Total Points', 'Points', 'Total Runs', 'Total Goals', 'Total Goals (Regular Time)'],
+      total: ['Total', 'Total Points', 'Points', 'Total Runs', 'Total Goals', 'Total Goals (Regular Time)', 'Total Rounds', 'Rounds'],
       team_total: ['Team Total', 'Team Total Points', 'Team Total Runs', 'Team Total Goals', 'Home Total', 'Away Total'],
     };
 
@@ -542,11 +546,13 @@ async function seedAllLines() {
     const f5NamePattern = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings/i;
     const h1NamePattern = /first\s*half|1st\s*half/i;
 
-    // Combat sports (MMA, Boxing) only have moneyline in our odds feed —
-    // SharpAPI/TheOddsAPI don't publish Total Rounds lines. Restrict to
-    // moneyline so we don't register a flood of "Total Rounds" lines that
-    // would always decline at price time with 'no odds data'.
-    const isCombatSport = sportKey === 'mma_mixed_martial_arts' || sportKey === 'boxing_boxing';
+    // Combat sports (MMA, Boxing) historically only had moneyline
+    // in our odds feeds. MMA now gets Total Rounds from the DK scraper
+    // (services/dk-scraper.fetchMmaFightOdds) merged into the cache —
+    // so MMA can register 'total' markets. Boxing still moneyline only.
+    const isMmaSport = sportKey === 'mma_mixed_martial_arts';
+    const isBoxingSport = sportKey === 'boxing_boxing';
+    const isCombatSport = isBoxingSport; // only boxing keeps the ML-only restriction
 
     // Series-winner markets are structurally 2-way moneylines (team vs
     // team with decimal odds). They get priced from the DK scraper
@@ -558,7 +564,9 @@ async function seedAllLines() {
       const isSeriesMarket = seriesWinnerNamePat.test(m.name || '');
       const supportedBase = isCombatSport
         ? ['moneyline']
-        : ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
+        : isMmaSport
+          ? ['moneyline', 'total']
+          : ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
       if (!supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type) && !FIRST_HALF_MARKET_TYPES.includes(m.type)) return false;
       // Series markets bypass the sub-game/prop filter and the name-
       // allowlist check. Still must be type=moneyline (single-leg team

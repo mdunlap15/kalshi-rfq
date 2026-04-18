@@ -2323,27 +2323,59 @@ async function mergeDkMmaFights() {
     // teamName→competitor by exact/substring anyway.
     const homeTeam = f1.fighter, awayTeam = f2.fighter;
     const key = normalizeEventKey(homeTeam, awayTeam);
+    const markets = {
+      h2h: {
+        home: {
+          rawOdds: f1.americanOdds, impliedProb: f1.impliedProb,
+          fairProb: f1.fairProb, displayFairProb: f1.fairProb,
+        },
+        away: {
+          rawOdds: f2.americanOdds, impliedProb: f2.impliedProb,
+          fairProb: f2.fairProb, displayFairProb: f2.fairProb,
+        },
+        books: 1,
+        pinnacle: null, fanduel: null,
+        draftkings: { home: f1.americanOdds, away: f2.americanOdds },
+        kalshi: null,
+        dkScraped: true,
+      },
+    };
+    // Total rounds: DK offers multiple lines (1.5, 2.5, 3.5). Attach
+    // the primary (closest to the middle, typically 2.5 for 3-round or
+    // 4.5 for 5-round fights) and keep the rest as alt lines.
+    if (Array.isArray(fight.totals) && fight.totals.length > 0) {
+      // Pick a primary line — prefer the one closest to median fight duration.
+      // 3-round fight median ≈ 2.5; 5-round main event ≈ 4.5. Use the middle
+      // line if multiple; fall back to the first.
+      const sorted = [...fight.totals].sort((a, b) => a.line - b.line);
+      const primary = sorted[Math.floor(sorted.length / 2)];
+      markets.totals = {
+        line: primary.line,
+        over: {
+          rawOdds: primary.over.americanOdds, impliedProb: primary.over.impliedProb,
+          fairProb: primary.over.fairProb, displayFairProb: primary.over.fairProb,
+        },
+        under: {
+          rawOdds: primary.under.americanOdds, impliedProb: primary.under.impliedProb,
+          fairProb: primary.under.fairProb, displayFairProb: primary.under.fairProb,
+        },
+        books: 1,
+        alt: sorted.map(t => ({
+          line: t.line,
+          over: { rawOdds: t.over.americanOdds, impliedProb: t.over.impliedProb, fairProb: t.over.fairProb, displayFairProb: t.over.fairProb },
+          under: { rawOdds: t.under.americanOdds, impliedProb: t.under.impliedProb, fairProb: t.under.fairProb, displayFairProb: t.under.fairProb },
+        })),
+        pinnacle: null, fanduel: null,
+        draftkings: { line: primary.line, over: primary.over.americanOdds, under: primary.under.americanOdds },
+        kalshi: null,
+        dkScraped: true,
+      };
+    }
     const newEvent = {
       homeTeam, awayTeam,
       commenceTime: fight.startTime || null,
       eventId: 'dk-mma-' + fight.eventId,
-      markets: {
-        h2h: {
-          home: {
-            rawOdds: f1.americanOdds, impliedProb: f1.impliedProb,
-            fairProb: f1.fairProb, displayFairProb: f1.fairProb,
-          },
-          away: {
-            rawOdds: f2.americanOdds, impliedProb: f2.impliedProb,
-            fairProb: f2.fairProb, displayFairProb: f2.fairProb,
-          },
-          books: 1,
-          pinnacle: null, fanduel: null,
-          draftkings: { home: f1.americanOdds, away: f2.americanOdds },
-          kalshi: null,
-          dkScraped: true,
-        },
-      },
+      markets,
     };
     if (!cache.events[key]) cache.events[key] = [];
     if (Array.isArray(cache.events[key])) cache.events[key].push(newEvent);
