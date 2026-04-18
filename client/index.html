@@ -3562,7 +3562,13 @@
       let detailHtml = '';
       if (teamParlays.length > 0) {
         detailHtml += '<table style="width:100%; font-size:11px;">';
-        detailHtml += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 8px;">Confirmed</th><th style="text-align:left; padding:2px 8px;">All Legs</th><th style="text-align:right; padding:2px 8px;">Odds</th><th style="text-align:right; padding:2px 8px;">My Risk</th><th style="text-align:right; padding:2px 8px;">To Win</th></tr>';
+        detailHtml += '<tr style="color:var(--text3);">'
+          + '<th style="text-align:left; padding:2px 8px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,0,false)" title="Sort by confirmation time">Confirmed</th>'
+          + '<th style="text-align:left; padding:2px 8px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,1,false)" title="Sort alphabetically">All Legs</th>'
+          + '<th style="text-align:right; padding:2px 8px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,2,true)" title="Sort by odds">Odds</th>'
+          + '<th style="text-align:right; padding:2px 8px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,3,true)" title="Sort by my risk">My Risk</th>'
+          + '<th style="text-align:right; padding:2px 8px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,4,true)" title="Sort by to-win">To Win</th>'
+          + '</tr>';
         for (const o of teamParlays) {
           const legs = o.legs || o.meta?.legs || [];
           const allTeams = formatParlaySelections(legs);
@@ -4126,7 +4132,13 @@
 
       // Expandable: show which parlays contribute
       let detail = '<table style="width:100%; font-size:11px;">';
-      detail += '<tr style="color:var(--text3);"><th style="text-align:left; padding:2px 6px;">Selection</th><th style="text-align:left; padding:2px 6px;">Legs</th><th style="text-align:right; padding:2px 6px;">Weighted Risk</th><th style="text-align:right; padding:2px 6px;">My Risk</th><th style="text-align:right; padding:2px 6px;">To Win</th></tr>';
+      detail += '<tr style="color:var(--text3);">'
+        + '<th style="text-align:left; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,0,false)" title="Sort alphabetically">Selection</th>'
+        + '<th style="text-align:left; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,1,true)" title="Sort by leg count">Legs</th>'
+        + '<th style="text-align:right; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,2,true)" title="Sort by weighted risk">Weighted Risk</th>'
+        + '<th style="text-align:right; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,3,true)" title="Sort by my risk">My Risk</th>'
+        + '<th style="text-align:right; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,4,true)" title="Sort by to-win">To Win</th>'
+        + '</tr>';
       for (const p of (g.parlays || [])) {
         // Build a specific "<Team> <±Line>" label. Prefer the concrete
         // teamName from backend; fall back to home/away resolution when
@@ -4480,6 +4492,51 @@
     if (opening) expandedRows.add(id);
     else expandedRows.delete(id);
   }
+
+  // Generic in-place sorter for the expandable detail tables inside
+  // Team Exposure / Game Exposure rows. Called from <th onclick=...>
+  // with the clicked element + column index + whether to parse as a
+  // number. Direction toggles on repeat clicks. Stops propagation so
+  // clicking a header doesn't collapse the parent detail row.
+  window.sortInlineTable = function(ev, th, colIdx, asNumber) {
+    if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+    const table = th.closest('table');
+    if (!table || !table.rows.length) return;
+    const headerRow = table.rows[0];
+    const curDir = th.dataset.sortDir === 'asc' ? 'desc' : 'asc';
+    for (const h of headerRow.cells) {
+      h.dataset.sortDir = '';
+      const a = h.querySelector('.sort-arrow');
+      if (a) a.remove();
+    }
+    th.dataset.sortDir = curDir;
+    const arrow = document.createElement('span');
+    arrow.className = 'sort-arrow';
+    arrow.textContent = curDir === 'asc' ? ' \u25B2' : ' \u25BC';
+    arrow.style.cssText = 'color:var(--accent); font-size:9px; margin-left:2px;';
+    th.appendChild(arrow);
+    const getVal = (row) => {
+      const cell = row.cells[colIdx];
+      if (!cell) return asNumber ? -Infinity : '';
+      const text = cell.textContent || '';
+      if (asNumber) {
+        const m = text.replace(/[\$,%]/g, '').match(/-?\d+(\.\d+)?/);
+        return m ? parseFloat(m[0]) : -Infinity;
+      }
+      const t = Date.parse(text);
+      if (!isNaN(t) && /\d{1,2}[\/\-]\d{1,2}/.test(text)) return t;
+      return text.toLowerCase();
+    };
+    const rows = Array.from(table.rows).slice(1);
+    rows.sort((a, b) => {
+      const va = getVal(a), vb = getVal(b);
+      if (va === vb) return 0;
+      return (va < vb ? -1 : 1) * (curDir === 'asc' ? 1 : -1);
+    });
+    const parent = rows[0]?.parentNode;
+    if (!parent) return;
+    for (const r of rows) parent.appendChild(r);
+  };
 
   // Per-day sort handler for Daily Volume parlay-detail tables. Clicking a
   // header column toggles direction if same column, otherwise switches column
