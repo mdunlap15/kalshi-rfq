@@ -2854,6 +2854,43 @@ function startStatusServer() {
     res.json({ events: oddsFeed.getAllCachedEvents() });
   });
 
+  // TEMPORARY: diagnose why most MMA fights aren't being registered.
+  // Pulls PX's full MMA event list, cross-checks against the line index
+  // and odds-feed events, and reports which ones matched vs didn't.
+  app.get('/debug-mma-match', async (req, res) => {
+    try {
+      const pxEvents = await px.fetchSportEvents();
+      const mmaEvents = pxEvents.filter(e => (e.sport_name || '').toLowerCase().includes('mma'));
+      const idx = lineManager.__debugGetLineIndex ? lineManager.__debugGetLineIndex() : {};
+      const registeredEventIds = new Set();
+      for (const v of Object.values(idx)) {
+        if (v.sport === 'mma_mixed_martial_arts' && v.pxEventId) registeredEventIds.add(String(v.pxEventId));
+      }
+      const oddsCached = oddsFeed.getAllCachedEvents().filter(e => e.sport === 'mma_mixed_martial_arts');
+      const oddsNames = oddsCached.map(e => `${e.homeTeam} vs ${e.awayTeam}`);
+
+      const summary = mmaEvents.map(e => ({
+        pxEventId: e.event_id,
+        pxEventName: e.name,
+        sport_name: e.sport_name,
+        scheduled: e.scheduled,
+        competitors: (e.competitors || []).map(c => c.name),
+        registered: registeredEventIds.has(String(e.event_id)),
+      }));
+
+      res.json({
+        ok: true,
+        pxMmaEventCount: mmaEvents.length,
+        registeredCount: summary.filter(s => s.registered).length,
+        oddsCachedCount: oddsCached.length,
+        oddsCachedSample: oddsNames.slice(0, 30),
+        pxEvents: summary,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack?.split('\n').slice(0, 5) });
+    }
+  });
+
   // TEMPORARY: probe SharpAPI with candidate F5 market-type names to see
   // which (if any) return data. Answers whether we can drop the Odds-API
   // F5 supplement in favor of SharpAPI as primary. Remove after confirming.
