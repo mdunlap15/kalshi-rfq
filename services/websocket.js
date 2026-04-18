@@ -60,7 +60,7 @@ async function connect() {
         (async () => {
           try {
             const token = await px.login();
-            const resp = await require('node-fetch')(
+            const resp = await fetch(
               `${require('../config').config.px.baseUrl}/parlay/sp/websocket/auth`,
               {
                 method: 'POST',

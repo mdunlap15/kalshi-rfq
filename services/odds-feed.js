@@ -2665,11 +2665,20 @@ async function warmAltLines(sport) {
 
   // Collect candidate events: home/away pairs with near-term commenceTime
   // and not already fresh in alt-line cache.
+  //
+  // Skip PX's conditional playoff events ("Game 3: Boston", "Boston 2026
+  // 1st Round series", etc.) — these aren't individual books' events and
+  // The Odds API has no matching record. Warming would burn API quota
+  // noMatch'ing them every cycle.
+  const conditionalPlayoffPattern =
+    /(^|\s)game\s*\d+\s*:|\d{4}\s+\w+\s+round|\bseries\s*$/i;
   const candidates = [];
   for (const [key, entry] of Object.entries(cache.events)) {
     const events = Array.isArray(entry) ? entry : [entry];
     for (const ev of events) {
       if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      if (conditionalPlayoffPattern.test(ev.homeTeam) ||
+          conditionalPlayoffPattern.test(ev.awayTeam)) continue;
       const startMs = ev.commenceTime ? new Date(ev.commenceTime).getTime() : null;
       if (startMs && !isNaN(startMs)) {
         if (startMs < now) continue;              // already started
@@ -2761,7 +2770,11 @@ async function warmAllSports() {
 
 // Periodic-warm loop handle so callers (and tests) can start/stop it cleanly.
 let _warmLoopTimer = null;
-const WARM_LOOP_INTERVAL_MS = 60 * 1000;
+// 30s interval halves the window where a newly-registered PX event hasn't
+// been pre-warmed yet. Individual warm calls early-exit when the alt cache
+// entry is still fresh under ALT_LINES_TTL_MS (10 min), so this doesn't
+// multiply API quota 2x — it just tightens new-event coverage latency.
+const WARM_LOOP_INTERVAL_MS = 30 * 1000;
 
 /**
  * Start the background warm loop. Safe to call multiple times — second calls
