@@ -51,6 +51,17 @@ const config = {
     // baseVig + favorite ramp, so extreme favorites still pay more.
     // Default 0.05 (5%); tunable via VIG_SERIES_MIN env var.
     vigSeriesMin: parseFloat(process.env.VIG_SERIES_MIN) || 0.05,
+    // Cap the favorite side's share of the book's overround during
+    // 2-way de-vig. Proportional de-vig (share = favImplied/sumImplied)
+    // over-corrects heavy favorites — on DK -3000/+1300 it strips ~4pp
+    // off the favorite and leaves our fair ~15pp looser than DK posts.
+    // Capping at 0.5 is the standard "additive margin" method: each side
+    // absorbs at most half the overround. Only binds once favorite
+    // implied share exceeds the cap (i.e., any 2-way with a meaningful
+    // favorite); coinflips are unaffected. Tunable via
+    // DEVIG_FAV_MAX_SHARE env var — lower values (0.3-0.4) bias harder
+    // toward DK's posted on heavy favs.
+    devigFavMaxShare: parseFloat(process.env.DEVIG_FAV_MAX_SHARE) || 0.5,
     // Minimum per-leg vig for MMA legs (moneyline + total rounds).
     // MMA is a low-competition market on PX and DK's per-leg vig is
     // ~4-5%; we can widen without losing flow. Applied as a floor on

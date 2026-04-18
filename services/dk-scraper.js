@@ -12,6 +12,7 @@
  * concurrent callers to avoid racing multiple Chromium instances.
  */
 const log = require('./logger');
+const { config } = require('../config');
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const NAV_TIMEOUT_MS = 60000;
@@ -384,14 +385,35 @@ function parseSeriesData(payload) {
     });
   }
 
-  // De-vig each 2-way series proportionally.
+  // De-vig each 2-way series with a cap on the favorite's share of the
+  // book's overround (config.pricing.devigFavMaxShare, default 0.5).
+  // Proportional de-vig over-corrects heavy favorites on DK's series
+  // markets (e.g. -3000/+1300 yields a fair ~15pp looser than posted);
+  // capping the favorite's absorbed share keeps our fair tight against
+  // DK on lopsided books while leaving coinflips effectively unchanged.
+  const favMaxShare = (config.pricing && config.pricing.devigFavMaxShare != null)
+    ? config.pricing.devigFavMaxShare
+    : 0.5;
   const series = [];
   for (const s of Object.values(seriesByEvent)) {
     if (s.teams.length !== 2) continue;
     const sumImplied = s.teams.reduce((x, t) => x + (t.impliedProb || 0), 0);
     if (sumImplied <= 0) continue;
-    for (const t of s.teams) t.fairProb = (t.impliedProb || 0) / sumImplied;
-    s.vig = round(sumImplied - 1, 5);
+    const overround = sumImplied - 1;
+    // Identify favorite (larger implied). Proportional share = favImplied/sumImplied;
+    // capped share = min(that, favMaxShare). Favorite absorbs `share × overround`
+    // of the vig, dog absorbs the rest. Sums to 1 by construction.
+    const [favIdx, dogIdx] = s.teams[0].impliedProb >= s.teams[1].impliedProb ? [0, 1] : [1, 0];
+    const favImplied = s.teams[favIdx].impliedProb || 0;
+    const dogImplied = s.teams[dogIdx].impliedProb || 0;
+    const proportionalFavShare = sumImplied > 0 ? favImplied / sumImplied : 0.5;
+    const favShare = Math.min(proportionalFavShare, favMaxShare);
+    const favFair = favImplied - favShare * overround;
+    const dogFair = dogImplied - (1 - favShare) * overround;
+    s.teams[favIdx].fairProb = favFair;
+    s.teams[dogIdx].fairProb = dogFair;
+    s.vig = round(overround, 5);
+    s.devigFavShare = round(favShare, 4);
     series.push(s);
   }
   series.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
