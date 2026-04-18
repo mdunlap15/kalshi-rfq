@@ -2961,6 +2961,32 @@ function startStatusServer() {
   // TEMPORARY: diagnose why tennis lines aren't registering despite
   // tennis events being in the odds cache. Returns PX's tennis event
   // list + current odds-cache teams + per-event registered status.
+  // TEMPORARY: dump raw PX market names/types for a given event so we
+  // can see what PX actually publishes for series spread markets.
+  app.get('/debug-px-markets', async (req, res) => {
+    try {
+      const eventName = (req.query.event || '').toLowerCase();
+      if (!eventName) return res.status(400).json({ error: 'event query param required (partial match)' });
+      const pxEvents = await px.fetchSportEvents();
+      const match = pxEvents.find(e => (e.name || '').toLowerCase().includes(eventName));
+      if (!match) return res.json({ error: 'no event found', searched: pxEvents.length });
+      const markets = await px.fetchMarkets(match.event_id);
+      const summary = (markets || []).map(m => ({
+        id: m.id, type: m.type, name: m.name,
+        selectionCount: (m.selections || []).reduce((n, sg) => n + (sg || []).length, 0)
+          + (m.market_lines || []).reduce((n, ml) => n + (ml.selections || []).reduce((mm, sg) => mm + (sg || []).length, 0), 0),
+        sampleSelection: (() => {
+          if (m.selections) for (const sg of m.selections) for (const s of sg || []) if (s.line_id) return { name: s.name, line_id: s.line_id, line: s.line };
+          if (m.market_lines) for (const ml of m.market_lines) for (const sg of ml.selections || []) for (const s of sg || []) if (s.line_id) return { name: s.name, line_id: s.line_id, line: ml.line ?? s.line };
+          return null;
+        })(),
+      }));
+      res.json({ ok: true, event: { id: match.event_id, name: match.name }, marketCount: markets.length, markets: summary });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/debug-tennis-match', async (req, res) => {
     try {
       const pxEvents = await px.fetchSportEvents();
