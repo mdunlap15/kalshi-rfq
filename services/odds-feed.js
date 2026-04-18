@@ -701,97 +701,107 @@ async function supplementMlbF5Markets(parsedEvents) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   if (!theOddsApiKey) return;
 
-  // F5 coverage from SharpAPI is thin: only BetMGM populates F5 ML +
-  // run-line, and totals are absent entirely (probed live). Pull all
-  // three F5 markets from The Odds API here so Pinnacle/DK/FanDuel
-  // cover every event. Odds API books take priority over SharpAPI's
-  // BetMGM — sharper books → better consensus fair. When a match
-  // can't be found (event not in Odds API), SharpAPI's BetMGM data
-  // stays in place as fallback.
-  const url = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds`
-    + `?apiKey=${theOddsApiKey}`
-    + `&regions=us,eu`
-    + `&markets=h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings`
-    + `&bookmakers=pinnacle,draftkings,fanduel`
-    + `&oddsFormat=american`;
+  // IMPORTANT: The Odds API's bulk /odds endpoint does NOT support F5
+  // market keys (h2h_1st_5_innings etc.) — returns 422 INVALID_MARKET.
+  // F5 markets live on the per-event endpoint /events/{id}/odds.
+  // Loop all parsed events and fetch F5 per-event (bounded concurrency).
+  // Still cheap vs our quota (15-ish MLB games per cycle).
 
-  const resp = await fetch(url);
-  if (!resp.ok) {
-    log.warn('OddsFeed', `MLB F5 fetch failed (${resp.status})`);
+  // Collect candidate events (skip any that already have all 3 F5 markets).
+  const candidates = [];
+  for (const entry of Object.values(parsedEvents)) {
+    const arr = Array.isArray(entry) ? entry : [entry];
+    for (const ev of arr) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      if (ev.markets && ev.markets.h2h_f5 && ev.markets.spreads_f5 && ev.markets.totals_f5) continue;
+      candidates.push(ev);
+    }
+  }
+  if (candidates.length === 0) {
+    log.info('OddsFeed', 'MLB F5 supplement: no candidates');
     return;
   }
-  const remaining = resp.headers.get('x-requests-remaining');
-  if (remaining != null) log.debug('OddsFeed', `The Odds API usage (MLB F5): ${remaining} remaining`);
 
-  const events = await resp.json();
-  let h2hCount = 0, spreadCount = 0, totalCount = 0;
-  for (const event of events) {
-    const entry = findParsedEntryFuzzy(parsedEvents, event.home_team, event.away_team);
-    if (!entry) continue;
-    const eventArr = Array.isArray(entry) ? entry : [entry];
-    const evDate = event.commence_time ? new Date(event.commence_time).toISOString().substring(0, 10) : '';
-    const matchedEv = eventArr.find(e => {
-      const d = e.commenceTime ? new Date(e.commenceTime).toISOString().substring(0, 10) : '';
-      return !evDate || !d || d === evDate;
-    }) || eventArr[0];
-    if (!matchedEv) continue;
+  let h2hCount = 0, spreadCount = 0, totalCount = 0, calls = 0, matchFails = 0, apiFails = 0;
+  const CONCURRENCY = 3;
+  let idx = 0;
+  async function worker() {
+    while (idx < candidates.length) {
+      const ev = candidates[idx++];
+      const resolved = await resolveOddsApiEventId('baseball_mlb', ev.homeTeam, ev.awayTeam, ev.commenceTime);
+      if (!resolved) { matchFails++; continue; }
 
-    const h2hPairs = [];
-    const spreadPairs = [];
-    const totalPairs = [];
-    for (const book of (event.bookmakers || [])) {
-      for (const m of (book.markets || [])) {
-        if (m.key === 'h2h_1st_5_innings') {
-          // h2h outcomes carry team names — match to home/away.
-          const homeOut = m.outcomes?.find(o => o.name === event.home_team);
-          const awayOut = m.outcomes?.find(o => o.name === event.away_team);
-          if (homeOut && awayOut) {
-            h2hPairs.push({
-              book: book.key,
-              home: { odds_probability: americanToImpliedProb(homeOut.price), odds_american: homeOut.price },
-              away: { odds_probability: americanToImpliedProb(awayOut.price), odds_american: awayOut.price },
-            });
-          }
-        } else if (m.key === 'spreads_1st_5_innings') {
-          // spreads outcomes: one row per team with a `point` (team's handicap).
-          // Pair the home+away outcomes; each book posts ONE primary spread line.
-          const homeOut = m.outcomes?.find(o => o.name === event.home_team);
-          const awayOut = m.outcomes?.find(o => o.name === event.away_team);
-          if (homeOut && awayOut) {
-            spreadPairs.push({
-              book: book.key,
-              home: { odds_probability: americanToImpliedProb(homeOut.price), odds_american: homeOut.price, point: homeOut.point, line: homeOut.point },
-              away: { odds_probability: americanToImpliedProb(awayOut.price), odds_american: awayOut.price, point: awayOut.point, line: awayOut.point },
-            });
-          }
-        } else if (m.key === 'totals_1st_5_innings') {
-          const over = m.outcomes?.find(o => o.name === 'Over');
-          const under = m.outcomes?.find(o => o.name === 'Under');
-          if (over && under) {
-            totalPairs.push({
-              book: book.key,
-              over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
-              under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
-            });
+      const url = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${resolved.eventId}/odds`
+        + `?apiKey=${theOddsApiKey}`
+        + `&regions=us,eu`
+        + `&markets=h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings`
+        + `&bookmakers=pinnacle,draftkings,fanduel`
+        + `&oddsFormat=american`;
+
+      try {
+        const resp = await fetch(url);
+        calls++;
+        if (!resp.ok) { apiFails++; continue; }
+        const data = await resp.json();
+
+        const h2hPairs = [], spreadPairs = [], totalPairs = [];
+        for (const book of (data.bookmakers || [])) {
+          for (const m of (book.markets || [])) {
+            if (m.key === 'h2h_1st_5_innings') {
+              const homeOut = m.outcomes?.find(o => o.name === data.home_team);
+              const awayOut = m.outcomes?.find(o => o.name === data.away_team);
+              if (homeOut && awayOut) {
+                h2hPairs.push({
+                  book: book.key,
+                  home: { odds_probability: americanToImpliedProb(homeOut.price), odds_american: homeOut.price },
+                  away: { odds_probability: americanToImpliedProb(awayOut.price), odds_american: awayOut.price },
+                });
+              }
+            } else if (m.key === 'spreads_1st_5_innings') {
+              const homeOut = m.outcomes?.find(o => o.name === data.home_team);
+              const awayOut = m.outcomes?.find(o => o.name === data.away_team);
+              if (homeOut && awayOut) {
+                spreadPairs.push({
+                  book: book.key,
+                  home: { odds_probability: americanToImpliedProb(homeOut.price), odds_american: homeOut.price, point: homeOut.point, line: homeOut.point },
+                  away: { odds_probability: americanToImpliedProb(awayOut.price), odds_american: awayOut.price, point: awayOut.point, line: awayOut.point },
+                });
+              }
+            } else if (m.key === 'totals_1st_5_innings') {
+              const over = m.outcomes?.find(o => o.name === 'Over');
+              const under = m.outcomes?.find(o => o.name === 'Under');
+              if (over && under) {
+                totalPairs.push({
+                  book: book.key,
+                  over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
+                  under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
+                });
+              }
+            }
           }
         }
+
+        if (h2hPairs.length > 0) {
+          const mk = buildConsensusMoneyline(h2hPairs);
+          if (mk) { ev.markets.h2h_f5 = mk; h2hCount++; }
+        }
+        if (spreadPairs.length > 0) {
+          const sp = buildConsensusSpread(spreadPairs);
+          if (sp) { ev.markets.spreads_f5 = sp; spreadCount++; }
+        }
+        if (totalPairs.length > 0) {
+          ev.markets.totals_f5 = buildConsensusTotals(totalPairs);
+          totalCount++;
+        }
+      } catch (err) {
+        apiFails++;
       }
     }
-
-    if (h2hPairs.length > 0) {
-      const m = buildConsensusMoneyline(h2hPairs);
-      if (m) { matchedEv.markets.h2h_f5 = m; h2hCount++; }
-    }
-    if (spreadPairs.length > 0) {
-      const s = buildConsensusSpread(spreadPairs);
-      if (s) { matchedEv.markets.spreads_f5 = s; spreadCount++; }
-    }
-    if (totalPairs.length > 0) {
-      matchedEv.markets.totals_f5 = buildConsensusTotals(totalPairs);
-      totalCount++;
-    }
   }
-  log.info('OddsFeed', `MLB F5 supplement: h2h on ${h2hCount}, spread on ${spreadCount}, total on ${totalCount} events`);
+  const workers = [];
+  for (let i = 0; i < Math.min(CONCURRENCY, candidates.length); i++) workers.push(worker());
+  await Promise.all(workers);
+  log.info('OddsFeed', `MLB F5 supplement (per-event): ${calls}/${candidates.length} calls, h2h+${h2hCount} spread+${spreadCount} total+${totalCount}, matchFails=${matchFails} apiFails=${apiFails}`);
 }
 
 /**
