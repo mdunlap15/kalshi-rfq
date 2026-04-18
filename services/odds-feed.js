@@ -256,7 +256,7 @@ async function fetchOddsForSport(sport, opts) {
   // per call regardless of the limit parameter, so we split market types into
   // separate API calls to ensure coverage of all market types for all events.
   const marketTypesList = {
-    'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total'],
+    'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total', '1st_5_innings_moneyline', '1st_5_innings_run_line'],
     'icehockey_nhl': ['moneyline', 'puck_line', 'total_goals', 'team_total'],
     'basketball_nba': ['moneyline', 'point_spread', 'total_points', 'team_total'],
     'tennis': ['moneyline', 'point_spread', 'total_points'],
@@ -603,6 +603,25 @@ async function fetchOddsForSport(sport, opts) {
       }
     }
 
+    // F5 markets (MLB only) — SharpAPI returns them under '1st_5_innings_*'
+    // naming. Totals aren't populated by SharpAPI currently; those come
+    // from The Odds API via supplementMlbF5Markets. We just attach what
+    // SharpAPI has here (h2h_f5, spreads_f5) so the primary feed covers
+    // moneyline/run-line F5 without waiting for the Odds-API supplement.
+    if (sport === 'baseball_mlb') {
+      const mlF5Books = getBookPairs(event.odds, '1st_5_innings_moneyline');
+      if (mlF5Books.length > 0) {
+        const m = buildConsensusMoneyline(mlF5Books);
+        if (m) markets.h2h_f5 = m;
+      }
+      const spreadF5Odds = event.odds.filter(r => r.market_type === '1st_5_innings_run_line');
+      const spreadF5Books = getBookPairs(spreadF5Odds, null);
+      if (spreadF5Books.length > 0) {
+        const s = buildConsensusSpread(spreadF5Books);
+        if (s) markets.spreads_f5 = s;
+      }
+    }
+
     if (Object.keys(markets).length > 0) {
       if (!parsed[key]) parsed[key] = [];
       parsed[key].push({
@@ -682,10 +701,14 @@ async function supplementMlbF5Markets(parsedEvents) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   if (!theOddsApiKey) return;
 
+  // F5 moneyline + run_line now come from SharpAPI (primary) — see the
+  // parse block for baseball_mlb that attaches markets.h2h_f5 /
+  // markets.spreads_f5. Only totals_1st_5_innings is still sourced here
+  // because SharpAPI returns 0 rows for that market (probed live).
   const url = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds`
     + `?apiKey=${theOddsApiKey}`
     + `&regions=us,eu`
-    + `&markets=h2h_1st_5_innings,spreads_1st_5_innings,totals_1st_5_innings`
+    + `&markets=totals_1st_5_innings`
     + `&bookmakers=pinnacle,draftkings,fanduel`
     + `&oddsFormat=american`;
 
@@ -711,48 +734,28 @@ async function supplementMlbF5Markets(parsedEvents) {
     }) || eventArr[0];
     if (!matchedEv) continue;
 
-    // Collect book pairs for each F5 market type
-    const mlPairs = [], spreadPairs = [], totalPairs = [];
+    // F5 totals only — SharpAPI already populated h2h_f5 and spreads_f5
+    // upstream. Don't overwrite them from this supplement.
+    const totalPairs = [];
     for (const book of (event.bookmakers || [])) {
       for (const m of (book.markets || [])) {
-        if (m.key === 'h2h_1st_5_innings') {
-          const home = m.outcomes?.find(o => o.name === event.home_team);
-          const away = m.outcomes?.find(o => o.name === event.away_team);
-          if (home && away) {
-            mlPairs.push({
-              book: book.key,
-              home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price },
-              away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price },
-            });
-          }
-        } else if (m.key === 'spreads_1st_5_innings') {
-          const home = m.outcomes?.find(o => o.name === event.home_team);
-          const away = m.outcomes?.find(o => o.name === event.away_team);
-          if (home && away) {
-            spreadPairs.push({
-              book: book.key,
-              home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price, point: home.point, line: home.point },
-              away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price, point: away.point, line: away.point },
-            });
-          }
-        } else if (m.key === 'totals_1st_5_innings') {
-          const over = m.outcomes?.find(o => o.name === 'Over');
-          const under = m.outcomes?.find(o => o.name === 'Under');
-          if (over && under) {
-            totalPairs.push({
-              book: book.key,
-              over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
-              under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
-            });
-          }
+        if (m.key !== 'totals_1st_5_innings') continue;
+        const over = m.outcomes?.find(o => o.name === 'Over');
+        const under = m.outcomes?.find(o => o.name === 'Under');
+        if (over && under) {
+          totalPairs.push({
+            book: book.key,
+            over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
+            under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
+          });
         }
       }
     }
 
-    if (mlPairs.length > 0 || spreadPairs.length > 0 || totalPairs.length > 0) matched++;
-    if (mlPairs.length > 0) matchedEv.markets.h2h_f5 = buildConsensusMoneyline(mlPairs);
-    if (spreadPairs.length > 0) matchedEv.markets.spreads_f5 = buildConsensusSpread(spreadPairs);
-    if (totalPairs.length > 0) matchedEv.markets.totals_f5 = buildConsensusTotals(totalPairs);
+    if (totalPairs.length > 0) {
+      matchedEv.markets.totals_f5 = buildConsensusTotals(totalPairs);
+      matched++;
+    }
   }
   log.info('OddsFeed', `MLB F5: attached to ${matched} events`);
 }
@@ -3391,7 +3394,7 @@ async function fetchOddsDelta(sport) {
 
   // Split delta fetch by market type — SharpAPI Hobby caps at 50 rows per call
   const marketTypesList = {
-    'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total'],
+    'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total', '1st_5_innings_moneyline', '1st_5_innings_run_line'],
     'icehockey_nhl': ['moneyline', 'puck_line', 'total_goals', 'team_total'],
     'basketball_nba': ['moneyline', 'point_spread', 'total_points', 'team_total'],
     'soccer': ['moneyline', 'point_spread', 'total_goals', 'team_total'],
