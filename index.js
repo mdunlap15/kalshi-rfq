@@ -2877,6 +2877,44 @@ function startStatusServer() {
     res.json({ events: oddsFeed.getAllCachedEvents() });
   });
 
+  // TEMPORARY: diagnose why tennis lines aren't registering despite
+  // tennis events being in the odds cache. Returns PX's tennis event
+  // list + current odds-cache teams + per-event registered status.
+  app.get('/debug-tennis-match', async (req, res) => {
+    try {
+      const pxEvents = await px.fetchSportEvents();
+      const tennisEvents = pxEvents.filter(e => (e.sport_name || '').toLowerCase() === 'tennis');
+      const idx = lineManager.__debugGetLineIndex ? lineManager.__debugGetLineIndex() : {};
+      const registeredByEvent = {};
+      for (const v of Object.values(idx)) {
+        if (v.sport === 'tennis' && v.pxEventId) {
+          registeredByEvent[String(v.pxEventId)] = (registeredByEvent[String(v.pxEventId)] || 0) + 1;
+        }
+      }
+      const oddsCached = oddsFeed.getAllCachedEvents().filter(e => e.sport === 'tennis');
+      const summary = tennisEvents.map(e => ({
+        pxEventId: e.event_id,
+        pxEventName: e.name,
+        tournament: e.tournament_name || e.tournament?.name,
+        scheduled: e.scheduled,
+        competitors: (e.competitors || []).map(c => c.name),
+        registeredLines: registeredByEvent[String(e.event_id)] || 0,
+      }));
+      res.json({
+        ok: true,
+        pxTennisEventCount: tennisEvents.length,
+        registeredEvents: Object.keys(registeredByEvent).length,
+        oddsCachedCount: oddsCached.length,
+        oddsCachedSample: oddsCached.slice(0, 30).map(e => ({
+          home: e.homeTeam, away: e.awayTeam, commenceTime: e.commenceTime,
+        })),
+        pxEvents: summary,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // TEMPORARY: probe DK's MMA/UFC page to find the right URL + XHR
   // subcategory for fight-winner moneylines. Loads the league page in
   // headless Chromium and reports all nash-API XHRs + category tabs.
