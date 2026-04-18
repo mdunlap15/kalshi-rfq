@@ -5934,7 +5934,26 @@
         const name = resolveName(l) || '?';
         const mkt = l.market || l.marketType || '';
         const line = l.line;
-        return formatSelection(name, mkt, line);
+        // F5 / H1 period indicator — prepend to the leg label so it's
+        // obvious this isn't a full-game leg. Matches any variant of
+        // 'first_5_innings_*' / '*_f5' / 'first_half_*' / '*_h1'.
+        const isF5 = /first_5|first_five|_f5\b/i.test(mkt);
+        const isH1 = /first_half|1st_half|_h1\b/i.test(mkt);
+        const periodTag = isF5 ? 'F5 ' : isH1 ? 'H1 ' : '';
+        // Bare over/under legs (F5 totals, MMA Total Rounds, etc.) arrive
+        // with name='Over' and no game context. Build 'AWAY @ HOME side line'
+        // using the leg's homeTeam/awayTeam fields so the row title actually
+        // identifies which game the total belongs to.
+        const bareOU = /^(over|under)$/i.test(String(name).trim());
+        if (bareOU && (l.homeTeam || l.awayTeam)) {
+          const away = teamAbbr(l.awayTeam || '') || (l.awayTeam || '');
+          const home = teamAbbr(l.homeTeam || '') || (l.homeTeam || '');
+          const side = String(name).trim().charAt(0).toUpperCase();
+          const lineStr = line != null ? ' ' + line : '';
+          const ctx = (away && home) ? (away + ' @ ' + home + ' ') : '';
+          return ctx + periodTag + side + lineStr;
+        }
+        return periodTag + formatSelection(name, mkt, line);
       }).join(', ');
     } catch (e) {
       // Fallback if formatting fails

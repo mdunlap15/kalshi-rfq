@@ -75,16 +75,25 @@ function getSeriesFairProb(lineInfo) {
     }
   }
 
-  // NBA heavy-favorite hard cap. Decline legs whose fair prob implies
-  // American odds stronger than the configured cap (default -1000).
-  // Applies to series_winner AND series_spread favorites. Totals don't
-  // have a "favorite" concept — over/under legs pass through.
+  // NBA series heavy-favorite: beyond FV of -500, quote DK's offered
+  // price directly (no vig) instead of our de-vigged-plus-vig number.
+  // Avoids drifting out of market on extreme favorites where our ramp
+  // would produce an uncompetitive line. Applies to series_winner and
+  // series_spread; totals pass through (no "favorite" concept).
   if (sportKey === 'nba' && (isSeriesWinner || isSeriesSpread)) {
-    const capOdds = config.pricing.nbaSeriesFavoriteCapAmericanOdds || -1000;
-    const capProb = capOdds < 0 ? (-capOdds) / (-capOdds + 100) : 100 / (capOdds + 100);
-    if (hit.fairProb >= capProb) {
-      log.info('Pricing', `NBA series favorite over cap — declining: ${teamName} ${mt || ''} fair ${hit.fairProb.toFixed(4)} >= cap ${capProb.toFixed(4)} (${capOdds})`);
-      return null;
+    const threshProb = 500 / 600; // FV of -500
+    if (hit.fairProb > threshProb) {
+      let bookDec = hit.decimalOdds;
+      if ((!bookDec || bookDec <= 1) && hit.americanOdds != null) {
+        bookDec = hit.americanOdds >= 0
+          ? 1 + hit.americanOdds / 100
+          : 1 + 100 / Math.abs(hit.americanOdds);
+      }
+      if (bookDec && bookDec > 1) {
+        const bookImplied = 1 / bookDec;
+        log.info('Pricing', `NBA series heavy fav ${teamName} ${mt || ''} fair ${hit.fairProb.toFixed(4)} > -500 cutoff — using DK book price ${hit.americanOdds} (implied ${bookImplied.toFixed(4)})`);
+        return { fairProb: hit.fairProb, bookPriceOverride: bookImplied };
+      }
     }
   }
   return hit.fairProb;
@@ -302,7 +311,13 @@ async function priceParlay(legs) {
     // Our odds feeds don't carry series markets, so bypass oddsFeed and
     // look up from the DK scraper cache (fetched out-of-band).
     const seriesFair = getSeriesFairProb(s.lineInfo);
-    if (seriesFair != null) return Promise.resolve(seriesFair);
+    if (seriesFair != null) {
+      if (typeof seriesFair === 'object') {
+        s.bookPriceOverride = seriesFair.bookPriceOverride;
+        return Promise.resolve(seriesFair.fairProb);
+      }
+      return Promise.resolve(seriesFair);
+    }
 
     // MMA moneyline legs: DK scraper is the source of truth and the
     // merged oddsFeed cache is prone to wipe by unrelated SharpAPI
@@ -341,7 +356,7 @@ async function priceParlay(legs) {
 
   // -------------------- PHASE 3: Post-process results per leg -------------------
   for (let legIdx = 0; legIdx < legStates.length; legIdx++) {
-    const { lineId, lineInfo, legLabel, legDescriptor } = legStates[legIdx];
+    const { lineId, lineInfo, legLabel, legDescriptor, bookPriceOverride } = legStates[legIdx];
     const fairProb = fairProbs[legIdx];
     const verifyResult = verifyResults[legIdx];
 
@@ -454,6 +469,7 @@ async function priceParlay(legs) {
       lineId,
       lineInfo,
       fairProb,
+      bookPriceOverride: bookPriceOverride != null ? bookPriceOverride : null,
       displayFairProb,
       pinnacleOdds,
       fanduelOdds,
@@ -574,25 +590,39 @@ async function priceParlay(legs) {
   let offeredImpliedProb;
   let vigMode;
   let vigRateUsed; // informational — the rate applied (for debugging/analytics)
+  // Legs flagged with bookPriceOverride (e.g. NBA series heavy favorites
+  // past -500 FV) bypass vig entirely — we quote DK's offered number for
+  // those legs. Vig logic below applies only to the remaining legs.
+  const overrideLegs = pricedLegs.filter(l => l.bookPriceOverride != null);
+  const vigLegs = pricedLegs.filter(l => l.bookPriceOverride == null);
+  const overrideProduct = overrideLegs.reduce((p, l) => p * l.bookPriceOverride, 1);
+
   if (config.pricing.parlayLevelVig) {
-    // Parlay-level: single vig application using max per-leg rate.
-    const perLegVigs = pricedLegs.map(l => getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType));
+    // Parlay-level: single vig application using max per-leg rate (over vig legs only).
+    const perLegVigs = vigLegs.map(l => getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType));
     const maxVig = perLegVigs.length > 0 ? Math.max(...perLegVigs) : config.pricing.defaultVig;
-    const fairDecimal = 1 / fairParlayProb;
-    const payout = fairDecimal - 1;
-    const viggedPayout = payout * (1 - maxVig);
-    offeredImpliedProb = 1 / (1 + viggedPayout);
+    const vigFair = vigLegs.reduce((p, l) => p * l.fairProb, 1);
+    if (vigLegs.length > 0) {
+      const fairDecimal = 1 / vigFair;
+      const payout = fairDecimal - 1;
+      const viggedPayout = payout * (1 - maxVig);
+      offeredImpliedProb = (1 / (1 + viggedPayout)) * overrideProduct;
+    } else {
+      offeredImpliedProb = overrideProduct;
+    }
     vigMode = 'parlay-level';
     vigRateUsed = maxVig;
   } else {
     // Per-leg: vig applied to each leg's odds then compounded (legacy).
-    offeredImpliedProb = 1;
-    for (const leg of pricedLegs) {
+    offeredImpliedProb = overrideProduct;
+    for (const leg of vigLegs) {
       offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType);
     }
     vigMode = 'per-leg';
-    // For per-leg, expose the AVERAGE per-leg rate as the "used" value.
-    const avgVig = pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType), 0) / Math.max(pricedLegs.length, 1);
+    // For per-leg, expose the AVERAGE per-leg rate as the "used" value (vig legs only).
+    const avgVig = vigLegs.length > 0
+      ? vigLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType), 0) / vigLegs.length
+      : 0;
     vigRateUsed = avgVig;
   }
 
@@ -819,10 +849,12 @@ async function priceParlay(legs) {
 
   // Build estimated_price (per-leg breakdown) — bettor-side American odds per leg.
   // Apply same odds-based vig so PX's recomputed parlay matches our intended price.
-  const estimatedPrice = pricedLegs.map(leg => ({
-    line_id: leg.lineId,
-    odds: decimalToAmerican(1 / applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType)),
-  }));
+  const estimatedPrice = pricedLegs.map(leg => {
+    const legImplied = leg.bookPriceOverride != null
+      ? leg.bookPriceOverride
+      : applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType);
+    return { line_id: leg.lineId, odds: decimalToAmerican(1 / legImplied) };
+  });
 
   // valid_until in nanoseconds
   const validUntil = Math.floor((Date.now() / 1000 + config.pricing.offerValidSeconds) * 1e9);
@@ -853,7 +885,8 @@ async function priceParlay(legs) {
           selection: l.lineInfo.oddsApiSelection,
           line: l.lineInfo.line,
           fairProb: Math.round(l.fairProb * 10000) / 10000,
-          legVig: Math.round(getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType) * 10000) / 10000,
+          legVig: l.bookPriceOverride != null ? 0 : Math.round(getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType) * 10000) / 10000,
+          bookPriceOverride: l.bookPriceOverride != null ? Math.round(l.bookPriceOverride * 10000) / 10000 : null,
           displayFairProb: l.displayFairProb ? Math.round(l.displayFairProb * 10000) / 10000 : null,
           pinnacleOdds: l.pinnacleOdds || null,
           fanduelOdds: l.fanduelOdds || null,
