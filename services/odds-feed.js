@@ -2433,27 +2433,72 @@ async function mergeDkMmaFights() {
   const cache = oddsCache[sport];
 
   // Build fuzzy lookup over existing cache events by last-word fighter pair.
+  // We also keep a handle to the existing event object so we can graft DK
+  // totals onto SharpAPI-seeded h2h entries (SharpAPI MMA feed is moneyline-
+  // only, so without enrichment totals would silently 404).
   const lw = (n) => (n || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(Boolean).pop() || '';
-  const existingByPair = new Set();
+  const existingByPair = new Map(); // "a|b" → event object
   for (const entry of Object.values(cache.events || {})) {
     const arr = Array.isArray(entry) ? entry : [entry];
     for (const ev of arr) {
       if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
       const a = lw(ev.homeTeam), b = lw(ev.awayTeam);
       if (a && b) {
-        existingByPair.add(a + '|' + b);
-        existingByPair.add(b + '|' + a);
+        existingByPair.set(a + '|' + b, ev);
+        existingByPair.set(b + '|' + a, ev);
       }
     }
   }
 
-  let added = 0, skipped = 0;
+  // Helper: build the markets.totals block from a DK fight's totals array.
+  function buildTotalsBlock(totals) {
+    if (!Array.isArray(totals) || totals.length === 0) return null;
+    // Pick a primary line — prefer the middle (median fight duration:
+    // 3-round ≈ 2.5, 5-round ≈ 4.5). Remaining lines become alt.
+    const sorted = [...totals].sort((a, b) => a.line - b.line);
+    const primary = sorted[Math.floor(sorted.length / 2)];
+    return {
+      line: primary.line,
+      over: {
+        rawOdds: primary.over.americanOdds, impliedProb: primary.over.impliedProb,
+        fairProb: primary.over.fairProb, displayFairProb: primary.over.fairProb,
+      },
+      under: {
+        rawOdds: primary.under.americanOdds, impliedProb: primary.under.impliedProb,
+        fairProb: primary.under.fairProb, displayFairProb: primary.under.fairProb,
+      },
+      books: 1,
+      alt: sorted.map(t => ({
+        line: t.line,
+        over: { rawOdds: t.over.americanOdds, impliedProb: t.over.impliedProb, fairProb: t.over.fairProb, displayFairProb: t.over.fairProb },
+        under: { rawOdds: t.under.americanOdds, impliedProb: t.under.impliedProb, fairProb: t.under.fairProb, displayFairProb: t.under.fairProb },
+      })),
+      pinnacle: null, fanduel: null,
+      draftkings: { line: primary.line, over: primary.over.americanOdds, under: primary.under.americanOdds },
+      kalshi: null,
+      dkScraped: true,
+    };
+  }
+
+  let added = 0, enriched = 0, skipped = 0;
   for (const fight of fightData.fights) {
     if (!fight.fighters || fight.fighters.length !== 2) continue;
     const [f1, f2] = fight.fighters;
     const p1 = lw(f1.fighter), p2 = lw(f2.fighter);
     if (!p1 || !p2) continue;
-    if (existingByPair.has(p1 + '|' + p2) || existingByPair.has(p2 + '|' + p1)) {
+    const existing = existingByPair.get(p1 + '|' + p2) || existingByPair.get(p2 + '|' + p1);
+    if (existing) {
+      // Fight already in cache (typically from SharpAPI h2h). Graft on
+      // DK's Total Rounds if the existing entry lacks totals.
+      if (!existing.markets) existing.markets = {};
+      if (!existing.markets.totals) {
+        const block = buildTotalsBlock(fight.totals);
+        if (block) {
+          existing.markets.totals = block;
+          enriched++;
+          continue;
+        }
+      }
       skipped++;
       continue;
     }
@@ -2479,37 +2524,8 @@ async function mergeDkMmaFights() {
         dkScraped: true,
       },
     };
-    // Total rounds: DK offers multiple lines (1.5, 2.5, 3.5). Attach
-    // the primary (closest to the middle, typically 2.5 for 3-round or
-    // 4.5 for 5-round fights) and keep the rest as alt lines.
-    if (Array.isArray(fight.totals) && fight.totals.length > 0) {
-      // Pick a primary line — prefer the one closest to median fight duration.
-      // 3-round fight median ≈ 2.5; 5-round main event ≈ 4.5. Use the middle
-      // line if multiple; fall back to the first.
-      const sorted = [...fight.totals].sort((a, b) => a.line - b.line);
-      const primary = sorted[Math.floor(sorted.length / 2)];
-      markets.totals = {
-        line: primary.line,
-        over: {
-          rawOdds: primary.over.americanOdds, impliedProb: primary.over.impliedProb,
-          fairProb: primary.over.fairProb, displayFairProb: primary.over.fairProb,
-        },
-        under: {
-          rawOdds: primary.under.americanOdds, impliedProb: primary.under.impliedProb,
-          fairProb: primary.under.fairProb, displayFairProb: primary.under.fairProb,
-        },
-        books: 1,
-        alt: sorted.map(t => ({
-          line: t.line,
-          over: { rawOdds: t.over.americanOdds, impliedProb: t.over.impliedProb, fairProb: t.over.fairProb, displayFairProb: t.over.fairProb },
-          under: { rawOdds: t.under.americanOdds, impliedProb: t.under.impliedProb, fairProb: t.under.fairProb, displayFairProb: t.under.fairProb },
-        })),
-        pinnacle: null, fanduel: null,
-        draftkings: { line: primary.line, over: primary.over.americanOdds, under: primary.under.americanOdds },
-        kalshi: null,
-        dkScraped: true,
-      };
-    }
+    const totalsBlock = buildTotalsBlock(fight.totals);
+    if (totalsBlock) markets.totals = totalsBlock;
     const newEvent = {
       homeTeam, awayTeam,
       commenceTime: fight.startTime || null,
@@ -2522,8 +2538,8 @@ async function mergeDkMmaFights() {
     added++;
   }
   cache.fetchedAt = Date.now();
-  log.info('OddsFeed', `MMA DK merge: added ${added}, skipped-already-cached ${skipped} (total DK fights: ${fightData.fights.length})`);
-  return { added, skipped, total: fightData.fights.length };
+  log.info('OddsFeed', `MMA DK merge: added ${added}, enriched-totals ${enriched}, skipped ${skipped} (total DK fights: ${fightData.fights.length})`);
+  return { added, enriched, skipped, total: fightData.fights.length };
 }
 
 async function backfillMissingH2h(sport) {
