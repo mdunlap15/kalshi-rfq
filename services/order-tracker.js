@@ -82,6 +82,43 @@ function recordFillBucketFill(legs) {
   pruneFillBucketEvents();
 }
 
+/**
+ * Back-fill fillBucketEvents from Supabase on boot so the 24h/7d/30d
+ * heatmap timeframes work across restarts. Pulls every parlay_orders
+ * row with quoted_at in the window (includes unfilled 'quoted' rows
+ * that loadFromDb skips) and replays them as synthetic submit + fill
+ * events. Does NOT touch sessionFillBuckets — that stays session-scoped.
+ */
+async function backfillFillBucketEvents() {
+  if (!db.isEnabled()) return;
+  const cutoffIso = new Date(Date.now() - FILL_BUCKET_WINDOW_MS).toISOString();
+  const rows = await db.loadFillBucketRowsSince(cutoffIso);
+  if (!rows || rows.length === 0) return;
+  const FILLED_STATUSES = new Set(['confirmed', 'settled_won', 'settled_lost', 'settled_push', 'settled_void']);
+  let submits = 0, fills = 0;
+  const historical = [];
+  for (const row of rows) {
+    const keys = fillBucketKeys(row.legs);
+    const qt = row.quotedAt ? new Date(row.quotedAt).getTime() : null;
+    if (qt && !Number.isNaN(qt)) {
+      for (const k of keys) { historical.push({ t: qt, key: k, kind: 'submit' }); submits++; }
+    }
+    if (FILLED_STATUSES.has(row.status)) {
+      const ft = row.confirmedAt ? new Date(row.confirmedAt).getTime() : qt;
+      if (ft && !Number.isNaN(ft)) {
+        for (const k of keys) { historical.push({ t: ft, key: k, kind: 'fill' }); fills++; }
+      }
+    }
+  }
+  historical.sort((a, b) => a.t - b.t);
+  // Prepend historical, keep any session events that already accumulated
+  // during boot (unlikely but guard against races).
+  fillBucketEvents.unshift(...historical);
+  fillBucketEvents.sort((a, b) => a.t - b.t);
+  pruneFillBucketEvents();
+  log.info('Tracker', `Backfilled fill-bucket events: ${submits} submits + ${fills} fills from ${rows.length} rows`);
+}
+
 // ---------------------------------------------------------------------------
 // DECLINE TRACKING
 // ---------------------------------------------------------------------------
@@ -3735,6 +3772,7 @@ module.exports = {
   enrichReconstructedFromPx,
   enrichOpenPositionsFromAffiliate,
   loadFromDb,
+  backfillFillBucketEvents,
   backfillGolfMetadata,
 };
 
@@ -4590,4 +4628,11 @@ async function loadFromDb() {
     log.warn('DB', `Background loadDeclines failed: ${err.message}`);
   });
   log.info('DB', 'Decline loading deferred to background');
+
+  // Back-fill fillBucketEvents for 24h/7d/30d heatmap windows. Runs in
+  // the background — the heatmap will start empty and populate once the
+  // Supabase query returns.
+  backfillFillBucketEvents().catch(err => {
+    log.warn('Tracker', `backfillFillBucketEvents failed: ${err.message}`);
+  });
 }

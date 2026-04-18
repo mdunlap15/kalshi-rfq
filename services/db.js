@@ -694,6 +694,72 @@ async function getDailyPnL(days = 30) {
 }
 
 /**
+ * Load minimal order fields needed to reconstruct fill-bucket events
+ * over a historical window. Pulls every parlay_orders row with
+ * quoted_at >= cutoff, so it includes 'quoted' rows (unfilled RFQs)
+ * that loadOrders() intentionally skips.
+ *
+ * Returns rows shaped as { parlayId, quotedAt, confirmedAt, status, legs }.
+ * Paginated with retries; caps at 'cap' rows to bound memory / boot time.
+ */
+async function loadFillBucketRowsSince(cutoffIso, cap = 200000) {
+  const db = getClient();
+  if (!db) return [];
+  const PAGE_SIZE = 1000;
+  const MAX_PAGE_RETRIES = 4;
+  const all = [];
+  let offset = 0;
+  const startMs = Date.now();
+  try {
+    while (all.length < cap) {
+      const pageSize = Math.min(PAGE_SIZE, cap - all.length);
+      let data = null;
+      let lastError = null;
+      for (let attempt = 0; attempt < MAX_PAGE_RETRIES; attempt++) {
+        const result = await db
+          .from('parlay_orders')
+          .select('parlay_id, status, legs, quoted_at, confirmed_at')
+          .gte('quoted_at', cutoffIso)
+          .order('quoted_at', { ascending: true })
+          .range(offset, offset + pageSize - 1);
+        if (!result.error) {
+          data = result.data;
+          lastError = null;
+          break;
+        }
+        lastError = result.error;
+        log.warn('DB', `loadFillBucketRowsSince offset ${offset} attempt ${attempt + 1}/${MAX_PAGE_RETRIES} failed: ${result.error.message}`);
+        await new Promise(r => setTimeout(r, 250 * Math.pow(2, attempt)));
+      }
+      if (lastError) {
+        log.error('DB', `loadFillBucketRowsSince offset ${offset}: gave up after ${MAX_PAGE_RETRIES} retries`);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      for (const row of data) {
+        all.push({
+          parlayId: row.parlay_id,
+          status: row.status,
+          legs: row.legs || [],
+          quotedAt: row.quoted_at,
+          confirmedAt: row.confirmed_at,
+        });
+      }
+      if (data.length < pageSize) break;
+      offset += pageSize;
+    }
+    log.info('DB', `loadFillBucketRowsSince: ${all.length} rows (${Date.now() - startMs}ms)`);
+    if (all.length >= cap) {
+      log.warn('DB', `loadFillBucketRowsSince hit cap ${cap} — fill-bucket history may be incomplete`);
+    }
+    return all;
+  } catch (err) {
+    log.error('DB', `loadFillBucketRowsSince error: ${err.message}`);
+    return all;
+  }
+}
+
+/**
  * Get the total P&L sum directly from Supabase (source of truth).
  * Sums the pnl column for all settled orders — no in-memory drift.
  */
@@ -725,6 +791,7 @@ module.exports = {
   saveOrder,
   loadOrders,
   loadOrdersByParlayIds,
+  loadFillBucketRowsSince,
   countOrders,
   saveMatchedParlay,
   loadMatchedParlays,
