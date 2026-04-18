@@ -2449,7 +2449,14 @@
       addCell(byCell, canonSport + '|' + bucket.label, submitted, filled);
       // Sub-league drill — only for real single-sport entries.
       if (rawSport !== 'Multi' && rawSport !== 'Unknown') {
-        const subLeague = sportLabel(rawSport);
+        // Normalize the sub-league label so PX-style raw sports
+        // ("Ice Hockey", "Baseball") and odds-feed keys
+        // ("icehockey_nhl", "baseball_mlb") don't produce separate
+        // sub-rows for the same league. sportLabel returns its input
+        // unchanged when unmapped; in that case fall back to the
+        // canonical sport name so both paths converge.
+        const labeled = sportLabel(rawSport);
+        const subLeague = labeled === rawSport ? canonSport : labeled;
         if (!subLeaguesPerSport[canonSport]) subLeaguesPerSport[canonSport] = new Set();
         subLeaguesPerSport[canonSport].add(subLeague);
         addCell(bySubCell, canonSport + '|' + subLeague + '|' + bucket.label, submitted, filled);
