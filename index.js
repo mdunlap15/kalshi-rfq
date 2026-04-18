@@ -17,6 +17,7 @@ const lineManager = require('./services/line-manager');
 const websocket = require('./services/websocket');
 const orderTracker = require('./services/order-tracker');
 const pxLedger = require('./services/px-ledger');
+const dkScraper = require('./services/dk-scraper');
 const db = require('./services/db');
 const express = require('express');
 const path = require('path');
@@ -818,6 +819,18 @@ function startStatusServer() {
   // net settlement P&L using ONLY PX's own status/stake/profit fields —
   // no tracker interpretation. Use this to reconcile against our
   // runningPnL when account-balance vs tracker-P&L disagree.
+  // DK-scraped NBA playoff series winner odds. Bypasses Akamai via
+  // Puppeteer (our feeds don't carry per-series markets).
+  app.get('/nba-series-prices', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const data = await dkScraper.fetchNbaSeriesWinners({ force });
+      res.json({ ok: true, ...data });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Authoritative PX-native P&L. Pulls full order history from PX and
   // aggregates realized P&L, open exposure, and net balance impact
   // directly from PX's profit + settlement_status fields. This is the
