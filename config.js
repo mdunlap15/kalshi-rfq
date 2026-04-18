@@ -17,7 +17,7 @@ const config = {
     baseUrl: 'https://feeds.datagolf.com',
   },
   pricing: {
-    defaultVig: parseFloat(process.env.DEFAULT_VIG) || 0.001,
+    defaultVig: parseFloat(process.env.DEFAULT_VIG) || 0.015,
     // Per-sport vig overrides. Keyed by odds-feed sport key.
     // Falls back to defaultVig if sport not listed.
     // Bootstrapped from VIG_BY_SPORT env var (JSON-encoded map) so values
