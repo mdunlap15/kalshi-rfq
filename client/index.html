@@ -2500,9 +2500,8 @@
       + 'A fill means we won the RFQ auction (PX chose our price); whether we profit depends on how the legs play out. '
       + 'PX only notifies us privately on our own fills, so auction losses are inferred from quotes that never matched &mdash; we don\'t see competitors\' prices. '
       + 'Parlays tagged <em>Multi</em> span multiple sports. '
-      + '<span style="color:var(--text2);">Colors adapt to this session\'s overall rate (' + overallRatePct.toFixed(1) + '%): '
-      + '<span style="color:var(--green);">green</span> &ge; ' + greenAt.toFixed(1) + '%, '
-      + '<span style="color:var(--red);">red</span> &le; ' + redAt.toFixed(1) + '%, amber in between.</span>'
+      + '<span style="color:var(--text2);">Overall rate this window: ' + overallRatePct.toFixed(1) + '%. '
+      + 'Cells blend continuously: <span style="color:var(--red);">red</span> near 0%, amber around 5%, <span style="color:var(--green);">green</span> at 10%+.</span>'
       + '</div>';
     html += '<div style="overflow-x:auto; padding:0 12px 12px;"><table style="font-size:13px; min-width:680px; border-collapse:separate; border-spacing:3px;">';
     html += '<tr><th style="text-align:left; padding:6px 12px;">Sport</th>';
@@ -2544,13 +2543,32 @@
         rowSubmitted += c.submitted;
         rowFills += c.fills;
         const wr = c.submitted > 0 ? (c.fills / c.submitted * 100) : 0;
-        // Combined absolute + relative color scheme (see greenAt/redAt above).
-        const wrColor = wr >= greenAt ? 'rgba(63,185,80,0.18)'
-                      : wr <= redAt   ? 'rgba(248,81,73,0.18)'
-                      : 'rgba(210,153,34,0.18)';
-        const wrTextColor = wr >= greenAt ? 'var(--green)'
-                          : wr <= redAt   ? 'var(--red)'
-                          : 'var(--amber)';
+        // Continuous 3-stop RGB lerp: red(0%) → amber(5%) → green(10%+).
+        // 10% is the "good" fill rate anchor — anything at/above goes full
+        // green. Below 10% gradates smoothly toward red. RGB lerp (not
+        // hue lerp) avoids the yellow/olive detour and gives a softer
+        // blend through the mid-range.
+        const redRGB = [248, 81, 73];   // --red  #f85149
+        const ambRGB = [210, 153, 34];  // --amber #d29922
+        const grnRGB = [63, 185, 80];   // --green #3fb950
+        const GREEN_AT = 10, AMBER_AT = 5;
+        let cr, cg, cb;
+        if (wr >= GREEN_AT) {
+          [cr, cg, cb] = grnRGB;
+        } else if (wr >= AMBER_AT) {
+          const t = (wr - AMBER_AT) / (GREEN_AT - AMBER_AT);
+          cr = ambRGB[0] + (grnRGB[0] - ambRGB[0]) * t;
+          cg = ambRGB[1] + (grnRGB[1] - ambRGB[1]) * t;
+          cb = ambRGB[2] + (grnRGB[2] - ambRGB[2]) * t;
+        } else {
+          const t = Math.max(0, wr / AMBER_AT);
+          cr = redRGB[0] + (ambRGB[0] - redRGB[0]) * t;
+          cg = redRGB[1] + (ambRGB[1] - redRGB[1]) * t;
+          cb = redRGB[2] + (ambRGB[2] - redRGB[2]) * t;
+        }
+        const rr = cr.toFixed(0), gg = cg.toFixed(0), bb = cb.toFixed(0);
+        const wrColor = `rgba(${rr},${gg},${bb},0.22)`;
+        const wrTextColor = `rgb(${rr},${gg},${bb})`;
         const relDelta = wr - overallRatePct;
         const relStr = (relDelta >= 0 ? '+' : '') + relDelta.toFixed(1) + 'pp vs overall ' + overallRatePct.toFixed(1) + '%';
         const tooltip = c.fills + ' filled / ' + c.submitted + ' quoted · ' + relStr;
