@@ -574,17 +574,21 @@ async function seedAllLines() {
         : isMmaSport
           ? ['moneyline', 'total']
           : ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
-      if (!supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type) && !FIRST_HALF_MARKET_TYPES.includes(m.type)) return false;
+      // Series markets include PX's 'sup_moneyline' type (Series Game Spread,
+      // Series Total Games — live probe 2026-04-18). Let those through the
+      // supportedBase check; parseMarketSelections retags them to 'spread'
+      // or 'total' so selection parsing works.
+      const isSupSeries = m.type === 'sup_moneyline' && (isSeriesSpread || isSeriesTotal);
+      if (!isSupSeries && !supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type) && !FIRST_HALF_MARKET_TYPES.includes(m.type)) return false;
       // Series markets bypass the sub-game/prop filter and the name-
-      // allowlist + bounds checks. Each variant must match the
-      // corresponding PX market.type:
+      // allowlist + bounds checks. Each variant must match one of:
       //   Series Winner      → type='moneyline'
-      //   Series Spread      → type='spread'
-      //   Series Total Games → type='total'
+      //   Series Spread      → type='spread' OR 'sup_moneyline'
+      //   Series Total Games → type='total'   OR 'sup_moneyline'
       if (isSeriesMarket) {
         if (isSeriesWinner && m.type === 'moneyline') return true;
-        if (isSeriesSpread && m.type === 'spread') return true;
-        if (isSeriesTotal  && m.type === 'total')  return true;
+        if (isSeriesSpread && (m.type === 'spread' || m.type === 'sup_moneyline')) return true;
+        if (isSeriesTotal  && (m.type === 'total'  || m.type === 'sup_moneyline')) return true;
         return false;
       }
       // Exclude anything matching half/quarter/prop patterns
@@ -1039,7 +1043,7 @@ async function resolveUnknownLine(rfqLeg) {
 
       // First pass: find which market contains this line_id (any type)
       // so we can log unsupported market types for diagnostics.
-      const SUPPORTED_TYPES = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance', 'series_winner', 'series_spread', 'series_total', ...F5_MARKET_TYPES, ...FIRST_HALF_MARKET_TYPES];
+      const SUPPORTED_TYPES = ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance', 'series_winner', 'series_spread', 'series_total', 'sup_moneyline', ...F5_MARKET_TYPES, ...FIRST_HALF_MARKET_TYPES];
       // Series markets (winner/spread/total) are structurally
       // moneyline/spread/total but named "Series Winner/Spread/Total
       // Games". resolveUnknownLine accepts the regular PX types and

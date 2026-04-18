@@ -463,6 +463,74 @@ function parseMarketSelections(market) {
   const isF5Spread = /first_5_innings_run_line|first_five_innings_run_line/.test(marketType);
   const isF5Total = /first_5_innings_total|first_five_innings_total/.test(marketType);
 
+  // PX uses `type: 'sup_moneyline'` for Series Game Spread + Series Total
+  // Games (live probe 2026-04-18). Selections are structured like moneyline
+  // (flat selections array) but the 'line' field is zero — the actual
+  // line + side are encoded in the selection name (e.g. "MIN +1.5",
+  // "Over 5.5"). Detect by market name and retag marketType so the seed's
+  // series handling picks it up.
+  const isSupSeriesSpread = market.type === 'sup_moneyline'
+    && (/\bseries\s*(game\s*)?(spread|handicap)\b/i.test(marketName)
+        || /\bseries\b[^.]*\bspread\b/i.test(marketName));
+  const isSupSeriesTotal = market.type === 'sup_moneyline'
+    && !isSupSeriesSpread
+    && (/\bseries\s*total\s*games\b/i.test(marketName)
+        || /\btotal\s*games\b/i.test(marketName)
+        || /\bseries\b[^.]*\btotal\b/i.test(marketName));
+  if (isSupSeriesSpread) marketType = 'spread';      // retagged to 'series_spread' by line-manager
+  else if (isSupSeriesTotal) marketType = 'total';   // retagged to 'series_total' by line-manager
+
+  if (isSupSeriesSpread && market.selections) {
+    for (const selGroup of market.selections) {
+      for (const sel of selGroup) {
+        if (!sel.line_id) continue;
+        const raw = (sel.display_name || sel.name || '').trim();
+        // Parse "TEAM +/-N.N" (e.g. "MIN +1.5", "DEN -2.5"). Team portion
+        // is everything before the signed number.
+        const m = raw.match(/^(.+?)\s+([+-]\d+(?:\.\d+)?)$/);
+        if (!m) continue;
+        const teamName = m[1].trim();
+        const line = parseFloat(m[2]);
+        if (!Number.isFinite(line)) continue;
+        results.push({
+          lineId: sel.line_id,
+          marketType: 'spread',
+          selection: line < 0 ? 'favorite' : 'underdog',
+          teamName,
+          line,
+          competitorId: sel.competitor_id || null,
+          outcomeName: raw,
+        });
+      }
+    }
+    return results;
+  }
+
+  if (isSupSeriesTotal && market.selections) {
+    for (const selGroup of market.selections) {
+      for (const sel of selGroup) {
+        if (!sel.line_id) continue;
+        const raw = (sel.display_name || sel.name || '').trim();
+        // Parse "Over N.N" / "Under N.N"
+        const m = raw.match(/^(over|under)\s+(\d+(?:\.\d+)?)$/i);
+        if (!m) continue;
+        const side = m[1].toLowerCase();
+        const line = parseFloat(m[2]);
+        if (!Number.isFinite(line)) continue;
+        results.push({
+          lineId: sel.line_id,
+          marketType: 'total',
+          selection: side,
+          teamName: side,
+          line,
+          competitorId: null,
+          outcomeName: raw,
+        });
+      }
+    }
+    return results;
+  }
+
   if ((marketType === 'moneyline' || isF5Moneyline) && market.selections) {
     // Moneyline: selections is array of arrays, each inner array has one object
     for (const selGroup of market.selections) {

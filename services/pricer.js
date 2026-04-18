@@ -1176,6 +1176,47 @@ function shouldDecline(legs) {
     // at pricing time via Pin-match logic (pinMatchTarget in priceParlay).
   }
 
+  // ---- CROSS-EVENT SERIES CORRELATION ----
+  // Series events and the underlying game events have DIFFERENT pxEventIds
+  // (e.g. Series Winner - DEN vs MIN is event 1500006589, Game 1 MIN @ DEN
+  // is a separate event). The per-pxEventId grouping above can't catch them
+  // paired. Group again by normalized home/away team pair across all legs:
+  //   - series_spread + any game leg (moneyline/spread/total/team_total)
+  //     between the same two teams: blocked (series outcome is tied to each
+  //     game's outcome, high correlation)
+  //   - multiple series_spread legs on the same series (alt lines on same
+  //     matchup): blocked (same bet at different breakpoints)
+  {
+    const normName = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s*\(series\)\s*/g, '').replace(/[^a-z0-9 ]/g, '').trim();
+    const pairKey = (h, a) => {
+      const nh = normName(h), na = normName(a);
+      if (!nh || !na) return null;
+      return [nh, na].sort().join('|');
+    };
+    const byPair = {};
+    for (const l of resolvedLegs) {
+      const key = pairKey(l.lineInfo.homeTeam, l.lineInfo.awayTeam);
+      if (!key) continue;
+      if (!byPair[key]) byPair[key] = [];
+      byPair[key].push({ market: l.lineInfo.marketType, team: l.lineInfo.teamName, line: l.lineInfo.line });
+    }
+    for (const [key, entries] of Object.entries(byPair)) {
+      if (entries.length <= 1) continue;
+      const seriesSpreadLegs = entries.filter(e => e.market === 'series_spread');
+      if (seriesSpreadLegs.length === 0) continue;
+      if (seriesSpreadLegs.length >= 2) {
+        log.info('Pricing', `Declined: multiple series_spread legs on same series (${key})`);
+        return { declined: true, reason: 'correlated legs', detail: `multiple series spread lines on same series: ${key}` };
+      }
+      const gameTypes = ['moneyline', 'spread', 'total', 'team_total'];
+      const hasGameLeg = entries.some(e => gameTypes.includes(e.market));
+      if (hasGameLeg) {
+        log.info('Pricing', `Declined: series_spread + game leg on same matchup (${key})`);
+        return { declined: true, reason: 'correlated legs', detail: `series spread + individual game market on same matchup: ${key}` };
+      }
+    }
+  }
+
   // Check team-level exposure limits.
   // Use maxRiskPerParlay as the estimate. The confirm-time re-check in
   // handleConfirm is the real safety net (checks actual stake against both
