@@ -373,6 +373,14 @@ async function startup() {
         log.warn('DkScraper', `Initial ${sport.toUpperCase()} fetch failed: ${err.message}`);
       }
     }
+    // Prime MMA cache + merge into oddsCache so line-manager picks up
+    // UFC Fight Night fights The Odds API doesn't carry.
+    try {
+      await dkScraper.fetchMmaFightOdds();
+      await oddsFeed.mergeDkMmaFights();
+    } catch (err) {
+      log.warn('DkScraper', `Initial MMA prime failed: ${err.message}`);
+    }
   })();
   setInterval(async () => {
     for (const sport of ['nba', 'nhl']) {
@@ -381,6 +389,12 @@ async function startup() {
       } catch (err) {
         log.warn('DkScraper', `Periodic ${sport.toUpperCase()} refresh failed: ${err.message}`);
       }
+    }
+    try {
+      await dkScraper.fetchMmaFightOdds({ force: true });
+      await oddsFeed.mergeDkMmaFights();
+    } catch (err) {
+      log.warn('DkScraper', `Periodic MMA refresh failed: ${err.message}`);
     }
   }, 10 * 60 * 1000);
 
@@ -865,6 +879,15 @@ function startStatusServer() {
     try {
       const force = req.query.force === '1' || req.query.force === 'true';
       const data = await dkScraper.fetchNhlSeriesWinners({ force });
+      res.json({ ok: true, ...data });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+  app.get('/mma-fight-odds', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const data = await dkScraper.fetchMmaFightOdds({ force });
       res.json({ ok: true, ...data });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });

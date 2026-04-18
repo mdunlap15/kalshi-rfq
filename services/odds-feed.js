@@ -2268,6 +2268,93 @@ let _lastWarmStats = null;
 // quote against, at the cost of ~1 Odds API call per sport per cycle.
 const H2H_BACKFILL_SPORTS = new Set(['baseball_mlb', 'basketball_nba', 'icehockey_nhl']);
 
+/**
+ * Merge DK-scraped MMA fight odds into oddsCache['mma_mixed_martial_arts'].
+ * The Odds API typically only carries 2-3 of a UFC Fight Night card's ~12
+ * fights; DK carries all of them. We pull the DK scraper's parsed fight
+ * list and, for each fight not already in the cache (matched by fighter
+ * last-word pairs), inject a new event entry with markets.h2h populated.
+ * After this runs, the line-manager seed picks them up and registers
+ * moneylines with PX, unlocking RFQ routing for the full card.
+ */
+async function mergeDkMmaFights() {
+  const dk = require('./dk-scraper');
+  let fightData;
+  try {
+    fightData = await dk.fetchMmaFightOdds();
+  } catch (err) {
+    log.warn('OddsFeed', `DK MMA fetch failed: ${err.message}`);
+    return { merged: 0, added: 0, err: err.message };
+  }
+  if (!fightData || !fightData.fights || fightData.fights.length === 0) {
+    return { merged: 0, added: 0 };
+  }
+  const sport = 'mma_mixed_martial_arts';
+  if (!oddsCache[sport]) oddsCache[sport] = { fetchedAt: Date.now(), events: {} };
+  const cache = oddsCache[sport];
+
+  // Build fuzzy lookup over existing cache events by last-word fighter pair.
+  const lw = (n) => (n || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(Boolean).pop() || '';
+  const existingByPair = new Set();
+  for (const entry of Object.values(cache.events || {})) {
+    const arr = Array.isArray(entry) ? entry : [entry];
+    for (const ev of arr) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      const a = lw(ev.homeTeam), b = lw(ev.awayTeam);
+      if (a && b) {
+        existingByPair.add(a + '|' + b);
+        existingByPair.add(b + '|' + a);
+      }
+    }
+  }
+
+  let added = 0, skipped = 0;
+  for (const fight of fightData.fights) {
+    if (!fight.fighters || fight.fighters.length !== 2) continue;
+    const [f1, f2] = fight.fighters;
+    const p1 = lw(f1.fighter), p2 = lw(f2.fighter);
+    if (!p1 || !p2) continue;
+    if (existingByPair.has(p1 + '|' + p2) || existingByPair.has(p2 + '|' + p1)) {
+      skipped++;
+      continue;
+    }
+    // DK doesn't label home/away for MMA (it's a neutral-site fight); use
+    // the first fighter as 'home' arbitrarily. line-manager's seed matches
+    // teamName→competitor by exact/substring anyway.
+    const homeTeam = f1.fighter, awayTeam = f2.fighter;
+    const key = normalizeEventKey(homeTeam, awayTeam);
+    const newEvent = {
+      homeTeam, awayTeam,
+      commenceTime: fight.startTime || null,
+      eventId: 'dk-mma-' + fight.eventId,
+      markets: {
+        h2h: {
+          home: {
+            rawOdds: f1.americanOdds, impliedProb: f1.impliedProb,
+            fairProb: f1.fairProb, displayFairProb: f1.fairProb,
+          },
+          away: {
+            rawOdds: f2.americanOdds, impliedProb: f2.impliedProb,
+            fairProb: f2.fairProb, displayFairProb: f2.fairProb,
+          },
+          books: 1,
+          pinnacle: null, fanduel: null,
+          draftkings: { home: f1.americanOdds, away: f2.americanOdds },
+          kalshi: null,
+          dkScraped: true,
+        },
+      },
+    };
+    if (!cache.events[key]) cache.events[key] = [];
+    if (Array.isArray(cache.events[key])) cache.events[key].push(newEvent);
+    else cache.events[key] = [cache.events[key], newEvent];
+    added++;
+  }
+  cache.fetchedAt = Date.now();
+  log.info('OddsFeed', `MMA DK merge: added ${added}, skipped-already-cached ${skipped} (total DK fights: ${fightData.fights.length})`);
+  return { added, skipped, total: fightData.fights.length };
+}
+
 async function backfillMissingH2h(sport) {
   if (!H2H_BACKFILL_SPORTS.has(sport)) return null;
   const cache = oddsCache[sport];
@@ -3534,6 +3621,15 @@ async function refreshAllSports() {
     });
   }
 
+  // Fire-and-forget DK MMA merge — covers UFC Fight Night prelims that
+  // The Odds API routinely misses. Adds ~15s of Puppeteer fetch on a
+  // 15-min cache, so negligible load.
+  if (sportsToRefresh.includes('mma_mixed_martial_arts')) {
+    mergeDkMmaFights().catch(err => {
+      log.warn('OddsFeed', `DK MMA merge failed: ${err.message}`);
+    });
+  }
+
   return results;
 }
 
@@ -3980,6 +4076,7 @@ module.exports = {
   getDNBFairProb,
   fetchAltLines,
   backfillMissingH2h,
+  mergeDkMmaFights,
   warmAltLines,
   warmAllSports,
   startAltLineWarmLoop,

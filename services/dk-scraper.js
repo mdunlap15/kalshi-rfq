@@ -117,6 +117,143 @@ function fetchNbaSeriesWinners(opts) { return fetchSeriesWinners('nba', opts); }
 function fetchNhlSeriesWinners(opts) { return fetchSeriesWinners('nhl', opts); }
 
 /**
+ * Fetch MMA fight moneylines from DK. Structure differs from series:
+ * DK's /leagues/mma/ufc page fires ONE primaryMarkets XHR per event
+ * (not a bulk subcategory call), each containing Moneyline + Point
+ * Spread + Total Rounds. We intercept every XHR and pick out the
+ * Moneyline selections. Covers UFC Fight Night prelims that our
+ * Odds API feed misses entirely (~10 of 12 fights on a typical card).
+ *
+ * Returns { fetchedAt, fights: [{ eventId, eventName, startTime, vig,
+ *   fighters: [{ fighter, decimalOdds, americanOdds, impliedProb, fairProb }] }] }
+ */
+async function fetchMmaFightOdds({ force = false } = {}) {
+  if (!force && cacheBySport.mma && Date.now() - cacheBySport.mma.at < CACHE_TTL_MS) {
+    return cacheBySport.mma.data;
+  }
+  if (inFlightBySport.mma) return inFlightBySport.mma;
+
+  inFlightBySport.mma = (async () => {
+    const startedAt = Date.now();
+    const browser = await puppeteer().launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1400, height: 900 });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+      const fightsById = {};
+      page.on('response', async (resp) => {
+        const url = resp.url();
+        if (!url.includes('sportsbook-nash.draftkings.com')) return;
+        if (!url.includes('primaryMarkets/v1/markets')) return;
+        try {
+          const ct = resp.headers()['content-type'] || '';
+          if (!ct.includes('json')) return;
+          const data = await resp.json();
+          if (!data.events || !data.markets || !data.selections) return;
+          for (const ev of data.events) {
+            if (!fightsById[ev.id]) {
+              fightsById[ev.id] = {
+                eventId: ev.id,
+                eventName: ev.name,
+                startTime: ev.startEventDate || null,
+                selections: [],
+              };
+            }
+          }
+          const mlMarkets = data.markets.filter(m => m.marketType?.name === 'Moneyline');
+          for (const m of mlMarkets) {
+            const ev = fightsById[m.eventId];
+            if (!ev) continue;
+            for (const sel of data.selections) {
+              if (sel.marketId !== m.id) continue;
+              const trueDec = typeof sel.trueOdds === 'number' ? sel.trueOdds : null;
+              const decDisplay = parseFloat(sel.displayOdds?.decimal);
+              const decimal = trueDec || decDisplay || null;
+              const american = sel.displayOdds?.american
+                ? parseInt(String(sel.displayOdds.american).replace(/[−–—]/g, '-').replace(/[^\-0-9]/g, ''), 10)
+                : null;
+              ev.selections.push({
+                fighter: sel.label,
+                decimalOdds: decimal,
+                americanOdds: Number.isFinite(american) ? american : null,
+                impliedProb: decimal && decimal > 0 ? 1 / decimal : null,
+              });
+            }
+          }
+        } catch { /* ignore */ }
+      });
+
+      await page.goto('https://sportsbook.draftkings.com/leagues/mma/ufc', {
+        waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS,
+      });
+      // MMA pages fire many per-event XHRs in sequence; give more time.
+      await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS + 5000));
+
+      const fights = [];
+      for (const ev of Object.values(fightsById)) {
+        if (ev.selections.length !== 2) continue;
+        const sumImplied = ev.selections.reduce((s, x) => s + (x.impliedProb || 0), 0);
+        if (sumImplied <= 0) continue;
+        for (const s of ev.selections) s.fairProb = (s.impliedProb || 0) / sumImplied;
+        fights.push({
+          eventId: ev.eventId,
+          eventName: ev.eventName,
+          startTime: ev.startTime,
+          vig: round(sumImplied - 1, 5),
+          fighters: ev.selections,
+        });
+      }
+      fights.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
+
+      const payload = { fetchedAt: new Date().toISOString(), fights };
+      cacheBySport.mma = { at: Date.now(), data: payload };
+      log.info('DkScraper', `MMA fights: ${fights.length} captured (${Date.now() - startedAt}ms)`);
+      return payload;
+    } finally {
+      await browser.close();
+      delete inFlightBySport.mma;
+    }
+  })().catch(err => { delete inFlightBySport.mma; throw err; });
+  return inFlightBySport.mma;
+}
+
+/**
+ * Look up a fighter's de-vigged fair probability from the DK MMA cache.
+ * Returns null if cache is cold or no match found. Uses the same
+ * last-word fallback strategy as series lookups to handle diacritics
+ * and minor name variants ("Thiago Moisés" vs "Thiago Moises").
+ */
+function lookupMmaFairProb(fighterName) {
+  const cache = cacheBySport.mma;
+  if (!cache || !cache.data) return null;
+  const target = normalizeTeamName(fighterName);
+  if (!target) return null;
+  const targetLast = target.split(' ').pop();
+  for (const f of cache.data.fights) {
+    for (const fighter of f.fighters) {
+      const cand = normalizeTeamName(fighter.fighter);
+      const base = {
+        fairProb: fighter.fairProb,
+        decimalOdds: fighter.decimalOdds,
+        americanOdds: fighter.americanOdds,
+        source: 'dk',
+        eventName: f.eventName,
+        startTime: f.startTime,
+      };
+      if (cand === target) return base;
+      if (cand.endsWith(' ' + target) || target.endsWith(' ' + cand)) return base;
+      const candLast = cand.split(' ').pop();
+      if (candLast && candLast === targetLast) return base;
+    }
+  }
+  return null;
+}
+
+/**
  * Normalize a team name for robust matching across sources (PX's leg
  * label like "Cleveland Cavaliers (Series)" vs DK's "CLE Cavaliers"
  * vs odds-feed's "Cleveland Cavaliers"). Strips punctuation, casing,
@@ -227,7 +364,9 @@ module.exports = {
   fetchSeriesWinners,
   fetchNbaSeriesWinners,
   fetchNhlSeriesWinners,
+  fetchMmaFightOdds,
   parseSeriesData,
   lookupSeriesFairProb,
+  lookupMmaFairProb,
   normalizeTeamName,
 };
