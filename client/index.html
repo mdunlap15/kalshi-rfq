@@ -727,6 +727,16 @@
           </div>
         </div>
 
+        <!-- Single-Leg Pricing vs. Books — collapsed -->
+        <div class="card">
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Single-Leg Pricing vs. Books</span>
+          </div>
+          <div class="card-body collapsed" id="chart-leg-vs-books">
+            <div class="empty-state"><div class="icon">-</div><div>Need quoted parlays with per-leg book odds</div></div>
+          </div>
+        </div>
+
         <!-- Cumulative P&L + ROI (merged) — collapsed -->
         <div class="card">
           <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
@@ -6498,6 +6508,7 @@
     renderChartDailyVolume(ownOrders);
     renderOrdersDailyVolume(ownOrders);
     renderChartParlayVsBooks(allQuoted);
+    renderChartLegVsBooks(allQuoted);
     renderChartCumulPnlRoi(settled);
     renderChartPnlSport(settled);
     renderChartPnlLegs(settled);
@@ -7365,6 +7376,265 @@
       html += box(s.label + ' avg', (avg >= 0 ? '+' : '') + avg.toFixed(2) + 'pp · n=' + vals.length, s.color);
     }
     html += '</div>';
+
+    el.innerHTML = html;
+  }
+
+  // Single-Leg Pricing vs Books — same chart shape as parlay version
+  // but each dot is ONE leg, so heavy-favorite single-leg pricing
+  // gaps (e.g. Horth Over 2.5 at 79% fair vs DK) are visible. The
+  // parlay version compounds vig into the 0-50% fair range and hides
+  // those gaps.
+  if (!window._legVsBooksToggle) {
+    window._legVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true, kalshi: true };
+    window._legVsBooksFilter = 'all';
+    window._legVsBooksRange = '7d';
+  }
+  function setLegVsBooksFilter(f) {
+    window._legVsBooksFilter = f;
+    if (window._legVsBooksData) renderChartLegVsBooks(null);
+  }
+  function setLegVsBooksRange(r) {
+    window._legVsBooksRange = r;
+    if (window._legVsBooksRawQuotes) {
+      window._legVsBooksData = null;
+      renderChartLegVsBooks(window._legVsBooksRawQuotes);
+    }
+  }
+  function toggleLegVsBooksSeries(which) {
+    window._legVsBooksToggle[which] = !window._legVsBooksToggle[which];
+    if (window._legVsBooksData) renderChartLegVsBooks(null);
+  }
+
+  function renderChartLegVsBooks(allQuoted) {
+    const el = document.getElementById('chart-leg-vs-books');
+    if (!el) return;
+
+    let data = window._legVsBooksData;
+    if (allQuoted) {
+      window._legVsBooksRawQuotes = allQuoted;
+      data = [];
+      const rangeOpt = RANGE_OPTIONS.find(r => r.key === window._legVsBooksRange) || RANGE_OPTIONS[2];
+      const cutoff = rangeOpt.ms > 0 ? new Date(Date.now() - rangeOpt.ms).toISOString() : null;
+      for (const o of allQuoted) {
+        const qDate = o.quotedAt || o.confirmedAt;
+        if (cutoff && qDate && qDate < cutoff) continue;
+        const legs = o.meta?.legs || o.legs || [];
+        const isConfirmed = o.status === 'confirmed' || (o.status && o.status.startsWith('settled_'));
+        for (const l of legs) {
+          const fp = l.fairProb;
+          if (fp == null || fp <= 0 || fp >= 1) continue;
+          // Reconstruct our per-leg offered implied prob from the stored
+          // legVig (payout-space formula, same as pricer).
+          const vig = l.legVig != null ? l.legVig : 0.001;
+          const fairDec = 1 / fp;
+          const payout = fairDec - 1;
+          const viggedDec = 1 + payout * (1 - vig);
+          const myProb = 1 / viggedDec;
+          const bookProb = (am) => {
+            if (am == null) return null;
+            if (am > 0) return 100 / (am + 100);
+            return -am / (-am + 100);
+          };
+          const pinProb = bookProb(l.pinnacleOdds);
+          const dkProb  = bookProb(l.draftkingsOdds);
+          const fdProb  = bookProb(l.fanduelOdds);
+          const kProb   = bookProb(l.kalshiOdds);
+          const distFromFair = (p) => p != null ? (p - fp) * 100 : null;
+          data.push({
+            parlayId: o.parlayId,
+            legLabel: (l.teamName || l.team || l.selection || '?')
+              + (l.line != null ? ' ' + l.line : '')
+              + (l.market ? ' (' + l.market + ')' : ''),
+            sport: l.sport || '?',
+            isConfirmed,
+            stake: o.confirmedStake || o.maxStake || 0,
+            fairProb: fp,
+            myProb,
+            pinProb, dkProb, fdProb, kProb,
+            distMine: distFromFair(myProb),
+            distPin:  distFromFair(pinProb),
+            distDk:   distFromFair(dkProb),
+            distFd:   distFromFair(fdProb),
+            distK:    distFromFair(kProb),
+            quotedAt: qDate,
+          });
+        }
+      }
+      window._legVsBooksData = data;
+    }
+
+    if (!data || data.length < 3) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ legs with fair prob + book odds</div></div>';
+      return;
+    }
+
+    const T = window._legVsBooksToggle;
+    const series = [
+      { key: 'mine',     label: 'My Offer', color: '#ffffff', getDist: d => d.distMine },
+      { key: 'pinnacle', label: 'Pinnacle', color: '#a855f7', getDist: d => d.distPin },
+      { key: 'dk',       label: 'DK',       color: '#22c55e', getDist: d => d.distDk },
+      { key: 'fd',       label: 'FanDuel',  color: '#3b82f6', getDist: d => d.distFd },
+      { key: 'kalshi',   label: 'Kalshi',   color: '#eab308', getDist: d => d.distK },
+    ];
+
+    let html = '';
+    html += '<div style="display:flex; gap:14px; align-items:center; flex-wrap:wrap; margin-bottom:10px; font-size:12px;">';
+    for (const s of series) {
+      const checked = T[s.key] ? ' checked' : '';
+      html += '<label style="cursor:pointer; user-select:none;">'
+        + '<input type="checkbox"' + checked + ' onchange="toggleLegVsBooksSeries(\'' + s.key + '\')" style="margin-right:6px; vertical-align:middle;">'
+        + '<span style="display:inline-block;width:10px;height:10px;background:' + s.color + ';margin:0 6px -1px 0;border-radius:50%;' + (s.key === 'mine' ? 'border:1px solid var(--text3);' : '') + '"></span>'
+        + s.label + '</label>';
+    }
+    const R = window._legVsBooksRange;
+    const btnStyle = (active) => 'cursor:pointer; padding:3px 10px; border-radius:4px; font-size:11px; border:1px solid var(--border); background:' + (active ? 'var(--accent)' : 'transparent') + '; color:' + (active ? '#fff' : 'var(--text3)') + ';';
+    html += '<span style="margin-left:auto; display:flex; gap:4px; align-items:center;">';
+    html += '<span style="font-size:11px; color:var(--text3); margin-right:2px;">Range:</span>';
+    for (const ro of RANGE_OPTIONS) {
+      html += '<button onclick="setLegVsBooksRange(\'' + ro.key + '\')" style="' + btnStyle(R === ro.key) + '">' + ro.label + '</button>';
+    }
+    html += '</span>';
+    html += '</div>';
+    const F = window._legVsBooksFilter;
+    html += '<div style="display:flex; gap:4px; justify-content:flex-end; margin-bottom:8px;">';
+    html += '<button onclick="setLegVsBooksFilter(\'all\')" style="' + btnStyle(F === 'all') + '">All</button>';
+    html += '<button onclick="setLegVsBooksFilter(\'confirmed\')" style="' + btnStyle(F === 'confirmed') + '">Confirmed</button>';
+    html += '<button onclick="setLegVsBooksFilter(\'notfilled\')" style="' + btnStyle(F === 'notfilled') + '">Not Filled</button>';
+    html += '</div>';
+
+    const filtered = F === 'all' ? data : data.filter(d => F === 'confirmed' ? d.isConfirmed : !d.isConfirmed);
+    const confirmedCount = data.filter(d => d.isConfirmed).length;
+    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">'
+      + data.length + ' legs &middot; ' + confirmedCount + ' from confirmed parlays &middot; '
+      + (R === 'all' ? 'all time' : 'last ' + RANGE_OPTIONS.find(r => r.key === R).label)
+      + ' &middot; X = leg fair prob (0-100%) &middot; Y = pp above fair (negative = bettor friendlier)</div>';
+
+    const W = 900, H = 450, pad = { l: 60, r: 20, t: 25, b: 58 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const visible = [];
+    for (const d of filtered) for (const s of series) if (T[s.key]) { const v = s.getDist(d); if (v != null) visible.push(v); }
+    if (visible.length === 0) {
+      html += '<div class="empty-state"><div class="icon">-</div><div>Enable at least one series above</div></div>';
+      el.innerHTML = html; return;
+    }
+    const sortedDists = [...visible].sort((a, b) => a - b);
+    const p3  = sortedDists[Math.floor(sortedDists.length * 0.03)] || sortedDists[0];
+    const p97 = sortedDists[Math.ceil(sortedDists.length * 0.97) - 1] || sortedDists[sortedDists.length - 1];
+    const distPad = (p97 - p3) * 0.2 || 1;
+    const minDist = Math.min(-1, p3 - distPad * 1.3);
+    const maxDist = Math.max(1, p97 + distPad);
+    const distRange = maxDist - minDist || 2;
+
+    // X = leg fair prob, full 0..1 so heavy favorites are visible
+    const scaleX = (p) => pad.l + p * chartW;
+    const scaleY = (v) => pad.t + chartH - ((v - minDist) / distRange) * chartH;
+
+    const stakes = filtered.map(d => d.stake || 0).filter(s => s > 0);
+    const maxStake = stakes.length ? Math.max(...stakes) : 1;
+    const stakeRadius = (s) => s && s > 0 ? 3 + Math.sqrt(s / maxStake) * 10 : 3;
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; height:auto; display:block;">';
+
+    const yStep = niceStep(distRange / 8);
+    for (let t = Math.ceil(minDist / yStep) * yStep; t <= maxDist; t += yStep) {
+      const y = scaleY(t);
+      svg += svgLine(pad.l, y, pad.l + chartW, y, 'var(--border)', 0.5);
+      svg += svgText(pad.l - 8, y + 4, (t >= 0 ? '+' : '') + t.toFixed(t % 1 === 0 ? 0 : 1) + 'pp', { anchor: 'end', size: 11, fill: 'var(--text3)' });
+    }
+    const zeroY = scaleY(0);
+    svg += svgLine(pad.l, zeroY, pad.l + chartW, zeroY, '#ffffff', 1.5);
+    svg += svgText(pad.l + chartW + 4, zeroY + 4, 'FAIR', { anchor: 'start', size: 10, fill: '#ffffff' });
+
+    for (let p = 0; p <= 1.001; p += 0.1) {
+      const x = scaleX(p);
+      svg += svgLine(x, pad.t + chartH, x, pad.t + chartH + 4, 'var(--text3)', 1);
+      svg += svgText(x, pad.t + chartH + 16, (p * 100).toFixed(0) + '%', { size: 11, fill: 'var(--text3)' });
+    }
+
+    const tipFor = (d, label) => {
+      const fmtPp = (v) => v == null ? 'n/a' : (v >= 0 ? '+' : '') + v.toFixed(2) + 'pp';
+      return '[' + label + ']\n'
+        + d.legLabel + ' · ' + d.sport
+        + (d.isConfirmed ? ' · CONFIRMED' : '')
+        + '\nFair: ' + (d.fairProb * 100).toFixed(2) + '% · My: ' + (d.myProb * 100).toFixed(2) + '%'
+        + '\nMy dist:  ' + fmtPp(d.distMine)
+        + '\nPIN dist: ' + fmtPp(d.distPin)
+        + '\nDK dist:  ' + fmtPp(d.distDk)
+        + '\nFD dist:  ' + fmtPp(d.distFd)
+        + '\nKAL dist: ' + fmtPp(d.distK);
+    };
+
+    const sortedF = [...filtered].sort((a, b) => (a.isConfirmed ? 1 : 0) - (b.isConfirmed ? 1 : 0));
+    const drawOrder = series.filter(s => s.key !== 'mine').concat(series.filter(s => s.key === 'mine'));
+    for (const s of drawOrder) {
+      if (!T[s.key]) continue;
+      for (const d of sortedF) {
+        const v = s.getDist(d);
+        if (v == null) continue;
+        const x = scaleX(d.fairProb);
+        const isOutlier = v < minDist || v > maxDist;
+        const clampedV = Math.max(minDist, Math.min(maxDist, v));
+        const y = scaleY(clampedV);
+        const r = stakeRadius(d.stake);
+        const tip = tipFor(d, s.label);
+        if (isOutlier) {
+          const h = r * 1.2;
+          const pts = x + ',' + (y - h) + ' ' + (x + h) + ',' + y + ' ' + x + ',' + (y + h) + ' ' + (x - h) + ',' + y;
+          svg += '<polygon points="' + pts + '" ' + (d.isConfirmed ? 'fill="' + s.color + '" opacity="0.85"' : 'fill="none" stroke="' + s.color + '" stroke-width="1.5" opacity="0.55"') + '><title>' + tip + '</title></polygon>';
+        } else {
+          svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" ' + (d.isConfirmed ? 'fill="' + s.color + '" opacity="0.85"' : 'fill="none" stroke="' + s.color + '" stroke-width="1.5" opacity="0.5"') + '><title>' + tip + '</title></circle>';
+        }
+      }
+    }
+
+    svg += svgText(pad.l + 10, pad.t + 14, 'Above FAIR = more expensive (tighter for bettor)', { anchor: 'start', size: 11, fill: 'var(--text3)' });
+    svg += svgText(pad.l + 10, pad.t + chartH - 6, 'Below FAIR = cheaper (better for bettor)', { anchor: 'start', size: 11, fill: 'var(--text3)' });
+    svg += svgText(pad.l + chartW / 2, H - 6, 'Leg Fair Implied Probability', { size: 13, fill: '#ffffff' });
+    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">Distance from FAIR (pp)</text>';
+    svg += '</svg>';
+
+    html += svg;
+
+    // Per-series summary + binned summary (split by fair prob bucket)
+    html += '<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; padding:10px 14px; background:var(--surface2); border-radius:6px; font-size:12px;">';
+    const box = (label, value, color) =>
+      '<div style="min-width:130px;"><div style="font-size:11px; color:var(--text3); text-transform:uppercase;">' + label + '</div>'
+      + '<div style="font-size:17px; font-weight:700; color:' + color + ';">' + value + '</div></div>';
+    for (const s of series) {
+      if (!T[s.key]) continue;
+      const vals = filtered.map(s.getDist).filter(v => v != null);
+      if (vals.length === 0) continue;
+      const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+      html += box(s.label + ' avg', (avg >= 0 ? '+' : '') + avg.toFixed(2) + 'pp · n=' + vals.length, s.color);
+    }
+    html += '</div>';
+
+    // Bucketed avg — key insight: where is our pricing vs books by fav level
+    const buckets = [
+      { label: '≤50%', filter: d => d.fairProb <= 0.5 },
+      { label: '50-65%', filter: d => d.fairProb > 0.5 && d.fairProb <= 0.65 },
+      { label: '65-80%', filter: d => d.fairProb > 0.65 && d.fairProb <= 0.80 },
+      { label: '>80%', filter: d => d.fairProb > 0.80 },
+    ];
+    html += '<div style="margin-top:10px; font-size:12px;"><div style="font-size:11px; color:var(--text3); text-transform:uppercase; margin-bottom:4px;">Avg pp above fair by fair-prob bucket</div>';
+    html += '<table style="font-size:12px; border-collapse:collapse;"><tr><th style="text-align:left; padding:4px 10px; color:var(--text3);">Bucket</th>';
+    for (const s of series) { if (T[s.key]) html += '<th style="padding:4px 10px; text-align:right; color:' + s.color + '; font-weight:600;">' + s.label + '</th>'; }
+    html += '<th style="padding:4px 10px; text-align:right; color:var(--text3);">n</th></tr>';
+    for (const b of buckets) {
+      const bucketData = filtered.filter(b.filter);
+      if (bucketData.length === 0) continue;
+      html += '<tr><td style="padding:4px 10px; color:var(--text);">' + b.label + '</td>';
+      for (const s of series) {
+        if (!T[s.key]) continue;
+        const vals = bucketData.map(s.getDist).filter(v => v != null);
+        const avg = vals.length > 0 ? vals.reduce((a, c) => a + c, 0) / vals.length : null;
+        const cellStr = avg != null ? (avg >= 0 ? '+' : '') + avg.toFixed(2) + 'pp' : '—';
+        html += '<td style="padding:4px 10px; text-align:right; color:' + (avg != null ? s.color : 'var(--text3)') + ';">' + cellStr + '</td>';
+      }
+      html += '<td style="padding:4px 10px; text-align:right; color:var(--text3);">' + bucketData.length + '</td></tr>';
+    }
+    html += '</table></div>';
 
     el.innerHTML = html;
   }
