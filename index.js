@@ -832,6 +832,45 @@ function startStatusServer() {
     }
   });
 
+  // Authoritative open-positions list. Pulls PX's finalized (unsettled)
+  // orders and joins with tracker leg data. Replaces the old path of
+  // filtering /orders by status==='confirmed' which includes silent-loss
+  // ghosts that reconcile hasn't swept yet.
+  app.get('/px-positions', async (req, res) => {
+    try {
+      const ledger = await pxLedger.fetchLedger();
+      const pxOpen = (ledger.ledger || []).filter(po => {
+        const s = (po.status || '').toLowerCase();
+        return s === 'finalized';
+      });
+      const positions = pxOpen.map(po => {
+        const uuid = po.order_uuid || po.orderUuid;
+        const tracked = uuid ? orderTracker.getOrderByUuid(uuid) : null;
+        // Prefer PX fields as source of truth (stake, odds); fall back
+        // to tracker data for legs and pricing context that PX doesn't
+        // expose on the list endpoint.
+        return {
+          parlayId: tracked?.parlayId || uuid,
+          orderUuid: uuid,
+          status: 'confirmed',
+          confirmedStake: Number(po.confirmed_stake ?? po.stake ?? 0),
+          confirmedOdds: tracked?.confirmedOdds ?? null,
+          offeredOdds: tracked?.offeredOdds ?? null,
+          fairParlayProb: tracked?.fairParlayProb ?? null,
+          maxRisk: tracked?.maxRisk ?? null,
+          confirmedAt: tracked?.confirmedAt || po.created_at || po.updated_at || null,
+          quotedAt: tracked?.quotedAt || null,
+          legs: tracked?.legs || tracked?.meta?.legs || [],
+          meta: tracked?.meta || {},
+          pxSource: true,
+        };
+      });
+      res.json({ ok: true, count: positions.length, totalStake: positions.reduce((s, p) => s + (p.confirmedStake || 0), 0), positions });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/debug/px-ledger', async (req, res) => {
     const limit = parseInt(req.query.limit) || 50000;
     try {

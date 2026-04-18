@@ -3845,6 +3845,12 @@ module.exports = {
   enrichOpenPositionsFromAffiliate,
   loadFromDb,
   backfillFillBucketEvents,
+  // Exposed for /px-positions endpoint — lets it enrich PX-open orders
+  // with tracker-held leg data without duplicating the uuid lookup.
+  getOrderByUuid: (uuid) => {
+    const pid = ordersByUuid[uuid];
+    return pid ? orders[pid] : null;
+  },
   backfillGolfMetadata,
 };
 

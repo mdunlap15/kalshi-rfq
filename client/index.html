@@ -994,6 +994,18 @@
         }
       }).catch(() => {});
 
+      // Fetch PX-native open positions. This is the authoritative list
+      // of truly-open parlays (PX status='finalized'). The tracker's
+      // confirmed list drifts high (silent losses accumulate as
+      // 'confirmed' until reconcile sweeps them). Overrides
+      // renderPositions input when available.
+      fetchJSON('/px-positions').then(pp => {
+        if (pp && pp.ok) {
+          window._pxPositions = pp;
+          renderPositions(orders);
+        }
+      }).catch(() => {});
+
       renderStatus(status);
       updateNotificationBadge(orders);
       renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
@@ -2828,9 +2840,14 @@
     const el = document.getElementById('positions-table');
     const countEl = document.getElementById('positions-count');
     const allOrders = data.recentOrders || [];
-    // Show ALL confirmed orders in Open Positions — including reconstructed
-    // ones from PX reconcile. These are real positions with real exposure.
-    const positions = allOrders.filter(o => o.status === 'confirmed');
+    // Prefer PX-native open positions list (authoritative — reflects
+    // PX's finalized orders). Fall back to tracker-confirmed only if
+    // the /px-positions fetch hasn't populated yet on initial load.
+    // The tracker list drifts high because PX never emits order.matched
+    // for SP losses, so losses silently sit as 'confirmed'.
+    const positions = window._pxPositions?.positions
+      ? window._pxPositions.positions
+      : allOrders.filter(o => o.status === 'confirmed');
 
     window._openPositionsCount = positions.length;
     updatePositionsCountBadge();
@@ -6274,9 +6291,15 @@
       }
     }
     if (s.positionType === 'open' || s.positionType === 'both') {
-      for (const o of Object.values(orderState.allOrders || {})) {
-        if (o.status === 'confirmed' && !seenIds.has(o.parlayId)) {
-          rows.push(o);
+      // Prefer PX-native open positions — the tracker's 'confirmed'
+      // set drifts high with silent losses PX never emits events for.
+      if (window._pxPositions?.positions) {
+        for (const o of window._pxPositions.positions) {
+          if (!seenIds.has(o.parlayId)) rows.push(o);
+        }
+      } else {
+        for (const o of Object.values(orderState.allOrders || {})) {
+          if (o.status === 'confirmed' && !seenIds.has(o.parlayId)) rows.push(o);
         }
       }
     }
