@@ -895,20 +895,31 @@ function startStatusServer() {
       const pxOpen = (ledger.ledger || []).filter(po => {
         const st = (po.status || '').toLowerCase();
         const ss = (po.settlement_status || '').toLowerCase();
-        // Finalized (PX's canonical 'confirmed and awaiting outcome').
         if (st === 'finalized') return true;
-        // Some confirmed orders land in 'settled' status with an
-        // unresolved settlement_status ('tbd', '', or missing) —
-        // stake is still at risk and belongs in Open Positions.
         if (st === 'settled' && !['won', 'lost', 'push'].includes(ss)) return true;
         return false;
       });
+      // Track which parlays PX already surfaced so we can avoid
+      // double-counting when we union with the tracker's confirmed set.
+      const coveredParlayIds = new Set();
+      const coveredUuids = new Set();
+      // Also build a set of PX UUIDs in terminal states (settled won/
+      // lost/push, rejected, failed) so we never re-surface a stale
+      // tracker-confirmed ghost that's already resolved on PX side.
+      const terminalUuids = new Set();
+      for (const po of (ledger.ledger || [])) {
+        const st = (po.status || '').toLowerCase();
+        const ss = (po.settlement_status || '').toLowerCase();
+        const isTerminal = (st === 'settled' && ['won','lost','push'].includes(ss))
+                        || st === 'rejected' || st === 'failed';
+        if (isTerminal && po.order_uuid) terminalUuids.add(po.order_uuid);
+      }
+
       const positions = pxOpen.map(po => {
         const uuid = po.order_uuid || po.orderUuid;
         const tracked = uuid ? orderTracker.getOrderByUuid(uuid) : null;
-        // Prefer PX fields as source of truth (stake, odds); fall back
-        // to tracker data for legs and pricing context that PX doesn't
-        // expose on the list endpoint.
+        if (tracked?.parlayId) coveredParlayIds.add(tracked.parlayId);
+        if (uuid) coveredUuids.add(uuid);
         return {
           parlayId: tracked?.parlayId || uuid,
           orderUuid: uuid,
@@ -922,10 +933,53 @@ function startStatusServer() {
           quotedAt: tracked?.quotedAt || null,
           legs: tracked?.legs || tracked?.meta?.legs || [],
           meta: tracked?.meta || {},
-          pxSource: true,
+          pxSource: 'px',
         };
       });
-      res.json({ ok: true, count: positions.length, totalStake: positions.reduce((s, p) => s + (p.confirmedStake || 0), 0), positions });
+
+      // Union with tracker-confirmed orders PX hasn't surfaced via its
+      // orders endpoint. Observed live: a freshly-confirmed parlay
+      // (e.g. Fulham/Newcastle, 9s confirm latency) was present in our
+      // tracker but absent from PX's /parlay/sp/orders response. Those
+      // positions are real and should show in Open Positions alongside
+      // PX-sourced ones. We gate on the tracker's own guard rails:
+      //   - status === 'confirmed'
+      //   - not flagged phantom via ghost-reconcile
+      //   - orderUuid (if present) not in PX's terminal set
+      // Sorted tracker-only positions appear at the top so newest are
+      // visible first.
+      const trackerAdds = [];
+      for (const o of orderTracker.getRecentOrders(500)) {
+        if (o.status !== 'confirmed') continue;
+        if (o.meta?.phantom) continue;
+        if (o.orderUuid && terminalUuids.has(o.orderUuid)) continue;
+        if (coveredParlayIds.has(o.parlayId)) continue;
+        if (o.orderUuid && coveredUuids.has(o.orderUuid)) continue;
+        trackerAdds.push({
+          parlayId: o.parlayId,
+          orderUuid: o.orderUuid || null,
+          status: 'confirmed',
+          confirmedStake: Number(o.confirmedStake || 0),
+          confirmedOdds: o.confirmedOdds ?? null,
+          offeredOdds: o.offeredOdds ?? null,
+          fairParlayProb: o.fairParlayProb ?? null,
+          maxRisk: o.maxRisk ?? null,
+          confirmedAt: o.confirmedAt || null,
+          quotedAt: o.quotedAt || null,
+          legs: o.legs || o.meta?.legs || [],
+          meta: o.meta || {},
+          pxSource: 'tracker',
+        });
+      }
+      const merged = [...positions, ...trackerAdds];
+      res.json({
+        ok: true,
+        count: merged.length,
+        pxCount: positions.length,
+        trackerOnlyCount: trackerAdds.length,
+        totalStake: merged.reduce((s, p) => s + (p.confirmedStake || 0), 0),
+        positions: merged,
+      });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
