@@ -396,8 +396,18 @@ function lookupSeriesFairProb(sport, teamName) {
 function teamNameMatches(candidate, target, targetLast) {
   if (candidate === target) return true;
   if (candidate.endsWith(' ' + target) || target.endsWith(' ' + candidate)) return true;
+  // Prefix match — PX series-spread selections come through as bare
+  // abbreviations (e.g. 'DEN', 'MIN'), while DK stores the abbrev +
+  // mascot ('DEN Nuggets'). Same for '(Series)' selections that got
+  // pre-stripped to just an abbreviation.
+  if (candidate.startsWith(target + ' ') || target.startsWith(candidate + ' ')) return true;
   const candLast = candidate.split(' ').pop();
-  return !!(candLast && candLast === targetLast);
+  if (candLast && candLast === targetLast) return true;
+  // Single-word target that matches the first word of candidate (handles
+  // 'DEN' vs 'DEN Nuggets' when neither last-word nor prefix with space
+  // applies — shouldn't normally happen after above checks but safety).
+  const candFirst = (candidate.split(' ')[0]) || '';
+  return !!(candFirst && candFirst === target);
 }
 
 /**
