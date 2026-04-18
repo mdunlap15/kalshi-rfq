@@ -152,10 +152,11 @@ function lookupSeriesFairProb(sport, teamName) {
   for (const s of cache.data.series) {
     for (const t of s.teams) {
       const candidate = normalizeTeamName(t.name);
-      if (candidate === target) return { fairProb: t.fairProb, decimalOdds: t.decimalOdds, americanOdds: t.americanOdds, source: 'dk', eventName: s.eventName };
-      if (candidate.endsWith(' ' + target) || target.endsWith(' ' + candidate)) return { fairProb: t.fairProb, decimalOdds: t.decimalOdds, americanOdds: t.americanOdds, source: 'dk', eventName: s.eventName };
+      const base = { fairProb: t.fairProb, decimalOdds: t.decimalOdds, americanOdds: t.americanOdds, source: 'dk', eventName: s.eventName, startTime: s.startTime };
+      if (candidate === target) return base;
+      if (candidate.endsWith(' ' + target) || target.endsWith(' ' + candidate)) return base;
       const candLast = candidate.split(' ').pop();
-      if (candLast && candLast === targetLast) return { fairProb: t.fairProb, decimalOdds: t.decimalOdds, americanOdds: t.americanOdds, source: 'dk', eventName: s.eventName };
+      if (candLast && candLast === targetLast) return base;
     }
   }
   return null;

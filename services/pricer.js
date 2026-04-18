@@ -12,6 +12,17 @@ const dkScraper = require('./dk-scraper');
  * which don't match any odds-feed h2h market. Returns null if the leg
  * isn't a series bet or the DK cache doesn't contain the team.
  */
+// Decline window around a series game tipoff. DK's series-winner market
+// is suspended while a game is in play AND our cache can be up to 10 min
+// stale; during that window our pre-game odds would overprice whichever
+// team took an early lead. Also pad a few hours AFTER expected game end
+// because DK doesn't instantly repost updated series odds.
+//   in-play   : startTime ≤ now  (game has tipped off)
+//   cooldown  : +6h after startTime (covers regulation + overtime + lag)
+// startTime is DK's series event's next-game tipoff; once DK moves to
+// the next game's tipoff (in the future), we resume quoting.
+const SERIES_DECLINE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
 function getSeriesFairProb(lineInfo) {
   // Trigger on either the tagged marketType (line-manager seed/virtual
   // registration path) OR a "(Series)" suffix in the team name (raw
@@ -29,7 +40,23 @@ function getSeriesFairProb(lineInfo) {
   // Strip any "(Series)" suffix before the DK team-name match.
   const bareTeam = teamName.replace(/\s*\(series\)\s*/ig, '').trim();
   const hit = dkScraper.lookupSeriesFairProb(sportKey, bareTeam || teamName);
-  return hit ? hit.fairProb : null;
+  if (!hit) return null;
+  // In-play / cooldown guard: decline if the next game in this series
+  // has already started and is still within the cooldown window. Our
+  // cached DK odds are pre-game and would give a bettor material edge
+  // if the in-game team took an early lead. Once DK's scraper refresh
+  // moves startTime forward (post-game to next game), we resume.
+  if (hit.startTime) {
+    const t = new Date(hit.startTime).getTime();
+    if (Number.isFinite(t)) {
+      const age = Date.now() - t;
+      if (age >= 0 && age < SERIES_DECLINE_COOLDOWN_MS) {
+        log.debug('Pricing', `Series in-play decline: ${teamName} (startTime ${hit.startTime}, age ${Math.round(age/60000)}min)`);
+        return null;
+      }
+    }
+  }
+  return hit.fairProb;
 }
 
 /**
