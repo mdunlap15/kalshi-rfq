@@ -829,8 +829,16 @@ function startStatusServer() {
     try {
       const uuid = req.query.uuid;
       if (!uuid) return res.status(400).json({ error: 'uuid query param required' });
-      const orders = await px.fetchOrders(500);
-      const match = orders.find(o => o.order_uuid === uuid || o.p_id === uuid || (o.order_uuid && o.order_uuid.startsWith(uuid)));
+      // Use the full cached pxLedger (up to 5000) so we catch older
+      // parlays that aren't in the first 500 returned by fetchOrders.
+      const ledger = await pxLedger.fetchLedger();
+      const orders = ledger.ledger || [];
+      const match = orders.find(o =>
+        o.order_uuid === uuid ||
+        o.p_id === uuid ||
+        (o.order_uuid && o.order_uuid.startsWith(uuid)) ||
+        (o.p_id && o.p_id.startsWith(uuid))
+      );
       if (!match) return res.json({ error: 'Order not found in PX', searched: orders.length });
       res.json({ ok: true, pxOrder: match });
     } catch (err) {
@@ -885,8 +893,15 @@ function startStatusServer() {
     try {
       const ledger = await pxLedger.fetchLedger();
       const pxOpen = (ledger.ledger || []).filter(po => {
-        const s = (po.status || '').toLowerCase();
-        return s === 'finalized';
+        const st = (po.status || '').toLowerCase();
+        const ss = (po.settlement_status || '').toLowerCase();
+        // Finalized (PX's canonical 'confirmed and awaiting outcome').
+        if (st === 'finalized') return true;
+        // Some confirmed orders land in 'settled' status with an
+        // unresolved settlement_status ('tbd', '', or missing) —
+        // stake is still at risk and belongs in Open Positions.
+        if (st === 'settled' && !['won', 'lost', 'push'].includes(ss)) return true;
+        return false;
       });
       const positions = pxOpen.map(po => {
         const uuid = po.order_uuid || po.orderUuid;
