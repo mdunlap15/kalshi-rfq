@@ -5626,19 +5626,23 @@
     const balanceCls = balanceNum != null && balanceNum < 500 ? 'negative'
                      : balanceNum != null && balanceNum < 2000 ? '' : 'positive';
 
-    // Cash Available = PX balance. Empirical reconciliation against the
-    // identity (balance = starting + realized − open stakes) shows PX's
-    // balance field already has open-parlay stakes DEDUCTED — they're
-    // not held at cost as part of balance. Previously we subtracted
-    // Deployed from Balance again, which double-counted: balance already
-    // excludes those stakes, and subtracting them a second time
-    // understated real liquid cash by the Deployed amount.
-    const cashFree = (balanceNum != null && !isNaN(balanceNum)) ? balanceNum : null;
+    // Cash Available = Balance − Deployed. Balance is treated as the
+    // TOTAL account value (including stakes currently locked in open
+    // parlays), so spendable cash = balance minus the locked portion.
+    const cashFree = (balanceNum != null && !isNaN(balanceNum)) ? (balanceNum - portRisk) : null;
     const cashFreeStr = cashFree != null ? fmtDollar(cashFree) : '-';
     const cashFreeCls = cashFree == null ? ''
       : cashFree < 500 ? 'negative'
       : cashFree < 2000 ? ''
       : 'positive';
+    // Percent-of-balance labels for Deployed and Cash Available so the
+    // operator can see at a glance how much of the bankroll is in play.
+    const deployedPct = (balanceNum && balanceNum > 0 && portRisk >= 0)
+      ? Math.round(portRisk / balanceNum * 1000) / 10 : null;
+    const cashPct = (balanceNum && balanceNum > 0 && cashFree != null)
+      ? Math.round(cashFree / balanceNum * 1000) / 10 : null;
+    const deployedStr = portStr + (deployedPct != null ? ` <span style="color:var(--text3); font-size:11px;">[${deployedPct}%]</span>` : '');
+    const cashFreeWithPct = cashFreeStr + (cashPct != null ? ` <span style="color:var(--text3); font-size:11px;">[${cashPct}%]</span>` : '');
 
     // Net balance impact = realized P&L − open exposure. Matches the
     // delta between current PX balance and starting bankroll. Only
@@ -5654,9 +5658,9 @@
 
     const html = `<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 16px;">
       <div class="stat-bar" style="gap:6px 18px;">
-        ${stat('Balance', balanceStr, balanceCls, 'Total PX account balance — includes the Deployed amount')}
-        ${stat('Cash Available', cashFreeStr, cashFreeCls, 'Balance − Deployed = real cash free for new parlays')}
-        ${stat('Deployed', portStr, portCls, 'Stake locked in open parlays (PX finalized/pending)')}
+        ${stat('Balance', balanceStr, balanceCls, 'Total PX account balance = Deployed + Cash Available')}
+        ${stat('Deployed', deployedStr, portCls, 'Stake locked in open parlays')}
+        ${stat('Cash Available', cashFreeWithPct, cashFreeCls, 'Balance − Deployed = real cash free for new parlays')}
         ${stat('To Win', fmtDollar(totalToWin), 'positive')}
         ${stat(pnlLabel, pnlStr, pnlCls, pnlTitle)}
         ${stat('ROI', roiStr, roiCls, 'Realized P&L / total settled stake')}
