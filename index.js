@@ -3319,6 +3319,122 @@ function startStatusServer() {
 
   // Inspect line index entries matching a query. Shows exactly what the
   // line index has registered for an event + market type.
+  // For every registered line (filtered by sport/market), resolve the
+  // fair probability the pricer would actually use and classify as
+  // quotable vs not-quotable. Primary use: after /debug-line-index
+  // shows which lines we'll RECOGNIZE on an RFQ, this shows which of
+  // those will ACTUALLY PRICE vs. decline for "no fair value".
+  //
+  // Series markets route to the DK scraper cache (same as pricer's
+  // getSeriesFairProb). Non-series markets use getFairProbAsync so
+  // alt-line lookups resolve accurately — may trigger Odds API
+  // fetches for uncached alt lines, so keep `limit` modest.
+  app.get('/debug-quotable', async (req, res) => {
+    try {
+      const sport = req.query.sport || null;
+      const market = req.query.market || null;
+      const limit = Math.min(parseInt(req.query.limit) || 200, 500);
+      const idx = lineManager.__debugGetLineIndex ? lineManager.__debugGetLineIndex() : {};
+      const entries = Object.entries(idx).filter(([, info]) => {
+        if (sport && info.sport !== sport) return false;
+        if (market && info.marketType !== market) return false;
+        return true;
+      }).slice(0, limit);
+
+      function americanFromProb(p) {
+        if (p == null || p <= 0 || p >= 1) return null;
+        return p >= 0.5
+          ? -Math.round((p / (1 - p)) * 100)
+          : Math.round(100 / p - 100);
+      }
+
+      function sportKeyFor(info) {
+        const s = (info.oddsApiSport || info.sport || '').toLowerCase();
+        return s.includes('nba') || s.includes('basketball') ? 'nba'
+             : s.includes('nhl') || s.includes('icehockey') || s.includes('hockey') ? 'nhl'
+             : null;
+      }
+
+      const quotable = [];
+      const notQuotable = [];
+      for (const [lineId, info] of entries) {
+        const mt = info.marketType;
+        let fairProb = null;
+        let reason = null;
+
+        try {
+          if (mt === 'series_winner') {
+            const sk = sportKeyFor(info);
+            const bare = (info.teamName || '').replace(/\s*\(series\)\s*/ig, '').trim();
+            const hit = sk ? dkScraper.lookupSeriesFairProb(sk, bare || info.teamName) : null;
+            fairProb = hit?.fairProb ?? null;
+          } else if (mt === 'series_spread') {
+            const sk = sportKeyFor(info);
+            const n = Number(info.line);
+            if (sk && Number.isFinite(n)) {
+              const bare = (info.teamName || '').replace(/\s*\(series\)\s*/ig, '').trim();
+              const hit = dkScraper.lookupSeriesSpreadFairProb(sk, bare || info.teamName, Math.abs(n), n < 0 ? '-' : '+');
+              fairProb = hit?.fairProb ?? null;
+            }
+          } else if (mt === 'series_total') {
+            const sk = sportKeyFor(info);
+            const n = Number(info.line);
+            if (sk && Number.isFinite(n)) {
+              const side = info.oddsApiSelection || info.selection;
+              const hit = dkScraper.lookupSeriesTotalFairProb(sk, info.homeTeam, info.awayTeam, n, side);
+              fairProb = hit?.fairProb ?? null;
+            }
+          } else {
+            // Normal markets — use async path so alt lines resolve.
+            fairProb = await oddsFeed.getFairProbAsync(
+              info.oddsApiSport, info.homeTeam, info.awayTeam,
+              info.oddsApiMarket, info.oddsApiSelection, info.line, info.startTime
+            );
+          }
+        } catch (e) {
+          reason = 'lookup_error: ' + e.message;
+        }
+
+        const row = {
+          lineId,
+          sport: info.sport,
+          marketType: mt,
+          marketName: info.marketName,
+          team: info.teamName,
+          selection: info.oddsApiSelection,
+          line: info.line,
+          event: info.pxEventName,
+          home: info.homeTeam,
+          away: info.awayTeam,
+        };
+        if (fairProb != null && fairProb > 0 && fairProb < 1) {
+          quotable.push({ ...row, fairProb: +fairProb.toFixed(4), fairAmerican: americanFromProb(fairProb) });
+        } else {
+          notQuotable.push({ ...row, reason: reason || 'no_fair_prob' });
+        }
+      }
+
+      // Group notQuotable by marketType so gaps are easy to spot at a glance.
+      const notQuotableByMarket = {};
+      for (const r of notQuotable) {
+        if (!notQuotableByMarket[r.marketType]) notQuotableByMarket[r.marketType] = 0;
+        notQuotableByMarket[r.marketType]++;
+      }
+      res.json({
+        summary: {
+          total: entries.length,
+          quotable: quotable.length,
+          notQuotable: notQuotable.length,
+          notQuotableByMarket,
+        },
+        quotable,
+        notQuotable,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   app.get('/debug-line-index', (req, res) => {
     const q = (req.query.q || '').toLowerCase();
     const market = req.query.market || null;
