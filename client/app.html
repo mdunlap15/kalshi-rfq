@@ -52,20 +52,67 @@
 
     .summary {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 8px;
-      padding: 12px 16px;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      padding: 8px 12px;
     }
+    .summary.collapsed { display: none; }
     .stat-card {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px 12px;
+      border-radius: 6px;
+      padding: 6px 8px;
+      min-width: 0;
     }
-    .stat-card .label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
-    .stat-card .value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+    .stat-card .label {
+      font-size: 9px;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .stat-card .value {
+      font-size: 15px;
+      font-weight: 600;
+      margin-top: 1px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .stat-card .value.positive { color: var(--green); }
     .stat-card .value.negative { color: var(--red); }
+
+    /* Collapsed summary shows 3 key numbers inline — Balance · Open · P&L */
+    .summary-peek {
+      display: none;
+      padding: 6px 12px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+      gap: 12px;
+      color: var(--text2);
+      justify-content: space-around;
+    }
+    .summary-peek.visible { display: flex; }
+    .summary-peek .item { display: flex; align-items: baseline; gap: 4px; }
+    .summary-peek .item strong { color: var(--text); font-size: 13px; font-weight: 600; }
+    .summary-peek .item strong.positive { color: var(--green); }
+    .summary-peek .item strong.negative { color: var(--red); }
+
+    /* Header toggle button to collapse/expand stats */
+    .stats-toggle {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text2);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      margin-left: 8px;
+    }
+    .stats-toggle:active { background: var(--surface); }
 
     .section-title {
       font-size: 13px;
@@ -364,9 +411,13 @@
 <body>
   <div class="header">
     <h1>Parlay SP</h1>
-    <span class="status" id="conn-status">...</span>
+    <div style="display:flex; align-items:center;">
+      <span class="status" id="conn-status">...</span>
+      <button class="stats-toggle" id="stats-toggle" onclick="toggleStats()" title="Collapse or expand the stats panel">Hide stats</button>
+    </div>
   </div>
 
+  <div class="summary-peek" id="summary-peek"></div>
   <div class="summary" id="summary"></div>
 
   <div id="notify-prompt"></div>
@@ -599,45 +650,79 @@
         });
       });
 
+      // Compact 4-column layout, 7 stats total (was 9). Removed Win Rate
+      // and Open Today; renamed Active → Open (it's the count of orders
+      // with status='confirmed' per services/order-tracker.js:1638).
+      const fmtShort = (v) => {
+        const abs = Math.abs(v);
+        if (abs >= 1000) return (v < 0 ? '-' : '') + '$' + (abs / 1000).toFixed(1) + 'k';
+        return (v < 0 ? '-' : '') + '$' + abs.toFixed(0);
+      };
+      const openCount = o.activeOrders || 0;
       document.getElementById('summary').innerHTML = `
         <div class="stat-card">
           <div class="label">P&L</div>
-          <div class="value ${pnlCls}">${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(2)}</div>
+          <div class="value ${pnlCls}">${pnl >= 0 ? '+' : ''}${fmtShort(pnl)}</div>
         </div>
         <div class="stat-card">
           <div class="label">Daily P&L</div>
-          <div class="value ${dailyPnlCls}">${dailyPnl >= 0 ? '+' : ''}$${Math.abs(dailyPnl).toFixed(2)}</div>
+          <div class="value ${dailyPnlCls}">${dailyPnl >= 0 ? '+' : ''}${fmtShort(dailyPnl)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Balance</div>
+          <div class="value">${fmtShort(balance)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Open</div>
+          <div class="value">${openCount}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Deployed</div>
+          <div class="value">${fmtShort(deployed)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">To Win</div>
+          <div class="value" style="color:var(--green);">${fmtShort(toWin)}</div>
         </div>
         <div class="stat-card">
           <div class="label">Settled Today</div>
           <div class="value">${todaySettled.length}</div>
         </div>
-        <div class="stat-card">
-          <div class="label">Deployed</div>
-          <div class="value">$${deployed.toFixed(2)}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">To Win</div>
-          <div class="value" style="color:var(--green);">$${toWin.toFixed(2)}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Balance</div>
-          <div class="value">$${balance.toFixed(2)}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Open Today</div>
-          <div class="value">${openToday.length}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Win Rate</div>
-          <div class="value">${o.totalSettlements > 0 ? ((o.totalWins / o.totalSettlements) * 100).toFixed(1) : 0}%</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Active</div>
-          <div class="value">${o.activeOrders || 0}</div>
-        </div>
       `;
+
+      // Peek bar shown when the full grid is collapsed — 3 key numbers only.
+      document.getElementById('summary-peek').innerHTML =
+        `<div class="item"><span>Bal</span><strong>${fmtShort(balance)}</strong></div>`
+      + `<div class="item"><span>Open</span><strong>${openCount}</strong></div>`
+      + `<div class="item"><span>P&L</span><strong class="${pnlCls}">${pnl >= 0 ? '+' : ''}${fmtShort(pnl)}</strong></div>`
+      + `<div class="item"><span>Daily</span><strong class="${dailyPnlCls}">${dailyPnl >= 0 ? '+' : ''}${fmtShort(dailyPnl)}</strong></div>`;
     }
+
+    // Collapse/expand the full stats grid. Preference persisted across
+    // reloads via localStorage so the user's choice sticks.
+    function applyStatsState(collapsed) {
+      const summary = document.getElementById('summary');
+      const peek = document.getElementById('summary-peek');
+      const toggleBtn = document.getElementById('stats-toggle');
+      if (collapsed) {
+        summary.classList.add('collapsed');
+        peek.classList.add('visible');
+        toggleBtn.textContent = 'Show stats';
+      } else {
+        summary.classList.remove('collapsed');
+        peek.classList.remove('visible');
+        toggleBtn.textContent = 'Hide stats';
+      }
+    }
+    function toggleStats() {
+      const collapsed = !document.getElementById('summary').classList.contains('collapsed');
+      try { localStorage.setItem('pxsp_stats_collapsed', collapsed ? '1' : '0'); } catch {}
+      applyStatsState(collapsed);
+    }
+    // Apply saved preference on load — default expanded.
+    try {
+      applyStatsState(localStorage.getItem('pxsp_stats_collapsed') === '1');
+    } catch {}
 
     // Current tab + cached orders + expanded rows persist across auto-refresh.
     let _activeParlayTab = 'open';
