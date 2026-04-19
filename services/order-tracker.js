@@ -1736,6 +1736,30 @@ function addExposure(order) {
   const stake = americanOddsToProfit(order.confirmedOdds || 0, order.confirmedStake || 0);
   if (legs.length === 0) return;
 
+  // Precompute per-leg effective prob + gameKey so we can compute the
+  // CORRECT per-parlay-per-game weighted risk for SGPs. Without this,
+  // a parlay with 2 legs on the same game would double-push into that
+  // game's parlays[] array and inflate Stakes Held + parlayCount +
+  // grossRisk in the dashboard totals (observed: $45k+ stakes held on
+  // games where actual bettor wagers were much lower).
+  const legProbs = legs.map(legEffectiveProb);
+  const legGameKeys = legs.map(l => {
+    const eid = l.pxEventId;
+    const gd = l.startTime ? new Date(l.startTime).toISOString().substring(0, 10) : '';
+    if (eid) return eid + '|' + gd;
+    const opp = normalizeExposureKey((l.homeTeam || '') + (l.awayTeam || ''));
+    return 'syn_' + (opp || '') + '|' + (gd || 'noevent');
+  });
+  // Per-game correct weighted risk = payout × product(probs of OFF-game legs).
+  const offGameProbByGame = {};
+  for (const gk of new Set(legGameKeys)) {
+    let p = 1;
+    for (let j = 0; j < legs.length; j++) {
+      if (legGameKeys[j] !== gk) p *= legProbs[j];
+    }
+    offGameProbByGame[gk] = p;
+  }
+
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
     const eventId = leg.pxEventId;
@@ -1789,7 +1813,15 @@ function addExposure(order) {
       payout,
       stake,
       legCount: legs.length,
+      // Per-leg weightedRisk — kept for the detail drop-down so each
+      // leg row shows its own marginal weighted contribution.
       weightedRisk: payout * otherProb,
+      // Per-parlay-per-game weightedRisk — used by getGameExposureSnapshot
+      // when deduping by parlayId so SGPs don't double-count. Equals
+      // payout * prod(probs of legs NOT on this game). Identical on
+      // every entry that shares (parlayId, gameKey) so aggregation can
+      // safely pick the first seen.
+      parlayGameWeightedRisk: payout * (offGameProbByGame[gameKey] || 1),
       selection: leg.selection,
       market: leg.market || leg.marketType,
       teamKey: key,
@@ -1954,8 +1986,24 @@ function recalcNetExposure() {
  */
 function getGameExposureSnapshot() {
   return Object.entries(gameExposure).map(([eventId, game]) => {
-    const grossRisk = game.parlays.reduce((s, p) => s + p.weightedRisk, 0);
-    const totalStakes = game.parlays.reduce((s, p) => s + p.stake, 0);
+    // Dedupe by parlayId: a SGP with 2+ legs on the same game gets
+    // pushed into parlays[] once per leg so the detail drop-down can
+    // render each selection. Aggregating blindly double-counted stake
+    // and risk (observed: $45k+ Stakes Held on games where actual
+    // bettor wagers were a fraction of that).
+    const seen = new Set();
+    let grossRisk = 0;
+    let totalStakes = 0;
+    for (const p of game.parlays) {
+      if (seen.has(p.parlayId)) continue;
+      seen.add(p.parlayId);
+      // Prefer the parlay-level weightedRisk which is computed as
+      // payout × prod(off-game leg probs). Fallback to per-leg value for
+      // orders persisted before this field existed.
+      grossRisk += (p.parlayGameWeightedRisk != null ? p.parlayGameWeightedRisk : p.weightedRisk) || 0;
+      totalStakes += p.stake || 0;
+    }
+    const distinctParlayCount = seen.size;
     // Check if ANY leg in ANY parlay contributing to this game uses live odds
     let hasLiveOdds = false;
     for (const p of game.parlays) {
@@ -1969,7 +2017,7 @@ function getGameExposureSnapshot() {
       name: game.name,
       sport: game.sport,
       startTime: game.startTime,
-      parlayCount: game.parlays.length,
+      parlayCount: distinctParlayCount,
       grossRisk: Math.round(grossRisk * 100) / 100,
       totalStakes: Math.round(totalStakes * 100) / 100,
       netExposure: Math.round((game.netExposure || 0) * 100) / 100,
