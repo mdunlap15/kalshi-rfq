@@ -4652,7 +4652,15 @@ async function loadFromDb() {
     stats.totalQuotes++;
     if (o.status === 'confirmed') {
       stats.totalConfirmations++;
-      if (!isOrderFinished(o)) addExposure(o);
+      // Always track exposure for confirmed orders regardless of whether
+      // their legs have started — we still hold the risk until the order
+      // actually moves to settled_*. The previous isOrderFinished filter
+      // silently dropped confirmed orders whose games had tipped off at
+      // startup, causing Team/Game Exposure rows to drastically
+      // under-count parlays after every redeploy. Zombie / stuck
+      // confirmed orders are cleaned by settlement polling + drift
+      // reconcile, not by hiding them from exposure.
+      addExposure(o);
     } else if (o.status === 'rejected') {
       stats.totalRejections++;
     } else if (o.status?.startsWith('settled_')) {
