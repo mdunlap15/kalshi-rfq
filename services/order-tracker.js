@@ -1635,7 +1635,9 @@ function getRecentOrders(limit = 200) {
 function getStats() {
   return {
     ...stats,
-    activeOrders: Object.values(orders).filter(o => o.status === 'confirmed').length,
+    activeOrders: Object.values(orders).filter(o =>
+      o.status === 'confirmed' && !(o.meta && o.meta.phantom)
+    ).length,
     openQuotes: Object.values(orders).filter(o => o.status === 'quoted').length,
     totalOrders: Object.keys(orders).length,
     sessionFillRate: stats.sessionQuotes > 0
@@ -2202,10 +2204,18 @@ function rebuildAllExposure() {
   // cleaned by the settlement poller + drift reconcile, not by hiding
   // them from exposure. Previous isOrderFinished filter was silently
   // dropping 30+ parlays per hot game after every live-odds refresh.
+  //
+  // BUT skip orders explicitly flagged meta.phantom — the ghost
+  // reconciler already determined PX can't locate these and we treat
+  // them as not-really-open. Exposure tables and Deployed counters
+  // should not include them, matching Open Positions view which
+  // already filters phantoms.
   let skippedFinished = 0;
+  let skippedPhantom = 0;
   for (const order of Object.values(orders)) {
     diag.totalOrders++;
     if (order.status !== 'confirmed') continue;
+    if (order.meta && order.meta.phantom) { skippedPhantom++; continue; }
     diag.confirmedOrders++;
     const legs = order.legs || order.meta?.legs || [];
     if (legs.length === 0) continue;
@@ -2223,6 +2233,7 @@ function rebuildAllExposure() {
     addExposure(order);
   }
   if (skippedFinished > 0) log.info('Exposure', `Skipped ${skippedFinished} finished orders during rebuild`);
+  if (skippedPhantom > 0) log.info('Exposure', `Skipped ${skippedPhantom} phantom-flagged orders during rebuild`);
   const result = {
     ...diag,
     uniqueTeamKeys: diag.uniqueTeamKeys.size,
@@ -4804,7 +4815,10 @@ async function loadFromDb() {
       // under-count parlays after every redeploy. Zombie / stuck
       // confirmed orders are cleaned by settlement polling + drift
       // reconcile, not by hiding them from exposure.
-      addExposure(o);
+      // Exception: phantom-flagged orders (ghost-reconcile already
+      // determined PX can't locate them) are excluded — matches the
+      // Open Positions view which also filters them.
+      if (!(o.meta && o.meta.phantom)) addExposure(o);
     } else if (o.status === 'rejected') {
       stats.totalRejections++;
     } else if (o.status?.startsWith('settled_')) {
