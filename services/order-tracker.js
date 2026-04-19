@@ -843,9 +843,20 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     // back-compat but do so in the won branch only.
     marketStats.weWon++;
     marketStats.weQuoted++;
-    // If order.finalized hasn't fired yet (or doesn't fire), promote the
-    // quote to 'confirmed' here. matched_odds IS the confirmed price.
-    if (ourQuote.status !== 'confirmed') {
+    // Promote quoted → confirmed only. Never promote from 'rejected' —
+    // that would silently override our own limit checks. Previously the
+    // check was `status !== 'confirmed'`, which treated 'rejected' as
+    // "promotable" and flipped any rejected parlay to confirmed when
+    // PX matched it despite our reject. Observed: \$7,410 stake parlay
+    // correctly rejected by our max_risk check (max \$2,500), then PX
+    // ignored the reject and broadcast order.matched, and this branch
+    // resurrected the parlay as confirmed with the over-limit stake.
+    //
+    // PX ignoring our reject is a PX-side bug (known; Alec aware). Our
+    // job is to keep our local accounting honest: once we've rejected,
+    // we stay rejected. Log the mismatch so it's visible but do not
+    // override.
+    if (ourQuote.status === 'quoted') {
       ourQuote.status = 'confirmed';
       if (matchedOdds != null) {
         // PX sends matched_odds in bettor-side convention; our format is
@@ -857,6 +868,15 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
       if (matchedStake != null) ourQuote.confirmedStake = matchedStake;
       ourQuote.confirmedAt = ourQuote.confirmedAt || new Date().toISOString();
       db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(won via matched) failed: ${err.message}`));
+    } else if (ourQuote.status === 'rejected') {
+      log.warn('Orders', `PX matched a parlay we rejected: ${parlayId} (reject reason=${ourQuote.rejectionReason || 'unknown'}, px stake=${matchedStake}, px odds=${matchedOdds}). Keeping status=rejected.`);
+      ourQuote.meta = ourQuote.meta || {};
+      ourQuote.meta.pxMatchedAfterReject = {
+        matchedAt: new Date().toISOString(),
+        matchedOdds, matchedStake,
+        originalRejectReason: ourQuote.rejectionReason || null,
+      };
+      db.saveOrder(ourQuote).catch(() => {});
     }
   } else {
     // order.matched without a corresponding quote on our side — should not
@@ -4857,6 +4877,32 @@ async function loadFromDb() {
     }
   }
   log.info('DB', `Loaded ${dbOrders.length} orders (P&L: $${stats.runningPnL.toFixed(2)})`);
+
+  // Self-heal: any order with rejectedAt set but status !== 'rejected'
+  // is a historical victim of the recordMatchedParlay bug that was
+  // promoting rejected quotes to 'confirmed' when PX ignored our reject
+  // and broadcast order.matched anyway. Demote back to rejected so our
+  // accounting is honest about which parlays we actually accepted.
+  // This matters especially for max_risk violations where PX confirmed
+  // stakes exceeding our local cap.
+  let resurrectedHealed = 0;
+  for (const o of Object.values(orders)) {
+    if (!o || !o.rejectedAt) continue;
+    if (o.status === 'rejected') continue;
+    if (typeof o.status === 'string' && o.status.startsWith('settled_')) continue;
+    log.warn('Orders', `Self-heal: demoting ${o.parlayId} from ${o.status} back to rejected (rejectedAt=${o.rejectedAt}, reason=${o.rejectionReason || 'unknown'})`);
+    // Correct any counter drift
+    if (o.status === 'confirmed') {
+      if (stats.totalConfirmations > 0) stats.totalConfirmations--;
+      stats.totalRejections++;
+    }
+    o.status = 'rejected';
+    db.saveOrder(o).catch(() => {});
+    resurrectedHealed++;
+  }
+  if (resurrectedHealed > 0) {
+    log.info('DB', `Self-heal: demoted ${resurrectedHealed} resurrected-rejection orders back to rejected`);
+  }
 
   // One-time golf metadata backfill on startup. For existing stored golf legs
   // missing tournamentName / roundNum, look up the lineId against the current
