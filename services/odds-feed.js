@@ -3236,63 +3236,38 @@ const _pinVerifyCache = {};
 const _pinVerifyInFlight = {};
 const PIN_VERIFY_TTL_MS = 30 * 1000;
 
-// Stale-while-revalidate cache for Pinnacle line-verify data.
-//   Fresh (< TTL):     return immediately.
-//   Stale (>= TTL):    return stale events synchronously + kick off
-//                      background refresh. Caller never pays network cost
-//                      once the cache has been populated once. Line-verify
-//                      is a defensive "line hasn't moved >1pt" check and
-//                      tolerates ~60s staleness cleanly (lines don't move
-//                      that fast; confirmation-time re-price catches drift).
-//   First-ever:        must block on the initial fetch (no stale data to
-//                      serve), same as before.
-// Cuts P50 pricing latency because Pinnacle verify was previously the
-// most common cold-cache slow path on the critical RFQ route.
 async function _fetchPinVerifyEvents(oddsApiSport, market, theOddsApiKey) {
   const cacheKey = oddsApiSport + '|' + market;
   const cached = _pinVerifyCache[cacheKey];
-  const now = Date.now();
-  const age = cached ? (now - cached.fetchedAt) : Infinity;
-
-  // Fresh → return immediately.
-  if (cached && age < PIN_VERIFY_TTL_MS) {
+  if (cached && (Date.now() - cached.fetchedAt) < PIN_VERIFY_TTL_MS) {
     return cached.events;
   }
-
-  const startFetch = () => {
-    if (_pinVerifyInFlight[cacheKey]) return _pinVerifyInFlight[cacheKey];
-    const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
-      + `?apiKey=${theOddsApiKey}`
-      + `&regions=eu`
-      + `&markets=${market}`
-      + `&bookmakers=pinnacle`
-      + `&oddsFormat=american`;
-    const promise = (async () => {
-      try {
-        const resp = await abortableFetch(url);
-        if (!resp.ok) return cached ? cached.events : null;
-        const events = await resp.json();
-        _pinVerifyCache[cacheKey] = { fetchedAt: Date.now(), events };
-        return events;
-      } catch (err) {
-        log.debug('OddsFeed', `Pin verify events fetch failed: ${err.message}`);
-        return cached ? cached.events : null;
-      } finally {
-        delete _pinVerifyInFlight[cacheKey];
-      }
-    })();
-    _pinVerifyInFlight[cacheKey] = promise;
-    return promise;
-  };
-
-  // Stale-while-revalidate: return stale events now, refresh in background.
-  if (cached) {
-    startFetch().catch(() => {}); // fire-and-forget; errors logged inside
-    return cached.events;
+  // Coalesce concurrent fetches on the same key.
+  if (_pinVerifyInFlight[cacheKey]) {
+    return _pinVerifyInFlight[cacheKey];
   }
-
-  // First-ever fetch — must block so the caller has something to compare.
-  return startFetch();
+  const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
+    + `?apiKey=${theOddsApiKey}`
+    + `&regions=eu`
+    + `&markets=${market}`
+    + `&bookmakers=pinnacle`
+    + `&oddsFormat=american`;
+  const promise = (async () => {
+    try {
+      const resp = await abortableFetch(url);
+      if (!resp.ok) return null;
+      const events = await resp.json();
+      _pinVerifyCache[cacheKey] = { fetchedAt: Date.now(), events };
+      return events;
+    } catch (err) {
+      log.debug('OddsFeed', `Pin verify events fetch failed: ${err.message}`);
+      return null;
+    } finally {
+      delete _pinVerifyInFlight[cacheKey];
+    }
+  })();
+  _pinVerifyInFlight[cacheKey] = promise;
+  return promise;
 }
 
 async function verifyLineWithPinnacle(sport, homeTeam, awayTeam, marketType, cachedLine) {
