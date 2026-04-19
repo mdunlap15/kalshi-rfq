@@ -6953,88 +6953,121 @@
 
     svg += '</svg>';
 
-    // Summary table below chart — rows expand to show individual wagers
+    // Roll days up into months for the summary table below the chart.
+    // Month rows default collapsed; expanding reveals the day rows, and
+    // each day row expands to its individual parlays. Same persistence
+    // via expandedRows so auto-refresh doesn't collapse open sections.
+    const byMonth = {};
+    for (const [day, d] of Object.entries(byDay)) {
+      const month = day.substring(0, 7);
+      if (!byMonth[month]) byMonth[month] = { count: 0, risk: 0, toWin: 0, pnl: 0, settled: 0, days: [] };
+      byMonth[month].count += d.count;
+      byMonth[month].risk += d.risk;
+      byMonth[month].toWin += d.toWin;
+      byMonth[month].pnl += d.pnl;
+      byMonth[month].settled += d.settled;
+      byMonth[month].days.push(day);
+    }
+    const months = Object.keys(byMonth).sort().reverse();
+
     svg += '<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:11px;">';
-    svg += '<tr><th>Date</th><th style="text-align:right">Fills</th><th style="text-align:right">My Risk</th><th style="text-align:right">To Win</th><th style="text-align:right">Settled</th><th style="text-align:right">P&L</th></tr>';
-    for (const day of days.reverse()) {
-      const d = byDay[day];
-      const pnlCls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
-      const dayId = 'dv-' + day.replace(/-/g, '');
-      // Use the global expandedRows tracker so auto-refreshes don't collapse
-      // open day rows. toggleDetailRow updates the Set on click.
-      const dayExpanded = expandedRows.has(dayId);
-      svg += '<tr onclick="toggleDetailRow(\'' + dayId + '\')" style="cursor:pointer;">';
-      svg += '<td>&#9654; ' + day + '</td>';
-      svg += '<td style="text-align:right">' + d.count + '</td>';
-      svg += '<td style="text-align:right">' + fmtDollar(d.risk) + '</td>';
-      svg += '<td style="text-align:right; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
-      svg += '<td style="text-align:right">' + d.settled + '</td>';
-      svg += '<td style="text-align:right" class="' + pnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
-      // Expandable detail row — initial display reflects persisted expansion
-      svg += '<tr id="' + dayId + '" style="display:' + (dayExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
-      svg += '<table style="font-size:10px; width:100%; background:var(--surface2); margin:0;">';
-      // Per-day sort state (default: time ascending)
-      const sortState = window._dvSort[dayId] || { col: 'time', dir: 1 };
-      const arrow = (col) => sortState.col === col ? (sortState.dir > 0 ? ' &#9650;' : ' &#9660;') : '';
-      const hClick = (col) => 'onclick="event.stopPropagation(); window._dvSortClick(\'' + dayId + '\',\'' + col + '\')" style="cursor:pointer;"';
-      svg += '<tr style="color:var(--text3);">'
-        + '<th ' + hClick('time') + ' style="padding:2px 6px; cursor:pointer;">Time' + arrow('time') + '</th>'
-        + '<th ' + hClick('selections') + ' style="padding:2px 6px; cursor:pointer;">Selections' + arrow('selections') + '</th>'
-        + '<th ' + hClick('legs') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Legs' + arrow('legs') + '</th>'
-        + '<th ' + hClick('odds') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">Odds' + arrow('odds') + '</th>'
-        + '<th ' + hClick('stake') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">Stake' + arrow('stake') + '</th>'
-        + '<th ' + hClick('pnl') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">P&L' + arrow('pnl') + '</th>'
-        + '<th ' + hClick('result') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Result' + arrow('result') + '</th>'
-        + '</tr>';
-      // Build display rows once, then sort by the requested column
-      const rows = d.orders.filter(o => o.pnl != null).map(o => {
-        const legs = o.legs || o.meta?.legs || [];
-        const selections = legs.map(l => {
-          const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
-          return name.length > 30 ? name.substring(0, 28) + '..' : name;
-        }).join(', ');
-        const timeStr = (o.confirmedAt || '').substring(11, 16) || '--:--';
-        const oddsNum = o.confirmedOdds || o.offeredOdds || 0;
-        const result = o.settlementResult || (o.status || '').replace('settled_', '') || '-';
-        return {
-          o, legs,
-          time: timeStr,
-          timeSort: o.settledAt || o.confirmedAt || '',
-          selections,
-          legCount: legs.length,
-          oddsNum,
-          oddsStr: oddsNum ? (oddsNum > 0 ? '+' + oddsNum : '' + oddsNum) : '-',
-          stake: o.confirmedStake || 0,
-          pnl: o.pnl,
-          result,
-        };
-      });
-      rows.sort((a, b) => {
-        let av, bv;
-        switch (sortState.col) {
-          case 'selections': av = a.selections; bv = b.selections; return sortState.dir * av.localeCompare(bv);
-          case 'legs':       av = a.legCount;   bv = b.legCount;   break;
-          case 'odds':       av = a.oddsNum;    bv = b.oddsNum;    break;
-          case 'stake':      av = a.stake;      bv = b.stake;      break;
-          case 'pnl':        av = a.pnl;        bv = b.pnl;        break;
-          case 'result':     av = a.result;     bv = b.result;     return sortState.dir * av.localeCompare(bv);
-          case 'time':
-          default:           av = a.timeSort;   bv = b.timeSort;   return sortState.dir * av.localeCompare(bv);
+    svg += '<tr><th>Month / Date</th><th style="text-align:right">Fills</th><th style="text-align:right">My Risk</th><th style="text-align:right">To Win</th><th style="text-align:right">Settled</th><th style="text-align:right">P&L</th></tr>';
+
+    for (const month of months) {
+      const m = byMonth[month];
+      const mPnlCls = m.pnl > 0 ? 'positive' : m.pnl < 0 ? 'negative' : 'neutral';
+      const monthId = 'dvm-' + month.replace(/-/g, '');
+      const monthExpanded = expandedRows.has(monthId);
+      svg += '<tr onclick="toggleDetailRow(\'' + monthId + '\')" style="cursor:pointer;">';
+      svg += '<td style="font-weight:600;">&#9654; ' + month + '</td>';
+      svg += '<td style="text-align:right">' + m.count + '</td>';
+      svg += '<td style="text-align:right">' + fmtDollar(m.risk) + '</td>';
+      svg += '<td style="text-align:right; color:var(--green);">' + fmtDollar(m.toWin) + '</td>';
+      svg += '<td style="text-align:right">' + m.settled + '</td>';
+      svg += '<td style="text-align:right" class="' + mPnlCls + '">' + fmtPnl(m.pnl) + '</td></tr>';
+
+      // Month detail row: daily breakdown
+      svg += '<tr id="' + monthId + '" style="display:' + (monthExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
+      svg += '<table style="font-size:11px; width:100%; background:var(--surface2); margin:0;">';
+      const monthDays = [...m.days].sort().reverse();
+      for (const day of monthDays) {
+        const d = byDay[day];
+        const pnlCls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
+        const dayId = 'dv-' + day.replace(/-/g, '');
+        const dayExpanded = expandedRows.has(dayId);
+        svg += '<tr onclick="event.stopPropagation(); toggleDetailRow(\'' + dayId + '\')" style="cursor:pointer;">';
+        svg += '<td style="padding:2px 12px;">&#9654; ' + day + '</td>';
+        svg += '<td style="text-align:right; padding:2px 10px;">' + d.count + '</td>';
+        svg += '<td style="text-align:right; padding:2px 10px;">' + fmtDollar(d.risk) + '</td>';
+        svg += '<td style="text-align:right; padding:2px 10px; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
+        svg += '<td style="text-align:right; padding:2px 10px;">' + d.settled + '</td>';
+        svg += '<td style="text-align:right; padding:2px 10px;" class="' + pnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
+
+        // Day detail row: parlay breakdown (sortable)
+        svg += '<tr id="' + dayId + '" style="display:' + (dayExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
+        svg += '<table style="font-size:10px; width:100%; background:var(--surface3); margin:0;">';
+        const sortState = window._dvSort[dayId] || { col: 'time', dir: 1 };
+        const arrow = (col) => sortState.col === col ? (sortState.dir > 0 ? ' &#9650;' : ' &#9660;') : '';
+        const hClick = (col) => 'onclick="event.stopPropagation(); window._dvSortClick(\'' + dayId + '\',\'' + col + '\')" style="cursor:pointer;"';
+        svg += '<tr style="color:var(--text3);">'
+          + '<th ' + hClick('time') + ' style="padding:2px 6px; cursor:pointer;">Time' + arrow('time') + '</th>'
+          + '<th ' + hClick('selections') + ' style="padding:2px 6px; cursor:pointer;">Selections' + arrow('selections') + '</th>'
+          + '<th ' + hClick('legs') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Legs' + arrow('legs') + '</th>'
+          + '<th ' + hClick('odds') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">Odds' + arrow('odds') + '</th>'
+          + '<th ' + hClick('stake') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">Stake' + arrow('stake') + '</th>'
+          + '<th ' + hClick('pnl') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">P&L' + arrow('pnl') + '</th>'
+          + '<th ' + hClick('result') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Result' + arrow('result') + '</th>'
+          + '</tr>';
+        const rows = d.orders.filter(o => o.pnl != null).map(o => {
+          const legs = o.legs || o.meta?.legs || [];
+          const selections = legs.map(l => {
+            const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
+            return name.length > 30 ? name.substring(0, 28) + '..' : name;
+          }).join(', ');
+          const timeStr = (o.confirmedAt || '').substring(11, 16) || '--:--';
+          const oddsNum = o.confirmedOdds || o.offeredOdds || 0;
+          const result = o.settlementResult || (o.status || '').replace('settled_', '') || '-';
+          return {
+            o, legs,
+            time: timeStr,
+            timeSort: o.settledAt || o.confirmedAt || '',
+            selections,
+            legCount: legs.length,
+            oddsNum,
+            oddsStr: oddsNum ? (oddsNum > 0 ? '+' + oddsNum : '' + oddsNum) : '-',
+            stake: o.confirmedStake || 0,
+            pnl: o.pnl,
+            result,
+          };
+        });
+        rows.sort((a, b) => {
+          let av, bv;
+          switch (sortState.col) {
+            case 'selections': return sortState.dir * a.selections.localeCompare(b.selections);
+            case 'legs':       av = a.legCount;   bv = b.legCount;   break;
+            case 'odds':       av = a.oddsNum;    bv = b.oddsNum;    break;
+            case 'stake':      av = a.stake;      bv = b.stake;      break;
+            case 'pnl':        av = a.pnl;        bv = b.pnl;        break;
+            case 'result':     return sortState.dir * a.result.localeCompare(b.result);
+            case 'time':
+            default:           av = a.timeSort;   bv = b.timeSort;   return sortState.dir * av.localeCompare(bv);
+          }
+          return sortState.dir * (av - bv);
+        });
+        for (const r of rows) {
+          const pnlCls2 = r.pnl > 0 ? 'positive' : r.pnl < 0 ? 'negative' : 'neutral';
+          const resultColor = r.result === 'won' ? 'var(--green)' : r.result === 'lost' ? 'var(--red)' : 'var(--text3)';
+          svg += '<tr style="border-top:1px solid var(--border);">';
+          svg += '<td style="padding:2px 6px;white-space:nowrap;">' + r.time + '</td>';
+          svg += '<td style="padding:2px 6px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + r.selections.replace(/"/g, '&quot;') + '">' + r.selections + '</td>';
+          svg += '<td style="padding:2px 6px;text-align:center;">' + r.legCount + '</td>';
+          svg += '<td style="padding:2px 6px;text-align:right;">' + r.oddsStr + '</td>';
+          svg += '<td style="padding:2px 6px;text-align:right;">' + fmtDollar(r.stake) + '</td>';
+          svg += '<td style="padding:2px 6px;text-align:right;" class="' + pnlCls2 + '">' + fmtPnl(r.pnl) + '</td>';
+          svg += '<td style="padding:2px 6px;text-align:center;color:' + resultColor + ';">' + r.result.charAt(0).toUpperCase() + r.result.slice(1) + '</td>';
+          svg += '</tr>';
         }
-        return sortState.dir * (av - bv);
-      });
-      for (const r of rows) {
-        const pnlCls2 = r.pnl > 0 ? 'positive' : r.pnl < 0 ? 'negative' : 'neutral';
-        const resultColor = r.result === 'won' ? 'var(--green)' : r.result === 'lost' ? 'var(--red)' : 'var(--text3)';
-        svg += '<tr style="border-top:1px solid var(--border);">';
-        svg += '<td style="padding:2px 6px;white-space:nowrap;">' + r.time + '</td>';
-        svg += '<td style="padding:2px 6px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + r.selections.replace(/"/g, '&quot;') + '">' + r.selections + '</td>';
-        svg += '<td style="padding:2px 6px;text-align:center;">' + r.legCount + '</td>';
-        svg += '<td style="padding:2px 6px;text-align:right;">' + r.oddsStr + '</td>';
-        svg += '<td style="padding:2px 6px;text-align:right;">' + fmtDollar(r.stake) + '</td>';
-        svg += '<td style="padding:2px 6px;text-align:right;" class="' + pnlCls2 + '">' + fmtPnl(r.pnl) + '</td>';
-        svg += '<td style="padding:2px 6px;text-align:center;color:' + resultColor + ';">' + r.result.charAt(0).toUpperCase() + r.result.slice(1) + '</td>';
-        svg += '</tr>';
+        svg += '</table></td></tr>';
       }
       svg += '</table></td></tr>';
     }

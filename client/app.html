@@ -150,6 +150,51 @@
 
     .empty { text-align: center; padding: 40px 16px; color: var(--text2); font-size: 14px; }
 
+    /* Daily Volume & P&L section */
+    .dv-wrap { padding: 0 12px 16px; }
+    .dv-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .dv-chart { padding: 8px 4px 4px; }
+    .dv-chart svg { width: 100%; height: auto; display: block; }
+    .dv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .dv-table th {
+      text-align: left;
+      padding: 6px 10px;
+      font-size: 10px;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 500;
+    }
+    .dv-table th.r { text-align: right; }
+    .dv-table td { padding: 6px 10px; border-top: 1px solid var(--border); }
+    .dv-table td.r { text-align: right; font-variant-numeric: tabular-nums; }
+    .dv-table td.c { text-align: center; }
+    .dv-table .dv-month-row { cursor: pointer; font-weight: 600; background: var(--surface); }
+    .dv-table .dv-day-row   { cursor: pointer; background: var(--surface2); }
+    .dv-table .dv-parlay-row { background: var(--surface2); font-size: 11px; }
+    .dv-table td.pos { color: var(--green); }
+    .dv-table td.neg { color: var(--red); }
+    .dv-table .dv-month-row td:first-child { padding-left: 10px; }
+    .dv-table .dv-day-row td:first-child    { padding-left: 22px; }
+    .dv-table .dv-parlay-row td:first-child { padding-left: 34px; }
+    .dv-table .dv-header-row { background: var(--surface); }
+    .dv-table .dv-sub-header { background: var(--surface); }
+    .dv-table .dv-sub-header th { font-size: 9px; padding: 4px 6px; }
+    .dv-caret { display: inline-block; width: 10px; font-size: 9px; color: var(--text2); }
+    .dv-section-title {
+      font-size: 13px; color: var(--text2); text-transform: uppercase;
+      letter-spacing: 0.5px; padding: 12px 16px 6px;
+    }
+    /* Legend */
+    .dv-legend { display: flex; gap: 12px; padding: 6px 12px 10px; font-size: 10px; color: var(--text2); flex-wrap: wrap; }
+    .dv-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
     .refresh-btn {
       position: fixed;
       bottom: 20px;
@@ -185,6 +230,13 @@
   <div class="section-title" id="list-title">Recent Parlays</div>
   <div class="parlay-list" id="parlay-list">
     <div class="empty">Loading...</div>
+  </div>
+
+  <div class="dv-section-title">Daily Volume &amp; P&amp;L</div>
+  <div class="dv-wrap">
+    <div class="dv-card" id="daily-volume-card">
+      <div class="empty">Loading...</div>
+    </div>
   </div>
 
   <button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()">&#8635;</button>
@@ -327,6 +379,7 @@
 
         renderStatus(status, allOrders);
         renderParlays(allOrders);
+        renderDailyVolume(allOrders);
       } catch (e) {
         console.error('Load failed:', e);
       } finally {
@@ -519,6 +572,268 @@
           '<div style="padding:2px 12px 6px;font-size:10px;color:var(--text2);">' + time + '</div>' +
         '</div>';
       }).join('');
+    }
+
+    // --- Daily Volume & P&L (chart + month→day→parlay table) ---
+    // Persist expanded row state + per-day sort across auto-refresh so
+    // the user's drill-down survives polling. Month rows default
+    // collapsed; days collapsed; parlays only appear when a day is open.
+    const _dvExpanded = new Set();
+    const _dvSort = {};
+
+    function _etDay(iso) {
+      if (!iso) return null;
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return null;
+      return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    }
+    function _fmt$(v) {
+      if (v == null || isNaN(v)) return '-';
+      const sign = v < 0 ? '-' : '';
+      const abs = Math.abs(v);
+      if (abs >= 10000) return sign + '$' + Math.round(abs).toLocaleString();
+      return sign + '$' + abs.toFixed(2);
+    }
+    function _fmtPnl(v) {
+      if (v == null || isNaN(v)) return '-';
+      return (v >= 0 ? '+' : '-') + '$' + Math.abs(v).toFixed(2);
+    }
+    function _calcSpProfit(stake, americanOdds) {
+      if (!stake || !americanOdds) return 0;
+      return stake * 100 / Math.abs(americanOdds);
+    }
+    function _pnlCls(v) { return v > 0 ? 'pos' : v < 0 ? 'neg' : ''; }
+
+    window.toggleDv = function(id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const opening = el.style.display === 'none';
+      el.style.display = opening ? 'table-row' : 'none';
+      if (opening) _dvExpanded.add(id);
+      else _dvExpanded.delete(id);
+    };
+
+    window.dvSortClick = function(dayId, col) {
+      const cur = _dvSort[dayId] || { col: 'time', dir: 1 };
+      if (cur.col === col) cur.dir = cur.dir > 0 ? -1 : 1;
+      else { cur.col = col; cur.dir = 1; }
+      _dvSort[dayId] = cur;
+      if (window._dvLastOrders) renderDailyVolume(window._dvLastOrders);
+    };
+
+    function renderDailyVolume(allOrders) {
+      const el = document.getElementById('daily-volume-card');
+      if (!el) return;
+      window._dvLastOrders = allOrders;
+
+      const confirmed = allOrders.filter(o =>
+        (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
+        && (o.quotedAt || !(o.meta && o.meta.reconstructed))
+      );
+      if (confirmed.length < 1) {
+        el.innerHTML = '<div class="empty">Need confirmed orders to show daily activity</div>';
+        return;
+      }
+
+      // Bucket by ET day
+      const byDay = {};
+      for (const o of confirmed) {
+        const day = _etDay(o.confirmedAt || o.quotedAt);
+        if (!day) continue;
+        if (!byDay[day]) byDay[day] = { risk: 0, toWin: 0, pnl: 0, count: 0, settled: 0, orders: [] };
+        byDay[day].count++;
+        byDay[day].orders.push(o);
+        byDay[day].risk += (o.confirmedStake || 0);
+        byDay[day].toWin += o.confirmedStake && o.offeredOdds
+          ? _calcSpProfit(o.confirmedStake, o.offeredOdds) : 0;
+        if (o.pnl != null) { byDay[day].pnl += o.pnl; byDay[day].settled++; }
+      }
+      const days = Object.keys(byDay).sort();
+
+      // Build chart
+      const W = 360, H = 220, pad = { l: 46, r: 12, t: 18, b: 48 };
+      const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+      // Show latest N days in the chart so it stays readable on mobile.
+      const N = Math.min(days.length, 14);
+      const chartDays = days.slice(-N);
+      const riskBarW = Math.max(6, (chartW / chartDays.length) * 0.75);
+      const pnlBarW = Math.max(3, riskBarW * 0.45);
+
+      const cumul = [];
+      let running = 0;
+      for (const day of chartDays) { running += byDay[day].pnl; cumul.push(running); }
+      const maxRisk = Math.max(0, ...chartDays.map(d => byDay[d].risk));
+      const maxPnlPos = Math.max(0, ...chartDays.map(d => byDay[d].pnl));
+      const minPnlNeg = Math.min(0, ...chartDays.map(d => byDay[d].pnl));
+      const maxCumul = Math.max(0, ...cumul);
+      const minCumul = Math.min(0, ...cumul);
+      const yMax = Math.max(1, maxRisk, maxPnlPos, maxCumul);
+      const yMin = Math.min(0, minPnlNeg, minCumul);
+      const yRange = yMax - yMin || 1;
+      const scaleY = (v) => pad.t + ((yMax - v) / yRange) * chartH;
+      const zeroY = scaleY(0);
+
+      let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
+      // Grid + axis labels
+      for (let t = 0; t <= 3; t++) {
+        const v = yMin + (yRange * t / 3);
+        const y = scaleY(v);
+        const isZero = Math.abs(v) < 0.5;
+        svg += `<line x1="${pad.l}" y1="${y}" x2="${W - pad.r}" y2="${y}" stroke="${isZero ? 'var(--text2)' : 'var(--border)'}" stroke-width="${isZero ? 1 : 0.5}"/>`;
+        const label = v >= 10000 ? '$' + Math.round(v / 1000) + 'k' : '$' + Math.round(v);
+        svg += `<text x="${pad.l - 4}" y="${y + 3}" text-anchor="end" font-size="8" fill="var(--text2)">${label}</text>`;
+      }
+      // Bars + labels
+      for (let i = 0; i < chartDays.length; i++) {
+        const d = byDay[chartDays[i]];
+        const cx = pad.l + (i + 0.5) * (chartW / chartDays.length);
+        if (d.risk > 0) {
+          const yTop = scaleY(d.risk);
+          svg += `<rect x="${cx - riskBarW / 2}" y="${yTop}" width="${riskBarW}" height="${zeroY - yTop}" fill="var(--accent)" fill-opacity="0.4" rx="1"/>`;
+        }
+        if (d.pnl !== 0) {
+          const pnlColor = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+          const yTop = d.pnl >= 0 ? scaleY(d.pnl) : zeroY;
+          const pnlH = Math.abs(scaleY(d.pnl) - zeroY);
+          svg += `<rect x="${cx - pnlBarW / 2}" y="${yTop}" width="${pnlBarW}" height="${pnlH}" fill="${pnlColor}" rx="1"/>`;
+        }
+        // X label (MM-DD)
+        const dayLabel = chartDays[i].substring(5);
+        svg += `<text x="${cx}" y="${H - pad.b + 12}" text-anchor="middle" font-size="8" fill="var(--text2)">${dayLabel}</text>`;
+        svg += `<text x="${cx}" y="${H - pad.b + 22}" text-anchor="middle" font-size="7" fill="var(--text2)">${d.count}</text>`;
+      }
+      // Cumulative P&L line
+      if (cumul.length >= 2) {
+        const pts = chartDays.map((_, i) => {
+          const cx = pad.l + (i + 0.5) * (chartW / chartDays.length);
+          return cx + ',' + scaleY(cumul[i]);
+        }).join(' ');
+        svg += `<polyline points="${pts}" fill="none" stroke="#f5b942" stroke-width="1.5"/>`;
+        for (let i = 0; i < chartDays.length; i++) {
+          const cx = pad.l + (i + 0.5) * (chartW / chartDays.length);
+          svg += `<circle cx="${cx}" cy="${scaleY(cumul[i])}" r="1.8" fill="#f5b942"/>`;
+        }
+      }
+      svg += '</svg>';
+
+      // Roll days up into months
+      const byMonth = {};
+      for (const [day, d] of Object.entries(byDay)) {
+        const month = day.substring(0, 7);
+        if (!byMonth[month]) byMonth[month] = { count: 0, risk: 0, toWin: 0, pnl: 0, settled: 0, days: [] };
+        byMonth[month].count += d.count;
+        byMonth[month].risk += d.risk;
+        byMonth[month].toWin += d.toWin;
+        byMonth[month].pnl += d.pnl;
+        byMonth[month].settled += d.settled;
+        byMonth[month].days.push(day);
+      }
+      const months = Object.keys(byMonth).sort().reverse();
+
+      // Table
+      let html = '<div class="dv-chart">' + svg + '</div>';
+      html += '<div class="dv-legend">'
+        + '<span><span class="swatch" style="background:var(--accent);opacity:0.4;"></span>My Risk</span>'
+        + '<span><span class="swatch" style="background:var(--green);"></span>Daily P&amp;L</span>'
+        + '<span><span class="swatch" style="background:#f5b942;"></span>Cumulative</span>'
+        + '</div>';
+      html += '<div style="overflow-x:auto;"><table class="dv-table">';
+      html += '<tr class="dv-header-row">'
+        + '<th>Month / Date</th>'
+        + '<th class="r">Fills</th>'
+        + '<th class="r">Risk</th>'
+        + '<th class="r">To Win</th>'
+        + '<th class="r">P&amp;L</th></tr>';
+
+      for (const month of months) {
+        const m = byMonth[month];
+        const monthId = 'mdvm-' + month.replace(/-/g, '');
+        const monthOpen = _dvExpanded.has(monthId);
+        const mCls = _pnlCls(m.pnl);
+        const mCaret = monthOpen ? '&#9660;' : '&#9654;';
+        html += '<tr class="dv-month-row" onclick="toggleDv(\'' + monthId + '\')">';
+        html += '<td><span class="dv-caret">' + mCaret + '</span> ' + month + '</td>';
+        html += '<td class="r">' + m.count + '</td>';
+        html += '<td class="r">' + _fmt$(m.risk) + '</td>';
+        html += '<td class="r pos">' + _fmt$(m.toWin) + '</td>';
+        html += '<td class="r ' + mCls + '">' + _fmtPnl(m.pnl) + '</td></tr>';
+
+        html += '<tr id="' + monthId + '" style="display:' + (monthOpen ? 'table-row' : 'none') + ';"><td colspan="5" style="padding:0;">';
+        html += '<table class="dv-table" style="width:100%;">';
+        const monthDays = [...m.days].sort().reverse();
+        for (const day of monthDays) {
+          const d = byDay[day];
+          const dayId = 'mdvd-' + day.replace(/-/g, '');
+          const dayOpen = _dvExpanded.has(dayId);
+          const dCls = _pnlCls(d.pnl);
+          const dCaret = dayOpen ? '&#9660;' : '&#9654;';
+          html += '<tr class="dv-day-row" onclick="event.stopPropagation(); toggleDv(\'' + dayId + '\')">';
+          html += '<td><span class="dv-caret">' + dCaret + '</span> ' + day + '</td>';
+          html += '<td class="r">' + d.count + '</td>';
+          html += '<td class="r">' + _fmt$(d.risk) + '</td>';
+          html += '<td class="r pos">' + _fmt$(d.toWin) + '</td>';
+          html += '<td class="r ' + dCls + '">' + _fmtPnl(d.pnl) + '</td></tr>';
+
+          html += '<tr id="' + dayId + '" style="display:' + (dayOpen ? 'table-row' : 'none') + ';"><td colspan="5" style="padding:0;">';
+          html += '<table class="dv-table" style="width:100%; background:var(--surface2);">';
+          const sortState = _dvSort[dayId] || { col: 'time', dir: 1 };
+          const arr = (c) => sortState.col === c ? (sortState.dir > 0 ? ' \u25B2' : ' \u25BC') : '';
+          const hc = (c) => 'onclick="event.stopPropagation(); dvSortClick(\'' + dayId + '\',\'' + c + '\')"';
+          html += '<tr class="dv-sub-header">'
+            + '<th ' + hc('time') + '>Time' + arr('time') + '</th>'
+            + '<th ' + hc('selections') + '>Selections' + arr('selections') + '</th>'
+            + '<th class="c" ' + hc('legs') + '>L' + arr('legs') + '</th>'
+            + '<th class="r" ' + hc('odds') + '>Odds' + arr('odds') + '</th>'
+            + '<th class="r" ' + hc('pnl') + '>P&amp;L' + arr('pnl') + '</th>'
+            + '</tr>';
+          const parlayRows = d.orders.filter(o => o.pnl != null).map(o => {
+            const legs = o.legs || (o.meta && o.meta.legs) || [];
+            const selections = legs.map(l => {
+              const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
+              return name.length > 22 ? name.substring(0, 20) + '..' : name;
+            }).join(', ');
+            const timeStr = (o.confirmedAt || '').substring(11, 16) || '--:--';
+            const oddsNum = o.confirmedOdds || o.offeredOdds || 0;
+            const result = o.settlementResult || (o.status || '').replace('settled_', '') || '-';
+            return {
+              time: timeStr,
+              timeSort: o.settledAt || o.confirmedAt || '',
+              selections,
+              legCount: legs.length,
+              oddsNum,
+              oddsStr: oddsNum ? (oddsNum > 0 ? '+' + oddsNum : '' + oddsNum) : '-',
+              stake: o.confirmedStake || 0,
+              pnl: o.pnl,
+              result,
+            };
+          });
+          parlayRows.sort((a, b) => {
+            let av, bv;
+            switch (sortState.col) {
+              case 'selections': return sortState.dir * a.selections.localeCompare(b.selections);
+              case 'legs': av = a.legCount; bv = b.legCount; break;
+              case 'odds': av = a.oddsNum; bv = b.oddsNum; break;
+              case 'pnl':  av = a.pnl;     bv = b.pnl;     break;
+              case 'time':
+              default:     av = a.timeSort; bv = b.timeSort; return sortState.dir * av.localeCompare(bv);
+            }
+            return sortState.dir * (av - bv);
+          });
+          for (const r of parlayRows) {
+            const cls = _pnlCls(r.pnl);
+            html += '<tr class="dv-parlay-row">';
+            html += '<td style="white-space:nowrap;">' + r.time + '</td>';
+            html += '<td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + r.selections.replace(/"/g, '&quot;') + '">' + r.selections + '</td>';
+            html += '<td class="c">' + r.legCount + '</td>';
+            html += '<td class="r">' + r.oddsStr + '</td>';
+            html += '<td class="r ' + cls + '">' + _fmtPnl(r.pnl) + '</td></tr>';
+          }
+          html += '</table></td></tr>';
+        }
+        html += '</table></td></tr>';
+      }
+      html += '</table></div>';
+      el.innerHTML = html;
     }
 
     // --- Init ---
