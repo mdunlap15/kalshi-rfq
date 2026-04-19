@@ -2882,7 +2882,7 @@
     // for SP losses, so losses silently sit as 'confirmed'.
     let positions = window._pxPositions?.positions
       ? window._pxPositions.positions
-      : allOrders.filter(o => o.status === 'confirmed');
+      : allOrders.filter(o => o.status === 'confirmed' && !(o.meta && o.meta.phantom));
 
     // Belt-and-suspenders: strip anything the live order map shows as
     // already settled. _pxPositions is cached on the server (60s ledger
@@ -3514,8 +3514,11 @@
       return expState.sortDir * (va - vb);
     });
 
-    // Build lookup: team+eventId composite key → confirmed orders containing that team in that game
-    const confirmedOrders = Object.values(orderState.allOrders).filter(o => o.status === 'confirmed');
+    // Build lookup: team+eventId composite key → confirmed orders containing that team in that game.
+    // Exclude phantoms so the Team Exposure detail drop-down matches Open Positions.
+    const confirmedOrders = Object.values(orderState.allOrders).filter(o =>
+      o.status === 'confirmed' && !(o.meta && o.meta.phantom)
+    );
     const teamParlayMap = {};
     for (const o of confirmedOrders) {
       const legs = o.legs || o.meta?.legs || [];
@@ -3687,7 +3690,9 @@
   // win or lose together; opposite-side legs are anti-correlated).
   function runRiskSimulation(nSims) {
     nSims = nSims || 10000;
-    const confirmed = Object.values(orderState.allOrders || {}).filter(o => o.status === 'confirmed');
+    const confirmed = Object.values(orderState.allOrders || {}).filter(o =>
+      o.status === 'confirmed' && !(o.meta && o.meta.phantom)
+    );
     if (confirmed.length === 0) return null;
 
     // Merge helper: combine o.legs with o.meta.legs so sim sees both
@@ -3871,7 +3876,9 @@
     const el = document.getElementById('risk-sim-body');
     const sumEl = document.getElementById('risk-sim-summary');
     if (!el) return;
-    const confirmedCount = Object.values(orderState.allOrders || {}).filter(o => o.status === 'confirmed').length;
+    const confirmedCount = Object.values(orderState.allOrders || {}).filter(o =>
+      o.status === 'confirmed' && !(o.meta && o.meta.phantom)
+    ).length;
     if (confirmedCount === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No confirmed positions to simulate</div></div>';
       return;
@@ -4662,8 +4669,14 @@
     window._lastPortfolioData = data;
     const allOrders = data.recentOrders || [];
     const stats = data.stats || {};
-    // Exclude reconstructed orders we never actually quoted (no pricing data)
-    const ownOrders = allOrders.filter(o => o.quotedAt || !(o.meta && o.meta.reconstructed));
+    // Exclude reconstructed orders we never actually quoted (no pricing
+    // data) and phantom-flagged orders (ghost reconcile determined PX
+    // can't locate them — never a real fill). Every downstream stat
+    // derived from ownOrders inherits both exclusions.
+    const ownOrders = allOrders.filter(o =>
+      (o.quotedAt || !(o.meta && o.meta.reconstructed))
+      && !(o.meta && o.meta.phantom)
+    );
     const settled = ownOrders.filter(o => o.status && o.status.startsWith('settled_'));
     const active = ownOrders.filter(o => o.status === 'confirmed');
 
@@ -6717,9 +6730,16 @@
 
   function renderAnalytics(data, intel) {
     const allOrders = data.recentOrders || [];
-    // Exclude reconstructed orders we never actually quoted — old PX orders
-    // from before the SP was actively trading (quotedAt null + meta.reconstructed).
-    const ownOrders = allOrders.filter(o => o.quotedAt || !(o.meta && o.meta.reconstructed));
+    // Exclude reconstructed orders we never actually quoted AND
+    // phantom-flagged orders (ghost reconcile determined PX can't
+    // locate them). Downstream charts and analytics derived from
+    // ownOrders inherit both exclusions — keeps volume, fill rate,
+    // parlay-vs-books scatter, etc. in sync with the Open Positions
+    // view which already filters phantoms.
+    const ownOrders = allOrders.filter(o =>
+      (o.quotedAt || !(o.meta && o.meta.reconstructed))
+      && !(o.meta && o.meta.phantom)
+    );
     const settled = ownOrders.filter(o => o.status && o.status.startsWith('settled_'));
     const confirmed = ownOrders.filter(o => o.status === 'confirmed');
     const allQuoted = ownOrders.filter(o => o.offeredOdds);

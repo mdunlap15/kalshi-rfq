@@ -771,9 +771,6 @@ async function handleConfirm(data) {
       return;
     }
 
-    // Accept the order
-    orderTracker.recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake);
-
     // Build price_probability for the confirmation
     const priceProbability = [{
       max_risk: originalOrder.maxRisk,
@@ -785,16 +782,31 @@ async function handleConfirm(data) {
       })),
     }];
 
+    // Send the accept POST FIRST, only record confirmation if it returns
+    // successfully. Previously we recorded optimistically before the POST,
+    // so any HTTP error / timeout / network failure would leave a
+    // phantom-confirmed order in our local state while PX had nothing.
+    // Root cause of many null-UUID phantoms that accumulated before the
+    // ghost reconciler could catch them.
     if (callbackUrl) {
-      await px.confirmOrder(
-        callbackUrl,
-        orderUuid,
-        'accept',
-        confirmedOdds,
-        confirmedStake,
-        priceProbability
-      );
+      try {
+        await px.confirmOrder(
+          callbackUrl,
+          orderUuid,
+          'accept',
+          confirmedOdds,
+          confirmedStake,
+          priceProbability
+        );
+      } catch (acceptErr) {
+        log.warn('Confirm', `Accept POST failed for ${parlayId} — NOT recording confirmation. err=${acceptErr.message}`);
+        orderTracker.recordRejection(parlayId, `accept-POST-failed: ${acceptErr.message}`);
+        return;
+      }
       log.info('Confirm', `Accepted: order=${orderUuid}`);
+
+      // POST succeeded — now safe to record confirmation locally.
+      orderTracker.recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake);
 
       // Send push notification to mobile app
       try {
@@ -804,6 +816,10 @@ async function handleConfirm(data) {
       } catch (pushErr) {
         log.debug('Push', `Notification failed: ${pushErr.message}`);
       }
+    } else {
+      // No callback URL means we can't confirm back to PX at all — don't
+      // record as confirmed. Treat as rejected to avoid phantom creation.
+      orderTracker.recordRejection(parlayId, 'no-callback-url');
     }
   } catch (err) {
     log.error('Confirm', `Error handling confirmation: ${err.message}`);

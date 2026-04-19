@@ -3348,6 +3348,13 @@ async function fullPxReconcile(px) {
   stats.runningPnL = 0;
   for (const o of Object.values(orders)) {
     stats.totalQuotes++;
+    // Phantom-flagged orders never produced a real confirm on PX; treat
+    // them as rejections for the lifetime-count stats so totalConfirmations
+    // reflects real fills only.
+    if (o.meta && o.meta.phantom) {
+      stats.totalRejections++;
+      continue;
+    }
     if (o.status === 'confirmed') stats.totalConfirmations++;
     else if (o.status === 'rejected') stats.totalRejections++;
     else if (o.status?.startsWith('settled_')) {
@@ -3836,6 +3843,9 @@ async function reconcileGhostConfirmed(px) {
       delete order.meta.phantomReason;
       delete order.meta.phantomMarkedAt;
       autoCleared++;
+      // Restore the lifetime-confirmation count — we'd decremented it
+      // when flagging; unclearing undoes that.
+      if (order.status === 'confirmed') stats.totalConfirmations++;
       db.saveOrder(order).catch(() => {});
     }
 
@@ -3848,6 +3858,7 @@ async function reconcileGhostConfirmed(px) {
           delete order.meta.phantomReason;
           delete order.meta.phantomMarkedAt;
           autoCleared++;
+          if (order.status === 'confirmed') stats.totalConfirmations++;
           db.saveOrder(order).catch(() => {});
         }
         // If PX shows it's settled/voided, demote our copy and — critically —
@@ -3897,6 +3908,7 @@ async function reconcileGhostConfirmed(px) {
         //   (c) at least one leg already has a known game result
         //       (inferredResult / settlement_status) — game is over,
         //       further uncertainty is about PX not us.
+        const wasAlreadyPhantom = order.meta && order.meta.phantom;
         order.meta = order.meta || {};
         order.meta.phantom = true;
         order.meta.phantomReason = ageMs >= PHANTOM_MIN_AGE_MS
@@ -3907,6 +3919,12 @@ async function reconcileGhostConfirmed(px) {
         order.meta.phantomMarkedAt = new Date().toISOString();
         phantomIds.push(order.parlayId);
         ghostsFound++;
+        // Decrement the lifetime confirmations stat — this order was
+        // counted as confirmed on the way in but we now know it never
+        // really was. Matches what fullPxReconcile will do on next run.
+        if (!wasAlreadyPhantom && stats.totalConfirmations > 0) {
+          stats.totalConfirmations--;
+        }
         db.saveOrder(order).catch(() => {});
       }
       // else: absent from PX list but still within grace window — do
@@ -3926,6 +3944,7 @@ async function reconcileGhostConfirmed(px) {
             delete order.meta.phantomReason;
             delete order.meta.phantomMarkedAt;
             autoCleared++;
+            if (order.status === 'confirmed') stats.totalConfirmations++;
           }
           db.saveOrder(order).catch(() => {});
         }
@@ -3939,8 +3958,12 @@ async function reconcileGhostConfirmed(px) {
       if (ageMs >= PHANTOM_MIN_AGE_MS
           || allLegsDoneOver(order, LEGS_DONE_CUTOFF_MS)
           || anyLegHasKnownResult(order)) {
+        const wasAlreadyPhantom = order.meta && order.meta.phantom;
         order.meta = order.meta || {};
         order.meta.phantom = true;
+        if (!wasAlreadyPhantom && stats.totalConfirmations > 0) {
+          stats.totalConfirmations--;
+        }
         order.meta.phantomReason = ageMs >= PHANTOM_MIN_AGE_MS
           ? 'no-uuid-and-no-px-match'
           : anyLegHasKnownResult(order)
@@ -4805,6 +4828,12 @@ async function loadFromDb() {
     // fields. If the DB is wrong, run /full-px-reconcile to fix it —
     // don't let the reload path silently mutate data.
     stats.totalQuotes++;
+    // Phantom-flagged orders don't count toward lifetime confirmations
+    // — classify as rejections so stats match reality.
+    if (o.meta && o.meta.phantom) {
+      stats.totalRejections++;
+      continue;
+    }
     if (o.status === 'confirmed') {
       stats.totalConfirmations++;
       // Always track exposure for confirmed orders regardless of whether
@@ -4815,10 +4844,7 @@ async function loadFromDb() {
       // under-count parlays after every redeploy. Zombie / stuck
       // confirmed orders are cleaned by settlement polling + drift
       // reconcile, not by hiding them from exposure.
-      // Exception: phantom-flagged orders (ghost-reconcile already
-      // determined PX can't locate them) are excluded — matches the
-      // Open Positions view which also filters them.
-      if (!(o.meta && o.meta.phantom)) addExposure(o);
+      addExposure(o);
     } else if (o.status === 'rejected') {
       stats.totalRejections++;
     } else if (o.status?.startsWith('settled_')) {

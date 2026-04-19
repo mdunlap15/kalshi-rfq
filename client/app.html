@@ -763,7 +763,10 @@
 
       const all = orders
         .filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
-        .filter(o => o.quotedAt || o.confirmedAt || (o.meta && o.meta.pxBackfill));
+        .filter(o => o.quotedAt || o.confirmedAt || (o.meta && o.meta.pxBackfill))
+        // Drop phantom-flagged orders — ghost reconcile determined
+        // PX can't locate them (never a real fill).
+        .filter(o => !(o.meta && o.meta.phantom));
 
       const openList = all
         .filter(o => o.status === 'confirmed')
@@ -929,6 +932,9 @@
       const confirmed = allOrders.filter(o =>
         (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
         && (o.quotedAt || !(o.meta && o.meta.reconstructed))
+        // Exclude phantoms so Daily Volume bars + fill counts reflect
+        // real activity, not phantom-confirmed parlays PX never had.
+        && !(o.meta && o.meta.phantom)
       );
       if (confirmed.length < 1) {
         el.innerHTML = '<div class="empty">Need confirmed orders to show daily activity</div>';
