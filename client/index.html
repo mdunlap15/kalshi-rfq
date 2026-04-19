@@ -2880,9 +2880,26 @@
     // the /px-positions fetch hasn't populated yet on initial load.
     // The tracker list drifts high because PX never emits order.matched
     // for SP losses, so losses silently sit as 'confirmed'.
-    const positions = window._pxPositions?.positions
+    let positions = window._pxPositions?.positions
       ? window._pxPositions.positions
       : allOrders.filter(o => o.status === 'confirmed');
+
+    // Belt-and-suspenders: strip anything the live order map shows as
+    // already settled. _pxPositions is cached on the server (60s ledger
+    // TTL) and can lag the order tracker when settlement polling
+    // processes a batch between ledger refreshes — briefly surfacing
+    // already-settled parlays here. We have the authoritative status in
+    // data.recentOrders, so filter against it.
+    const localByParlayId = {};
+    for (const o of allOrders) {
+      if (o && o.parlayId) localByParlayId[o.parlayId] = o;
+    }
+    positions = positions.filter(p => {
+      const local = localByParlayId[p.parlayId];
+      if (local && typeof local.status === 'string'
+          && local.status.startsWith('settled_')) return false;
+      return true;
+    });
 
     window._openPositionsCount = positions.length;
     updatePositionsCountBadge();
@@ -6469,12 +6486,20 @@
     if (s.positionType === 'open' || s.positionType === 'both') {
       // Prefer PX-native open positions — the tracker's 'confirmed'
       // set drifts high with silent losses PX never emits events for.
+      // But cross-check against the live order map so already-settled
+      // parlays never export as Open when _pxPositions is stale (60s
+      // ledger TTL on the server).
+      const allLocal = orderState.allOrders || {};
       if (window._pxPositions?.positions) {
         for (const o of window._pxPositions.positions) {
-          if (!seenIds.has(o.parlayId)) rows.push(o);
+          if (seenIds.has(o.parlayId)) continue;
+          const local = allLocal[o.parlayId];
+          if (local && typeof local.status === 'string'
+              && local.status.startsWith('settled_')) continue;
+          rows.push(o);
         }
       } else {
-        for (const o of Object.values(orderState.allOrders || {})) {
+        for (const o of Object.values(allLocal)) {
           if (o.status === 'confirmed' && !seenIds.has(o.parlayId)) rows.push(o);
         }
       }
