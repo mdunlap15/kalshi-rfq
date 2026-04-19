@@ -689,8 +689,8 @@
                 <th style="text-align:left; padding:6px 12px;">Meaning</th>
               </tr>
               <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Net Exposure</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">worst-case loss after offsets</td><td style="padding:4px 12px; color:var(--text2);">Accounts for offsetting positions (e.g., Over/Under can't both hit)</td></tr>
-              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Gross Risk</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">payout &times; P(other legs hit)</td><td style="padding:4px 12px; color:var(--text2);">Sum of probability-weighted payouts, treating each parlay independently</td></tr>
-              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Notional Payout</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">sum of full payouts</td><td style="padding:4px 12px; color:var(--text2);">Unweighted liability if every parlay fully hits</td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Weighted Risk</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">&Sigma; payout &times; P(other legs hit)</td><td style="padding:4px 12px; color:var(--text2);">Expected payout if this selection hits, weighted by the probability each parlay's other legs also hit. Smaller than Max Payout.</td></tr>
+              <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Max Payout</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">&Sigma; full payout</td><td style="padding:4px 12px; color:var(--text2);">Worst-case maximum liability if every parlay hits in full. Equals the sum of My Risk values in the detail drop-down.</td></tr>
               <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Remaining</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">max_per_team &minus; net exposure</td><td style="padding:4px 12px; color:var(--text2);">Capacity before risk gate blocks new quotes</td></tr>
               <tr><td style="padding:4px 12px; font-weight:600; color:var(--text);">Stakes Held</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">sum of bettor stakes on a game</td><td style="padding:4px 12px; color:var(--text2);">Money in pocket; kept if parlays lose</td></tr>
               <tr><td style="padding:4px 12px; font-weight:600; color:var(--green);">Net Exposure &#9733;</td><td style="padding:4px 12px; font-family:monospace; color:var(--text2);">max over sides of (payouts owed &minus; opposite stakes)</td><td style="padding:4px 12px; color:var(--text2);">True worst-case loss after offsets. <strong>The one to watch.</strong></td></tr>
@@ -3546,8 +3546,8 @@
         + rangeFilterHtml('expState', 'parlaysMin', 'parlaysMax', expState, 'expRerender()', eDStyle, { title: 'Parlay count', width: '55px', step: '1' })
         + '<span style="color:var(--text3); margin-left:8px;">Net Exposure $:</span>'
         + rangeFilterHtml('expState', 'riskMin', 'riskMax', expState, 'expRerender()', eDStyle, { title: 'Net exposure', width: '80px' })
-        + '<span style="color:var(--text3); margin-left:8px;">Notional Payout $:</span>'
-        + rangeFilterHtml('expState', 'payoutMin', 'payoutMax', expState, 'expRerender()', eDStyle, { title: 'Notional payout', width: '80px' })
+        + '<span style="color:var(--text3); margin-left:8px;">Max Payout $:</span>'
+        + rangeFilterHtml('expState', 'payoutMin', 'payoutMax', expState, 'expRerender()', eDStyle, { title: 'Max payout (unweighted)', width: '80px' })
         + '</div>';
     }
     html += `<div style="overflow-x: auto;">
@@ -3556,8 +3556,8 @@
           <th ${eSortClick('name')}>Team / Selection${eSortArrow('name')}</th>
           <th ${eSortClick('parlays', 'right')}>Parlays${eSortArrow('parlays')}</th>
           <th ${eSortClick('net', 'right')} title="Worst-case loss after offsetting positions (Over/Under, spread sides)">Net Exposure${eSortArrow('net')}</th>
-          <th ${eSortClick('risk', 'right')} title="Sum of weighted risks (independent, no offsets)">Gross Risk${eSortArrow('risk')}</th>
-          <th ${eSortClick('payout', 'right')}>Notional Payout${eSortArrow('payout')}</th>
+          <th ${eSortClick('risk', 'right')} title="Sum of each parlay's payout weighted by the probability its OTHER legs hit. Answers 'if this team wins, what's our expected payout?' — not the sum of individual My Risk figures.">Weighted Risk${eSortArrow('risk')}</th>
+          <th ${eSortClick('payout', 'right')} title="Sum of every parlay's full payout (unweighted). Worst-case maximum loss if every parlay on this selection wins in full. Matches the sum of the My Risk column in the detail drop-down.">Max Payout${eSortArrow('payout')}</th>
           <th ${eSortClick('remaining', 'right')}>Remaining${eSortArrow('remaining')}</th>
           <th style="width:120px;"></th>
         </tr>
@@ -4120,8 +4120,8 @@
       html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
         + '<span style="color:var(--text3);">Parlays:</span>'
         + rangeFilterHtml('gameExpState', 'parlaysMin', 'parlaysMax', gameExpState, 'gameExpRerender()', gDStyle, { title: 'Parlay count', width: '55px', step: '1' })
-        + '<span style="color:var(--text3); margin-left:8px;">Gross Risk $:</span>'
-        + rangeFilterHtml('gameExpState', 'grossMin', 'grossMax', gameExpState, 'gameExpRerender()', gDStyle, { title: 'Gross risk', width: '80px' })
+        + '<span style="color:var(--text3); margin-left:8px;">Weighted Risk $:</span>'
+        + rangeFilterHtml('gameExpState', 'grossMin', 'grossMax', gameExpState, 'gameExpRerender()', gDStyle, { title: 'Weighted risk', width: '80px' })
         + '<span style="color:var(--text3); margin-left:8px;">Stakes Held $:</span>'
         + rangeFilterHtml('gameExpState', 'stakesMin', 'stakesMax', gameExpState, 'gameExpRerender()', gDStyle, { title: 'Stakes held', width: '80px' })
         + '<span style="color:var(--text3); margin-left:8px;">Net Exposure $:</span>'
@@ -4135,7 +4135,7 @@
     html += '<th ' + gSortClick('sport') + '>Sport' + gSortArrow('sport') + '</th>';
     html += '<th ' + gSortClick('start') + '>Start' + gSortArrow('start') + '</th>';
     html += '<th ' + gSortClick('parlays', 'right') + '>Parlays' + gSortArrow('parlays') + '</th>';
-    html += '<th ' + gSortClick('gross', 'right') + '>Gross Risk' + gSortArrow('gross') + '</th>';
+    html += '<th ' + gSortClick('gross', 'right') + ' title="Sum of each parlay\'s payout weighted by the probability its OTHER legs hit. Not the same as summing My Risk values in the detail drop-down (that would be Max Payout).">Weighted Risk' + gSortArrow('gross') + '</th>';
     html += '<th ' + gSortClick('stakes', 'right') + '>Stakes Held' + gSortArrow('stakes') + '</th>';
     html += '<th ' + gSortClick('netExposure', 'right') + '>Net Exposure' + gSortArrow('netExposure') + '</th>';
     if (maxPerGame > 0) html += '<th style="text-align:right">% of Limit</th>';
