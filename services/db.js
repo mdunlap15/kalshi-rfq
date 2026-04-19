@@ -785,6 +785,62 @@ async function getTotalPnL() {
   }
 }
 
+/**
+ * Persist a web-push subscription so it survives Railway redeploys.
+ * Subscriptions were previously in-memory only (services/push.js), so
+ * every redeploy silently dropped every subscription and notifications
+ * stopped firing until the operator re-enabled them in the browser.
+ *
+ * Table schema (run in Supabase SQL editor once):
+ *
+ *   create table if not exists push_subscriptions (
+ *     endpoint text primary key,
+ *     subscription jsonb not null,
+ *     created_at timestamptz default now()
+ *   );
+ *   alter table push_subscriptions enable row level security;
+ */
+async function savePushSubscription(sub) {
+  if (!isEnabled() || !sub || !sub.endpoint) return;
+  const db = getClient();
+  try {
+    const { error } = await db.from('push_subscriptions').upsert({
+      endpoint: sub.endpoint,
+      subscription: sub,
+    }, { onConflict: 'endpoint' });
+    if (error) log.warn('DB', `savePushSubscription error: ${error.message}`);
+  } catch (err) {
+    log.warn('DB', `savePushSubscription exception: ${err.message}`);
+  }
+}
+
+async function loadPushSubscriptions() {
+  if (!isEnabled()) return [];
+  const db = getClient();
+  try {
+    const { data, error } = await db.from('push_subscriptions').select('subscription');
+    if (error) {
+      log.warn('DB', `loadPushSubscriptions error: ${error.message}`);
+      return [];
+    }
+    return (data || []).map(r => r.subscription).filter(s => s && s.endpoint);
+  } catch (err) {
+    log.warn('DB', `loadPushSubscriptions exception: ${err.message}`);
+    return [];
+  }
+}
+
+async function deletePushSubscription(endpoint) {
+  if (!isEnabled() || !endpoint) return;
+  const db = getClient();
+  try {
+    const { error } = await db.from('push_subscriptions').delete().eq('endpoint', endpoint);
+    if (error) log.warn('DB', `deletePushSubscription error: ${error.message}`);
+  } catch (err) {
+    log.warn('DB', `deletePushSubscription exception: ${err.message}`);
+  }
+}
+
 module.exports = {
   getClient,
   isEnabled,
@@ -804,4 +860,7 @@ module.exports = {
   loadLineCacheByEventIds,
   getDailyPnL,
   getTotalPnL,
+  savePushSubscription,
+  loadPushSubscriptions,
+  deletePushSubscription,
 };

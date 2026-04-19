@@ -4,6 +4,7 @@
  */
 const webpush = require('web-push');
 const log = require('./logger');
+const db = require('./db');
 
 // VAPID keys — set in env vars or use defaults
 const VAPID_PUBLIC = process.env.VAPID_PUBLIC_KEY || 'BMwBpGMMSuF0Jf6OaYukUM6zPZp3XTEiW4mAomeuQpZxMvtSab3Eh45pLrmbIrHpzhOmpuMipHscIhVC6cbP0iw';
@@ -17,18 +18,45 @@ try {
   log.warn('Push', `VAPID setup failed: ${err.message}`);
 }
 
-// In-memory subscription store (survives as long as process runs)
+// In-memory subscription store, hydrated from Supabase at boot so
+// notifications survive Railway redeploys. Previously pure in-memory,
+// meaning every deploy silently wiped every subscription and operators
+// had to re-enable notifications in their browser.
 const subscriptions = new Map();
 let unreadCount = 0;
+let hydrated = false;
+
+async function hydrateFromDb() {
+  if (hydrated) return;
+  hydrated = true;
+  try {
+    const saved = await db.loadPushSubscriptions();
+    for (const sub of saved) {
+      if (sub && sub.endpoint) subscriptions.set(sub.endpoint, sub);
+    }
+    if (saved.length > 0) {
+      log.info('Push', `Hydrated ${saved.length} subscriptions from Supabase`);
+    }
+  } catch (err) {
+    log.warn('Push', `Subscription hydrate failed: ${err.message}`);
+  }
+}
 
 function addSubscription(sub) {
   const key = sub.endpoint;
   subscriptions.set(key, sub);
   log.info('Push', `Subscription added (${subscriptions.size} total)`);
+  // Persist to Supabase so it survives Railway redeploys. Fire and
+  // forget — the subscription is already in memory and will work even
+  // if the DB write fails.
+  db.savePushSubscription(sub).catch(err =>
+    log.warn('Push', `savePushSubscription failed: ${err.message}`));
 }
 
 function removeSubscription(endpoint) {
   subscriptions.delete(endpoint);
+  db.deletePushSubscription(endpoint).catch(err =>
+    log.warn('Push', `deletePushSubscription failed: ${err.message}`));
 }
 
 /**
@@ -98,4 +126,5 @@ module.exports = {
   resetBadge,
   getVapidPublicKey,
   getSubscriptionCount,
+  hydrateFromDb,
 };

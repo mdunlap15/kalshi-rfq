@@ -4130,6 +4130,10 @@ function startStatusServer() {
 
   // --- PWA / Mobile App routes ---
   const push = require('./services/push');
+  // Hydrate push subscriptions from Supabase so notifications survive
+  // Railway redeploys. Fire-and-forget — failures are non-fatal.
+  push.hydrateFromDb().catch(err =>
+    log.warn('Push', `hydrate failed: ${err.message}`));
 
   app.get('/app', (req, res) => {
     push.resetBadge();
