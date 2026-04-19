@@ -3743,6 +3743,28 @@ async function reconcileGhostConfirmed(px) {
   // old: any real fill should have settled (and been removed from the
   // 'confirmed' set) well within this window.
   const PHANTOM_MIN_AGE_MS = 48 * 60 * 60 * 1000; // 48h
+  // Supplementary rule: regardless of confirmedAt age, an order whose
+  // every leg's game started > this many ms ago is almost certainly
+  // settled or failed on PX. If we still can't find it in PX's paginated
+  // list, safe to phantom-flag early. Without this, null-UUID orders
+  // that fall outside PX's scan window (orderUuid was never captured
+  // because price.confirm.new sometimes omits it) sit in "confirmed"
+  // state for hours or days after the games finished.
+  const LEGS_DONE_CUTOFF_MS = 24 * 60 * 60 * 1000; // 24h
+  function allLegsDoneOver(order, cutoffMs) {
+    const legs = order.legs || (order.meta && order.meta.legs) || [];
+    if (legs.length === 0) return false;
+    const now = Date.now();
+    let latest = null;
+    for (const leg of legs) {
+      const st = leg.startTime || leg.start_time;
+      if (!st) return false; // unknown — don't vote done
+      const t = new Date(st).getTime();
+      if (isNaN(t)) return false;
+      if (latest == null || t > latest) latest = t;
+    }
+    return latest != null && (now - latest) > cutoffMs;
+  }
   const phantomIds = [];
   let autoCleared = 0;
   for (const order of Object.values(orders)) {
@@ -3755,8 +3777,11 @@ async function reconcileGhostConfirmed(px) {
     // Un-flag any previously-phantom order that is still within the
     // grace window. The prior version of this function over-flagged
     // under truncated PX responses; this step recovers DB rows that
-    // were incorrectly marked in past runs.
-    if (wasPhantom && ageMs < PHANTOM_MIN_AGE_MS) {
+    // were incorrectly marked in past runs. Preserve phantoms that were
+    // set for legs-finished reasons — those don't care about confirmedAt
+    // age, only about whether games are done.
+    const legsDone = allLegsDoneOver(order, LEGS_DONE_CUTOFF_MS);
+    if (wasPhantom && ageMs < PHANTOM_MIN_AGE_MS && !legsDone) {
       delete order.meta.phantom;
       delete order.meta.phantomReason;
       delete order.meta.phantomMarkedAt;
@@ -3812,12 +3837,18 @@ async function reconcileGhostConfirmed(px) {
         }
         // pxStatus === 'finalized' WITHOUT settlement_status = still waiting
         // for outcome → leave as 'confirmed' in our tracker.
-      } else if (ageMs >= PHANTOM_MIN_AGE_MS) {
-        // PX's paginated list didn't return this order AND it's older
-        // than the grace window. Now safe to flag.
+      } else if (ageMs >= PHANTOM_MIN_AGE_MS
+                 || allLegsDoneOver(order, LEGS_DONE_CUTOFF_MS)) {
+        // PX's paginated list didn't return this order AND either:
+        //   (a) order is older than the 48h confirmedAt grace window, OR
+        //   (b) every leg's game started >24h ago (so the parlay is long
+        //       resolved upstream regardless of confirmedAt age).
+        // Either is safe to phantom-flag.
         order.meta = order.meta || {};
         order.meta.phantom = true;
-        order.meta.phantomReason = 'orderUuid-not-in-px';
+        order.meta.phantomReason = ageMs >= PHANTOM_MIN_AGE_MS
+          ? 'orderUuid-not-in-px'
+          : 'orderUuid-not-in-px-legs-finished';
         order.meta.phantomMarkedAt = new Date().toISOString();
         phantomIds.push(order.parlayId);
         ghostsFound++;
@@ -3845,12 +3876,17 @@ async function reconcileGhostConfirmed(px) {
         }
         continue;
       }
-      // No match at all. Only flag phantom if order is beyond grace
-      // window — same rationale as UUID branch above.
-      if (ageMs >= PHANTOM_MIN_AGE_MS) {
+      // No match at all. Flag phantom if order is beyond grace window OR
+      // all legs' games have already concluded (>24h past start) — the
+      // latter covers the common null-UUID case where parlayId lookup
+      // fails because the order rolled out of PX's paginated window.
+      if (ageMs >= PHANTOM_MIN_AGE_MS
+          || allLegsDoneOver(order, LEGS_DONE_CUTOFF_MS)) {
         order.meta = order.meta || {};
         order.meta.phantom = true;
-        order.meta.phantomReason = 'no-uuid-and-no-px-match';
+        order.meta.phantomReason = ageMs >= PHANTOM_MIN_AGE_MS
+          ? 'no-uuid-and-no-px-match'
+          : 'no-uuid-legs-finished';
         order.meta.phantomMarkedAt = new Date().toISOString();
         phantomIds.push(order.parlayId);
         ghostsFound++;

@@ -2894,10 +2894,37 @@
     for (const o of allOrders) {
       if (o && o.parlayId) localByParlayId[o.parlayId] = o;
     }
+    // Also hide "stale confirmed" parlays: orders that are still locally
+    // 'confirmed' but every leg's game started more than 24h ago. These
+    // are almost certainly settled or failed on PX — we just haven't
+    // been able to reconcile because orderUuid is null on many orders
+    // (PX's price.confirm.new payload doesn't always include it) so the
+    // ghost-reconcile UUID lookup fails, and parlayId fallback misses
+    // anything outside PX's most-recent-500-orders window.
+    const STALE_CONFIRMED_CUTOFF_MS = 24 * 3600 * 1000;
+    const nowMs = Date.now();
+    function isStaleConfirmed(p) {
+      const local = localByParlayId[p.parlayId] || p;
+      if (!local || local.status !== 'confirmed') return false;
+      const legs = local.legs || (local.meta && local.meta.legs) || [];
+      if (legs.length === 0) return false;
+      let latestStart = null;
+      for (const l of legs) {
+        const st = l.startTime || l.start_time;
+        if (!st) return false; // missing startTime — can't judge, don't hide
+        const t = new Date(st).getTime();
+        if (isNaN(t)) return false;
+        if (latestStart == null || t > latestStart) latestStart = t;
+      }
+      if (latestStart == null) return false;
+      return (nowMs - latestStart) > STALE_CONFIRMED_CUTOFF_MS;
+    }
+
     positions = positions.filter(p => {
       const local = localByParlayId[p.parlayId];
       if (local && typeof local.status === 'string'
           && local.status.startsWith('settled_')) return false;
+      if (isStaleConfirmed(p)) return false;
       return true;
     });
 
@@ -6490,17 +6517,37 @@
       // parlays never export as Open when _pxPositions is stale (60s
       // ledger TTL on the server).
       const allLocal = orderState.allOrders || {};
+      // Also exclude stale-confirmed (all legs started >24h ago). These
+      // are almost certainly settled or failed on PX but couldn't be
+      // reconciled. Mirrors the filter applied in renderPositions.
+      const STALE_CUT = 24 * 3600 * 1000;
+      const nowMs = Date.now();
+      const isStale = (o) => {
+        if (!o || o.status !== 'confirmed') return false;
+        const legs = o.legs || (o.meta && o.meta.legs) || [];
+        if (legs.length === 0) return false;
+        let latest = null;
+        for (const l of legs) {
+          const st = l.startTime || l.start_time;
+          if (!st) return false;
+          const t = new Date(st).getTime();
+          if (isNaN(t)) return false;
+          if (latest == null || t > latest) latest = t;
+        }
+        return latest != null && (nowMs - latest) > STALE_CUT;
+      };
       if (window._pxPositions?.positions) {
         for (const o of window._pxPositions.positions) {
           if (seenIds.has(o.parlayId)) continue;
           const local = allLocal[o.parlayId];
           if (local && typeof local.status === 'string'
               && local.status.startsWith('settled_')) continue;
+          if (isStale(local || o)) continue;
           rows.push(o);
         }
       } else {
         for (const o of Object.values(allLocal)) {
-          if (o.status === 'confirmed' && !seenIds.has(o.parlayId)) rows.push(o);
+          if (o.status === 'confirmed' && !seenIds.has(o.parlayId) && !isStale(o)) rows.push(o);
         }
       }
     }
