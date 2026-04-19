@@ -1514,6 +1514,73 @@ function startStatusServer() {
     }
   });
 
+  // Debug: enumerate every confirmed leg matching a given team name and
+  // group by the composite key the client uses in teamParlayMap. Lets us
+  // see whether the Team Exposure drop-down is over-matching because
+  // legs share a pxEventId they shouldn't, or because the fallback key
+  // (name|opponent|date) collapses across dates.
+  // Usage: GET /debug/team-exposure-legs?team=Houston%20Rockets
+  app.get('/debug/team-exposure-legs', (req, res) => {
+    try {
+      const target = (req.query.team || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+      if (!target) return res.status(400).json({ ok: false, error: 'team query param required' });
+      const all = orderTracker.getRecentOrders(5000) || [];
+      const confirmed = all.filter(o => o.status === 'confirmed');
+      const byKey = {};
+      const unmatched = [];
+      for (const o of confirmed) {
+        const legs = o.legs || (o.meta && o.meta.legs) || [];
+        for (const l of legs) {
+          const name = String(l.team || l.teamName || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+          if (!name || !name.includes(target)) continue;
+          const gameDate = l.startTime ? new Date(l.startTime).toISOString().substring(0, 10) : '';
+          const eventId = l.pxEventId || null;
+          let compositeKey;
+          if (eventId) {
+            compositeKey = name + '|' + eventId + '|' + gameDate;
+          } else {
+            const opp = String((l.homeTeam || '') + (l.awayTeam || '')).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+            compositeKey = name + '|' + (opp || '') + '|' + (gameDate || 'noevent');
+          }
+          if (!byKey[compositeKey]) byKey[compositeKey] = [];
+          byKey[compositeKey].push({
+            parlayId: o.parlayId,
+            confirmedAt: o.confirmedAt,
+            market: l.market || l.marketType || null,
+            marketName: l.marketName || null,
+            pxEventName: l.pxEventName || null,
+            pxEventId: eventId,
+            startTime: l.startTime || null,
+            homeTeam: l.homeTeam || null,
+            awayTeam: l.awayTeam || null,
+            line: l.line != null ? l.line : null,
+            lineId: l.lineId || null,
+            confirmedStake: o.confirmedStake,
+            legTeam: l.team || l.teamName,
+          });
+        }
+      }
+      // Summarize
+      const groups = Object.entries(byKey).map(([key, legs]) => ({
+        compositeKey: key,
+        legCount: legs.length,
+        distinctMarkets: [...new Set(legs.map(x => x.market))],
+        distinctEventNames: [...new Set(legs.map(x => x.pxEventName).filter(Boolean))],
+        sampleLegs: legs.slice(0, 5),
+      })).sort((a, b) => b.legCount - a.legCount);
+      res.json({
+        ok: true,
+        target,
+        totalConfirmedScanned: confirmed.length,
+        matchingLegCount: Object.values(byKey).reduce((s, a) => s + a.length, 0),
+        distinctCompositeKeys: groups.length,
+        groups,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Debug: trace golf matchup matching step by step
   app.get('/debug/golf-matching', async (req, res) => {
     try {
