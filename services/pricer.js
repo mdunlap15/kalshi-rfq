@@ -738,12 +738,24 @@ async function priceParlay(legs) {
   const isSGP = Object.values(eventCounts).some(c => c >= 2);
 
   if (isSGP) {
-    // --- Layer 1: Correlation discount ---
-    // For each same-game pair of (ML or spread) + total, apply a 3%
-    // boost to the offered implied probability. This makes our price
-    // worse for the bettor (lower payout) to account for positive
-    // correlation that independent multiplication ignores.
-    const SGP_CORRELATION_DISCOUNT = 0.01; // 1% per correlated pair
+    // --- Layer 1: Correlation discount (tiered by pair type) ---
+    // Independent-multiplication pricing ignores same-game positive
+    // correlation that sportsbooks routinely bake into their SGP prices.
+    // Empirical calibration (Apr 2026) against Caesars/DK/FD on a
+    // Rockies ML + Under 11.5 parlay showed they apply roughly a +19%
+    // correlation boost on ML+Total pairings. Our prior flat +1% was
+    // nowhere near enough: settled ML+Total SGPs ran at -57% ROI
+    // ($5k+ loss on $8.8k stake) while spread+Total SGPs landed at
+    // a milder -8%. Tiered boosts tuned to reflect the observed
+    // correlation strength per market pair.
+    //
+    // Tunable via env so we can iterate without redeploys:
+    //   SGP_BOOST_ML_TOTAL       (default 0.15)
+    //   SGP_BOOST_SPREAD_TOTAL   (default 0.05)
+    //   SGP_BOOST_OTHER          (default 0.03)
+    const SGP_BOOST_ML_TOTAL = parseFloat(process.env.SGP_BOOST_ML_TOTAL) || 0.15;
+    const SGP_BOOST_SPREAD_TOTAL = parseFloat(process.env.SGP_BOOST_SPREAD_TOTAL) || 0.05;
+    const SGP_BOOST_OTHER = parseFloat(process.env.SGP_BOOST_OTHER) || 0.03;
     const byEvent = {};
     for (const pl of pricedLegs) {
       const eid = pl.lineInfo.pxEventId;
@@ -753,14 +765,21 @@ async function priceParlay(legs) {
     }
 
     let correlationBoost = 1.0;
+    const appliedTiers = [];
     for (const legs of Object.values(byEvent)) {
       if (legs.length < 2) continue;
-      const hasMLOrSpread = legs.some(l =>
-        l.lineInfo.marketType === 'moneyline' || l.lineInfo.marketType === 'spread'
-      );
-      const hasTotal = legs.some(l => l.lineInfo.marketType === 'total');
-      if (hasMLOrSpread && hasTotal) {
-        correlationBoost *= (1 + SGP_CORRELATION_DISCOUNT);
+      const mkts = legs.map(l => String(l.lineInfo.marketType || '').toLowerCase());
+      const hasML = mkts.includes('moneyline');
+      const hasSpread = mkts.includes('spread');
+      const hasTotal = mkts.includes('total');
+      let pairBoost = 0;
+      let tier = null;
+      if (hasML && hasTotal) { pairBoost = SGP_BOOST_ML_TOTAL; tier = 'ml_total'; }
+      else if (hasSpread && hasTotal) { pairBoost = SGP_BOOST_SPREAD_TOTAL; tier = 'spread_total'; }
+      else { pairBoost = SGP_BOOST_OTHER; tier = 'other'; }
+      if (pairBoost > 0) {
+        correlationBoost *= (1 + pairBoost);
+        appliedTiers.push(tier);
       }
     }
 
@@ -768,7 +787,7 @@ async function priceParlay(legs) {
       const beforeDiscount = offeredImpliedProb;
       offeredImpliedProb *= correlationBoost;
       pricingMethod = 'sgp_correlation_discount';
-      log.info('Pricing', `SGP correlation discount: ${correlationBoost.toFixed(3)}x boost, offered ${(beforeDiscount*100).toFixed(2)}% → ${(offeredImpliedProb*100).toFixed(2)}% for ${pricedLegs.length}-leg parlay`);
+      log.info('Pricing', `SGP correlation discount: ${correlationBoost.toFixed(3)}x boost (tiers=${appliedTiers.join(',')}), offered ${(beforeDiscount*100).toFixed(2)}% → ${(offeredImpliedProb*100).toFixed(2)}% for ${pricedLegs.length}-leg parlay`);
     }
 
     // --- Layer 2: Pin-match floor ---
