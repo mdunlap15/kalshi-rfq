@@ -1582,6 +1582,46 @@ function startStatusServer() {
   });
 
   // Debug: trace golf matchup matching step by step
+  // Debug: pull DataGolf's raw per-book odds for a specific matchup so we
+  // can see which books actually offered the pairing and confirm the
+  // consensus isn't averaging across books that never offered it.
+  // Usage: GET /debug/datagolf-raw?p1=Scheffler&p2=Fitzpatrick&market=round_matchups&round=4
+  app.get('/debug/datagolf-raw', async (req, res) => {
+    try {
+      const p1q = (req.query.p1 || '').toLowerCase();
+      const p2q = (req.query.p2 || '').toLowerCase();
+      const market = req.query.market || 'round_matchups';
+      const tour = req.query.tour || 'pga';
+      const apiKey = process.env.DATAGOLF_API_KEY;
+      if (!apiKey) return res.status(400).json({ ok: false, error: 'DATAGOLF_API_KEY not set' });
+      const url = `https://feeds.datagolf.com/betting-tools/matchups`
+        + `?tour=${tour}&market=${market}&odds_format=american&file_format=json&key=${apiKey}`;
+      const resp = await fetch(url);
+      if (!resp.ok) return res.status(resp.status).json({ ok: false, error: `DG ${resp.status}` });
+      const data = await resp.json();
+      if (typeof data.match_list === 'string') {
+        return res.json({ ok: true, note: 'DataGolf returned string (no matchups offered)', value: data.match_list });
+      }
+      const matches = (data.match_list || []).filter(m => {
+        const n1 = (m.p1_player_name || '').toLowerCase();
+        const n2 = (m.p2_player_name || '').toLowerCase();
+        if (!p1q && !p2q) return true;
+        const bothInOne = (p1q && (n1.includes(p1q) || n2.includes(p1q))) && (p2q && (n1.includes(p2q) || n2.includes(p2q)));
+        return bothInOne;
+      });
+      res.json({
+        ok: true,
+        event_name: data.event_name,
+        round_num: data.round_num,
+        last_updated: data.last_updated,
+        matchCount: matches.length,
+        matches,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/debug/golf-matching', async (req, res) => {
     try {
       const report = await lineManager.debugGolfMatching();
