@@ -150,6 +150,150 @@
 
     .empty { text-align: center; padding: 40px 16px; color: var(--text2); font-size: 14px; }
 
+    /* Tabbed parlays table (Open / Settled) */
+    .tab-bar {
+      display: flex;
+      gap: 4px;
+      padding: 4px 12px 0;
+      background: var(--bg);
+      position: sticky;
+      top: 64px;
+      z-index: 5;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-bottom: none;
+      border-radius: 8px 8px 0 0;
+      color: var(--text2);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tab-btn .count {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      background: var(--surface2);
+      font-size: 11px;
+      color: var(--text2);
+      font-weight: 500;
+    }
+    .tab-btn.active {
+      background: var(--surface);
+      color: var(--text);
+      border-color: var(--accent);
+      border-bottom: 2px solid var(--surface);
+    }
+    .tab-btn.active .count { background: var(--accent); color: #fff; }
+    .tab-btn:not(.active):active { background: var(--surface2); }
+    .parlay-table-wrap {
+      padding: 0 12px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0 0 8px 8px;
+      margin: 0 12px 12px;
+      max-height: 65vh;
+      overflow-y: auto;
+    }
+    .parlay-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 4px 12px;
+      padding: 10px 8px;
+      border-top: 1px solid var(--border);
+      cursor: pointer;
+      align-items: center;
+    }
+    .parlay-row:first-child { border-top: none; }
+    .parlay-row:active { background: var(--surface2); }
+    .parlay-row .main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .parlay-row .selections {
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .parlay-row .meta {
+      font-size: 11px;
+      color: var(--text2);
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .parlay-row .meta .sep { color: var(--border); }
+    .parlay-row .right {
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 2px;
+      white-space: nowrap;
+    }
+    .parlay-row .odds {
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .parlay-row .pnl {
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .parlay-row .pnl.positive { color: var(--green); }
+    .parlay-row .pnl.negative { color: var(--red); }
+    .parlay-row .pill {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .parlay-row .pill.won { background: rgba(63,185,80,0.15); color: var(--green); }
+    .parlay-row .pill.lost { background: rgba(248,81,73,0.15); color: var(--red); }
+    .parlay-row .pill.push { background: rgba(139,148,158,0.15); color: var(--text2); }
+    .parlay-row .pill.confirmed { background: rgba(88,166,255,0.15); color: var(--accent); }
+    .parlay-row .pill.upcoming { background: rgba(139,148,158,0.15); color: var(--text2); }
+    .parlay-row.expanded { background: var(--surface2); }
+    .parlay-detail {
+      padding: 0 8px 10px;
+      font-size: 12px;
+      background: var(--surface2);
+      border-top: 1px solid var(--border);
+    }
+    .parlay-detail .leg-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+      border-top: 1px solid var(--border);
+      color: var(--text2);
+    }
+    .parlay-detail .leg-item:first-child { border-top: none; padding-top: 6px; }
+    .parlay-detail .leg-item .leg-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; }
+    .parlay-detail .leg-item .leg-status { font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px; }
+    .parlay-detail .leg-item .leg-status.won { background: rgba(63,185,80,0.15); color: var(--green); }
+    .parlay-detail .leg-item .leg-status.lost { background: rgba(248,81,73,0.15); color: var(--red); }
+    .parlay-detail .footer {
+      display: flex;
+      justify-content: space-between;
+      padding-top: 6px;
+      margin-top: 6px;
+      border-top: 1px solid var(--border);
+      color: var(--text2);
+    }
+    .parlay-detail .footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
     /* Daily Volume & P&L section */
     .dv-wrap { padding: 0 12px 16px; }
     .dv-card {
@@ -227,8 +371,15 @@
 
   <div id="notify-prompt"></div>
 
-  <div class="section-title" id="list-title">Recent Parlays</div>
-  <div class="parlay-list" id="parlay-list">
+  <div class="tab-bar" id="tab-bar">
+    <button class="tab-btn active" data-tab="open" onclick="switchParlayTab('open')">
+      Open <span class="count" id="tab-count-open">0</span>
+    </button>
+    <button class="tab-btn" data-tab="settled" onclick="switchParlayTab('settled')">
+      Settled <span class="count" id="tab-count-settled">0</span>
+    </button>
+  </div>
+  <div class="parlay-table-wrap" id="parlay-table-wrap">
     <div class="empty">Loading...</div>
   </div>
 
@@ -488,90 +639,154 @@
       `;
     }
 
-    function renderParlays(orders) {
-      const el = document.getElementById('parlay-list');
-      // Show confirmed + settled, newest first
-      const relevant = orders
-        .filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
-        .filter(o => o.quotedAt || o.confirmedAt || (o.meta && o.meta.pxBackfill))
-        .sort((a, b) => (b.confirmedAt || b.quotedAt || '').localeCompare(a.confirmedAt || a.quotedAt || ''))
-        .slice(0, 50);
+    // Current tab + cached orders + expanded rows persist across auto-refresh.
+    let _activeParlayTab = 'open';
+    let _lastOrdersCache = [];
+    const _expandedParlays = new Set();
 
-      if (relevant.length === 0) {
-        el.innerHTML = '<div class="empty">No parlays yet</div>';
+    window.switchParlayTab = function(tab) {
+      _activeParlayTab = tab;
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === tab);
+      });
+      renderParlays(_lastOrdersCache);
+    };
+
+    window.toggleParlayRow = function(pid) {
+      if (_expandedParlays.has(pid)) _expandedParlays.delete(pid);
+      else _expandedParlays.add(pid);
+      renderParlays(_lastOrdersCache);
+    };
+
+    function probToAmerican(p) {
+      if (!p || p <= 0 || p >= 1) return '-';
+      if (p >= 0.5) return Math.round(-100 * p / (1 - p));
+      return '+' + Math.round(100 * (1 - p) / p);
+    }
+    function fmtOdds(odds) {
+      if (odds == null) return '-';
+      return odds > 0 ? '+' + odds : '' + odds;
+    }
+    function calcToWin(stake, odds) {
+      if (!stake || !odds) return 0;
+      return stake * 100 / Math.abs(odds);
+    }
+
+    function renderParlays(orders) {
+      _lastOrdersCache = orders;
+      const el = document.getElementById('parlay-table-wrap');
+
+      const all = orders
+        .filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
+        .filter(o => o.quotedAt || o.confirmedAt || (o.meta && o.meta.pxBackfill));
+
+      const openList = all
+        .filter(o => o.status === 'confirmed')
+        .sort((a, b) => (b.confirmedAt || b.quotedAt || '').localeCompare(a.confirmedAt || a.quotedAt || ''));
+
+      const settledList = all
+        .filter(o => o.status && o.status.startsWith('settled_'))
+        .sort((a, b) => (b.settledAt || b.confirmedAt || '').localeCompare(a.settledAt || a.confirmedAt || ''));
+
+      document.getElementById('tab-count-open').textContent = openList.length;
+      document.getElementById('tab-count-settled').textContent = settledList.length;
+
+      const list = _activeParlayTab === 'open' ? openList : settledList;
+
+      if (list.length === 0) {
+        el.innerHTML = '<div class="empty">No ' + _activeParlayTab + ' parlays</div>';
         return;
       }
 
-      document.getElementById('list-title').textContent = `Recent Parlays (${relevant.length})`;
-
       const dashboardUrl = BASE;
-
-      // Convert fair probability to American odds
-      function probToAmerican(p) {
-        if (!p || p <= 0 || p >= 1) return '-';
-        if (p >= 0.5) return Math.round(-100 * p / (1 - p));
-        return '+' + Math.round(100 * (1 - p) / p);
-      }
-
-      function fmtOdds(odds) {
-        if (odds == null) return '-';
-        return odds > 0 ? '+' + odds : '' + odds;
-      }
-
-      // Calculate to-win: what bettor wagered = SP profit if we win
-      function calcToWin(stake, odds) {
-        if (!stake || !odds) return 0;
-        return stake * 100 / Math.abs(odds);
-      }
-
-      el.innerHTML = relevant.map(o => {
+      const html = list.map(o => {
+        const pid = o.parlayId || '';
         const legs = o.legs || (o.meta && o.meta.legs) || [];
         const odds = o.confirmedOdds || o.offeredOdds;
         const oddsStr = fmtOdds(odds);
         const result = o.settlementResult || (o.status === 'confirmed' ? 'confirmed' : (o.status || '').replace('settled_', ''));
-        const resultCls = result === 'won' ? 'won' : result === 'lost' ? 'lost' : result === 'push' ? 'push' : 'confirmed';
         const pnl = o.pnl;
-        const pnlStr = pnl != null ? (pnl >= 0 ? '+$' + pnl.toFixed(2) : '-$' + Math.abs(pnl).toFixed(2)) : '-';
+        const pnlStr = pnl != null ? (pnl >= 0 ? '+$' + pnl.toFixed(2) : '-$' + Math.abs(pnl).toFixed(2)) : null;
         const pnlCls = pnl != null ? (pnl > 0 ? 'positive' : pnl < 0 ? 'negative' : '') : '';
         const stake = o.confirmedStake || 0;
-        const stakeStr = stake ? '$' + stake.toFixed(2) : '-';
         const toWinAmt = calcToWin(stake, odds);
-        const toWinStr = toWinAmt > 0 ? '$' + toWinAmt.toFixed(2) : '-';
-        const time = (o.confirmedAt || o.quotedAt || '').replace('T', ' ').substring(0, 16);
 
-        // Parlay-level fair odds (from fairParlayProb on the order)
-        const fairParlayOdds = o.fairParlayProb ? probToAmerican(o.fairParlayProb) : '-';
-
-        const legHtml = legs.map(l => {
+        // Summarize selections: first 2-3 truncated names
+        const firstNames = legs.slice(0, 3).map(l => {
           const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
-          const displayName = name.length > 28 ? name.substring(0, 26) + '..' : name;
-          const lr = l.settlementStatus || l.settlement_status || l.inferredResult || '';
-          const lrCls = lr === 'won' ? 'won' : lr === 'lost' ? 'lost' : '';
-          const lrLabel = lr ? lr.charAt(0).toUpperCase() + lr.slice(1) : '';
-          return '<div class="leg" style="display:flex;justify-content:space-between;align-items:center;">' +
-              '<span>' + displayName + '</span>' +
-              (lrLabel ? '<span class="leg-result ' + lrCls + '">' + lrLabel + '</span>' : '') +
-          '</div>';
-        }).join('');
+          return name.length > 22 ? name.substring(0, 20) + '..' : name;
+        }).join(', ');
+        const more = legs.length > 3 ? ` +${legs.length - 3}` : '';
+        const selections = firstNames + more;
 
-        return '<div class="parlay-card" onclick="window.open(\'' + dashboardUrl + '\', \'_blank\')">' +
-          '<div class="card-header">' +
-            '<span class="odds">' + legs.length + '-leg ' + oddsStr + '</span>' +
-            '<span class="result ' + resultCls + '">' + result + '</span>' +
-          '</div>' +
-          '<div class="legs">' + legHtml + '</div>' +
-          '<div style="display:flex;gap:12px;padding:4px 12px;font-size:11px;color:var(--text2);">' +
-            '<span>OFFER <span style="color:var(--text);font-weight:600;">' + oddsStr + '</span></span>' +
-            '<span>FAIR <span style="color:var(--text);font-weight:600;">' + fairParlayOdds + '</span></span>' +
-          '</div>' +
-          '<div class="card-footer">' +
-            '<span>Risk: ' + stakeStr + '</span>' +
-            '<span style="color:var(--green);">Win: ' + toWinStr + '</span>' +
-            '<span class="pnl ' + pnlCls + '">' + pnlStr + '</span>' +
-          '</div>' +
-          '<div style="padding:2px 12px 6px;font-size:10px;color:var(--text2);">' + time + '</div>' +
-        '</div>';
+        // Timestamp to show: settledAt for settled, confirmedAt for open.
+        // Render as MM/DD HH:MM ET for compactness.
+        const tsIso = _activeParlayTab === 'settled' ? (o.settledAt || o.confirmedAt) : (o.confirmedAt || o.quotedAt);
+        let timeLabel = '';
+        if (tsIso) {
+          try {
+            const d = new Date(tsIso);
+            const et = d.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+            timeLabel = et;
+          } catch { timeLabel = tsIso.substring(5, 16).replace('T', ' '); }
+        }
+
+        const expanded = _expandedParlays.has(pid);
+
+        // Right-side summary: odds + (pnl if settled else to-win)
+        let rightHtml = `<span class="odds">${oddsStr}</span>`;
+        if (_activeParlayTab === 'settled' && pnlStr) {
+          rightHtml += `<span class="pnl ${pnlCls}">${pnlStr}</span>`;
+        } else if (_activeParlayTab === 'open') {
+          rightHtml += `<span class="pnl" style="color:var(--green);">$${toWinAmt.toFixed(2)}</span>`;
+        }
+        // Result pill
+        const pillCls = result === 'won' ? 'won' : result === 'lost' ? 'lost' : result === 'push' ? 'push' : 'confirmed';
+        const pillLabel = result.charAt(0).toUpperCase() + result.slice(1);
+
+        let row = `<div class="parlay-row ${expanded ? 'expanded' : ''}" onclick="toggleParlayRow('${pid}')">
+          <div class="main">
+            <div class="selections">${selections}</div>
+            <div class="meta">
+              <span>${legs.length}-leg</span>
+              <span class="sep">·</span>
+              <span>$${stake.toFixed(2)}</span>
+              <span class="sep">·</span>
+              <span>${timeLabel}</span>
+              <span class="pill ${pillCls}">${pillLabel}</span>
+            </div>
+          </div>
+          <div class="right">${rightHtml}</div>
+        </div>`;
+
+        if (expanded) {
+          const legItems = legs.map(l => {
+            const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
+            const displayName = name.length > 40 ? name.substring(0, 38) + '..' : name;
+            const lr = l.settlementStatus || l.settlement_status || l.inferredResult || '';
+            const lrCls = lr === 'won' ? 'won' : lr === 'lost' ? 'lost' : '';
+            const lrLabel = lr ? lr.charAt(0).toUpperCase() + lr.slice(1) : '';
+            return `<div class="leg-item">
+              <span class="leg-name">${displayName}</span>
+              ${lrLabel ? `<span class="leg-status ${lrCls}">${lrLabel}</span>` : ''}
+            </div>`;
+          }).join('');
+          const fairParlayOdds = o.fairParlayProb ? probToAmerican(o.fairParlayProb) : '-';
+          row += `<div class="parlay-detail">
+            ${legItems}
+            <div class="footer">
+              <span>Fair ${fairParlayOdds} · Offer ${oddsStr}</span>
+              <span>Risk $${stake.toFixed(2)} · Win $${toWinAmt.toFixed(2)}</span>
+            </div>
+            <div class="footer">
+              <a href="${dashboardUrl}" target="_blank" rel="noopener">Open in web dashboard →</a>
+            </div>
+          </div>`;
+        }
+        return row;
       }).join('');
+
+      el.innerHTML = html;
     }
 
     // --- Daily Volume & P&L (chart + month→day→parlay table) ---
