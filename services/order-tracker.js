@@ -1812,6 +1812,14 @@ function addExposure(order) {
       parlayId: order.parlayId,
       payout,
       stake,
+      // weightedStake mirrors weightedRisk: the bettor's wager portion
+      // we actually keep when THIS leg kills the parlay, weighted by
+      // the prob of every OTHER leg hitting. Used in recalcNetExposure
+      // to avoid crediting full parlay stakes as 100% offsetting — a
+      // 5-leg parlay w/ Dodgers-ML as one leg only reliably dies at
+      // the Dodgers leg when the other 4 all hit, so the stake we'd
+      // keep in that scenario is stake * product(other-leg probs).
+      weightedStake: stake * otherProb,
       legCount: legs.length,
       // Per-leg weightedRisk — kept for the detail drop-down so each
       // leg row shows its own marginal weighted contribution.
@@ -1944,7 +1952,18 @@ function recalcNetExposure() {
         const otherMarket = otherSel.split(':')[0];
         if (selMarket === otherMarket) {
           // Same market type, different selection = opposite side
-          oppositeStakes += otherParlays.reduce((s, p) => s + p.stake, 0);
+          // Use weightedStake (= stake × other-legs-prob) not raw
+          // stake. A 5-leg parlay with one opposite-side leg only
+          // "actually dies at this leg" (us keeping the wager in the
+          // scenario being evaluated) when the other 4 legs have
+          // resolved in the bettor's favor. Counting full stake
+          // over-credited offsets and drove legit large exposures to
+          // $0 Net (observed: Rockies row showed $0 despite $1,592
+          // gross on 3 large Rockies+Under SGPs).
+          oppositeStakes += otherParlays.reduce(
+            (s, p) => s + (p.weightedStake != null ? p.weightedStake : p.stake),
+            0
+          );
         }
       }
 
