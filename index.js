@@ -2153,6 +2153,22 @@ function startStatusServer() {
     }
   });
 
+  // Immediately sweep locally-'confirmed' orders against PX. Orders PX
+  // can't locate AND that satisfy one of the phantom triggers (age,
+  // all legs finished, any leg with a known result) get flagged
+  // meta.phantom=true so the Open Positions view, CSV export, Deployed
+  // figure, and exposure tables stop counting them. Use when the
+  // Open Positions table is obviously polluted with stuck confirmeds
+  // and you don't want to wait for the 5-min periodic reconcile.
+  app.post('/purge-phantoms', async (req, res) => {
+    try {
+      const result = await orderTracker.reconcileGhostConfirmed(px);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Force a fresh rebuild of the in-memory exposure tables from the current
   // orders map. Use this when Team Exposure / Game Exposure look stale or
   // empty after a reload path that mutated legs without re-running exposure.
