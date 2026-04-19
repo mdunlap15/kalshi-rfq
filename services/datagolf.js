@@ -14,7 +14,10 @@ const log = require('./logger');
 
 // Books to use for de-vig consensus. Excludes 'datagolf' which is their model
 // prediction (not a tradeable market quote).
-const CONSENSUS_BOOKS = ['bet365', 'betmgm', 'betonline', 'bovada', 'caesars', 'draftkings', 'fanduel', 'unibet', 'betcris'];
+// Pinnacle added — consistently the sharpest book in DataGolf's feed for
+// golf matchups and was being silently excluded from the consensus. Its
+// inclusion pulls fair values closer to true market consensus.
+const CONSENSUS_BOOKS = ['bet365', 'betmgm', 'betonline', 'bovada', 'caesars', 'draftkings', 'fanduel', 'unibet', 'betcris', 'pinnacle'];
 const TOURS = ['pga', 'euro', 'alt']; // alt includes LIV
 
 function americanToImpliedProb(odds) {
@@ -34,6 +37,58 @@ function deVig2Way(p1, p2) {
 function avg(arr) {
   if (arr.length === 0) return 0;
   return arr.reduce((s, v) => s + v, 0) / arr.length;
+}
+
+/**
+ * DataGolf occasionally returns MULTIPLE match_list entries for the same
+ * pairing (different internal source rollups). If we process them
+ * independently, one may end up with only a single soft book (e.g.
+ * bet365 alone) while another holds the full 7-book spread — and our
+ * lookup returns the first entry for a given pair, which can be the
+ * thin one. Real-world miss: Scheffler vs Fitzpatrick R4 showed two
+ * DG entries, first had bet365-only at Scheffler -138, second had 7
+ * books averaging Scheffler ≈ -170. We were quoting off the bet365
+ * number (FV -145, ~25 cents softer than market).
+ *
+ * Fix: merge all match_list entries that refer to the same pairing
+ * (by normalized player pair, regardless of p1/p2 ordering) into a
+ * single entry whose `odds` map contains every book from every
+ * contributing entry. First-seen wins per book so later soft entries
+ * can't overwrite a sharper one.
+ */
+function mergeDuplicatePairings(matchList) {
+  if (!Array.isArray(matchList)) return [];
+  const merged = new Map(); // canonical-pair-key → merged entry
+  for (const entry of matchList) {
+    const p1n = normalizeDgPlayerName(entry.p1_player_name);
+    const p2n = normalizeDgPlayerName(entry.p2_player_name);
+    if (!p1n || !p2n) continue;
+    // Canonical key: alphabetically ordered player pair, case-insensitive.
+    const [a, b] = [p1n, p2n].map(s => s.toLowerCase()).sort();
+    const key = a + '|' + b;
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, {
+        p1_player_name: entry.p1_player_name,
+        p2_player_name: entry.p2_player_name,
+        ties: entry.ties,
+        odds: { ...(entry.odds || {}) },
+      });
+      continue;
+    }
+    // Another entry for the same pairing — merge its odds in. If the
+    // new entry has the players in opposite p1/p2 order, swap before
+    // merging so p1/p2 remain consistent with the canonical entry.
+    const existingP1Norm = normalizeDgPlayerName(existing.p1_player_name).toLowerCase();
+    const thisP1Norm = p1n.toLowerCase();
+    const swapped = thisP1Norm !== existingP1Norm;
+    for (const [book, o] of Object.entries(entry.odds || {})) {
+      if (!o || typeof o !== 'object') continue;
+      if (existing.odds[book]) continue; // first-seen wins
+      existing.odds[book] = swapped ? { p1: o.p2, p2: o.p1 } : { p1: o.p1, p2: o.p2 };
+    }
+  }
+  return Array.from(merged.values());
 }
 
 /**
@@ -168,7 +223,8 @@ async function fetchGolfMatchupsCache() {
     if (roundData && Array.isArray(roundData.match_list)) {
       const eventName = roundData.event_name || '';
       const roundNum = roundData.round_num || null;
-      for (const entry of roundData.match_list) {
+      const mergedRound = mergeDuplicatePairings(roundData.match_list);
+      for (const entry of mergedRound) {
         const matchup = parseMatchup(entry, eventName, roundNum);
         if (!matchup) continue;
 
@@ -214,7 +270,8 @@ async function fetchGolfMatchupsCache() {
     const tournData = await fetchDgMatchups(tour, 'tournament_matchups');
     if (tournData && Array.isArray(tournData.match_list)) {
       const eventName = tournData.event_name || '';
-      for (const entry of tournData.match_list) {
+      const mergedTourn = mergeDuplicatePairings(tournData.match_list);
+      for (const entry of mergedTourn) {
         const matchup = parseMatchup(entry, eventName, null);
         if (!matchup) continue;
         const keyAB = normalizeEventKey(matchup.homeTeam, matchup.awayTeam);
