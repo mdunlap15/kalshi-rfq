@@ -2895,19 +2895,29 @@
       if (o && o.parlayId) localByParlayId[o.parlayId] = o;
     }
     // Also hide "stale confirmed" parlays: orders that are still locally
-    // 'confirmed' but every leg's game started more than 24h ago. These
-    // are almost certainly settled or failed on PX — we just haven't
-    // been able to reconcile because orderUuid is null on many orders
-    // (PX's price.confirm.new payload doesn't always include it) so the
+    // 'confirmed' but either (a) every leg's game started more than 12h
+    // ago, or (b) at least one leg already has a known result
+    // (inferredResult / settlement_status) so we KNOW the game is done.
+    // These are almost certainly settled or failed on PX — we just
+    // haven't reconciled because orderUuid is null on many orders (PX's
+    // price.confirm.new payload doesn't always include it) so the
     // ghost-reconcile UUID lookup fails, and parlayId fallback misses
     // anything outside PX's most-recent-500-orders window.
-    const STALE_CONFIRMED_CUTOFF_MS = 24 * 3600 * 1000;
+    const STALE_CONFIRMED_CUTOFF_MS = 12 * 3600 * 1000;
     const nowMs = Date.now();
+    function anyLegResolved(legs) {
+      for (const l of legs || []) {
+        const r = l.inferredResult || l.settlementStatus || l.settlement_status;
+        if (r && r !== 'pending' && r !== 'unknown') return true;
+      }
+      return false;
+    }
     function isStaleConfirmed(p) {
       const local = localByParlayId[p.parlayId] || p;
       if (!local || local.status !== 'confirmed') return false;
       const legs = local.legs || (local.meta && local.meta.legs) || [];
       if (legs.length === 0) return false;
+      if (anyLegResolved(legs)) return true;
       let latestStart = null;
       for (const l of legs) {
         const st = l.startTime || l.start_time;
@@ -6517,15 +6527,24 @@
       // parlays never export as Open when _pxPositions is stale (60s
       // ledger TTL on the server).
       const allLocal = orderState.allOrders || {};
-      // Also exclude stale-confirmed (all legs started >24h ago). These
-      // are almost certainly settled or failed on PX but couldn't be
-      // reconciled. Mirrors the filter applied in renderPositions.
-      const STALE_CUT = 24 * 3600 * 1000;
+      // Also exclude stale-confirmed (all legs started >12h ago, OR any
+      // leg already has a known game result). These are almost
+      // certainly settled or failed on PX but couldn't be reconciled.
+      // Mirrors the filter applied in renderPositions.
+      const STALE_CUT = 12 * 3600 * 1000;
       const nowMs = Date.now();
+      const legResolved = (legs) => {
+        for (const l of legs || []) {
+          const r = l.inferredResult || l.settlementStatus || l.settlement_status;
+          if (r && r !== 'pending' && r !== 'unknown') return true;
+        }
+        return false;
+      };
       const isStale = (o) => {
         if (!o || o.status !== 'confirmed') return false;
         const legs = o.legs || (o.meta && o.meta.legs) || [];
         if (legs.length === 0) return false;
+        if (legResolved(legs)) return true;
         let latest = null;
         for (const l of legs) {
           const st = l.startTime || l.start_time;
