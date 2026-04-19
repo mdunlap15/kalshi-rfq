@@ -2124,12 +2124,16 @@ function rebuildAllExposure() {
     legsSkippedNoPayout: 0,
     uniqueTeamKeys: new Set(),
   };
-  // Re-add all confirmed orders (skip finished — games already played)
+  // Re-add all confirmed orders. We DO NOT skip orders whose games have
+  // already started — they still represent real risk on our books until
+  // they actually move to settled_*. Zombie/stuck confirmed orders are
+  // cleaned by the settlement poller + drift reconcile, not by hiding
+  // them from exposure. Previous isOrderFinished filter was silently
+  // dropping 30+ parlays per hot game after every live-odds refresh.
   let skippedFinished = 0;
   for (const order of Object.values(orders)) {
     diag.totalOrders++;
     if (order.status !== 'confirmed') continue;
-    if (isOrderFinished(order)) { skippedFinished++; continue; }
     diag.confirmedOrders++;
     const legs = order.legs || order.meta?.legs || [];
     if (legs.length === 0) continue;
