@@ -2610,19 +2610,32 @@ async function pollOrderSettlements(px) {
       // settlement data: if the SP-won order contains at least one lost leg
       // per PX, accept the settlement immediately.
       if (settlementStatus === 'lost') {
-        const orderLegs = order.legs || order.meta?.legs || [];
-        const now = Date.now();
-        const anyUnfinished = orderLegs.some(l => {
-          const st = l.startTime || l.start_time;
-          if (!st) return false;
-          const startMs = new Date(st).getTime();
-          if (startMs > now) return true;
-          if ((now - startMs) < 4 * 3600 * 1000) return true;
-          return false;
-        });
-        if (anyUnfinished) {
-          log.warn('Poll', `Skipping bogus lost settlement for ${order.parlayId}: leg(s) not yet finished`);
-          continue;
+        // Trust PX's leg-level settlement first. If every PX leg has a
+        // terminal settlement_status (won/lost/push/void), the parlay
+        // is genuinely resolved and our 4-hour start-time heuristic
+        // should not veto it. The heuristic only exists to guard
+        // against the historical case where PX returned 'lost' before
+        // the game actually finished — which cannot be true when PX's
+        // own leg resolutions are complete.
+        const terminalLegStatuses = new Set(['won', 'lost', 'push', 'void']);
+        const pxLegs = Array.isArray(pxOrder.legs) ? pxOrder.legs : [];
+        const allPxLegsTerminal = pxLegs.length > 0 &&
+          pxLegs.every(l => terminalLegStatuses.has(l.settlement_status));
+        if (!allPxLegsTerminal) {
+          const orderLegs = order.legs || order.meta?.legs || [];
+          const now = Date.now();
+          const anyUnfinished = orderLegs.some(l => {
+            const st = l.startTime || l.start_time;
+            if (!st) return false;
+            const startMs = new Date(st).getTime();
+            if (startMs > now) return true;
+            if ((now - startMs) < 4 * 3600 * 1000) return true;
+            return false;
+          });
+          if (anyUnfinished) {
+            log.warn('Poll', `Skipping bogus lost settlement for ${order.parlayId}: leg(s) not yet finished and PX legs incomplete`);
+            continue;
+          }
         }
       } else if (settlementStatus === 'won') {
         // For 'won', only accept if PX has at least one leg marked lost.
