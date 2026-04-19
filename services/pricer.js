@@ -1211,18 +1211,40 @@ function shouldDecline(legs) {
       log.info('Pricing', `Declined: BTTS + total on ${gameLabel}`);
       return { declined: true, reason: 'correlated legs', detail: `BTTS + total on same game: ${gameLabel}` };
     }
-    // Block: F5 + full-game on same market type (F5 is a subset of the full game)
-    if (hasF5Moneyline && hasMoneyline) {
-      log.info('Pricing', `Declined: F5 moneyline + full-game moneyline on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `F5 + full-game moneyline on same game: ${gameLabel}` };
+    // Block: ANY sub-game market (F5 / half / quarter / period / inning)
+    // paired with ANY full-game market on the same event. A sub-game
+    // market is a strict subset of the full game, so the two are always
+    // correlated — whatever happens in the first 5 innings / first half
+    // affects the full-game outcome mechanically. Previously only
+    // matched-type pairs (F5 ML + full ML, etc.) were blocked; the
+    // cross pairs (F5 ML + full total, F5 total + full ML, etc.) leaked
+    // through and landed in the SGP "other" correlation bucket, which
+    // doesn't capture the true mechanical dependence.
+    //
+    // Regex covers:
+    //   F5 baseball:   first_5_innings_*, first_five_innings_*, *_f5
+    //   Halves:        first_half_*, 1st_half_*, 2nd_half_*, *_h1, *_h2
+    //   Quarters:      first_quarter_*, 1st_quarter_*..4th_quarter_*, *_q1..*_q4
+    //   Periods (NHL): first_period_*, 1st_period_*..3rd_period_*, *_p1..*_p3
+    //   Innings:       1st_inning_*..9th_inning_*
+    const subGamePattern =
+      /first_5_innings|first_five_innings|\b_f5\b|_f5_|\bf5_|(first|1st|2nd|3rd|4th)_half|_h[12]\b|(first|1st|2nd|3rd|4th)_quarter|_q[1-4]\b|(first|1st|2nd|3rd)_period|_p[1-3]\b|(1st|2nd|3rd|4th|5th|6th|7th|8th|9th)_inning/i;
+    const fullGameTypes = new Set(['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance']);
+    const hasSubGame = entries.some(e => subGamePattern.test(String(e.market || '')));
+    const hasFullGame = entries.some(e => fullGameTypes.has(String(e.market || '').toLowerCase()));
+    if (hasSubGame && hasFullGame) {
+      const subLeg = entries.find(e => subGamePattern.test(String(e.market || '')));
+      const fullLeg = entries.find(e => fullGameTypes.has(String(e.market || '').toLowerCase()));
+      log.info('Pricing', `Declined: sub-game ${subLeg.market} + full-game ${fullLeg.market} on ${gameLabel}`);
+      return { declined: true, reason: 'correlated legs', detail: `sub-game (${subLeg.market}) + full-game (${fullLeg.market}) on same event: ${gameLabel}` };
     }
-    if (hasF5RunLine && hasSpread) {
-      log.info('Pricing', `Declined: F5 run line + full-game spread on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `F5 + full-game spread on same game: ${gameLabel}` };
-    }
-    if (hasF5Total && hasTotal) {
-      log.info('Pricing', `Declined: F5 total + full-game total on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `F5 + full-game total on same game: ${gameLabel}` };
+    // Also block two sub-game markets of the same period on the same
+    // event (e.g. F5 ML + F5 total) — same mechanical correlation
+    // between score and who's winning within that narrower window.
+    const subGameLegs = entries.filter(e => subGamePattern.test(String(e.market || '')));
+    if (subGameLegs.length >= 2) {
+      log.info('Pricing', `Declined: multiple sub-game legs on ${gameLabel}: ${subGameLegs.map(e => e.market).join(' + ')}`);
+      return { declined: true, reason: 'correlated legs', detail: `multiple sub-game legs on same event: ${gameLabel} (${subGameLegs.map(e => e.market).join(', ')})` };
     }
     // ---- TEAM TOTAL: block ALL same-game combinations ----
     // team_total is strongly correlated with every other market on the same
