@@ -2913,13 +2913,25 @@ function reconcileSettlements() {
     // handling of won+push mixed parlays (sometimes 'lost', sometimes 'push')
     // so we don't try to guess — leave those to pollOrderSettlements which
     // fetches PX's authoritative order-level decision directly.
-    //   - Any leg LOST → bettor's parlay busted → SP WON (always)
-    //   - All legs WON (no pushes) → bettor hit everything → SP LOST (always)
-    //   - All legs PUSHED → stake refunded → PUSH (always)
-    //   - Anything else (mix of won + push) → skip, let polling handle it
+    //   - Any leg LOST → bettor's parlay busted → SP WON (always, even
+    //     with other legs missing status — one loss is enough to kill)
+    //   - ALL legs have status AND all WON (no pushes) → bettor hit
+    //     everything → SP LOST
+    //   - ALL legs have status AND all PUSHED → stake refunded → PUSH
+    //   - Otherwise → don't derive. Critically: if any leg's status is
+    //     MISSING we cannot assume it won just because the known legs
+    //     won. Observed bug: a 4-leg parlay where the Royals +1.5 leg's
+    //     status was missing while the other 3 were 'won' triggered a
+    //     false "allWon → SP lost" derivation, overriding PX's correct
+    //     SP-won settlement (pxProfit=+\$200) with pnl=-\$896.
     const anyLegLost = legStatuses.some(s => s === 'lost');
-    const allWon = legStatuses.length > 0 && legStatuses.every(s => s === 'won');
-    const allPushed = legStatuses.length > 0 && legStatuses.every(s => s === 'push' || s === 'void');
+    const haveAllLegStatuses = legStatuses.length === primaryLegs.length;
+    const allWon = haveAllLegStatuses
+      && legStatuses.length > 0
+      && legStatuses.every(s => s === 'won');
+    const allPushed = haveAllLegStatuses
+      && legStatuses.length > 0
+      && legStatuses.every(s => s === 'push' || s === 'void');
     let derivedResult;
     if (anyLegLost) {
       derivedResult = 'won';
@@ -2928,7 +2940,7 @@ function reconcileSettlements() {
     } else if (allPushed) {
       derivedResult = 'push';
     } else {
-      continue; // mixed won+push — PX-specific, let polling handle
+      continue; // incomplete coverage OR mixed won+push — let PX poll decide
     }
 
     const storedResult = o.settlementResult || o.status.replace('settled_', '');
