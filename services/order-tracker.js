@@ -623,7 +623,7 @@ function americanOddsToProfit(americanOdds, stake) {
   return 0;
 }
 
-function recordSettlement(orderUuid, result, payout) {
+function recordSettlement(orderUuid, result, payout, opts = {}) {
   const parlayId = ordersByUuid[orderUuid];
   const order = parlayId ? orders[parlayId] : null;
 
@@ -640,7 +640,12 @@ function recordSettlement(orderUuid, result, payout) {
     // pass leg-level context, we can't distinguish the two — be strict for
     // 'lost' only and permissive for 'won' (callers that DO have PX leg
     // data should filter there, e.g. pollOrderSettlements does).
-    if (result === 'lost') {
+    //
+    // Callers that have already verified the settlement via PX's leg-level
+    // data (pollOrderSettlements) pass { trusted: true } to bypass this
+    // defensive recheck, otherwise our 4-hour start-time heuristic would
+    // silently re-reject settlements the upstream validator just approved.
+    if (result === 'lost' && !opts.trusted) {
       const legs = order.legs || order.meta?.legs || [];
       const now = Date.now();
       const anyUnfinished = legs.some(l => {
@@ -2665,7 +2670,10 @@ async function pollOrderSettlements(px) {
       }
 
       // PX REST API settlement_status is SP-perspective — use directly.
-      recordSettlement(uuid, settlementStatus, pxOrder.profit || 0);
+      // Pass trusted:true because we already validated the settlement via
+      // pxOrder.legs above; recordSettlement should not re-apply its own
+      // defensive 4-hour startTime recheck.
+      recordSettlement(uuid, settlementStatus, pxOrder.profit || 0, { trusted: true });
       settled++;
 
       // Update per-leg settlement from PX response
