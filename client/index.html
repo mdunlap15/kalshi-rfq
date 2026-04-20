@@ -2487,16 +2487,20 @@
       ? `${totalFills} filled of ${totalSubmitted} quoted (${(totalFills/totalSubmitted*100).toFixed(1)}%)`
       : '';
 
-    // Color thresholds: combine absolute floors/ceilings with
-    // relative-to-overall-mean. Green requires cell % meaningfully
-    // above the session mean AND at least somewhat good absolutely.
-    // Red = well below mean OR catastrophic absolute rate. Adapts to
-    // whatever baseline the session settles at (3% mean → green at
-    // 15%, red below 1.3%) without calling a relatively-better-than-
-    // dismal cell "good".
+    // Color thresholds are anchored to the overall fill rate. Fill rates
+    // scale inversely with volume (MLB at 1% of 35k quotes is genuinely
+    // good; Golf at 11% of 115 quotes is genuinely good) so a flat 0-10%
+    // scale hides the real signal. Instead:
+    //   ratio = cell_rate / overall_rate
+    //   ratio ≥ 2.0  → full green  (twice the book's average = strong bucket)
+    //   ratio = 1.0  → full amber  (at the book's baseline)
+    //   ratio ≤ 0.5  → full red    (half the baseline = weak bucket)
+    // The legend shows the actual pp values tied to these ratios so the
+    // operator can read the scale off their current overall rate.
     const overallRatePct = totalSubmitted > 0 ? (totalFills / totalSubmitted * 100) : 0;
-    const greenAt = Math.max(overallRatePct * 1.5, 15);
-    const redAt = Math.min(overallRatePct * 0.5, 5);
+    const greenAt = overallRatePct * 2;   // 2× the overall
+    const amberAt = overallRatePct;       // 1× the overall
+    const redAt   = overallRatePct * 0.5; // 0.5× the overall
 
     let html = '';
     // Show the window label + origin so the operator knows the scope.
@@ -2517,8 +2521,11 @@
       + 'A fill means we won the RFQ auction (PX chose our price); whether we profit depends on how the legs play out. '
       + 'PX only notifies us privately on our own fills, so auction losses are inferred from quotes that never matched &mdash; we don\'t see competitors\' prices. '
       + 'Parlays tagged <em>Multi</em> span multiple sports. '
-      + '<span style="color:var(--text2);">Overall rate this window: ' + overallRatePct.toFixed(1) + '%. '
-      + 'Cells blend continuously: <span style="color:var(--red);">red</span> near 0%, amber around 5%, <span style="color:var(--green);">green</span> at 10%+.</span>'
+      + '<span style="color:var(--text2);">Overall fill rate this window: ' + overallRatePct.toFixed(2) + '%. '
+      + 'Cells are shaded relative to that baseline &mdash; fill rate scales with volume, so absolute thresholds hide real signal. '
+      + '<span style="color:var(--red);">Red</span> at &le; ' + redAt.toFixed(2) + '% (&frac12;&times; overall), '
+      + 'amber at ' + amberAt.toFixed(2) + '% (1&times;), '
+      + '<span style="color:var(--green);">green</span> at &ge; ' + greenAt.toFixed(2) + '% (2&times;).</span>'
       + '</div>';
     html += '<div style="overflow-x:auto; padding:0 12px 12px;"><table style="font-size:13px; min-width:680px; border-collapse:separate; border-spacing:3px;">';
     html += '<tr><th style="text-align:left; padding:6px 12px;">Sport</th>';
@@ -2560,25 +2567,32 @@
         rowSubmitted += c.submitted;
         rowFills += c.fills;
         const wr = c.submitted > 0 ? (c.fills / c.submitted * 100) : 0;
-        // Continuous 3-stop RGB lerp: red(0%) → amber(5%) → green(10%+).
-        // 10% is the "good" fill rate anchor — anything at/above goes full
-        // green. Below 10% gradates smoothly toward red. RGB lerp (not
-        // hue lerp) avoids the yellow/olive detour and gives a softer
-        // blend through the mid-range.
+        // Continuous 3-stop RGB lerp: red(≤0.5×) → amber(1×) → green(≥2×)
+        // of the overall fill rate for this window. See threshold comment
+        // above. RGB lerp (not hue lerp) avoids the yellow/olive detour.
+        // Degenerate overall=0 case falls back to simple absolute scale
+        // so we don't divide by zero; unlikely in practice since the
+        // chart needs settled fills to exist.
         const redRGB = [248, 81, 73];   // --red  #f85149
         const ambRGB = [210, 153, 34];  // --amber #d29922
         const grnRGB = [63, 185, 80];   // --green #3fb950
-        const GREEN_AT = 10, AMBER_AT = 5;
         let cr, cg, cb;
-        if (wr >= GREEN_AT) {
+        if (overallRatePct <= 0) {
+          // No baseline — lean red for anything below 5% just to show something.
+          const t = Math.min(1, wr / 5);
+          cr = redRGB[0] + (grnRGB[0] - redRGB[0]) * t;
+          cg = redRGB[1] + (grnRGB[1] - redRGB[1]) * t;
+          cb = redRGB[2] + (grnRGB[2] - redRGB[2]) * t;
+        } else if (wr >= greenAt) {
           [cr, cg, cb] = grnRGB;
-        } else if (wr >= AMBER_AT) {
-          const t = (wr - AMBER_AT) / (GREEN_AT - AMBER_AT);
+        } else if (wr >= amberAt) {
+          const t = (wr - amberAt) / (greenAt - amberAt);
           cr = ambRGB[0] + (grnRGB[0] - ambRGB[0]) * t;
           cg = ambRGB[1] + (grnRGB[1] - ambRGB[1]) * t;
           cb = ambRGB[2] + (grnRGB[2] - ambRGB[2]) * t;
         } else {
-          const t = Math.max(0, wr / AMBER_AT);
+          // Below amber: lerp from red (at ≤ 0.5× overall) to amber (at 1× overall)
+          const t = Math.max(0, Math.min(1, (wr - redAt) / (amberAt - redAt)));
           cr = redRGB[0] + (ambRGB[0] - redRGB[0]) * t;
           cg = redRGB[1] + (ambRGB[1] - redRGB[1]) * t;
           cb = redRGB[2] + (ambRGB[2] - redRGB[2]) * t;
