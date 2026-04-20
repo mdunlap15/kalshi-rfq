@@ -3593,6 +3593,13 @@ function getLiveEventMarkets(sport, homeTeam, awayTeam, targetTime) {
  * (caller should fall back to pre-game fair prob).
  */
 function getLiveFairProb(sport, homeTeam, awayTeam, marketType, selection, line, targetTime) {
+  // Accept both Odds-API naming ('h2h' / 'spreads' / 'totals') and PX
+  // naming ('moneyline' / 'spread' / 'total'). refreshLiveOdds pulls
+  // from leg.market which uses PX names; other callers use Odds-API
+  // names. Translate to the internal h2h/spreads/totals scheme.
+  if (marketType === 'moneyline') marketType = 'h2h';
+  else if (marketType === 'spread') marketType = 'spreads';
+  else if (marketType === 'total') marketType = 'totals';
   const event = getLiveEventMarkets(sport, homeTeam, awayTeam, targetTime);
   if (!event || !event.markets) return null;
   // Detect orientation flip. If the found event's home/away are swapped
