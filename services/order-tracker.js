@@ -517,15 +517,39 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
   return order;
 }
 
+// Classify a raw rejection reason string into a short, human-readable
+// category so the dashboard banner doesn't dump URLs and JSON into the
+// UI. Falls back to the leading clause of the reason when no pattern
+// matches. The RAW reason stays in rejectStats.recent[].reason for
+// debugging; only the `bucket` field gets normalized here.
+function classifyRejectionReason(reason) {
+  const r = (reason || '').trim();
+  if (!r) return 'unknown';
+  // PX API errors bubbled up from the confirm/accept HTTP call
+  if (r.startsWith('accept-POST-failed:') || r.includes('ProphetX API')) {
+    const errM = r.match(/"error"\s*:\s*"([^"]+)"/);
+    if (errM) return `PX confirm rejected (${errM[1]})`;
+    const statusM = r.match(/ProphetX API (\d+)/);
+    if (statusM) return `PX confirm rejected (HTTP ${statusM[1]})`;
+    return 'PX confirm rejected';
+  }
+  // Local exposure / risk limits
+  if (/team exposure/i.test(r)) return 'team exposure limit';
+  if (/game exposure/i.test(r)) return 'game exposure limit';
+  if (/portfolio (risk|drawdown)/i.test(r)) return 'portfolio drawdown limit';
+  if (/per-parlay risk|risk \$[\d,.]+ > max/i.test(r)) return 'per-parlay risk limit';
+  // Generic: take the clause before the first colon (dropping any
+  // dollar values), capped at 60 chars
+  const before = r.split(':')[0].replace(/\$[\d,.]+/g, '$').trim();
+  if (before.length > 0 && before.length <= 60) return before;
+  return before.substring(0, 60) + '…';
+}
+
 function recordRejection(parlayId, reason) {
   stats.totalRejections++;
   rejectStats.total++;
 
-  // Bucket by reason prefix (strip dollar amounts for aggregation)
-  const bucket = (reason || 'unknown')
-    .replace(/\$[\d,.]+/g, '$')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const bucket = classifyRejectionReason(reason);
   rejectStats.reasons[bucket] = (rejectStats.reasons[bucket] || 0) + 1;
   rejectStats.recent.unshift({
     reason,

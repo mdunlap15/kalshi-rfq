@@ -1390,8 +1390,21 @@
     }
     if (alerts.rejectByBucket) {
       for (const [bucket, info] of Object.entries(alerts.rejectByBucket)) {
-        const detailStr = info.lastReason && info.lastReason !== bucket ? ` &mdash; <span style="color:var(--text3);">${escapeHtml(info.lastReason)}</span>` : '';
-        lines.push(`<li><strong>Confirm rejected (${escapeHtml(bucket)})</strong>: ${info.count}${detailStr}</li>`);
+        // Hide the raw lastReason when it's a URL/JSON dump (long PX errors)
+        // — the bucket already carries the clean category. Keep full reason
+        // in title attribute so operator can hover for the full message.
+        const raw = info.lastReason || '';
+        const isNoisy = raw.length > 120 || /https?:\/\/|\{.*\}/.test(raw);
+        const showDetail = raw && raw !== bucket && !isNoisy;
+        const detailStr = showDetail ? ` &mdash; <span style="color:var(--text3);">${escapeHtml(raw)}</span>` : '';
+        const titleAttr = raw ? ` title="${escapeHtml(raw)}"` : '';
+        // Bucket already starts with its own category (e.g. "PX confirm
+        // rejected (order_not_valid)", "team exposure limit"). Prefix the
+        // line only when the bucket doesn't already self-describe as a
+        // confirm/PX issue.
+        const selfDescribes = /^(px |confirm |order )/i.test(bucket);
+        const label = selfDescribes ? escapeHtml(bucket) : `Confirm rejected: ${escapeHtml(bucket)}`;
+        lines.push(`<li${titleAttr}><strong>${label}</strong>: ${info.count}${detailStr}</li>`);
       }
     }
     if (lines.length > 0) {
@@ -1408,21 +1421,34 @@
         </div>`);
     }
 
-    // Action hint — show only the relevant env var based on the limit that was hit
+    // Action hint — show only the env vars that actually exist. Percent-
+    // based caps (game-pct, drawdown-pct, risk-pct) were removed; what
+    // remains is MAX_LEGS, MAX_ODDS, MAX_RISK_PER_PARLAY, MAX_EXPOSURE_PER_TEAM.
+    // PX-side confirm rejections (order_not_valid, etc.) aren't fixable via
+    // env vars — suppress the hint entirely in that case.
     const allReasons = [
       ...Object.keys(alerts.declineByReason || {}),
       ...Object.keys(alerts.rejectByBucket || {}),
     ].join(' ').toLowerCase();
+    const isPxReject = allReasons.includes('px confirm rejected');
     const code = (v) => `<code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">${v}</code>`;
-    let hintVar = '';
-    if (allReasons.includes('game exposure')) hintVar = code('MAX_EXPOSURE_PER_GAME_PCT');
-    else if (allReasons.includes('team exposure')) hintVar = code('MAX_EXPOSURE_PER_TEAM');
-    else if (allReasons.includes('risk') && allReasons.includes('max')) hintVar = code('MAX_RISK_PER_PARLAY');
-    else if (allReasons.includes('drawdown') || allReasons.includes('portfolio')) hintVar = code('MAX_DRAWDOWN_PCT');
-    else hintVar = code('MAX_RISK_PER_PARLAY') + ', ' + code('MAX_EXPOSURE_PER_TEAM') + ', or ' + code('MAX_EXPOSURE_PER_GAME_PCT');
-    parts.push(`<div style="margin-top:8px; font-size:11px; color:var(--text3);">
-      Adjust ${hintVar} in Railway env vars.
-    </div>`);
+    if (!isPxReject) {
+      let hintVar = '';
+      if (allReasons.includes('team exposure')) hintVar = code('MAX_EXPOSURE_PER_TEAM');
+      else if (allReasons.includes('risk') && allReasons.includes('max')) hintVar = code('MAX_RISK_PER_PARLAY');
+      else if (allReasons.includes('too many legs')) hintVar = code('MAX_LEGS');
+      else if (allReasons.includes('odds too high')) hintVar = code('MAX_ODDS');
+      else hintVar = code('MAX_RISK_PER_PARLAY') + ' or ' + code('MAX_EXPOSURE_PER_TEAM');
+      parts.push(`<div style="margin-top:8px; font-size:11px; color:var(--text3);">
+        Adjust ${hintVar} in Railway env vars.
+      </div>`);
+    } else {
+      parts.push(`<div style="margin-top:8px; font-size:11px; color:var(--text3);">
+        ProphetX rejected our accept &mdash; no env-var fix. Usually means the
+        bettor cancelled or the order expired between our quote and the confirm
+        round-trip. Safe to ignore if rare; investigate if clustered.
+      </div>`);
+    }
 
     content.innerHTML = parts.join('');
     banner.style.display = 'block';
