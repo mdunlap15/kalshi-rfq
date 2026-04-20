@@ -757,6 +757,19 @@ const LIVE_CACHE_TTL_MS = 50 * 1000; // under the 60s refresh cadence
 const liveCacheBySport = {};
 const liveInFlightBySport = {};
 
+// DK event detail URLs are `/event/<slug>/<eventId>`. The slug portion is
+// cosmetic — DK routes by numeric id and the slug only affects the pretty URL
+// — but a malformed slug can 404 in some routes, so we construct a sensible
+// one from the event name. Example: "BOS Red Sox @ TOR Blue Jays" → "bos-red-sox-at-tor-blue-jays".
+function slugifyDkEventName(name) {
+  return (name || '')
+    .toLowerCase()
+    .replace(/@/g, 'at')
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'x';
+}
+
 function isInProgressEvent(ev) {
   const t = ev.startEventDate ? new Date(ev.startEventDate).getTime() : null;
   if (!t || isNaN(t)) return false;
@@ -812,6 +825,42 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
         await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
       } catch (err) {
         log.warn('DkScraper', `Live nav failed for ${sport}: ${err.message}`);
+      }
+
+      // PHASE 2 — per-event detail pages. The league page only fires moneyline
+      // XHRs for live games in its featured strip; spread + total XHRs only
+      // load when we navigate to each event's detail URL. We scan the payloads
+      // accumulated so far for in-progress events, then hit each detail page
+      // sequentially in the same browser session (Akamai challenge already
+      // solved, so each nav is fast). Budgeted to ~40s total to stay under the
+      // 60s server-side refresh cadence.
+      const DETAIL_BUDGET_MS = 40000;
+      const DETAIL_NAV_TIMEOUT_MS = 15000;
+      const DETAIL_POST_WAIT_MS = 3500;
+      const inProgressDetailEvents = [];
+      const seenDetailIds = new Set();
+      for (const p of payloads) {
+        for (const ev of (p.events || [])) {
+          if (seenDetailIds.has(ev.id)) continue;
+          seenDetailIds.add(ev.id);
+          if (isInProgressEvent(ev)) inProgressDetailEvents.push(ev);
+        }
+      }
+      let detailNavs = 0, detailSkipped = 0;
+      for (const ev of inProgressDetailEvents) {
+        if (Date.now() - startedAt > DETAIL_BUDGET_MS) {
+          detailSkipped = inProgressDetailEvents.length - detailNavs;
+          break;
+        }
+        const slug = slugifyDkEventName(ev.name);
+        const detailUrl = `https://sportsbook.draftkings.com/event/${slug}/${ev.id}`;
+        try {
+          await page.goto(detailUrl, { waitUntil: 'domcontentloaded', timeout: DETAIL_NAV_TIMEOUT_MS });
+          await new Promise(r => setTimeout(r, DETAIL_POST_WAIT_MS));
+          detailNavs++;
+        } catch (err) {
+          log.warn('DkScraper', `${sport} detail nav ${ev.id} failed: ${err.message}`);
+        }
       }
 
       // Index events / markets / selections across payloads (dedup by id).
@@ -980,7 +1029,7 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
       const mlCount = events.filter(e => e.markets.h2h).length;
       const spCount = events.filter(e => e.markets.spreads).length;
       const toCount = events.filter(e => e.markets.totals).length;
-      log.info('DkScraper', `${sport} live: ${events.length} events (h2h:${mlCount} spreads:${spCount} totals:${toCount}) ${data.scrapeMs}ms, ${payloads.length} payloads`);
+      log.info('DkScraper', `${sport} live: ${events.length} events (h2h:${mlCount} spreads:${spCount} totals:${toCount}) detail-navs:${detailNavs}${detailSkipped ? ` (skipped:${detailSkipped} budget)` : ''} ${data.scrapeMs}ms, ${payloads.length} payloads`);
       return data;
     } finally {
       await browser.close();
