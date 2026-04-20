@@ -2302,24 +2302,29 @@ async function refreshLiveOdds(oddsFeed) {
   }
 
   // Fetch live odds for each sport with in-progress games. Strategy:
-  //   1) DK live scraper for sports DK covers (primary — best live
-  //      coverage for NBA/MLB/NHL/NFL, overrides SharpAPI live path)
-  //   2) SharpAPI live fallback for anything DK doesn't cover
-  // The two writes to liveOddsCache are layered: whichever ran last wins.
-  // DK second so it beats any empty SharpAPI payload.
+  //   1) SharpAPI live (free, thin coverage — moneyline mostly, best-effort)
+  //   2) The Odds API in-play (Pinnacle+DK+FD across h2h/spreads/totals) —
+  //      writes last so it wins over SharpAPI where both are present.
+  //
+  // Previously used DK Puppeteer scraping as the primary — that approach only
+  // yielded moneyline XHRs (spreads/totals were rendered from client-side
+  // state, not interceptable) and incurred 16-40s of headless-Chromium load
+  // per sport per cycle. The Odds API covers moneyline+spreads+totals cleanly
+  // at the same quota cost as pre-game, no fragility. DK remains the scraper
+  // of record for NBA/NHL series winners (separate code path).
   let sportsRefreshed = 0;
-  const DK_LIVE_SPORTS = new Set(['basketball_nba', 'baseball_mlb', 'icehockey_nhl', 'americanfootball_nfl']);
+  const LIVE_ODDS_API_SPORTS = new Set(['basketball_nba', 'baseball_mlb', 'icehockey_nhl', 'americanfootball_nfl']);
   for (const sport of sports) {
     try {
       // SharpAPI live (best-effort — may return empty for some sports).
       await oddsFeed.fetchOddsForSport(sport, { live: true }).catch(() => null);
-      // DK live (if supported for this sport) — merges on top.
-      if (DK_LIVE_SPORTS.has(sport)) {
-        const dkResult = await oddsFeed.mergeDkLiveOdds(sport).catch(err => {
-          log.warn('LiveOdds', `DK live merge failed for ${sport}: ${err.message}`);
+      // The Odds API live — replaces DK scraper for in-play h2h/spreads/totals.
+      if (LIVE_ODDS_API_SPORTS.has(sport)) {
+        const result = await oddsFeed.mergeOddsApiLive(sport).catch(err => {
+          log.warn('LiveOdds', `Odds API live merge failed for ${sport}: ${err.message}`);
           return null;
         });
-        if (dkResult && dkResult.merged > 0) sportsRefreshed++;
+        if (result && result.merged > 0) sportsRefreshed++;
       }
     } catch (err) {
       log.warn('LiveOdds', `Failed to fetch live odds for ${sport}: ${err.message}`);

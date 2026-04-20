@@ -2461,6 +2461,207 @@ async function mergeDkLiveOdds(sport) {
   return { merged: live.events.length, sport };
 }
 
+// Odds-API sport keys for the live in-play fetch. Same endpoint as pre-game —
+// `commence_time < now` naturally returns in-progress events, at no extra cost.
+const ODDS_API_LIVE_SPORTS = {
+  basketball_nba: 'basketball_nba',
+  baseball_mlb: 'baseball_mlb',
+  icehockey_nhl: 'icehockey_nhl',
+  americanfootball_nfl: 'americanfootball_nfl',
+};
+
+/**
+ * Pull in-play markets from The Odds API (Pinnacle + DK + FD) and write them
+ * into liveOddsCache in the shape getLiveFairProb expects. Replaces the DK
+ * Puppeteer scraper for live odds — same coverage, no Akamai fragility, no
+ * browser overhead. Same quota cost as pre-game Odds API calls.
+ *
+ * Filters events to in-progress (commence_time in past, <6h elapsed) before
+ * writing. De-vigs each book's 2-way pair, then averages fair probs across
+ * books for each market/line.
+ */
+async function mergeOddsApiLive(sport) {
+  const apiKey = process.env.THE_ODDS_API_KEY;
+  const apiSport = ODDS_API_LIVE_SPORTS[sport];
+  if (!apiKey || !apiSport) return { merged: 0, sport };
+
+  const url = `https://api.the-odds-api.com/v4/sports/${apiSport}/odds`
+    + `?apiKey=${apiKey}`
+    + `&regions=us,eu`
+    + `&markets=h2h,spreads,totals`
+    + `&bookmakers=pinnacle,draftkings,fanduel`
+    + `&oddsFormat=american`;
+
+  let events;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      log.warn('OddsFeed', `Odds API live fetch failed (${resp.status}) for ${sport}`);
+      return { merged: 0, sport };
+    }
+    const remaining = resp.headers.get('x-requests-remaining');
+    const used = resp.headers.get('x-requests-used');
+    if (remaining != null) log.debug('OddsFeed', `Odds API live usage: ${used} used, ${remaining} remaining`);
+    events = await resp.json();
+  } catch (err) {
+    log.warn('OddsFeed', `Odds API live fetch error for ${sport}: ${err.message}`);
+    return { merged: 0, sport };
+  }
+
+  const now = Date.now();
+  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+  const inProgress = (events || []).filter(ev => {
+    const t = ev.commence_time ? new Date(ev.commence_time).getTime() : null;
+    if (!t || isNaN(t)) return false;
+    const elapsed = now - t;
+    return elapsed >= 0 && elapsed < SIX_HOURS_MS;
+  });
+
+  if (inProgress.length === 0) {
+    return { merged: 0, sport };
+  }
+
+  const cacheEvents = {};
+  for (const ev of inProgress) {
+    const home = ev.home_team;
+    const away = ev.away_team;
+    if (!home || !away) continue;
+    const markets = {};
+
+    // --- Moneyline (h2h) ---
+    const mlFair = { home: [], away: [] };
+    for (const book of (ev.bookmakers || [])) {
+      const m = (book.markets || []).find(x => x.key === 'h2h');
+      if (!m) continue;
+      const h = (m.outcomes || []).find(o => o.name === home);
+      const a = (m.outcomes || []).find(o => o.name === away);
+      if (!h || !a) continue;
+      const hp = americanToImpliedProb(h.price);
+      const ap = americanToImpliedProb(a.price);
+      if (!hp || !ap) continue;
+      const [fh, fa] = deVig2Way(hp, ap);
+      mlFair.home.push(fh);
+      mlFair.away.push(fa);
+    }
+    if (mlFair.home.length > 0) {
+      const fh = avg(mlFair.home), fa = avg(mlFair.away);
+      markets.h2h = {
+        home: { fairProb: fh, displayFairProb: fh },
+        away: { fairProb: fa, displayFairProb: fa },
+        books: mlFair.home.length,
+        source: 'odds-api-live',
+      };
+    }
+
+    // --- Spreads (keyed by line magnitude) ---
+    // Books may carry slightly different magnitudes (e.g. Pin -8.5, DK -9).
+    // Store each magnitude as its own line entry — the consumer does an
+    // exact-line lookup and falls back to `_primary` if the leg's line
+    // isn't present. home/away preserve bookmaker's sign-of-home convention.
+    const spreadsByLine = {};
+    for (const book of (ev.bookmakers || [])) {
+      const m = (book.markets || []).find(x => x.key === 'spreads');
+      if (!m) continue;
+      const h = (m.outcomes || []).find(o => o.name === home);
+      const a = (m.outcomes || []).find(o => o.name === away);
+      if (!h || !a || h.point == null || a.point == null) continue;
+      const line = Math.abs(Number(h.point));
+      if (!Number.isFinite(line)) continue;
+      const hp = americanToImpliedProb(h.price);
+      const ap = americanToImpliedProb(a.price);
+      if (!hp || !ap) continue;
+      const [fh, fa] = deVig2Way(hp, ap);
+      if (!spreadsByLine[line]) spreadsByLine[line] = { home: [], away: [] };
+      spreadsByLine[line].home.push(fh);
+      spreadsByLine[line].away.push(fa);
+    }
+    const spreads = {};
+    let spreadPrimary = null;
+    let spreadPrimaryBooks = 0;
+    for (const [line, bucket] of Object.entries(spreadsByLine)) {
+      const fh = avg(bucket.home), fa = avg(bucket.away);
+      spreads[line] = {
+        line: parseFloat(line),
+        home: { fairProb: fh, displayFairProb: fh },
+        away: { fairProb: fa, displayFairProb: fa },
+        books: bucket.home.length,
+        source: 'odds-api-live',
+      };
+      if (bucket.home.length > spreadPrimaryBooks) {
+        spreadPrimaryBooks = bucket.home.length;
+        spreadPrimary = parseFloat(line);
+      }
+    }
+    if (spreadPrimary != null) {
+      spreads._primary = spreadPrimary;
+      markets.spreads = spreads;
+    }
+
+    // --- Totals (keyed by line) ---
+    const totalsByLine = {};
+    for (const book of (ev.bookmakers || [])) {
+      const m = (book.markets || []).find(x => x.key === 'totals');
+      if (!m) continue;
+      const ov = (m.outcomes || []).find(o => o.name === 'Over');
+      const un = (m.outcomes || []).find(o => o.name === 'Under');
+      if (!ov || !un || ov.point == null) continue;
+      const line = Number(ov.point);
+      if (!Number.isFinite(line)) continue;
+      const op = americanToImpliedProb(ov.price);
+      const up = americanToImpliedProb(un.price);
+      if (!op || !up) continue;
+      const [fo, fu] = deVig2Way(op, up);
+      if (!totalsByLine[line]) totalsByLine[line] = { over: [], under: [] };
+      totalsByLine[line].over.push(fo);
+      totalsByLine[line].under.push(fu);
+    }
+    const totals = {};
+    let totalsPrimary = null;
+    let totalsPrimaryBooks = 0;
+    for (const [line, bucket] of Object.entries(totalsByLine)) {
+      const fo = avg(bucket.over), fu = avg(bucket.under);
+      totals[line] = {
+        line: parseFloat(line),
+        over: { fairProb: fo, displayFairProb: fo },
+        under: { fairProb: fu, displayFairProb: fu },
+        books: bucket.over.length,
+        source: 'odds-api-live',
+      };
+      if (bucket.over.length > totalsPrimaryBooks) {
+        totalsPrimaryBooks = bucket.over.length;
+        totalsPrimary = parseFloat(line);
+      }
+    }
+    if (totalsPrimary != null) {
+      totals._primary = totalsPrimary;
+      markets.totals = totals;
+    }
+
+    if (!markets.h2h && !markets.spreads && !markets.totals) continue;
+
+    const key = normalizeEventKey(home, away);
+    const entry = {
+      homeTeam: home,
+      awayTeam: away,
+      commenceTime: ev.commence_time,
+      eventId: 'oddsapi-live-' + ev.id,
+      markets,
+    };
+    if (!cacheEvents[key]) cacheEvents[key] = [];
+    cacheEvents[key].push(entry);
+  }
+
+  const evCount = Object.values(cacheEvents).reduce((s, arr) => s + arr.length, 0);
+  if (evCount === 0) return { merged: 0, sport };
+
+  liveOddsCache[sport] = { fetchedAt: Date.now(), events: cacheEvents };
+  const mlN = Object.values(cacheEvents).flat().filter(e => e.markets.h2h).length;
+  const spN = Object.values(cacheEvents).flat().filter(e => e.markets.spreads).length;
+  const toN = Object.values(cacheEvents).flat().filter(e => e.markets.totals).length;
+  log.info('OddsFeed', `Odds API live ${sport}: ${evCount} events (h2h:${mlN} spreads:${spN} totals:${toN})`);
+  return { merged: evCount, sport };
+}
+
 async function mergeDkMmaFights() {
   const dk = require('./dk-scraper');
   let fightData;
@@ -4462,6 +4663,7 @@ module.exports = {
   backfillMissingH2h,
   mergeDkMmaFights,
   mergeDkLiveOdds,
+  mergeOddsApiLive,
   warmAltLines,
   warmAllSports,
   startAltLineWarmLoop,
