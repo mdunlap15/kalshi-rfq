@@ -252,9 +252,12 @@ async function fetchOddsForSport(sport, opts) {
   const mapping = LEAGUE_MAP[sport];
   if (!mapping) throw new Error(`Unknown sport: ${sport}`);
 
-  // Market types vary by sport. SharpAPI Hobby tier caps responses at 50 rows
-  // per call regardless of the limit parameter, so we split market types into
-  // separate API calls to ensure coverage of all market types for all events.
+  // Market types vary by sport. SharpAPI's /odds endpoint caps `limit` at
+  // 200 per request; we paginate with `cursor` until meta.pagination.has_more
+  // is false to drain each market. Splitting by market type still helps
+  // because of the tier request-rate limit (Hobby = 120/min) — a single
+  // drained fetch per market is much cheaper than a single multi-market
+  // fetch that then re-pages through everything.
   const marketTypesList = {
     'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total', '1st_5_innings_moneyline', '1st_5_innings_run_line'],
     'icehockey_nhl': ['moneyline', 'puck_line', 'total_goals', 'team_total'],
@@ -266,46 +269,72 @@ async function fetchOddsForSport(sport, opts) {
 
   log.info('OddsFeed', `Fetching ${liveMode ? 'LIVE ' : ''}${mapping.value} odds from SharpAPI (${marketTypesList.length} market types)...`);
 
-  // Fetch each market type separately to avoid the Hobby tier row cap
+  // Fetch each market type separately and paginate with `cursor` until
+  // meta.pagination.has_more is false. Hard safety cap on pages so a bad
+  // cursor can never cause an infinite loop.
+  const PAGE_LIMIT = 200; // SharpAPI /odds max per request
+  const MAX_PAGES_PER_MARKET = 50; // safety: 50 × 200 = 10k rows
   const rows = [];
-  // Per-market diagnostic: row count, event count, book count. Logged in one
-  // compact line at info level after the loop so the user can verify which
-  // markets SharpAPI is actually returning data for on each sport (e.g.,
-  // empty team_total for NBA would signal a plan gate or upstream gap).
   const marketBreakdown = {};
   for (const mt of marketTypesList) {
-    const url = `${config.oddsApi.baseUrl}/odds`
+    const baseUrl = `${config.oddsApi.baseUrl}/odds`
       + `?${mapping.param}=${mapping.value}`
       + `&market=${mt}`
       + `&live=${liveMode ? 'true' : 'false'}`
-      + `&limit=500`;
-    try {
-      const resp = await fetch(url, {
-        headers: { 'X-API-Key': config.oddsApi.apiKey },
-      });
-      if (!resp.ok) {
-        const text = await resp.text();
-        log.warn('OddsFeed', `SharpAPI ${resp.status} for ${mapping.value}/${mt}: ${text.substring(0, 100)}`);
-        marketBreakdown[mt] = { rows: 0, events: 0, books: 0, error: resp.status };
-        continue;
+      + `&limit=${PAGE_LIMIT}`;
+    let cursor = null;
+    let pages = 0;
+    let mtRowCount = 0;
+    const mtEvents = new Set();
+    const mtBooks = new Set();
+    let errorState = null;
+    while (pages < MAX_PAGES_PER_MARKET) {
+      const url = cursor ? `${baseUrl}&cursor=${encodeURIComponent(cursor)}` : baseUrl;
+      try {
+        const resp = await fetch(url, {
+          headers: { 'X-API-Key': config.oddsApi.apiKey },
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          log.warn('OddsFeed', `SharpAPI ${resp.status} for ${mapping.value}/${mt} (page ${pages + 1}): ${text.substring(0, 100)}`);
+          errorState = resp.status;
+          break;
+        }
+        const body = await resp.json();
+        const mtRows = body.data || [];
+        rows.push(...mtRows);
+        mtRowCount += mtRows.length;
+        for (const r of mtRows) {
+          if (r.event_id) mtEvents.add(r.event_id);
+          if (r.sportsbook) mtBooks.add(r.sportsbook);
+        }
+        pages++;
+        const pagination = body.meta && body.meta.pagination;
+        if (!pagination || !pagination.has_more || !pagination.next_cursor) break;
+        cursor = pagination.next_cursor;
+      } catch (err) {
+        log.warn('OddsFeed', `Fetch error for ${mapping.value}/${mt} (page ${pages + 1}): ${err.message}`);
+        errorState = err.message;
+        break;
       }
-      const body = await resp.json();
-      const mtRows = body.data || [];
-      rows.push(...mtRows);
-      const uniqueEvents = new Set(mtRows.map(r => r.event_id).filter(Boolean));
-      const uniqueBooks = new Set(mtRows.map(r => r.sportsbook).filter(Boolean));
-      marketBreakdown[mt] = { rows: mtRows.length, events: uniqueEvents.size, books: uniqueBooks.size };
-      log.debug('OddsFeed', `  ${mt}: ${mtRows.length} rows`);
-    } catch (err) {
-      log.warn('OddsFeed', `Fetch error for ${mapping.value}/${mt}: ${err.message}`);
-      marketBreakdown[mt] = { rows: 0, events: 0, books: 0, error: err.message };
     }
+    if (pages >= MAX_PAGES_PER_MARKET) {
+      log.warn('OddsFeed', `Hit ${MAX_PAGES_PER_MARKET}-page safety cap for ${mapping.value}/${mt} — possible pagination loop`);
+    }
+    marketBreakdown[mt] = {
+      rows: mtRowCount,
+      events: mtEvents.size,
+      books: mtBooks.size,
+      pages,
+      ...(errorState != null ? { error: errorState } : {}),
+    };
+    log.debug('OddsFeed', `  ${mt}: ${mtRowCount} rows across ${pages} page(s)`);
   }
-  // Compact one-line breakdown: "moneyline=450r/15e/4b, team_total=0r/0e/0b(EMPTY), ..."
+  // Compact one-line breakdown: "moneyline=450r/15e/4b/3p, team_total=0r/0e/0b/1p(EMPTY), ..."
   const breakdownStr = Object.entries(marketBreakdown)
     .map(([mt, b]) => {
       const flag = b.error ? `(ERR:${b.error})` : (b.rows === 0 ? '(EMPTY)' : '');
-      return `${mt}=${b.rows}r/${b.events}e/${b.books}b${flag}`;
+      return `${mt}=${b.rows}r/${b.events}e/${b.books}b/${b.pages}p${flag}`;
     })
     .join(', ');
   log.info('OddsFeed', `SharpAPI ${mapping.value} breakdown: ${breakdownStr}`);
@@ -4119,7 +4148,9 @@ async function fetchOddsDelta(sport) {
     return fetchOddsForSport(sport);
   }
 
-  // Split delta fetch by market type — SharpAPI Hobby caps at 50 rows per call
+  // Split delta by market type and paginate each until drained. Same
+  // reasoning as fetchOddsForSport: /odds/delta caps `limit` at 200 and
+  // returns meta.pagination.has_more + next_offset; we loop until empty.
   const marketTypesList = {
     'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total', '1st_5_innings_moneyline', '1st_5_innings_run_line'],
     'icehockey_nhl': ['moneyline', 'puck_line', 'total_goals', 'team_total'],
@@ -4127,29 +4158,45 @@ async function fetchOddsDelta(sport) {
     'soccer': ['moneyline', 'point_spread', 'total_goals', 'team_total'],
   }[sport] || ['moneyline', 'point_spread', 'total_points', 'team_total'];
 
+  const PAGE_LIMIT = 200;
+  const MAX_PAGES_PER_MARKET = 50;
   const rows = [];
   let anyFailed = false;
   for (const mt of marketTypesList) {
-    const url = `${config.oddsApi.baseUrl}/odds/delta`
+    const baseUrl = `${config.oddsApi.baseUrl}/odds/delta`
       + `?${mapping.param}=${mapping.value}`
       + `&market=${mt}`
       + `&since=${encodeURIComponent(since)}`
-      + `&limit=500`;
-    try {
-      const resp = await fetch(url, {
-        headers: { 'X-API-Key': config.oddsApi.apiKey },
-      });
-      if (!resp.ok) {
-        log.warn('OddsFeed', `Delta fetch failed (${resp.status}) for ${sport}/${mt}`);
+      + `&limit=${PAGE_LIMIT}`;
+    let offset = 0;
+    let pages = 0;
+    while (pages < MAX_PAGES_PER_MARKET) {
+      const url = offset === 0 ? baseUrl : `${baseUrl}&offset=${offset}`;
+      try {
+        const resp = await fetch(url, {
+          headers: { 'X-API-Key': config.oddsApi.apiKey },
+        });
+        if (!resp.ok) {
+          log.warn('OddsFeed', `Delta fetch failed (${resp.status}) for ${sport}/${mt} (page ${pages + 1})`);
+          anyFailed = true;
+          break;
+        }
+        const body = await resp.json();
+        const mtRows = body.data || [];
+        rows.push(...mtRows);
+        pages++;
+        const pagination = body.meta && body.meta.pagination;
+        if (!pagination || !pagination.has_more) break;
+        offset = pagination.next_offset != null ? pagination.next_offset : offset + mtRows.length;
+        if (mtRows.length === 0) break; // defensive: no progress
+      } catch (err) {
+        log.warn('OddsFeed', `Delta fetch error for ${sport}/${mt} (page ${pages + 1}): ${err.message}`);
         anyFailed = true;
-        continue;
+        break;
       }
-      const body = await resp.json();
-      const mtRows = body.data || [];
-      rows.push(...mtRows);
-    } catch (err) {
-      log.warn('OddsFeed', `Delta fetch error for ${sport}/${mt}: ${err.message}`);
-      anyFailed = true;
+    }
+    if (pages >= MAX_PAGES_PER_MARKET) {
+      log.warn('OddsFeed', `Hit ${MAX_PAGES_PER_MARKET}-page safety cap for ${sport}/${mt} delta — possible pagination loop`);
     }
   }
 
