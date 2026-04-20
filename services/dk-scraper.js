@@ -780,12 +780,25 @@ function isInProgressEvent(ev) {
 }
 
 // DK fires many XHRs per live-page load. We grab any payload containing
-// moneyline or total markets, then downstream filters to in-progress events.
-const LIVE_MARKET_NAMES = new Set([
-  'Moneyline', 'Moneyline (2 Way)', 'Moneyline (2-Way)', 'Moneyline (Regulation)',
-  'Total', 'Total Points', 'Total Runs', 'Total Goals',
-  'Spread', 'Point Spread', 'Puck Line', 'Run Line',
-]);
+// moneyline / spread / total markets, then downstream filters to in-progress
+// events. We keyword-match against marketType.name rather than using an
+// exact-match Set — DK varies naming across league/detail/live contexts
+// (e.g. `Moneyline`, `Live Moneyline`, `Puck Line`, `Point Spread`, `Run
+// Line`, `Total`, `Total Points`, `Total Runs`, `Total Goals`, `Live Total`)
+// and we'd rather catch all variants than maintain an exhaustive list.
+//
+// Exclusions: sub-game markets (1H/2H/Q1/Period/Inning, etc.) — we only
+// want full-game lines. Alternate lines are fine (we store all lines).
+const SUB_GAME_RE = /(1st|2nd|3rd|4th|first|second|third|fourth|half|quarter|period|inning|1H|2H|Q1|Q2|Q3|Q4|P1|P2|P3)\b/i;
+function classifyLiveMarketName(name) {
+  if (!name) return null;
+  if (SUB_GAME_RE.test(name)) return null;
+  const n = name.toLowerCase();
+  if (n.includes('moneyline')) return 'h2h';
+  if (n.includes('puck line') || n.includes('run line') || n.includes('point spread') || n.includes('spread')) return 'spreads';
+  if (n.includes('total')) return 'totals';
+  return null;
+}
 
 async function fetchLiveMarkets(sport, { force = false } = {}) {
   const url = LIVE_SPORT_URLS[sport];
@@ -815,7 +828,7 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
           const data = await resp.json();
           if (!data || !data.selections || !data.events || !data.markets) return;
           const names = (data.markets || []).map(m => m.marketType?.name).filter(Boolean);
-          if (!names.some(n => LIVE_MARKET_NAMES.has(n))) return;
+          if (!names.some(n => classifyLiveMarketName(n))) return;
           payloads.push(data);
         } catch { /* ignore */ }
       });
@@ -872,7 +885,7 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
         for (const e of (p.events || [])) if (!eventsById[e.id]) eventsById[e.id] = e;
         for (const m of (p.markets || [])) {
           const mn = m.marketType?.name;
-          if (!mn || !LIVE_MARKET_NAMES.has(mn)) continue;
+          if (!mn || !classifyLiveMarketName(mn)) continue;
           if (!marketsById[m.id]) marketsById[m.id] = m;
         }
         for (const sel of (p.selections || [])) {
@@ -917,8 +930,9 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
         }
         const bucket = liveByEvent[ev.id];
         const mname = market.marketType.name;
+        const mkind = classifyLiveMarketName(mname);
         // Moneyline → h2h
-        if (mname.startsWith('Moneyline')) {
+        if (mkind === 'h2h') {
           // DK sends the two sides in label-order matching participants.
           // Match side by label vs team name.
           const parsedSels = sels.map(sel => ({ label: sel.label, ...parseSelectionOdds(sel) }));
@@ -936,7 +950,7 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
               };
             }
           }
-        } else if (mname.startsWith('Total')) {
+        } else if (mkind === 'totals') {
           // Pair Over + Under by line. DK selection labels are "Over N.N" / "Under N.N".
           const byOutcome = {};
           for (const sel of sels) {
@@ -967,7 +981,7 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
             totals._primary = primary;
             bucket.markets.totals = totals;
           }
-        } else if (mname === 'Spread' || mname === 'Point Spread' || mname === 'Puck Line' || mname === 'Run Line') {
+        } else if (mkind === 'spreads') {
           // DK live spread selection labels look like:
           //   "BOS Red Sox +1.5"  or "Celtics -3.5"
           // Side is encoded by the sign in front of the numeric magnitude.
