@@ -501,6 +501,9 @@
       <a class="nav-item" onclick="switchSection('intel', this)">
         <span class="nav-icon">&#9881;</span> Market Intel
       </a>
+      <a class="nav-item" onclick="switchSection('lines', this)">
+        <span class="nav-icon">&#9776;</span> Lines
+      </a>
       <a class="nav-item" onclick="switchSection('config', this)">
         <span class="nav-icon">&#9881;</span> Config
       </a>
@@ -838,6 +841,72 @@
             <span id="intel-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
           <div class="card-body" id="market-intel"><div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div></div>
+        </div>
+      </div>
+
+      <!-- ===================== SECTION: LINES ===================== -->
+      <div id="section-lines" class="section" style="display:none;">
+        <div class="card">
+          <div class="card-header">
+            <span>Registered Lines</span>
+            <span id="lines-count-summary" style="color:var(--text3); font-weight:400; font-size:14px; margin-left:auto;"></span>
+          </div>
+          <div class="card-body">
+            <div style="padding:8px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">
+              <label style="font-size:12px; color:var(--text2);">Sport:
+                <select id="lines-sport" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; margin-left:4px;" onchange="linesState.sport=this.value; loadLines()">
+                  <option value="">All sports</option>
+                  <option value="basketball_nba">NBA</option>
+                  <option value="basketball_ncaab">NCAAB</option>
+                  <option value="basketball_wnba">WNBA</option>
+                  <option value="baseball_mlb">MLB</option>
+                  <option value="icehockey_nhl">NHL</option>
+                  <option value="tennis">Tennis</option>
+                  <option value="soccer_usa_mls">MLS</option>
+                  <option value="soccer_epl">EPL</option>
+                  <option value="soccer_spain_la_liga">La Liga</option>
+                  <option value="soccer_italy_serie_a">Serie A</option>
+                  <option value="soccer_germany_bundesliga">Bundesliga</option>
+                  <option value="soccer_france_ligue_one">Ligue 1</option>
+                  <option value="mma_mixed_martial_arts">MMA</option>
+                  <option value="boxing_boxing">Boxing</option>
+                  <option value="golf_matchups">Golf</option>
+                </select>
+              </label>
+              <label style="font-size:12px; color:var(--text2);">Market:
+                <select id="lines-market" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; margin-left:4px;" onchange="linesState.market=this.value; loadLines()">
+                  <option value="">All markets</option>
+                  <option value="moneyline">Moneyline</option>
+                  <option value="spread">Spread</option>
+                  <option value="total">Total</option>
+                  <option value="team_total">Team Total</option>
+                  <option value="series_">Series (all)</option>
+                  <option value="series_winner">Series Winner</option>
+                  <option value="series_spread">Series Spread</option>
+                  <option value="series_total">Series Total</option>
+                  <option value="first_5_innings_">First 5 Innings (all)</option>
+                  <option value="first_5_innings_moneyline">F5 Moneyline</option>
+                  <option value="first_5_innings_run_line">F5 Run Line</option>
+                  <option value="first_5_innings_total">F5 Total</option>
+                  <option value="first_half_">1st Half (all)</option>
+                  <option value="btts">Both Teams to Score</option>
+                  <option value="double_chance">Double Chance</option>
+                </select>
+              </label>
+              <input type="text" id="lines-team" placeholder="Search team..." oninput="linesState.team=this.value; debounceLoadLines()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">
+              <input type="text" id="lines-event" placeholder="PX event ID..." oninput="linesState.event=this.value; debounceLoadLines()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:140px;">
+              <label style="font-size:12px; color:var(--text2);">Limit:
+                <select id="lines-limit" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; margin-left:4px;" onchange="linesState.limit=parseInt(this.value); loadLines()">
+                  <option value="200">200</option>
+                  <option value="500" selected>500</option>
+                  <option value="1000">1000</option>
+                  <option value="2000">2000</option>
+                </select>
+              </label>
+              <button class="btn" onclick="loadLines()" style="font-size:12px; padding:4px 12px;">Refresh</button>
+            </div>
+            <div id="lines-table"><div class="empty-state"><div class="icon">-</div><div>Select filters and click Refresh</div></div></div>
+          </div>
         </div>
       </div>
 
@@ -9063,7 +9132,7 @@
   }
 
   // Tab switching
-  const sectionNames = { orders: 'Orders', portfolio: 'Portfolio', exposure: 'Exposure', analytics: 'Analytics', intel: 'Market Intel', config: 'Config' };
+  const sectionNames = { orders: 'Orders', portfolio: 'Portfolio', exposure: 'Exposure', analytics: 'Analytics', intel: 'Market Intel', lines: 'Lines', config: 'Config' };
   let activeSection = 'orders';
   function switchPnlBreakdown(tab) {
     const sportEl = document.getElementById('chart-pnl-sport');
@@ -9176,9 +9245,106 @@
     // Start/stop live odds refresh based on which tab is active
     if (section === 'exposure') startLiveOddsRefresh();
     else stopLiveOddsRefresh();
+    // Auto-load the Lines tab on first activation so the operator
+    // doesn't stare at an empty panel.
+    if (section === 'lines' && !linesState.loaded) loadLines();
   }
   // Backwards compat alias
   function switchTab(tab, btn) { switchSection(tab, btn); }
+
+  // --- Lines tab: browse the registered lineIndex via /lines/detail ---
+  const linesState = {
+    sport: '',
+    market: '',
+    team: '',
+    event: '',
+    limit: 500,
+    loaded: false,
+    inFlight: false,
+  };
+  // Debounce text-input-driven refetches so every keystroke doesn't fire
+  // an HTTP request. Dropdown changes call loadLines() directly (no need
+  // to debounce those — user-intentional single actions).
+  let _linesDebounceTimer = null;
+  function debounceLoadLines() {
+    if (_linesDebounceTimer) clearTimeout(_linesDebounceTimer);
+    _linesDebounceTimer = setTimeout(() => {
+      _linesDebounceTimer = null;
+      rerenderWithFocus(() => loadLines());
+    }, 300);
+  }
+  async function loadLines() {
+    const el = document.getElementById('lines-table');
+    const countEl = document.getElementById('lines-count-summary');
+    if (!el) return;
+    if (linesState.inFlight) return; // simple debounce
+    linesState.inFlight = true;
+    try {
+      const qs = new URLSearchParams();
+      if (linesState.sport) qs.set('sport', linesState.sport);
+      if (linesState.market) qs.set('market', linesState.market);
+      if (linesState.team) qs.set('team', linesState.team);
+      if (linesState.event) qs.set('event', linesState.event);
+      qs.set('limit', String(linesState.limit || 500));
+      const data = await fetchJSON('/lines/detail?' + qs.toString());
+      linesState.loaded = true;
+      const rows = (data && data.lines) || [];
+      const total = (data && data.count) || 0;
+      if (countEl) {
+        countEl.textContent = total > 0
+          ? total + ' line' + (total === 1 ? '' : 's')
+              + (total >= linesState.limit ? ' (limit reached — narrow filters or raise limit)' : '')
+          : 'No lines match';
+      }
+      if (rows.length === 0) {
+        el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>No registered lines match these filters.</div></div>';
+        return;
+      }
+      let html = '<div style="overflow-x:auto;"><table style="font-size:13px;">';
+      html += '<tr>'
+        + '<th style="text-align:left;">Sport</th>'
+        + '<th style="text-align:left;">Market</th>'
+        + '<th style="text-align:left;">Team / Selection</th>'
+        + '<th style="text-align:right;">Line</th>'
+        + '<th style="text-align:left;">Event</th>'
+        + '<th style="text-align:left;">Starts</th>'
+        + '<th style="text-align:left; color:var(--text3);">line_id</th>'
+        + '</tr>';
+      for (const r of rows) {
+        const sportLabel = ({
+          basketball_nba: 'NBA', basketball_ncaab: 'NCAAB', basketball_wnba: 'WNBA',
+          baseball_mlb: 'MLB', icehockey_nhl: 'NHL', tennis: 'Tennis',
+          soccer_usa_mls: 'MLS', soccer_epl: 'EPL', soccer_spain_la_liga: 'La Liga',
+          soccer_italy_serie_a: 'Serie A', soccer_germany_bundesliga: 'Bundesliga',
+          soccer_france_ligue_one: 'Ligue 1', mma_mixed_martial_arts: 'MMA',
+          boxing_boxing: 'Boxing', golf_matchups: 'Golf',
+        })[r.sport] || r.sport || '-';
+        const team = r.teamName || (r.selection || '-');
+        const line = (r.line != null ? (r.line > 0 ? '+' : '') + r.line : '-');
+        const event = r.pxEventName || ((r.awayTeam || '?') + ' @ ' + (r.homeTeam || '?'));
+        const starts = r.startTime
+          ? new Date(r.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+          : '-';
+        const shortId = (r.lineId || '').substring(0, 8) + '…';
+        html += '<tr>'
+          + '<td style="padding:4px 8px;">' + escapeHtml(sportLabel) + '</td>'
+          + '<td style="padding:4px 8px; font-family:monospace; color:var(--text2);">' + escapeHtml(r.marketType || '-') + '</td>'
+          + '<td style="padding:4px 8px;">' + escapeHtml(team) + '</td>'
+          + '<td style="padding:4px 8px; text-align:right; font-family:monospace;">' + line + '</td>'
+          + '<td style="padding:4px 8px; color:var(--text2);">' + escapeHtml(event) + '</td>'
+          + '<td style="padding:4px 8px; color:var(--text3); font-size:11px;">' + starts + '</td>'
+          + '<td style="padding:4px 8px; font-family:monospace; font-size:11px; color:var(--text3);" title="' + escapeHtml(r.lineId || '') + '">' + shortId + '</td>'
+          + '</tr>';
+      }
+      html += '</table></div>';
+      el.innerHTML = html;
+    } catch (err) {
+      el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">!</div><div>Failed to load lines: ' + escapeHtml(err.message || String(err)) + '</div></div>';
+      if (countEl) countEl.textContent = '';
+    } finally {
+      linesState.inFlight = false;
+    }
+  }
 
   // History state — accumulates all orders across refreshes
   const historyState = {
