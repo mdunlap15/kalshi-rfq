@@ -692,19 +692,30 @@ async function handleConfirm(data) {
     // and odds=-1774 (SP side). Our risk on this parlay is $1774.
     // Our risk = confirmedStake directly, no multiplication.
     const ourRisk = confirmedStake || 0;
-    const maxRisk = config.pricing.maxRiskPerParlay;
+    const origLegs = originalOrder.legs || originalOrder.meta?.legs || [];
+    const legsForCheck = origLegs.map(l => ({ ...l, lineInfo: l, team: l.team || l.teamName, fairProb: l.fairProb }));
+
+    // Series-containing parlays get a tighter per-parlay cap — mirrors
+    // what we set on the offer's max_risk in priceParlay so PX shouldn't
+    // confirm a stake above this, but re-check defensively in case of
+    // race / sandbox permissiveness.
+    const parlayHasSeries = legsForCheck.some(l =>
+      typeof (l.market || l.marketType) === 'string' &&
+      (l.market || l.marketType).startsWith('series_')
+    );
+    const maxRisk = parlayHasSeries
+      ? (config.pricing.maxSeriesRiskPerParlay || 500)
+      : config.pricing.maxRiskPerParlay;
     if (maxRisk > 0 && ourRisk > maxRisk) {
-      log.warn('Confirm', `Rejecting: our risk $${ourRisk.toFixed(2)} exceeds max $${maxRisk.toFixed(0)} (stake=$${confirmedStake}, odds=${confirmedOdds})`);
+      const capLabel = parlayHasSeries ? 'series per-parlay cap' : 'per-parlay risk limit';
+      log.warn('Confirm', `Rejecting: our risk $${ourRisk.toFixed(2)} exceeds ${capLabel} $${maxRisk.toFixed(0)} (stake=$${confirmedStake}, odds=${confirmedOdds})`);
       orderTracker.recordRejection(parlayId, `risk $${ourRisk.toFixed(0)} > max $${maxRisk}`);
-      orderTracker.recordExposureRejection(parlayId, ourRisk, 'per-parlay risk limit', [{ team: 'parlay-cap', wouldBe: ourRisk, limit: maxRisk }]);
+      orderTracker.recordExposureRejection(parlayId, ourRisk, capLabel, [{ team: 'parlay-cap', wouldBe: ourRisk, limit: maxRisk }]);
       if (callbackUrl) {
         await px.confirmOrder(callbackUrl, orderUuid, 'reject');
       }
       return;
     }
-
-    const origLegs = originalOrder.legs || originalOrder.meta?.legs || [];
-    const legsForCheck = origLegs.map(l => ({ ...l, lineInfo: l, team: l.team || l.teamName, fairProb: l.fairProb }));
 
     // Release this parlay's pending reservation BEFORE the exposure check
     // below so we don't double-count (real ourRisk + pending worst-case for
@@ -728,6 +739,26 @@ async function handleConfirm(data) {
         await px.confirmOrder(callbackUrl, orderUuid, 'reject');
       }
       return;
+    }
+
+    // Series gross-exposure re-check. Same rationale as the team check:
+    // a race between quote and confirm could push a series event over
+    // the $1K cap. Uses actual ourRisk now that the stake is known.
+    if (parlayHasSeries) {
+      const seriesCheck = orderTracker.checkSeriesExposure(
+        legsForCheck, ourRisk, config.pricing.maxSeriesGrossExposure
+      );
+      if (!seriesCheck.allowed) {
+        log.warn('Confirm', `Rejecting: ${seriesCheck.reason}`);
+        orderTracker.recordRejection(parlayId, seriesCheck.reason);
+        orderTracker.recordExposureRejection(parlayId, ourRisk, 'series exposure limit', [{
+          team: 'series-event', wouldBe: seriesCheck.wouldBe, limit: seriesCheck.limit,
+        }]);
+        if (callbackUrl) {
+          await px.confirmOrder(callbackUrl, orderUuid, 'reject');
+        }
+        return;
+      }
     }
 
     // Re-validate pricing

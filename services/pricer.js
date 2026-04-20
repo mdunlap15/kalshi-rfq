@@ -794,8 +794,17 @@ async function priceParlay(legs, opts = {}) {
   // Convert to decimal odds
   const decimalOdds = 1 / cappedProb;
 
-  // Determine max risk
-  const maxRisk = config.pricing.maxRiskPerParlay;
+  // Determine max risk. Series-containing parlays get a tighter cap
+  // because they tie up bankroll until the series settles (can be weeks).
+  // max_risk on the offer is what PX uses to bound bettor wagers, so
+  // setting it here enforces the per-parlay limit at the exchange level.
+  const parlayHasSeries = pricedLegs.some(l =>
+    typeof l.lineInfo.marketType === 'string' &&
+    l.lineInfo.marketType.startsWith('series_')
+  );
+  const maxRisk = parlayHasSeries
+    ? (config.pricing.maxSeriesRiskPerParlay || 500)
+    : config.pricing.maxRiskPerParlay;
 
   // PX expects positive bettor-side American odds in offers (e.g., +215).
   // PX converts to negative SP-side for storage (confirmed_odds = -215).
@@ -1095,19 +1104,6 @@ function shouldDecline(legs) {
     const lineInfo = lineManager.lookupLine(lineId);
     if (!lineInfo) return { declined: true, reason: 'unknown legs', detail: null };
 
-    // NBA series markets settle only when the full playoff series ends (could
-    // be a week+ after the confirm). Avoid locking bankroll on those.
-    if (lineInfo.sport === 'basketball_nba' &&
-        (lineInfo.marketType === 'series_winner' ||
-         lineInfo.marketType === 'series_spread' ||
-         lineInfo.marketType === 'series_total')) {
-      return {
-        declined: true,
-        reason: 'NBA series disabled',
-        detail: `${lineInfo.teamName || lineInfo.pxEventName || 'NBA series'} (${lineInfo.marketType}) — series markets tie up bankroll until series ends`,
-      };
-    }
-
     const isGolfMatchup = lineInfo.sport === 'golf_matchups' || lineInfo.oddsApiSport === 'golf_matchups';
     const startMs = lineInfo.startTimeMs;
     if (startMs != null) {
@@ -1206,6 +1202,31 @@ function shouldDecline(legs) {
   if (!exposureCheck.allowed) {
     log.info('Pricing', `Exposure limit: ${exposureCheck.reason}`);
     return { declined: true, reason: 'team exposure limit', detail: exposureCheck.reason, violations: exposureCheck.violations, estPayout };
+  }
+
+  // Series-specific gross exposure cap. Uses the tighter per-parlay
+  // cap (config.pricing.maxSeriesRiskPerParlay) as the worst-case add
+  // since that's what max_risk on the offer will be set to for series
+  // parlays — PX cannot confirm an amount above it.
+  const hasSeriesLeg = resolvedLegs.some(l =>
+    typeof l.lineInfo.marketType === 'string' &&
+    l.lineInfo.marketType.startsWith('series_')
+  );
+  if (hasSeriesLeg) {
+    const seriesParlayCap = config.pricing.maxSeriesRiskPerParlay || 500;
+    const seriesCheck = orderTracker.checkSeriesExposure(
+      resolvedLegs, seriesParlayCap, config.pricing.maxSeriesGrossExposure
+    );
+    if (!seriesCheck.allowed) {
+      log.info('Pricing', `Series exposure limit: ${seriesCheck.reason}`);
+      return {
+        declined: true,
+        reason: 'series exposure limit',
+        detail: seriesCheck.reason,
+        violations: [{ team: 'series-event', wouldBe: seriesCheck.wouldBe || 0, limit: seriesCheck.limit || 0 }],
+        estPayout: seriesParlayCap,
+      };
+    }
   }
 
   // On success, surface the resolved lineInfos keyed by lineId so the caller

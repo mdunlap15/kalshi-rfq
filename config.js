@@ -52,14 +52,15 @@ const config = {
     // Default 0.05 (5%); tunable via VIG_SERIES_MIN env var.
     vigSeriesMin: parseFloat(process.env.VIG_SERIES_MIN) || 0.05,
     // Hard cap on NBA series_winner favorite pricing. If our fair prob
-    // for an NBA series favorite exceeds this threshold (default 1000/1100
-    // = 0.9091, corresponding to American -1000), decline the leg rather
-    // than quote. Even with capped de-vig, a small error at these extremes
-    // has outsized $ impact per offer, and DK's posted line (-2000+) runs
-    // well beyond what our 2-way de-vig can ever recover. Tunable via
-    // NBA_SERIES_FAV_CAP_ODDS env var (in American odds, e.g. -1500 for
-    // looser cap, -800 for tighter).
-    nbaSeriesFavoriteCapAmericanOdds: parseInt(process.env.NBA_SERIES_FAV_CAP_ODDS) || -1000,
+    // for an NBA series favorite exceeds this threshold (default -500 =
+    // 500/600 = 0.8333 fair prob), decline the leg rather than quote.
+    // Even with capped de-vig, a small error at these extremes has
+    // outsized $ impact per offer, and DK's posted line can run well
+    // beyond what our 2-way de-vig can ever recover. Tightened from
+    // -1000 to -500 after reviewing NBA SP P&L — heavy favorites on
+    // series markets were a meaningful chunk of the NBA bleed.
+    // Tunable via NBA_SERIES_FAV_CAP_ODDS env var.
+    nbaSeriesFavoriteCapAmericanOdds: parseInt(process.env.NBA_SERIES_FAV_CAP_ODDS) || -500,
     // Cap the favorite side's share of the book's overround during
     // 2-way de-vig. Proportional de-vig (share = favImplied/sumImplied)
     // over-corrects heavy favorites — on DK -3000/+1300 it strips ~4pp
@@ -115,6 +116,12 @@ const config = {
     confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
     offerValidSeconds: parseInt(process.env.OFFER_VALID_SECONDS) || 60,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
+    // Tighter risk caps for parlays containing series_* markets. Series
+    // bets tie up bankroll for weeks until the series settles, so we
+    // limit both per-parlay SP risk and aggregate per-series-event
+    // exposure. Applied only when at least one leg is a series market.
+    maxSeriesRiskPerParlay: parseFloat(process.env.MAX_SERIES_RISK_PER_PARLAY) || 500,
+    maxSeriesGrossExposure: parseFloat(process.env.MAX_SERIES_GROSS_EXPOSURE) || 1000,
     // startingBankroll anchors the account-based P&L calculation
     // (balance − starting). If env var is NOT set, leave as null so the
     // dashboard falls back to the tracker's runningPnL (derived from

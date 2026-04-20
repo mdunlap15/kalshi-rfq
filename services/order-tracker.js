@@ -2094,6 +2094,62 @@ function getGameExposureSnapshot() {
 }
 
 /**
+ * Sum SP risk (confirmedStake) across all open/confirmed parlays that
+ * touch a given series pxEventId with a series_* market. Used for the
+ * series-specific gross exposure cap — series events have their own
+ * pxEventIds distinct from underlying game events.
+ */
+function getSeriesEventRisk(pxEventId) {
+  if (!pxEventId) return 0;
+  let total = 0;
+  for (const o of Object.values(orders)) {
+    if (o.status !== 'confirmed') continue;
+    if (o.meta && o.meta.phantom) continue;
+    const legs = o.legs || (o.meta && o.meta.legs) || [];
+    const touches = legs.some(l =>
+      l.pxEventId === pxEventId &&
+      typeof (l.market || l.marketType) === 'string' &&
+      (l.market || l.marketType).startsWith('series_')
+    );
+    if (touches) total += (o.confirmedStake || 0);
+  }
+  return total;
+}
+
+/**
+ * Check whether adding a new parlay would exceed the per-series-event
+ * SP risk cap. Only fires for parlays containing ≥1 series_* leg.
+ * Enforces at quote-time with worstCaseRisk (typically the max_risk
+ * set on the offer) and at confirm-time with actual ourRisk.
+ */
+function checkSeriesExposure(legs, additionalRisk, maxPerSeries) {
+  if (!maxPerSeries || maxPerSeries <= 0) return { allowed: true };
+  const seen = new Set();
+  for (const leg of legs) {
+    const li = leg.lineInfo || leg;
+    const mt = li.marketType || leg.market;
+    if (typeof mt !== 'string' || !mt.startsWith('series_')) continue;
+    const eid = li.pxEventId || leg.pxEventId;
+    if (!eid || seen.has(eid)) continue;
+    seen.add(eid);
+    const current = getSeriesEventRisk(eid);
+    const wouldBe = current + additionalRisk;
+    if (wouldBe > maxPerSeries) {
+      return {
+        allowed: false,
+        reason: `Series event ${eid}: current $${Math.round(current)} + new $${Math.round(additionalRisk)} > max $${Math.round(maxPerSeries)}`,
+        eventId: eid,
+        current,
+        additionalRisk,
+        wouldBe,
+        limit: maxPerSeries,
+      };
+    }
+  }
+  return { allowed: true };
+}
+
+/**
  * Check if adding a new parlay would exceed per-game NET exposure limits.
  */
 function checkGameExposure(legs, estPayout, maxPerGame) {
@@ -4083,6 +4139,8 @@ module.exports = {
   checkPortfolioRisk,
   getGameExposureSnapshot,
   checkGameExposure,
+  getSeriesEventRisk,
+  checkSeriesExposure,
   getRecentOrders,
   getStats,
   getPnLBySport,
