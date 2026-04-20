@@ -1702,28 +1702,19 @@ function buildConsensusSpread(bookPairs) {
   };
 }
 
-function buildConsensusTotals(bookPairs) {
-  // Use the most common line across books
-  const lineCounts = {};
-  for (const { over } of bookPairs) {
-    const line = over.line;
-    if (line != null) lineCounts[line] = (lineCounts[line] || 0) + 1;
-  }
-  const primaryLine = Object.entries(lineCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
-  const pLine = parseFloat(primaryLine);
-
+// Compute the de-vigged consensus + book-level details for ONE specific
+// totals line. Shared between primary and byLine computation. Returns null
+// if no books posted this line.
+function buildTotalsForLine(bookPairs, pLine) {
   const matching = bookPairs.filter(bp => bp.over.line === pLine);
   if (matching.length === 0) return null;
 
-  // Filter high-vig books out of the averaging input (see
-  // filterSharpBooks rationale in buildConsensusMoneyline).
   const sharpMatching = filterSharpBooks(
     matching,
     bp => [bp.over.odds_probability, bp.under.odds_probability],
     'total'
   );
 
-  // De-vigged consensus for display
   const devigged = { over: [], under: [] };
   for (const { over, under } of sharpMatching) {
     const [fo, fu] = deVig2Way(over.odds_probability, under.odds_probability);
@@ -1734,16 +1725,16 @@ function buildConsensusTotals(bookPairs) {
   const dvUnder = avg(devigged.under);
 
   const pinBook = matching.find(bp => bp.book === 'pinnacle');
-  const fdBook2 = matching.find(bp => bp.book === 'fanduel');
   const klBookT = matching.find(bp => bp.book === 'kalshi');
-  // Floor at Pinnacle's DE-VIGGED fair prob (not raw implied) to avoid double-vig.
-  // Threshold lowered from 0.65 to 0.50 — see buildConsensusMoneyline.
   const pinFairOver = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[0] : 0;
   const pinFairUnder = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[1] : 0;
   const floorOver = pinBook ? pinFairOver : (klBookT ? Math.min(klBookT.over.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
   const floorUnder = pinBook ? pinFairUnder : (klBookT ? Math.min(klBookT.under.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
   const pricingOver = dvOver >= 0.50 ? Math.max(dvOver, floorOver) : dvOver;
   const pricingUnder = dvUnder >= 0.50 ? Math.max(dvUnder, floorUnder) : dvUnder;
+
+  const fdBook = matching.find(bp => bp.book === 'fanduel');
+  const dkBook = matching.find(bp => bp.book === 'draftkings');
 
   return {
     over: {
@@ -1762,23 +1753,38 @@ function buildConsensusTotals(bookPairs) {
     },
     line: pLine,
     books: matching.length,
-    pinnacle: (() => {
-      const pinBook = matching.find(bp => bp.book === 'pinnacle');
-      return pinBook ? { over: pinBook.over.odds_american, under: pinBook.under.odds_american } : null;
-    })(),
-    fanduel: (() => {
-      const fdBook = matching.find(bp => bp.book === 'fanduel');
-      return fdBook ? { over: fdBook.over.odds_american, under: fdBook.under.odds_american } : null;
-    })(),
-    kalshi: (() => {
-      const klBook = matching.find(bp => bp.book === 'kalshi');
-      return klBook ? { over: klBook.over.odds_american, under: klBook.under.odds_american } : null;
-    })(),
-    draftkings: (() => {
-      const dkBook = matching.find(bp => bp.book === 'draftkings');
-      return dkBook ? { over: dkBook.over.odds_american, under: dkBook.under.odds_american } : null;
-    })(),
+    pinnacle: pinBook ? { over: pinBook.over.odds_american, under: pinBook.under.odds_american } : null,
+    fanduel: fdBook ? { over: fdBook.over.odds_american, under: fdBook.under.odds_american } : null,
+    kalshi: klBookT ? { over: klBookT.over.odds_american, under: klBookT.under.odds_american } : null,
+    draftkings: dkBook ? { over: dkBook.over.odds_american, under: dkBook.under.odds_american } : null,
   };
+}
+
+function buildConsensusTotals(bookPairs) {
+  // Tally distinct lines. The "primary" is the most-common line across
+  // books; but we also preserve consensus for every OTHER line in `byLine`
+  // so RFQs that reference a minority line (e.g., Pinnacle's integer 8
+  // when the majority is 8.5) can be priced without a network fetch.
+  const lineCounts = {};
+  for (const { over } of bookPairs) {
+    const line = over.line;
+    if (line != null) lineCounts[line] = (lineCounts[line] || 0) + 1;
+  }
+  const entries = Object.entries(lineCounts).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return null;
+
+  const primaryLine = parseFloat(entries[0][0]);
+  const primary = buildTotalsForLine(bookPairs, primaryLine);
+  if (!primary) return null;
+
+  const byLine = {};
+  for (const [lineStr] of entries) {
+    const ln = parseFloat(lineStr);
+    const entry = buildTotalsForLine(bookPairs, ln);
+    if (entry) byLine[String(ln)] = entry;
+  }
+
+  return { ...primary, byLine };
 }
 
 // ---------------------------------------------------------------------------
@@ -2124,10 +2130,15 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
   const mlbF5Markets = sport === 'baseball_mlb'
     ? ',alternate_spreads_1st_5_innings,alternate_totals_1st_5_innings'
     : '';
+  // Include the PRIMARY totals market alongside alternate_totals so lines
+  // that are a book's primary (e.g. Pinnacle's integer MLB 8) — and thus
+  // not listed in alternate_totals — still land in the altTotals cache.
+  // Books that skip integer totals in their alt list won't cover Over 8
+  // otherwise.
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events/${eventId}/odds`
     + `?apiKey=${theOddsApiKey}`
     + `&regions=us,eu`
-    + `&markets=alternate_spreads,alternate_totals${mlbF5Markets}`
+    + `&markets=totals,alternate_spreads,alternate_totals${mlbF5Markets}`
     + `&bookmakers=${ALT_LINES_BOOKMAKERS}`
     + `&oddsFormat=american`;
 
@@ -2243,7 +2254,14 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
             }
             result.altSpreads[lineKey].byBook[book.key][isHome ? 'home' : 'away'] = o.price;
           }
-        } else if (market.key === 'alternate_totals') {
+        } else if (market.key === 'alternate_totals' || market.key === 'totals') {
+          // `totals` is each book's primary; `alternate_totals` is its alts.
+          // Merged into the same altTotals map since consumers (getFairProb)
+          // don't care whether a line is a book's primary or alt — only that
+          // we have enough book coverage to de-vig. Adding `totals` here is
+          // what surfaces integer MLB totals that skip alternate_totals on
+          // many US books (e.g. Pinnacle's primary MLB total is integer 8,
+          // and it's NOT re-listed in Pinnacle's alternate_totals).
           for (const o of (market.outcomes || [])) {
             const lineKey = o.point;
             if (!result.altTotals[lineKey]) {
@@ -3125,7 +3143,19 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
       const absLine = Math.abs(line);
       const lineDiff = Math.abs(Math.abs(market.line) - absLine);
       if (lineDiff > 0.01) {
-        // Line magnitude doesn't match primary — check alt lines.
+        // Line magnitude doesn't match primary. First try the per-line
+        // consensus in market.byLine — populated by buildConsensusTotals
+        // for every distinct line across books, so minority lines (e.g.
+        // Pinnacle's integer 8 when majority is 8.5) resolve without a
+        // network fetch. Only applies to totals; spreads have signed
+        // home_point bucketing via getAltLineFairProb.
+        if (marketType === 'totals' && market.byLine) {
+          const byLineEntry = market.byLine[String(absLine)];
+          if (byLineEntry) {
+            const sideProb = selection === 'over' ? byLineEntry.over?.fairProb : byLineEntry.under?.fairProb;
+            if (sideProb != null && sideProb > 0 && sideProb < 1) return sideProb;
+          }
+        }
         // Pass the SIGNED line so getAltLineFairProb can route to the correct
         // signed home_point bucket (critical: sign flips on alt spreads).
         const key = normalizeEventKey(homeTeam, awayTeam);
