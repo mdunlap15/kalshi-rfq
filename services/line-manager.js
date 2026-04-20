@@ -898,7 +898,16 @@ function __debugGetLineIndex() {
 }
 
 function lookupLine(lineId) {
-  return lineIndex[lineId] || null;
+  const info = lineIndex[lineId];
+  if (!info) return null;
+  // Parse startTime once per line lifetime. Hot-path callers (shouldDecline,
+  // priceParlay) read startTimeMs directly — avoids re-parsing the ISO string
+  // on every RFQ. `undefined` = never computed, `null` = missing startTime,
+  // `NaN` = invalid, number = valid ms.
+  if (info.startTimeMs === undefined) {
+    info.startTimeMs = info.startTime ? Date.parse(info.startTime) : null;
+  }
+  return info;
 }
 
 /**

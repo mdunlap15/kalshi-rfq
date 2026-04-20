@@ -184,7 +184,7 @@ function decimalToAmerican(dec) {
  * Returns null if the parlay should be declined.
  * Returns an offer object if we can price it.
  */
-async function priceParlay(legs) {
+async function priceParlay(legs, opts = {}) {
   priceParlay._lastFailure = null; // clear any prior failure
   // Validate leg count
   if (!legs || legs.length === 0) {
@@ -197,6 +197,12 @@ async function priceParlay(legs) {
     priceParlay._lastFailure = { reason: 'too many legs', detail: `${legs.length} > max ${config.pricing.maxLegs}`, blockerLeg: null };
     return null;
   }
+  // Optional: caller (handleRFQ via shouldDecline) passes a Map of lineId →
+  // lineInfo so we skip redundant lookupLine() calls. shouldDecline already
+  // validated "unknown legs" and "event started" for these, but we keep the
+  // startTime check below as a belt-and-suspenders guard (cheap with
+  // startTimeMs pre-computed).
+  const preResolved = opts.resolvedLineInfos; // Map<lineId, lineInfo> | undefined
 
   // Look up and price each leg.
   //
@@ -219,9 +225,17 @@ async function priceParlay(legs) {
 
   // ------------------------- PHASE 1: Sync validation -------------------------
   const legStates = [];
+  const nowMs = Date.now();
+  // Per-request cache: isStale / getCacheAge / getStaleThreshold repeat for
+  // every leg of a single-sport parlay. Memoize once here.
+  const staleCache = {};
+  const isStaleCached = (sport) => {
+    if (staleCache[sport] === undefined) staleCache[sport] = oddsFeed.isStale(sport);
+    return staleCache[sport];
+  };
   for (const leg of legs) {
     const lineId = leg.line_id || leg.lineId || leg;
-    const lineInfo = lineManager.lookupLine(lineId);
+    const lineInfo = (preResolved && preResolved.get(lineId)) || lineManager.lookupLine(lineId);
 
     if (!lineInfo) {
       log.debug('Pricing', `Declined: unknown line_id ${lineId}`);
@@ -241,15 +255,16 @@ async function priceParlay(legs) {
 
     // Check if event has already started — don't quote with stale pre-game odds.
     // Golf matchups exempt (no commenceTime from DataGolf; isStale check covers).
+    // Uses pre-computed lineInfo.startTimeMs (cached by lookupLine).
     const isGolfMatchup = lineInfo.sport === 'golf_matchups' || lineInfo.oddsApiSport === 'golf_matchups';
-    if (lineInfo.startTime) {
-      const startMs = new Date(lineInfo.startTime).getTime();
+    const startMs = lineInfo.startTimeMs;
+    if (startMs != null) {
       if (isNaN(startMs)) {
         log.debug('Pricing', `Declined: invalid startTime for ${lineInfo.teamName} (${lineInfo.startTime})`);
         priceParlay._lastFailure = { reason: 'unknown start time', detail: `${legLabel} has invalid startTime ${lineInfo.startTime}`, blockerLeg: legDescriptor };
         return null;
       }
-      if (Date.now() > startMs) {
+      if (nowMs > startMs) {
         log.debug('Pricing', `Declined: event already started (${lineInfo.teamName}, started ${lineInfo.startTime})`);
         priceParlay._lastFailure = { reason: 'event started', detail: `${legLabel} already in progress`, blockerLeg: legDescriptor };
         return null;
@@ -263,7 +278,7 @@ async function priceParlay(legs) {
     // Check if prices are stale for this sport. Uses per-sport threshold:
     // MMA/boxing/NFL have tighter windows because they move on news;
     // NCAAB/tennis have looser windows because they only refresh on full cycles.
-    if (oddsFeed.isStale(lineInfo.sport)) {
+    if (isStaleCached(lineInfo.sport)) {
       const ageMin = Math.round(oddsFeed.getCacheAge(lineInfo.sport) * 10) / 10;
       const threshold = oddsFeed.getStaleThreshold(lineInfo.sport);
       log.debug('Pricing', `Declined: stale prices for ${lineInfo.sport} (${ageMin}min old, threshold ${threshold}m)`);
@@ -738,59 +753,12 @@ async function priceParlay(legs) {
   const isSGP = Object.values(eventCounts).some(c => c >= 2);
 
   if (isSGP) {
-    // --- Layer 1: Correlation discount (tiered by pair type) ---
-    // Independent-multiplication pricing ignores same-game positive
-    // correlation that sportsbooks routinely bake into their SGP prices.
-    // Empirical calibration (Apr 2026) against Caesars/DK/FD on a
-    // Rockies ML + Under 11.5 parlay showed they apply roughly a +19%
-    // correlation boost on ML+Total pairings. Our prior flat +1% was
-    // nowhere near enough: settled ML+Total SGPs ran at -57% ROI
-    // ($5k+ loss on $8.8k stake) while spread+Total SGPs landed at
-    // a milder -8%. Tiered boosts tuned to reflect the observed
-    // correlation strength per market pair.
-    //
-    // Defaults are 0: PX rejects any offer priced above its internal
-    // correlation model with "invalid estimated prices". Apr 2026 test
-    // showed boost=0.10 → ~30% acceptance, 0.03 → ~52%, 0 → ~99%.
-    // Left tunable via env as a kill-switch if PX behavior ever changes.
-    const SGP_BOOST_ML_TOTAL = parseFloat(process.env.SGP_BOOST_ML_TOTAL) || 0;
-    const SGP_BOOST_SPREAD_TOTAL = parseFloat(process.env.SGP_BOOST_SPREAD_TOTAL) || 0;
-    const SGP_BOOST_OTHER = parseFloat(process.env.SGP_BOOST_OTHER) || 0;
-    const byEvent = {};
-    for (const pl of pricedLegs) {
-      const eid = pl.lineInfo.pxEventId;
-      if (!eid) continue;
-      if (!byEvent[eid]) byEvent[eid] = [];
-      byEvent[eid].push(pl);
-    }
+    // PX rejects any SGP offer priced above its internal correlation model
+    // with "invalid estimated prices". Apr 2026 test: any boost → rejection,
+    // zero boost → ~99% acceptance. We let PX's own correlation handling
+    // price the dependency and only enforce a Pin-match floor below.
 
-    let correlationBoost = 1.0;
-    const appliedTiers = [];
-    for (const legs of Object.values(byEvent)) {
-      if (legs.length < 2) continue;
-      const mkts = legs.map(l => String(l.lineInfo.marketType || '').toLowerCase());
-      const hasML = mkts.includes('moneyline');
-      const hasSpread = mkts.includes('spread');
-      const hasTotal = mkts.includes('total');
-      let pairBoost = 0;
-      let tier = null;
-      if (hasML && hasTotal) { pairBoost = SGP_BOOST_ML_TOTAL; tier = 'ml_total'; }
-      else if (hasSpread && hasTotal) { pairBoost = SGP_BOOST_SPREAD_TOTAL; tier = 'spread_total'; }
-      else { pairBoost = SGP_BOOST_OTHER; tier = 'other'; }
-      if (pairBoost > 0) {
-        correlationBoost *= (1 + pairBoost);
-        appliedTiers.push(tier);
-      }
-    }
-
-    if (correlationBoost > 1.0) {
-      const beforeDiscount = offeredImpliedProb;
-      offeredImpliedProb *= correlationBoost;
-      pricingMethod = 'sgp_correlation_discount';
-      log.info('Pricing', `SGP correlation discount: ${correlationBoost.toFixed(3)}x boost (tiers=${appliedTiers.join(',')}), offered ${(beforeDiscount*100).toFixed(2)}% → ${(offeredImpliedProb*100).toFixed(2)}% for ${pricedLegs.length}-leg parlay`);
-    }
-
-    // --- Layer 2: Pin-match floor ---
+    // --- Pin-match floor ---
     // Compute Pinnacle raw compound implied prob using DNB-adjusted values
     // where applicable (soccer 2-way moneylines). If Pin data available,
     // ensure we don't offer better than Pin raw minus 0.5%.
@@ -812,26 +780,10 @@ async function priceParlay(legs) {
         if (pinMatchTarget > offeredImpliedProb) {
           log.info('Pricing', `SGP pin-match tightening: ${(offeredImpliedProb*100).toFixed(2)}% → ${(pinMatchTarget*100).toFixed(2)}% (Pin raw ${(pinRawCompound*100).toFixed(2)}%)`);
           offeredImpliedProb = pinMatchTarget;
-          pricingMethod = correlationBoost > 1.0 ? 'sgp_correlation_and_pin_match' : 'sgp_pin_match';
+          pricingMethod = 'sgp_pin_match';
         } else {
-          // Correlation discount already tighter than Pin — keep it
-          if (correlationBoost <= 1.0) pricingMethod = 'sgp_pin_match_keep_baseline';
+          pricingMethod = 'sgp_pin_match_keep_baseline';
         }
-      }
-    }
-
-    // Fallback: no Pin data AND no correlation discount applied
-    if (pinRawCompound == null && correlationBoost <= 1.0) {
-      const fallbackBoost = 1.05;
-      const adjustedFair = Math.min(fairParlayProb * fallbackBoost, 0.99);
-      const adjustedFairDecimal = 1 / adjustedFair;
-      const corrVig = Math.max(config.pricing.defaultVig, 0.03);
-      const adjustedPayout = (adjustedFairDecimal - 1) * (1 - corrVig);
-      const fallbackOfferedProb = 1 / (1 + adjustedPayout);
-      if (fallbackOfferedProb > offeredImpliedProb) {
-        log.info('Pricing', `SGP fallback boost ${fallbackBoost.toFixed(2)}x (Pin missing): ${(offeredImpliedProb*100).toFixed(2)}% → ${(fallbackOfferedProb*100).toFixed(2)}% for ${pricedLegs.length}-leg parlay`);
-        offeredImpliedProb = fallbackOfferedProb;
-        pricingMethod = 'sgp_fallback_boost';
       }
     }
   }
@@ -1133,23 +1085,23 @@ function shouldDecline(legs) {
     };
   }
 
-  // Check all legs are known and events haven't started
+  // Check all legs are known and events haven't started.
+  // Uses pre-computed lineInfo.startTimeMs (parsed lazily on first lookupLine
+  // and cached on the object) to avoid re-parsing the ISO string per RFQ.
   const resolvedLegs = [];
+  const nowMs = Date.now();
   for (const leg of legs) {
     const lineId = leg.line_id || leg.lineId || leg;
     const lineInfo = lineManager.lookupLine(lineId);
     if (!lineInfo) return { declined: true, reason: 'unknown legs', detail: null };
 
-    // Reject if event has already started.
-    // Golf matchups legitimately have no commenceTime (DataGolf doesn't expose
-    // per-matchup tee times); we rely on isStale() instead for those.
     const isGolfMatchup = lineInfo.sport === 'golf_matchups' || lineInfo.oddsApiSport === 'golf_matchups';
-    if (lineInfo.startTime) {
-      const startMs = new Date(lineInfo.startTime).getTime();
+    const startMs = lineInfo.startTimeMs;
+    if (startMs != null) {
       if (isNaN(startMs)) {
         return { declined: true, reason: 'unknown start time', detail: `${lineInfo.teamName || '?'} (${lineInfo.sport || '?'}) has invalid startTime ${lineInfo.startTime} — cannot verify game hasn't started` };
       }
-      if (Date.now() > startMs) {
+      if (nowMs > startMs) {
         return { declined: true, reason: 'event started', detail: `${lineInfo.teamName || '?'} (${lineInfo.sport || '?'}) already in progress` };
       }
     } else if (!isGolfMatchup) {
@@ -1374,7 +1326,11 @@ function shouldDecline(legs) {
     };
   }
 
-  return { declined: false };
+  // On success, surface the resolved lineInfos keyed by lineId so the caller
+  // can pass them to priceParlay and skip redundant lookupLine() calls.
+  const resolvedLineInfos = new Map();
+  for (const r of resolvedLegs) resolvedLineInfos.set(r.lineId, r.lineInfo);
+  return { declined: false, resolvedLineInfos };
 }
 
 /**
