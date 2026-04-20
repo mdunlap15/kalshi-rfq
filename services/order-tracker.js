@@ -2301,12 +2301,26 @@ async function refreshLiveOdds(oddsFeed) {
     return { sportsRefreshed: 0, legsUpdated: 0, inProgressGames: 0 };
   }
 
-  // Fetch live odds for each sport with in-progress games
+  // Fetch live odds for each sport with in-progress games. Strategy:
+  //   1) DK live scraper for sports DK covers (primary — best live
+  //      coverage for NBA/MLB/NHL/NFL, overrides SharpAPI live path)
+  //   2) SharpAPI live fallback for anything DK doesn't cover
+  // The two writes to liveOddsCache are layered: whichever ran last wins.
+  // DK second so it beats any empty SharpAPI payload.
   let sportsRefreshed = 0;
+  const DK_LIVE_SPORTS = new Set(['basketball_nba', 'baseball_mlb', 'icehockey_nhl', 'americanfootball_nfl']);
   for (const sport of sports) {
     try {
-      const result = await oddsFeed.fetchOddsForSport(sport, { live: true });
-      if (result != null) sportsRefreshed++;
+      // SharpAPI live (best-effort — may return empty for some sports).
+      await oddsFeed.fetchOddsForSport(sport, { live: true }).catch(() => null);
+      // DK live (if supported for this sport) — merges on top.
+      if (DK_LIVE_SPORTS.has(sport)) {
+        const dkResult = await oddsFeed.mergeDkLiveOdds(sport).catch(err => {
+          log.warn('LiveOdds', `DK live merge failed for ${sport}: ${err.message}`);
+          return null;
+        });
+        if (dkResult && dkResult.merged > 0) sportsRefreshed++;
+      }
     } catch (err) {
       log.warn('LiveOdds', `Failed to fetch live odds for ${sport}: ${err.message}`);
     }

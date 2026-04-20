@@ -361,6 +361,21 @@ async function startup() {
   refreshDbPnL();
   setInterval(refreshDbPnL, 2 * 60 * 1000);
 
+  // Server-side live-odds refresh. The client dashboard fires a 60s
+  // timer too, but if nobody has the dashboard open (mobile-only
+  // viewing, page closed, overnight), nothing would refresh and
+  // Risk Simulation / Exposure would silently fall back to pre-game
+  // fair probs. Run unconditionally on the server at 60s cadence;
+  // refreshLiveOdds itself cheaply early-exits when there are no
+  // in-progress legs in confirmed parlays.
+  setInterval(async () => {
+    try {
+      await orderTracker.refreshLiveOdds(oddsFeed);
+    } catch (err) {
+      log.debug('LiveOdds', `Refresh failed: ${err.message}`);
+    }
+  }, 60 * 1000);
+
   // Pre-warm DK series prices (NBA + NHL). Puppeteer takes ~15s per
   // sport — too slow to run inline when an RFQ arrives — so fetch at
   // boot and refresh every 10 min. Pricer's getSeriesFairProb() reads
@@ -752,6 +767,55 @@ function startStatusServer() {
     try {
       const result = await orderTracker.refreshLiveOdds(oddsFeed);
       res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Diagnostic: per-sport live-cache status + a sample lookup on an
+  // in-progress leg, to debug why liveFairProb may not be hitting.
+  app.get('/debug/live-odds-coverage', (req, res) => {
+    try {
+      const status = oddsFeed.getLiveCacheStatus();
+      const now = Date.now();
+      const legsByStatus = { covered: 0, uncovered: 0, noSport: 0, notInProgress: 0 };
+      const uncoveredSamples = [];
+      for (const o of Object.values(orderTracker.getRecentOrders(5000))) {
+        if (o.status !== 'confirmed') continue;
+        if (o.meta && o.meta.phantom) continue;
+        const legs = o.legs || (o.meta && o.meta.legs) || [];
+        for (const l of legs) {
+          const sport = l.sport || l.oddsApiSport;
+          if (!sport) { legsByStatus.noSport++; continue; }
+          const st = l.startTime ? new Date(l.startTime).getTime() : null;
+          if (!st || isNaN(st)) { legsByStatus.noSport++; continue; }
+          const elapsed = now - st;
+          if (elapsed < 0 || elapsed > 6 * 60 * 60 * 1000) { legsByStatus.notInProgress++; continue; }
+          if (l.liveFairProb != null) { legsByStatus.covered++; continue; }
+          legsByStatus.uncovered++;
+          if (uncoveredSamples.length < 10) {
+            const probeMarket = l.oddsApiMarket || (l.market === 'moneyline' ? 'h2h' : l.market === 'total' ? 'totals' : l.market === 'spread' ? 'spreads' : l.market);
+            const probed = oddsFeed.getLiveFairProb(
+              sport, l.homeTeam, l.awayTeam, probeMarket, l.oddsApiSelection || l.selection,
+              l.line != null ? Math.abs(l.line) : null, l.startTime
+            );
+            uncoveredSamples.push({
+              team: l.team || l.teamName || '?', market: l.market, line: l.line,
+              sport, home: l.homeTeam, away: l.awayTeam, startTime: l.startTime,
+              probeResult: probed != null ? 'MATCH ' + probed.toFixed(4) : 'no-match',
+            });
+          }
+        }
+      }
+      res.json({
+        ok: true,
+        liveCacheStatus: status,
+        legsByStatus,
+        coveragePct: legsByStatus.covered + legsByStatus.uncovered > 0
+          ? Math.round(legsByStatus.covered / (legsByStatus.covered + legsByStatus.uncovered) * 100)
+          : 0,
+        uncoveredSamples,
+      });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }

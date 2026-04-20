@@ -714,6 +714,228 @@ function parseSeriesData(payload) {
 
 function round(n, dp) { const f = Math.pow(10, dp); return Math.round(n * f) / f; }
 
+// ---------------------------------------------------------------------------
+// LIVE IN-PLAY ODDS SCRAPER
+//
+// Pulls DK's current in-play moneyline + total markets for a sport, parses
+// into a shape that merges into oddsFeed.liveOddsCache. Meant to be called
+// by orderTracker.refreshLiveOdds every 60s when there are confirmed
+// parlays with legs on in-progress games in that sport.
+//
+// Output shape (per sport):
+//   {
+//     fetchedAt: ISO,
+//     sport,
+//     events: [
+//       {
+//         eventId, eventName, homeTeam, awayTeam, commenceTime,
+//         markets: {
+//           h2h:    { home: {fairProb, decimalOdds, americanOdds, ...}, away: {...}, books: 1, vig },
+//           totals: { [line]: { over: {...}, under: {...}, books: 1, vig }, _primary: line },
+//         }
+//       },
+//       ...
+//     ]
+//   }
+//
+// Skipped markets for now: spreads (line matching is fragile for live; we
+// can add it once the foundation is proven). MMA/series/F5 have their own
+// scrapers.
+// ---------------------------------------------------------------------------
+const LIVE_SPORT_URLS = {
+  basketball_nba: 'https://sportsbook.draftkings.com/leagues/basketball/nba',
+  baseball_mlb:   'https://sportsbook.draftkings.com/leagues/baseball/mlb',
+  icehockey_nhl:  'https://sportsbook.draftkings.com/leagues/hockey/nhl',
+  americanfootball_nfl: 'https://sportsbook.draftkings.com/leagues/football/nfl',
+};
+const LIVE_CACHE_TTL_MS = 50 * 1000; // under the 60s refresh cadence
+const liveCacheBySport = {};
+const liveInFlightBySport = {};
+
+function isInProgressEvent(ev) {
+  const t = ev.startEventDate ? new Date(ev.startEventDate).getTime() : null;
+  if (!t || isNaN(t)) return false;
+  const elapsed = Date.now() - t;
+  // Game has tipped off (startEventDate is in past) and within 6h — wider
+  // than refreshLiveOdds's 4h cutoff so we can cover extras / overtime.
+  return elapsed >= 0 && elapsed < 6 * 60 * 60 * 1000;
+}
+
+// DK fires many XHRs per live-page load. We grab any payload containing
+// moneyline or total markets, then downstream filters to in-progress events.
+const LIVE_MARKET_NAMES = new Set([
+  'Moneyline', 'Moneyline (2 Way)', 'Moneyline (2-Way)', 'Moneyline (Regulation)',
+  'Total', 'Total Points', 'Total Runs', 'Total Goals',
+]);
+
+async function fetchLiveMarkets(sport, { force = false } = {}) {
+  const url = LIVE_SPORT_URLS[sport];
+  if (!url) return { fetchedAt: new Date().toISOString(), sport, events: [], skipped: 'unsupported sport' };
+  const cached = liveCacheBySport[sport];
+  if (!force && cached && (Date.now() - cached.at) < LIVE_CACHE_TTL_MS) return cached.data;
+  if (liveInFlightBySport[sport]) return liveInFlightBySport[sport];
+
+  liveInFlightBySport[sport] = (async () => {
+    const startedAt = Date.now();
+    const browser = await puppeteer().launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1400, height: 900 });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+      const payloads = [];
+      page.on('response', async (resp) => {
+        const rurl = resp.url();
+        if (!rurl.includes('sportsbook-nash.draftkings.com')) return;
+        try {
+          const ct = resp.headers()['content-type'] || '';
+          if (!ct.includes('json')) return;
+          const data = await resp.json();
+          if (!data || !data.selections || !data.events || !data.markets) return;
+          const names = (data.markets || []).map(m => m.marketType?.name).filter(Boolean);
+          if (!names.some(n => LIVE_MARKET_NAMES.has(n))) return;
+          payloads.push(data);
+        } catch { /* ignore */ }
+      });
+
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+        await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
+      } catch (err) {
+        log.warn('DkScraper', `Live nav failed for ${sport}: ${err.message}`);
+      }
+
+      // Index events / markets / selections across payloads (dedup by id).
+      const eventsById = {};
+      const marketsById = {};
+      const selectionsByMarketId = {};
+      const seenSel = new Set();
+      for (const p of payloads) {
+        for (const e of (p.events || [])) if (!eventsById[e.id]) eventsById[e.id] = e;
+        for (const m of (p.markets || [])) {
+          const mn = m.marketType?.name;
+          if (!mn || !LIVE_MARKET_NAMES.has(mn)) continue;
+          if (!marketsById[m.id]) marketsById[m.id] = m;
+        }
+        for (const sel of (p.selections || [])) {
+          if (!marketsById[sel.marketId]) continue;
+          if (seenSel.has(sel.id)) continue;
+          seenSel.add(sel.id);
+          (selectionsByMarketId[sel.marketId] ||= []).push(sel);
+        }
+      }
+
+      // Group markets by eventId, build per-event {h2h, totals}.
+      const liveByEvent = {};
+      for (const market of Object.values(marketsById)) {
+        const ev = eventsById[market.eventId];
+        if (!ev) continue;
+        if (!isInProgressEvent(ev)) continue;
+        const sels = selectionsByMarketId[market.id] || [];
+        if (sels.length < 2) continue;
+        if (!liveByEvent[ev.id]) {
+          // Team names: DK events have `name` like "BOS Red Sox @ TOR Blue Jays"
+          // and also `participants`. Prefer participants when present.
+          let home = null, away = null;
+          if (Array.isArray(ev.participants) && ev.participants.length >= 2) {
+            for (const p of ev.participants) {
+              const role = (p.venueRole || '').toLowerCase();
+              if (role === 'home') home = p.name;
+              else if (role === 'away' || role === 'visitor') away = p.name;
+            }
+          }
+          if (!home || !away) {
+            const m = /^(.+?)\s+@\s+(.+)$/.exec((ev.name || '').trim());
+            if (m) { away = m[1].trim(); home = m[2].trim(); }
+          }
+          liveByEvent[ev.id] = {
+            eventId: ev.id,
+            eventName: ev.name,
+            commenceTime: ev.startEventDate,
+            homeTeam: home,
+            awayTeam: away,
+            markets: {},
+          };
+        }
+        const bucket = liveByEvent[ev.id];
+        const mname = market.marketType.name;
+        // Moneyline → h2h
+        if (mname.startsWith('Moneyline')) {
+          // DK sends the two sides in label-order matching participants.
+          // Match side by label vs team name.
+          const parsedSels = sels.map(sel => ({ label: sel.label, ...parseSelectionOdds(sel) }));
+          const homeSel = parsedSels.find(s => s.label && bucket.homeTeam && s.label.includes(bucket.homeTeam.split(' ').pop()));
+          const awaySel = parsedSels.find(s => s.label && bucket.awayTeam && s.label.includes(bucket.awayTeam.split(' ').pop()));
+          if (homeSel && awaySel && homeSel !== awaySel) {
+            const dv = devigPair(homeSel, awaySel);
+            if (dv) {
+              bucket.markets.h2h = {
+                home: { ...homeSel, displayFairProb: homeSel.fairProb },
+                away: { ...awaySel, displayFairProb: awaySel.fairProb },
+                books: 1,
+                vig: dv.vig,
+                source: 'dk-live',
+              };
+            }
+          }
+        } else if (mname.startsWith('Total')) {
+          // Pair Over + Under by line. DK selection labels are "Over N.N" / "Under N.N".
+          const byOutcome = {};
+          for (const sel of sels) {
+            const m = /^\s*(over|under)\s+([0-9]+(?:\.[0-9]+)?)\s*$/i.exec(sel.label || '');
+            if (!m) continue;
+            const outcome = m[1].toLowerCase();
+            const line = parseFloat(m[2]);
+            if (!Number.isFinite(line)) continue;
+            (byOutcome[line] ||= {})[outcome] = { line, ...parseSelectionOdds(sel) };
+          }
+          const totals = {};
+          let primary = null;
+          for (const [line, pair] of Object.entries(byOutcome)) {
+            if (!pair.over || !pair.under) continue;
+            const dv = devigPair(pair.over, pair.under);
+            if (!dv) continue;
+            totals[line] = {
+              line: parseFloat(line),
+              over: { ...pair.over, displayFairProb: pair.over.fairProb },
+              under: { ...pair.under, displayFairProb: pair.under.fairProb },
+              books: 1,
+              vig: dv.vig,
+              source: 'dk-live',
+            };
+            if (primary == null) primary = parseFloat(line);
+          }
+          if (Object.keys(totals).length > 0) {
+            totals._primary = primary;
+            bucket.markets.totals = totals;
+          }
+        }
+      }
+
+      const events = Object.values(liveByEvent).filter(e =>
+        e.homeTeam && e.awayTeam && (e.markets.h2h || e.markets.totals)
+      );
+      const data = {
+        fetchedAt: new Date().toISOString(),
+        sport,
+        events,
+        scrapeMs: Date.now() - startedAt,
+        payloadCount: payloads.length,
+      };
+      liveCacheBySport[sport] = { at: Date.now(), data };
+      log.info('DkScraper', `${sport} live: ${events.length} in-progress events (${data.scrapeMs}ms, ${payloads.length} payloads)`);
+      return data;
+    } finally {
+      await browser.close();
+      delete liveInFlightBySport[sport];
+    }
+  })().catch(err => { delete liveInFlightBySport[sport]; throw err; });
+  return liveInFlightBySport[sport];
+}
+
 module.exports = {
   fetchSeriesMarkets,
   fetchSeriesWinners,
@@ -724,6 +946,7 @@ module.exports = {
   fetchNbaSeriesTotals,
   fetchNhlSeriesTotals,
   fetchMmaFightOdds,
+  fetchLiveMarkets,
   parseSeriesData,
   parseSeriesWinnerData,
   parseSeriesSpreadData,

@@ -2416,6 +2416,51 @@ const H2H_BACKFILL_SPORTS = new Set(['baseball_mlb', 'basketball_nba', 'icehocke
  * After this runs, the line-manager seed picks them up and registers
  * moneylines with PX, unlocking RFQ routing for the full card.
  */
+/**
+ * Pull DK's in-play markets for a sport and write them into liveOddsCache.
+ * Replaces anything SharpAPI's live fetch populated (DK is preferred over
+ * SharpAPI for in-play because of coverage + speed on top-4 US books).
+ * Events keyed by normalized (home, away) pair so getLiveFairProb works.
+ */
+async function mergeDkLiveOdds(sport) {
+  const dk = require('./dk-scraper');
+  let live;
+  try {
+    live = await dk.fetchLiveMarkets(sport);
+  } catch (err) {
+    log.warn('OddsFeed', `DK live fetch failed for ${sport}: ${err.message}`);
+    return { merged: 0, sport, err: err.message };
+  }
+  if (!live || !Array.isArray(live.events) || live.events.length === 0) {
+    return { merged: 0, sport };
+  }
+  // Build events map keyed by pair, keeping arrays for doubleheaders.
+  const events = {};
+  for (const ev of live.events) {
+    if (!ev.homeTeam || !ev.awayTeam) continue;
+    const key = normalizeEventKey(ev.homeTeam, ev.awayTeam);
+    // Remap markets from dk-scraper shape into what oddsFeed.getLiveFairProb expects.
+    // dk-scraper emits markets: { h2h, totals: { [line]: {...}, _primary } }.
+    // liveOddsCache expects the same shape as oddsCache events — we mirror it.
+    const entry = {
+      homeTeam: ev.homeTeam,
+      awayTeam: ev.awayTeam,
+      commenceTime: ev.commenceTime,
+      eventId: 'dk-live-' + ev.eventId,
+      markets: ev.markets || {},
+    };
+    if (!events[key]) events[key] = [];
+    events[key].push(entry);
+  }
+  if (!liveOddsCache[sport]) liveOddsCache[sport] = {};
+  liveOddsCache[sport] = {
+    fetchedAt: Date.now(),
+    events,
+  };
+  log.info('OddsFeed', `DK live merge ${sport}: ${live.events.length} in-progress events cached`);
+  return { merged: live.events.length, sport };
+}
+
 async function mergeDkMmaFights() {
   const dk = require('./dk-scraper');
   let fightData;
@@ -3496,9 +3541,38 @@ function getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, boo
  */
 function getLiveEventMarkets(sport, homeTeam, awayTeam, targetTime) {
   const sportCache = liveOddsCache[sport];
-  if (!sportCache) return null;
+  if (!sportCache || !sportCache.events) return null;
+  // Primary: exact pair match.
   const key = normalizeEventKey(homeTeam, awayTeam);
-  const events = sportCache.events[key];
+  let events = sportCache.events[key];
+  // Fallback 1: flipped orientation (live feed may have stored
+  // as away@home while caller passes home/away).
+  if (!events || events.length === 0) {
+    const flipped = normalizeEventKey(awayTeam, homeTeam);
+    events = sportCache.events[flipped];
+  }
+  // Fallback 2: fuzzy match across all cached events in this sport.
+  // Handles abbreviation mismatches (e.g. caller "Oakland Athletics" vs
+  // live-cache "Athletics"). Matches on last-word equality which is
+  // sufficient for our single-sport context.
+  if (!events || events.length === 0) {
+    const hNorm = normalizeTeamName(homeTeam);
+    const aNorm = normalizeTeamName(awayTeam);
+    const hLast = (hNorm.split(' ').pop() || '').toLowerCase();
+    const aLast = (aNorm.split(' ').pop() || '').toLowerCase();
+    for (const [k, list] of Object.entries(sportCache.events)) {
+      for (const ev of (list || [])) {
+        const ehLast = (normalizeTeamName(ev.homeTeam || '').split(' ').pop() || '').toLowerCase();
+        const eaLast = (normalizeTeamName(ev.awayTeam || '').split(' ').pop() || '').toLowerCase();
+        if ((ehLast === hLast && eaLast === aLast)
+            || (ehLast === aLast && eaLast === hLast)) {
+          events = [ev];
+          break;
+        }
+      }
+      if (events && events.length > 0) break;
+    }
+  }
   if (!events || events.length === 0) return null;
   if (events.length === 1 || !targetTime) return events[0];
   const targetMs = new Date(targetTime).getTime();
@@ -3521,21 +3595,37 @@ function getLiveEventMarkets(sport, homeTeam, awayTeam, targetTime) {
 function getLiveFairProb(sport, homeTeam, awayTeam, marketType, selection, line, targetTime) {
   const event = getLiveEventMarkets(sport, homeTeam, awayTeam, targetTime);
   if (!event || !event.markets) return null;
-  // Reuse same probe-by-market-type logic as getFairProb — we search the markets object
-  // in the live event's payload, same structure as getEventMarkets output
+  // Detect orientation flip. If the found event's home/away are swapped
+  // vs. our caller's args, swap the selection for home/away markets.
+  let sel = selection;
+  let lookupLine = line;
+  const evHomeLast = (normalizeTeamName(event.homeTeam || '').split(' ').pop() || '').toLowerCase();
+  const callerHomeLast = (normalizeTeamName(homeTeam || '').split(' ').pop() || '').toLowerCase();
+  const flipped = evHomeLast && callerHomeLast && evHomeLast !== callerHomeLast;
+  if (flipped) {
+    if (marketType === 'h2h' || marketType === 'spreads') {
+      sel = selection === 'home' ? 'away' : selection === 'away' ? 'home' : selection;
+      if (marketType === 'spreads' && lookupLine != null) lookupLine = -lookupLine;
+    }
+  }
+
   const m = event.markets;
   if (marketType === 'h2h' && m.h2h) {
-    const pick = selection === 'home' ? m.h2h.home : m.h2h.away;
+    const pick = sel === 'home' ? m.h2h.home : m.h2h.away;
     return pick && pick.fairProb ? pick.fairProb : null;
   }
   if (marketType === 'spreads' && m.spreads) {
-    const group = m.spreads[line != null ? Math.abs(line) : (m.spreads._primary || 0)];
+    const group = m.spreads[lookupLine != null ? Math.abs(lookupLine) : (m.spreads._primary || 0)];
     if (!group) return null;
-    const pick = selection === 'home' ? group.home : group.away;
+    const pick = sel === 'home' ? group.home : group.away;
     return pick && pick.fairProb ? pick.fairProb : null;
   }
   if (marketType === 'totals' && m.totals) {
-    const group = m.totals[line];
+    // DK live totals may not have the exact line we registered. Pick
+    // the primary (current line) when caller's line is missing from
+    // the live cache — still more accurate than pre-game.
+    let group = m.totals[line];
+    if (!group && m.totals._primary != null) group = m.totals[m.totals._primary];
     if (!group) return null;
     const pick = selection === 'over' ? group.over : group.under;
     return pick && pick.fairProb ? pick.fairProb : null;
@@ -4364,6 +4454,7 @@ module.exports = {
   fetchAltLines,
   backfillMissingH2h,
   mergeDkMmaFights,
+  mergeDkLiveOdds,
   warmAltLines,
   warmAllSports,
   startAltLineWarmLoop,
