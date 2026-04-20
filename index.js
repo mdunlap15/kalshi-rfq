@@ -488,8 +488,6 @@ function startStatusServer() {
       exposure: {
         maxPerTeam: config.pricing.maxExposurePerTeam,
         teams: orderTracker.getExposureSnapshot(),
-        maxPerGamePct: config.pricing.maxExposurePerGamePct,
-        maxPerGame: getBankroll() * config.pricing.maxExposurePerGamePct / 100,
         games: orderTracker.getGameExposureSnapshot(),
       },
       portfolio: (() => {
@@ -522,16 +520,10 @@ function startStatusServer() {
           accountValue,
           startingBankroll,
           accountPnL,
-          maxDrawdownPct: config.pricing.maxDrawdownPct,
-          maxDrawdown: getBankroll() * config.pricing.maxDrawdownPct / 100,
           totalRisk: orderTracker.getTotalPortfolioRisk(),
           currentRisk: orderTracker.getTotalPortfolioRisk(),
           totalToWin: orderTracker.getTotalToWin(),
           maxRiskPerParlay: config.pricing.maxRiskPerParlay,
-          maxRiskPerParlayPct: config.pricing.maxRiskPerParlayPct,
-          maxRiskPerParlayFromPct: config.pricing.maxRiskPerParlayPct > 0
-            ? getBankroll() * config.pricing.maxRiskPerParlayPct / 100
-            : null,
         };
       })(),
       alerts: orderTracker.getAlerts(),

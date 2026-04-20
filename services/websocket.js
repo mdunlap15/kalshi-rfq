@@ -692,13 +692,8 @@ async function handleConfirm(data) {
     // and odds=-1774 (SP side). Our risk on this parlay is $1774.
     // Our risk = confirmedStake directly, no multiplication.
     const ourRisk = confirmedStake || 0;
-    // Per-parlay limit: use % of bankroll or fixed amount, whichever is set
-    const bankroll = getBankroll();
-    const maxRiskPct = config.pricing.maxRiskPerParlayPct;
-    const maxRiskFixed = config.pricing.maxRiskPerParlay;
-    const maxRiskFromPct = maxRiskPct > 0 ? bankroll * maxRiskPct / 100 : Infinity;
-    const maxRisk = Math.min(maxRiskFixed || Infinity, maxRiskFromPct);
-    if (maxRisk > 0 && maxRisk < Infinity && ourRisk > maxRisk) {
+    const maxRisk = config.pricing.maxRiskPerParlay;
+    if (maxRisk > 0 && ourRisk > maxRisk) {
       log.warn('Confirm', `Rejecting: our risk $${ourRisk.toFixed(2)} exceeds max $${maxRisk.toFixed(0)} (stake=$${confirmedStake}, odds=${confirmedOdds})`);
       orderTracker.recordRejection(parlayId, `risk $${ourRisk.toFixed(0)} > max $${maxRisk}`);
       orderTracker.recordExposureRejection(parlayId, ourRisk, 'per-parlay risk limit', [{ team: 'parlay-cap', wouldBe: ourRisk, limit: maxRisk }]);
@@ -708,28 +703,14 @@ async function handleConfirm(data) {
       return;
     }
 
-    // Check portfolio-level drawdown limit
-    // Check game-level exposure
-    const maxPerGame = getBankroll() * config.pricing.maxExposurePerGamePct / 100;
     const origLegs = originalOrder.legs || originalOrder.meta?.legs || [];
     const legsForCheck = origLegs.map(l => ({ ...l, lineInfo: l, team: l.team || l.teamName, fairProb: l.fairProb }));
 
-    // Release this parlay's pending reservation BEFORE the exposure checks
+    // Release this parlay's pending reservation BEFORE the exposure check
     // below so we don't double-count (real ourRisk + pending worst-case for
     // the same parlay). The remaining pending totals reflect OTHER in-flight
     // quotes, which is what we want to include in the cap.
     orderTracker.releasePending(parlayId);
-
-    const gameCheck = orderTracker.checkGameExposure(legsForCheck, ourRisk, maxPerGame);
-    if (!gameCheck.allowed) {
-      log.warn('Confirm', `Rejecting: ${gameCheck.reason}`);
-      orderTracker.recordRejection(parlayId, gameCheck.reason);
-      orderTracker.recordExposureRejection(parlayId, ourRisk, 'game exposure limit');
-      if (callbackUrl) {
-        await px.confirmOrder(callbackUrl, orderUuid, 'reject');
-      }
-      return;
-    }
 
     // Per-team exposure re-check — CRITICAL. shouldDecline ran at price time
     // with stale exposure data; by confirm time other parlays may have pushed
@@ -743,18 +724,6 @@ async function handleConfirm(data) {
       log.warn('Confirm', `Rejecting: ${teamCheck.reason}`);
       orderTracker.recordRejection(parlayId, teamCheck.reason);
       orderTracker.recordExposureRejection(parlayId, ourRisk, 'team exposure limit', teamCheck.violations);
-      if (callbackUrl) {
-        await px.confirmOrder(callbackUrl, orderUuid, 'reject');
-      }
-      return;
-    }
-
-    const maxDrawdown = getBankroll() * config.pricing.maxDrawdownPct / 100;
-    const portfolioCheck = orderTracker.checkPortfolioRisk(ourRisk, maxDrawdown);
-    if (!portfolioCheck.allowed) {
-      log.warn('Confirm', `Rejecting: portfolio risk $${portfolioCheck.current.toFixed(0)} + $${ourRisk.toFixed(0)} > max drawdown $${maxDrawdown.toFixed(0)}`);
-      orderTracker.recordRejection(parlayId, `portfolio risk $${(portfolioCheck.current + ourRisk).toFixed(0)} > $${maxDrawdown.toFixed(0)}`);
-      orderTracker.recordExposureRejection(parlayId, ourRisk, 'portfolio drawdown limit', [{ team: 'portfolio', wouldBe: portfolioCheck.current + ourRisk, limit: maxDrawdown }]);
       if (callbackUrl) {
         await px.confirmOrder(callbackUrl, orderUuid, 'reject');
       }

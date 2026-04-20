@@ -1304,28 +1304,6 @@ function shouldDecline(legs) {
     return { declined: true, reason: 'team exposure limit', detail: exposureCheck.reason, violations: exposureCheck.violations, estPayout };
   }
 
-  // Check game-level exposure limit
-  const maxPerGame = getBankroll() * config.pricing.maxExposurePerGamePct / 100;
-  const gameCheck = orderTracker.checkGameExposure(resolvedLegs, estPayout, maxPerGame);
-  if (!gameCheck.allowed) {
-    log.info('Pricing', `Game exposure limit: ${gameCheck.reason}`);
-    return { declined: true, reason: 'game exposure limit', detail: gameCheck.reason, violations: [{ team: 'game-level', wouldBe: gameCheck.wouldBe || 0, limit: gameCheck.limit || 0 }], estPayout };
-  }
-
-  // Check portfolio-level drawdown limit
-  const maxDrawdown = getBankroll() * config.pricing.maxDrawdownPct / 100;
-  const portfolioCheck = orderTracker.checkPortfolioRisk(estPayout, maxDrawdown);
-  if (!portfolioCheck.allowed) {
-    log.info('Pricing', `Portfolio risk limit: $${portfolioCheck.current.toFixed(0)} + $${estPayout.toFixed(0)} > max $${portfolioCheck.limit.toFixed(0)}`);
-    return {
-      declined: true,
-      reason: 'portfolio drawdown limit',
-      detail: `$${portfolioCheck.current.toFixed(0)} current + $${estPayout.toFixed(0)} new > $${portfolioCheck.limit.toFixed(0)} max`,
-      violations: [{ team: 'portfolio', wouldBe: portfolioCheck.current + estPayout, limit: portfolioCheck.limit }],
-      estPayout,
-    };
-  }
-
   // On success, surface the resolved lineInfos keyed by lineId so the caller
   // can pass them to priceParlay and skip redundant lookupLine() calls.
   const resolvedLineInfos = new Map();

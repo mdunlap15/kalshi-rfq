@@ -115,26 +115,13 @@ const config = {
     confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
     offerValidSeconds: parseInt(process.env.OFFER_VALID_SECONDS) || 60,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
-    bankroll: parseFloat(process.env.BANKROLL) || 0,
-    // Override live PX balance with a fixed amount. Set to 0 (or unset) to use live balance.
-    assumedBankroll: parseFloat(process.env.ASSUMED_BANKROLL) || 0,
-    // Starting account balance, used as the baseline for account-based P&L
-    // (accountPnL = liveBalance - startingBankroll). PX balance is the source
-    // of truth — this number anchors the P&L calculation to a known origin.
-    // PX does NOT separately deduct SP risk from balance, so balance alone
-    // is the total account value.
     // startingBankroll anchors the account-based P&L calculation
     // (balance − starting). If env var is NOT set, leave as null so the
     // dashboard falls back to the tracker's runningPnL (derived from
-    // real settled outcomes, not an arbitrary anchor) — defaulting to
-    // $20K was a sandbox-era assumption and silently made prod P&L off
-    // by (real-initial − $20K).
+    // real settled outcomes, not an arbitrary anchor).
     startingBankroll: process.env.STARTING_BANKROLL != null && process.env.STARTING_BANKROLL !== ''
       ? parseFloat(process.env.STARTING_BANKROLL)
       : null,
-    maxDrawdownPct: parseFloat(process.env.MAX_DRAWDOWN_PCT) || 100,
-    maxRiskPerParlayPct: parseFloat(process.env.MAX_RISK_PER_PARLAY_PCT) || 5,
-    maxExposurePerGamePct: parseFloat(process.env.MAX_EXPOSURE_PER_GAME_PCT) || 10,
     maxOdds: parseInt(process.env.MAX_ODDS) || 1500,
   },
   supportedSports: (process.env.SUPPORTED_SPORTS || 'basketball_nba,basketball_ncaab,basketball_wnba,baseball_mlb,icehockey_nhl,tennis,soccer,soccer_usa_mls,soccer_epl,soccer_mexico_ligamx,soccer_brazil_campeonato,soccer_conmebol_libertadores')
@@ -180,14 +167,12 @@ const config = {
 };
 
 /**
- * Get effective bankroll — assumed override (sandbox testing) takes priority,
- * then live PX balance, then fallback to env var.
+ * Get effective bankroll — auto-populated from live PX balance at startup
+ * and every refresh cycle. Used only for display/P&L anchoring now that the
+ * percent-based exposure caps have been removed.
  */
 function getBankroll() {
-  if (config.pricing.assumedBankroll && config.pricing.assumedBankroll > 0) {
-    return config.pricing.assumedBankroll;
-  }
-  return config.pricing.liveBankroll || config.pricing.bankroll;
+  return config.pricing.liveBankroll || 0;
 }
 
 // Validate required config
