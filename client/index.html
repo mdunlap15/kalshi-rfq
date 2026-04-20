@@ -7488,6 +7488,10 @@
   if (!window._parlayVsBooksRange) {
     window._parlayVsBooksRange = '7d'; // '24h' | '3d' | '7d' | '14d' | '30d' | 'all'
   }
+  if (!window._parlayVsBooksSport) {
+    // 'all' | sport key (e.g. 'baseball_mlb') | 'soccer' (all soccer_*) | 'multi'
+    window._parlayVsBooksSport = 'all';
+  }
   const RANGE_OPTIONS = [
     // 'session' = current server session (everything since last boot).
     // ms: null signals "derive cutoff from window._lastIntel.sessionStartedAt".
@@ -7513,6 +7517,10 @@
   }
   function toggleParlayVsBooksSeries(which) {
     window._parlayVsBooksToggle[which] = !window._parlayVsBooksToggle[which];
+    if (window._parlayVsBooksData) renderChartParlayVsBooks(null);
+  }
+  function setParlayVsBooksSport(sp) {
+    window._parlayVsBooksSport = sp;
     if (window._parlayVsBooksData) renderChartParlayVsBooks(null);
   }
 
@@ -7577,6 +7585,13 @@
           return '• ' + name + (dt ? ' (' + dt + ')' : '');
         }).join('\n');
 
+        // Distinct sports touched by this parlay — used by the sport filter.
+        // Soccer leagues collapse to 'soccer' for the filter UI (treats
+        // EPL/La Liga/MLS as one bucket), but we also keep the raw list for
+        // finer-grained analysis if we ever need it.
+        const rawSports = [...new Set(legs.map(l => l.sport).filter(Boolean))];
+        const bucketSports = [...new Set(rawSports.map(s => s && s.startsWith('soccer') ? 'soccer' : s))];
+
         // Distance from fair in pp: (series prob − fair prob) × 100
         const distFromFair = (sp) => sp != null ? ((sp - fairProb) * 100) : null;
 
@@ -7585,6 +7600,9 @@
           legCount: legs.length,
           isConfirmed: o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')),
           stake: o.confirmedStake || o.maxStake || o.stake || 0,
+          rawSports,
+          bucketSports,
+          isMultiSport: bucketSports.length > 1,
           fairProb,
           myProb,
           pinProb, dkProb, fdProb, kProb,
@@ -7635,19 +7653,53 @@
     }
     html += '</span>';
     html += '</div>';
-    // Confirmed / Not-filled filter
+    // Confirmed / Not-filled filter + sport filter
     const F = window._parlayVsBooksFilter;
-    html += '<div style="display:flex; gap:4px; justify-content:flex-end; margin-bottom:8px;">';
+    const SPORT = window._parlayVsBooksSport;
+    // Build sport dropdown options dynamically from the data we have, so
+    // only sports actually present in the current range show up. 'multi'
+    // added if any cross-sport parlays exist. Soccer leagues collapse
+    // under one 'soccer' bucket.
+    const sportsInData = new Set();
+    for (const d of data) {
+      for (const s of (d.bucketSports || [])) sportsInData.add(s);
+      if (d.isMultiSport) sportsInData.add('__multi__');
+    }
+    const sportLabelMap = {
+      baseball_mlb: 'MLB', basketball_nba: 'NBA', basketball_ncaab: 'NCAAB',
+      basketball_wnba: 'WNBA', icehockey_nhl: 'NHL', tennis: 'Tennis',
+      soccer: 'Soccer', mma_mixed_martial_arts: 'MMA', boxing_boxing: 'Boxing',
+      golf_matchups: 'Golf', __multi__: 'Multi-Sport',
+    };
+    const sportOrder = ['baseball_mlb', 'basketball_nba', 'basketball_ncaab', 'basketball_wnba', 'icehockey_nhl', 'tennis', 'soccer', 'mma_mixed_martial_arts', 'boxing_boxing', 'golf_matchups', '__multi__'];
+    const sportOpts = sportOrder.filter(k => sportsInData.has(k));
+    html += '<div style="display:flex; gap:8px; justify-content:flex-end; margin-bottom:8px; align-items:center;">';
+    html += '<label style="font-size:11px; color:var(--text3);">Sport:'
+      + ' <select onchange="setParlayVsBooksSport(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; margin-left:2px;">'
+      + '<option value="all"' + (SPORT === 'all' ? ' selected' : '') + '>All sports</option>';
+    for (const k of sportOpts) {
+      html += '<option value="' + k + '"' + (SPORT === k ? ' selected' : '') + '>' + (sportLabelMap[k] || k) + '</option>';
+    }
+    html += '</select></label>';
     html += '<button onclick="setParlayVsBooksFilter(\'all\')" style="' + btnStyle(F === 'all') + '">All</button>';
     html += '<button onclick="setParlayVsBooksFilter(\'confirmed\')" style="' + btnStyle(F === 'confirmed') + '">Confirmed</button>';
     html += '<button onclick="setParlayVsBooksFilter(\'notfilled\')" style="' + btnStyle(F === 'notfilled') + '">Not Filled</button>';
     html += '</div>';
 
-    // Filter data by confirmed status
-    const filtered = F === 'all' ? data : data.filter(d => F === 'confirmed' ? d.isConfirmed : !d.isConfirmed);
-    const confirmedCount = data.filter(d => d.isConfirmed).length;
+    // Apply confirmed-status filter, then sport filter
+    let filtered = F === 'all' ? data : data.filter(d => F === 'confirmed' ? d.isConfirmed : !d.isConfirmed);
+    if (SPORT && SPORT !== 'all') {
+      if (SPORT === '__multi__') {
+        filtered = filtered.filter(d => d.isMultiSport);
+      } else {
+        filtered = filtered.filter(d => (d.bucketSports || []).includes(SPORT));
+      }
+    }
+    const confirmedCount = filtered.filter(d => d.isConfirmed).length;
+    const sportSuffix = (SPORT && SPORT !== 'all') ? ' · ' + (sportLabelMap[SPORT] || SPORT) + ' only' : '';
     html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">'
-      + data.length + ' parlays · ' + confirmedCount + ' confirmed · ' + (R === 'all' ? 'all time' : R === 'session' ? 'this session' : 'last ' + RANGE_OPTIONS.find(r => r.key === R).label)
+      + filtered.length + ' parlays · ' + confirmedCount + ' confirmed · ' + (R === 'all' ? 'all time' : R === 'session' ? 'this session' : 'last ' + RANGE_OPTIONS.find(r => r.key === R).label)
+      + sportSuffix
       + ' · &#9679; solid = confirmed · &#9675; hollow = not filled · size ∝ stake</div>';
 
     // --- Scatter ---
