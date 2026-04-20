@@ -51,16 +51,17 @@ const config = {
     // baseVig + favorite ramp, so extreme favorites still pay more.
     // Default 0.05 (5%); tunable via VIG_SERIES_MIN env var.
     vigSeriesMin: parseFloat(process.env.VIG_SERIES_MIN) || 0.05,
-    // Hard cap on NBA series_winner favorite pricing. If our fair prob
-    // for an NBA series favorite exceeds this threshold (default -500 =
-    // 500/600 = 0.8333 fair prob), decline the leg rather than quote.
-    // Even with capped de-vig, a small error at these extremes has
-    // outsized $ impact per offer, and DK's posted line can run well
-    // beyond what our 2-way de-vig can ever recover. Tightened from
-    // -1000 to -500 after reviewing NBA SP P&L — heavy favorites on
-    // series markets were a meaningful chunk of the NBA bleed.
+    // Threshold on NBA series_winner favorite pricing. If our fair prob
+    // for an NBA series_winner favorite exceeds this cutoff (default
+    // -250 = 250/350 = 0.7143 fair prob), we quote at DK's posted book
+    // price directly instead of our de-vigged-plus-vig number — avoids
+    // drifting out of market on extreme favorites where our ramp would
+    // produce an uncompetitive line. Applies to series_winner only;
+    // series_spread and series_total pass through normally.
+    // Tightened -1000 → -500 → -250 over iterations as we measured
+    // heavy favorites as a meaningful chunk of NBA series bleed.
     // Tunable via NBA_SERIES_FAV_CAP_ODDS env var.
-    nbaSeriesFavoriteCapAmericanOdds: parseInt(process.env.NBA_SERIES_FAV_CAP_ODDS) || -500,
+    nbaSeriesFavoriteCapAmericanOdds: parseInt(process.env.NBA_SERIES_FAV_CAP_ODDS) || -250,
     // Cap the favorite side's share of the book's overround during
     // 2-way de-vig. Proportional de-vig (share = favImplied/sumImplied)
     // over-corrects heavy favorites — on DK -3000/+1300 it strips ~4pp

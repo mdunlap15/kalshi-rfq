@@ -75,13 +75,19 @@ function getSeriesFairProb(lineInfo) {
     }
   }
 
-  // NBA series heavy-favorite: beyond FV of -500, quote DK's offered
-  // price directly (no vig) instead of our de-vigged-plus-vig number.
-  // Avoids drifting out of market on extreme favorites where our ramp
-  // would produce an uncompetitive line. Applies to series_winner and
-  // series_spread; totals pass through (no "favorite" concept).
-  if (sportKey === 'nba' && (isSeriesWinner || isSeriesSpread)) {
-    const threshProb = 500 / 600; // FV of -500
+  // NBA series heavy-favorite: beyond the config'd FV cap (default -250),
+  // quote DK's offered price directly (no vig) instead of our
+  // de-vigged-plus-vig number. Avoids drifting out of market on extreme
+  // favorites where our ramp would produce an uncompetitive line.
+  // Applies ONLY to series_winner (the "moneyline" of series betting).
+  // Series spread and series total pass through normally — those lines
+  // are calibrated to ~50/50 and the fav-cap concept doesn't apply.
+  if (sportKey === 'nba' && isSeriesWinner) {
+    // Convert config'd American odds cap → implied probability threshold.
+    // Negative American odds -N → N / (N + 100). Positive odds +N → 100 / (N + 100).
+    const capAm = config.pricing.nbaSeriesFavoriteCapAmericanOdds || -250;
+    const absCap = Math.abs(capAm);
+    const threshProb = capAm < 0 ? absCap / (absCap + 100) : 100 / (absCap + 100);
     if (hit.fairProb > threshProb) {
       let bookDec = hit.decimalOdds;
       if ((!bookDec || bookDec <= 1) && hit.americanOdds != null) {
@@ -91,7 +97,7 @@ function getSeriesFairProb(lineInfo) {
       }
       if (bookDec && bookDec > 1) {
         const bookImplied = 1 / bookDec;
-        log.info('Pricing', `NBA series heavy fav ${teamName} ${mt || ''} fair ${hit.fairProb.toFixed(4)} > -500 cutoff — using DK book price ${hit.americanOdds} (implied ${bookImplied.toFixed(4)})`);
+        log.info('Pricing', `NBA series heavy fav ${teamName} ${mt || ''} fair ${hit.fairProb.toFixed(4)} > ${capAm} cutoff — using DK book price ${hit.americanOdds} (implied ${bookImplied.toFixed(4)})`);
         return { fairProb: hit.fairProb, bookPriceOverride: bookImplied };
       }
     }
@@ -822,16 +828,16 @@ async function priceParlay(legs, opts = {}) {
   const americanOdds = decimalToAmerican(decimalOdds);
 
   // Decline heavy favorite moneyline legs — PX sign-flip bug causes overpayment.
-  // NBA: no moneyline favorites beyond -220 (fairProb > 0.6875)
+  // NBA: no moneyline favorites beyond -250 (fairProb > 0.7143)
   // Tennis: no moneyline favorites beyond -300 (fairProb > 0.75)
   for (const leg of pricedLegs) {
     if (leg.lineInfo.marketType !== 'moneyline') continue;
     const impliedOdds = leg.fairProb >= 0.5 ? Math.round(-100 * leg.fairProb / (1 - leg.fairProb)) : Math.round(100 * (1 - leg.fairProb) / leg.fairProb);
-    if (leg.lineInfo.sport === 'basketball_nba' && leg.fairProb > 0.6875) {
+    if (leg.lineInfo.sport === 'basketball_nba' && leg.fairProb > (250 / 350)) {
       log.debug('Pricing', `Declined: NBA moneyline ${leg.lineInfo.teamName} is heavy favorite (${impliedOdds})`);
       priceParlay._lastFailure = {
         reason: 'NBA heavy favorite',
-        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -220 limit`,
+        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -250 limit`,
         blockerLeg: { team: leg.lineInfo.teamName, sport: 'basketball_nba', market: 'moneyline' },
       };
       return null;
