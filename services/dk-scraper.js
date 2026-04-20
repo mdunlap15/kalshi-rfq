@@ -742,21 +742,12 @@ function round(n, dp) { const f = Math.pow(10, dp); return Math.round(n * f) / f
 // can add it once the foundation is proven). MMA/series/F5 have their own
 // scrapers.
 // ---------------------------------------------------------------------------
-// DK's /live route renders moneyline + spread + total inline per in-progress
-// game in a single view (vs the league pages which only surface moneyline for
-// live games in the featured strip). Filter by sport-category so we only get
-// events for the target league. URL format confirmed via DK's live navigation:
-//   /live?category=basketball&subcategory=nba  etc.
+// League pages surface in-play markets inline for any game currently live.
+// Previous attempt to use /live?category=...&subcategory=... returned no
+// usable XHR payloads and also stalled the scrape wall-time, so we're back
+// on the league URL — but now with spread parsing enabled (see below), which
+// picks up DK's live spread selections whenever they render on the page.
 const LIVE_SPORT_URLS = {
-  basketball_nba: 'https://sportsbook.draftkings.com/live?category=basketball&subcategory=nba',
-  baseball_mlb:   'https://sportsbook.draftkings.com/live?category=baseball&subcategory=mlb',
-  icehockey_nhl:  'https://sportsbook.draftkings.com/live?category=hockey&subcategory=nhl',
-  americanfootball_nfl: 'https://sportsbook.draftkings.com/live?category=football&subcategory=nfl',
-};
-// League-page fallback if /live renders empty (e.g. no in-progress games; DK
-// sometimes redirects to a default sport). We navigate both URLs in a single
-// browser session so the second nav reuses the first's Akamai challenge.
-const LIVE_SPORT_FALLBACK_URLS = {
   basketball_nba: 'https://sportsbook.draftkings.com/leagues/basketball/nba',
   baseball_mlb:   'https://sportsbook.draftkings.com/leagues/baseball/mlb',
   icehockey_nhl:  'https://sportsbook.draftkings.com/leagues/hockey/nhl',
@@ -816,18 +807,11 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
         } catch { /* ignore */ }
       });
 
-      // Navigate /live first (renders all markets inline for in-progress
-      // games). Then hit the league page in the same session so we pick up
-      // any additional markets DK only surfaces there (Akamai challenge is
-      // already solved, so the second nav is fast).
-      const navUrls = [url, LIVE_SPORT_FALLBACK_URLS[sport]].filter(Boolean);
-      for (const navUrl of navUrls) {
-        try {
-          await page.goto(navUrl, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-          await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
-        } catch (err) {
-          log.warn('DkScraper', `Live nav failed (${navUrl}): ${err.message}`);
-        }
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+        await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
+      } catch (err) {
+        log.warn('DkScraper', `Live nav failed for ${sport}: ${err.message}`);
       }
 
       // Index events / markets / selections across payloads (dedup by id).
