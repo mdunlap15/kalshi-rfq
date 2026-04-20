@@ -749,13 +749,13 @@ async function priceParlay(legs) {
     // a milder -8%. Tiered boosts tuned to reflect the observed
     // correlation strength per market pair.
     //
-    // Tunable via env so we can iterate without redeploys:
-    //   SGP_BOOST_ML_TOTAL       (default 0.15)
-    //   SGP_BOOST_SPREAD_TOTAL   (default 0.05)
-    //   SGP_BOOST_OTHER          (default 0.03)
-    const SGP_BOOST_ML_TOTAL = parseFloat(process.env.SGP_BOOST_ML_TOTAL) || 0.15;
-    const SGP_BOOST_SPREAD_TOTAL = parseFloat(process.env.SGP_BOOST_SPREAD_TOTAL) || 0.05;
-    const SGP_BOOST_OTHER = parseFloat(process.env.SGP_BOOST_OTHER) || 0.03;
+    // Defaults are 0: PX rejects any offer priced above its internal
+    // correlation model with "invalid estimated prices". Apr 2026 test
+    // showed boost=0.10 → ~30% acceptance, 0.03 → ~52%, 0 → ~99%.
+    // Left tunable via env as a kill-switch if PX behavior ever changes.
+    const SGP_BOOST_ML_TOTAL = parseFloat(process.env.SGP_BOOST_ML_TOTAL) || 0;
+    const SGP_BOOST_SPREAD_TOTAL = parseFloat(process.env.SGP_BOOST_SPREAD_TOTAL) || 0;
+    const SGP_BOOST_OTHER = parseFloat(process.env.SGP_BOOST_OTHER) || 0;
     const byEvent = {};
     for (const pl of pricedLegs) {
       const eid = pl.lineInfo.pxEventId;
