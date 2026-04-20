@@ -268,6 +268,11 @@ async function fetchOddsForSport(sport, opts) {
 
   // Fetch each market type separately to avoid the Hobby tier row cap
   const rows = [];
+  // Per-market diagnostic: row count, event count, book count. Logged in one
+  // compact line at info level after the loop so the user can verify which
+  // markets SharpAPI is actually returning data for on each sport (e.g.,
+  // empty team_total for NBA would signal a plan gate or upstream gap).
+  const marketBreakdown = {};
   for (const mt of marketTypesList) {
     const url = `${config.oddsApi.baseUrl}/odds`
       + `?${mapping.param}=${mapping.value}`
@@ -281,16 +286,29 @@ async function fetchOddsForSport(sport, opts) {
       if (!resp.ok) {
         const text = await resp.text();
         log.warn('OddsFeed', `SharpAPI ${resp.status} for ${mapping.value}/${mt}: ${text.substring(0, 100)}`);
+        marketBreakdown[mt] = { rows: 0, events: 0, books: 0, error: resp.status };
         continue;
       }
       const body = await resp.json();
       const mtRows = body.data || [];
       rows.push(...mtRows);
+      const uniqueEvents = new Set(mtRows.map(r => r.event_id).filter(Boolean));
+      const uniqueBooks = new Set(mtRows.map(r => r.sportsbook).filter(Boolean));
+      marketBreakdown[mt] = { rows: mtRows.length, events: uniqueEvents.size, books: uniqueBooks.size };
       log.debug('OddsFeed', `  ${mt}: ${mtRows.length} rows`);
     } catch (err) {
       log.warn('OddsFeed', `Fetch error for ${mapping.value}/${mt}: ${err.message}`);
+      marketBreakdown[mt] = { rows: 0, events: 0, books: 0, error: err.message };
     }
   }
+  // Compact one-line breakdown: "moneyline=450r/15e/4b, team_total=0r/0e/0b(EMPTY), ..."
+  const breakdownStr = Object.entries(marketBreakdown)
+    .map(([mt, b]) => {
+      const flag = b.error ? `(ERR:${b.error})` : (b.rows === 0 ? '(EMPTY)' : '');
+      return `${mt}=${b.rows}r/${b.events}e/${b.books}b${flag}`;
+    })
+    .join(', ');
+  log.info('OddsFeed', `SharpAPI ${mapping.value} breakdown: ${breakdownStr}`);
   log.info('OddsFeed', `Got ${rows.length} total odds rows for ${mapping.value} across ${marketTypesList.length} markets`);
 
   // Group by event, then by market+selection to de-vig across books
