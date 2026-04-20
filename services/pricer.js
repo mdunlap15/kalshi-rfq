@@ -1095,6 +1095,19 @@ function shouldDecline(legs) {
     const lineInfo = lineManager.lookupLine(lineId);
     if (!lineInfo) return { declined: true, reason: 'unknown legs', detail: null };
 
+    // NBA series markets settle only when the full playoff series ends (could
+    // be a week+ after the confirm). Avoid locking bankroll on those.
+    if (lineInfo.sport === 'basketball_nba' &&
+        (lineInfo.marketType === 'series_winner' ||
+         lineInfo.marketType === 'series_spread' ||
+         lineInfo.marketType === 'series_total')) {
+      return {
+        declined: true,
+        reason: 'NBA series disabled',
+        detail: `${lineInfo.teamName || lineInfo.pxEventName || 'NBA series'} (${lineInfo.marketType}) — series markets tie up bankroll until series ends`,
+      };
+    }
+
     const isGolfMatchup = lineInfo.sport === 'golf_matchups' || lineInfo.oddsApiSport === 'golf_matchups';
     const startMs = lineInfo.startTimeMs;
     if (startMs != null) {
@@ -1113,10 +1126,10 @@ function shouldDecline(legs) {
     resolvedLegs.push({ lineId, lineInfo });
   }
 
-  // Check for correlated same-game legs.
-  // Allowed: spread/moneyline + total on same game (low correlation)
-  // Blocked: spread + moneyline on same game (high correlation)
-  // Blocked: two of the same market type on same game
+  // Block any same-game parlay. SGPs ran at −15.3% ROI over 134 settled
+  // fills (−$4,431) because independent-leg pricing ignores positive
+  // correlation that sportsbooks bake in. Blanket decline is safer than
+  // per-combo rules until we have a PX-accepted correlation adjustment.
   const byEvent = {};
   for (const l of resolvedLegs) {
     const eid = l.lineInfo.pxEventId;
@@ -1126,119 +1139,10 @@ function shouldDecline(legs) {
   }
   for (const [eid, entries] of Object.entries(byEvent)) {
     if (entries.length <= 1) continue;
-    const types = entries.map(e => e.market);
-    const gameLabel = entries[0].away && entries[0].home ? `${entries[0].away} @ ${entries[0].home}` : `event ${eid}`;
-    const hasSpread = types.includes('spread');
-    const hasMoneyline = types.includes('moneyline');
-    const hasDoubleChance = types.includes('double_chance');
-    const hasBtts = types.includes('btts') || types.includes('both_teams_to_score');
-    const hasTotal = types.includes('total');
-    const hasF5Moneyline = types.some(t => /first_5_innings_moneyline|first_five_innings_moneyline/.test(t));
-    const hasF5RunLine = types.some(t => /first_5_innings_run_line|first_five_innings_run_line/.test(t));
-    const hasF5Total = types.some(t => /first_5_innings_total|first_five_innings_total/.test(t));
-    const uniqueTypes = new Set(types);
-    // Block: two of the same type on same game
-    if (uniqueTypes.size < types.length) {
-      const dup = types.find((t, i) => types.indexOf(t) !== i);
-      log.info('Pricing', `Declined: duplicate ${dup} on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `two ${dup} legs on same game: ${gameLabel}` };
-    }
-    // Block: spread + moneyline (highly correlated)
-    if (hasSpread && hasMoneyline) {
-      log.info('Pricing', `Declined: spread + moneyline on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `spread + moneyline on same game: ${gameLabel}` };
-    }
-    // Block: double_chance + moneyline (double chance is derived from moneyline, perfectly correlated)
-    if (hasDoubleChance && hasMoneyline) {
-      log.info('Pricing', `Declined: double_chance + moneyline on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `double_chance + moneyline on same game: ${gameLabel}` };
-    }
-    // Block: double_chance + spread (both tied to match result)
-    if (hasDoubleChance && hasSpread) {
-      log.info('Pricing', `Declined: double_chance + spread on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `double_chance + spread on same game: ${gameLabel}` };
-    }
-    // Block: BTTS + total (both depend on goal count, strongly correlated)
-    if (hasBtts && hasTotal) {
-      log.info('Pricing', `Declined: BTTS + total on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `BTTS + total on same game: ${gameLabel}` };
-    }
-    // Block: ANY sub-game market (F5 / half / quarter / period / inning)
-    // paired with ANY full-game market on the same event. A sub-game
-    // market is a strict subset of the full game, so the two are always
-    // correlated — whatever happens in the first 5 innings / first half
-    // affects the full-game outcome mechanically. Previously only
-    // matched-type pairs (F5 ML + full ML, etc.) were blocked; the
-    // cross pairs (F5 ML + full total, F5 total + full ML, etc.) leaked
-    // through and landed in the SGP "other" correlation bucket, which
-    // doesn't capture the true mechanical dependence.
-    //
-    // Regex covers:
-    //   F5 baseball:   first_5_innings_*, first_five_innings_*, *_f5
-    //   Halves:        first_half_*, 1st_half_*, 2nd_half_*, *_h1, *_h2
-    //   Quarters:      first_quarter_*, 1st_quarter_*..4th_quarter_*, *_q1..*_q4
-    //   Periods (NHL): first_period_*, 1st_period_*..3rd_period_*, *_p1..*_p3
-    //   Innings:       1st_inning_*..9th_inning_*
-    const subGamePattern =
-      /first_5_innings|first_five_innings|\b_f5\b|_f5_|\bf5_|(first|1st|2nd|3rd|4th)_half|_h[12]\b|(first|1st|2nd|3rd|4th)_quarter|_q[1-4]\b|(first|1st|2nd|3rd)_period|_p[1-3]\b|(1st|2nd|3rd|4th|5th|6th|7th|8th|9th)_inning/i;
-    const fullGameTypes = new Set(['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance']);
-    const hasSubGame = entries.some(e => subGamePattern.test(String(e.market || '')));
-    const hasFullGame = entries.some(e => fullGameTypes.has(String(e.market || '').toLowerCase()));
-    if (hasSubGame && hasFullGame) {
-      const subLeg = entries.find(e => subGamePattern.test(String(e.market || '')));
-      const fullLeg = entries.find(e => fullGameTypes.has(String(e.market || '').toLowerCase()));
-      log.info('Pricing', `Declined: sub-game ${subLeg.market} + full-game ${fullLeg.market} on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `sub-game (${subLeg.market}) + full-game (${fullLeg.market}) on same event: ${gameLabel}` };
-    }
-    // Also block two sub-game markets of the same period on the same
-    // event (e.g. F5 ML + F5 total) — same mechanical correlation
-    // between score and who's winning within that narrower window.
-    const subGameLegs = entries.filter(e => subGamePattern.test(String(e.market || '')));
-    if (subGameLegs.length >= 2) {
-      log.info('Pricing', `Declined: multiple sub-game legs on ${gameLabel}: ${subGameLegs.map(e => e.market).join(' + ')}`);
-      return { declined: true, reason: 'correlated legs', detail: `multiple sub-game legs on same event: ${gameLabel} (${subGameLegs.map(e => e.market).join(', ')})` };
-    }
-    // ---- TEAM TOTAL: block ALL same-game combinations ----
-    // team_total is strongly correlated with every other market on the same
-    // game (game total, spread, moneyline, other team's total). Block
-    // unconditionally whenever team_total appears with any other leg.
-    const hasTeamTotal = types.includes('team_total');
-    if (hasTeamTotal && entries.length > 1) {
-      const otherMarket = entries.find(e => e.market !== 'team_total')?.market || 'other';
-      log.info('Pricing', `Declined: team_total + ${otherMarket} on same game ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `team_total + ${otherMarket} on same game: ${gameLabel}` };
-    }
-
-    // ---- SERIES: mirror single-game correlation rules ----
-    // Block highly-correlated pairs on the same series event. The
-    // duplicate-types check above already handles two series_winner /
-    // two series_spread / two series_total. Here we only need the
-    // cross-type cases.
-    //   BLOCK: series_winner + series_spread (both tied to outcome)
-    //   ALLOW: series_winner OR series_spread + series_total
-    const hasSeriesWinner = types.includes('series_winner');
-    const hasSeriesSpread = types.includes('series_spread');
-    if (hasSeriesWinner && hasSeriesSpread) {
-      log.info('Pricing', `Declined: series_winner + series_spread on ${gameLabel}`);
-      return { declined: true, reason: 'correlated legs', detail: `series winner + series spread on same series: ${gameLabel}` };
-    }
-
-    // ---- 1ST HALF: block any H1 + full-game on same game ----
-    // 1st half outcomes are a subset of full-game outcomes — heavily correlated.
-    const h1Pattern = /^(first_half_|1st_half_)/;
-    const hasH1 = types.some(t => h1Pattern.test(t));
-    if (hasH1) {
-      const hasFullGame = types.some(t => !h1Pattern.test(t) && !/^first_5_innings|^first_five_innings/.test(t));
-      if (hasFullGame) {
-        log.info('Pricing', `Declined: 1st half + full-game on ${gameLabel}`);
-        return { declined: true, reason: 'correlated legs', detail: `1st half + full-game on same game: ${gameLabel}` };
-      }
-    }
-    // Note: same-game spread+total and moneyline+total are NOT blocked here
-    // because they're still reasonable to quote — SGP correlation is handled
-    // at pricing time via Pin-match logic (pinMatchTarget in priceParlay).
+    const gameLabel0 = entries[0].away && entries[0].home ? `${entries[0].away} @ ${entries[0].home}` : `event ${eid}`;
+    log.info('Pricing', `Declined SGP: ${entries.length} legs on ${gameLabel0}`);
+    return { declined: true, reason: 'SGP blocked', detail: `${entries.length} legs on same game: ${gameLabel0} (same-game parlays disabled)` };
   }
-
   // ---- CROSS-EVENT SERIES CORRELATION ----
   // Series events and the underlying game events have DIFFERENT pxEventIds
   // (e.g. Series Winner - DEN vs MIN is event 1500006589, Game 1 MIN @ DEN
