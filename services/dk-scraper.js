@@ -742,7 +742,21 @@ function round(n, dp) { const f = Math.pow(10, dp); return Math.round(n * f) / f
 // can add it once the foundation is proven). MMA/series/F5 have their own
 // scrapers.
 // ---------------------------------------------------------------------------
+// DK's /live route renders moneyline + spread + total inline per in-progress
+// game in a single view (vs the league pages which only surface moneyline for
+// live games in the featured strip). Filter by sport-category so we only get
+// events for the target league. URL format confirmed via DK's live navigation:
+//   /live?category=basketball&subcategory=nba  etc.
 const LIVE_SPORT_URLS = {
+  basketball_nba: 'https://sportsbook.draftkings.com/live?category=basketball&subcategory=nba',
+  baseball_mlb:   'https://sportsbook.draftkings.com/live?category=baseball&subcategory=mlb',
+  icehockey_nhl:  'https://sportsbook.draftkings.com/live?category=hockey&subcategory=nhl',
+  americanfootball_nfl: 'https://sportsbook.draftkings.com/live?category=football&subcategory=nfl',
+};
+// League-page fallback if /live renders empty (e.g. no in-progress games; DK
+// sometimes redirects to a default sport). We navigate both URLs in a single
+// browser session so the second nav reuses the first's Akamai challenge.
+const LIVE_SPORT_FALLBACK_URLS = {
   basketball_nba: 'https://sportsbook.draftkings.com/leagues/basketball/nba',
   baseball_mlb:   'https://sportsbook.draftkings.com/leagues/baseball/mlb',
   icehockey_nhl:  'https://sportsbook.draftkings.com/leagues/hockey/nhl',
@@ -766,6 +780,7 @@ function isInProgressEvent(ev) {
 const LIVE_MARKET_NAMES = new Set([
   'Moneyline', 'Moneyline (2 Way)', 'Moneyline (2-Way)', 'Moneyline (Regulation)',
   'Total', 'Total Points', 'Total Runs', 'Total Goals',
+  'Spread', 'Point Spread', 'Puck Line', 'Run Line',
 ]);
 
 async function fetchLiveMarkets(sport, { force = false } = {}) {
@@ -801,11 +816,18 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
         } catch { /* ignore */ }
       });
 
-      try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-        await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
-      } catch (err) {
-        log.warn('DkScraper', `Live nav failed for ${sport}: ${err.message}`);
+      // Navigate /live first (renders all markets inline for in-progress
+      // games). Then hit the league page in the same session so we pick up
+      // any additional markets DK only surfaces there (Akamai challenge is
+      // already solved, so the second nav is fast).
+      const navUrls = [url, LIVE_SPORT_FALLBACK_URLS[sport]].filter(Boolean);
+      for (const navUrl of navUrls) {
+        try {
+          await page.goto(navUrl, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+          await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
+        } catch (err) {
+          log.warn('DkScraper', `Live nav failed (${navUrl}): ${err.message}`);
+        }
       }
 
       // Index events / markets / selections across payloads (dedup by id).
@@ -912,11 +934,56 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
             totals._primary = primary;
             bucket.markets.totals = totals;
           }
+        } else if (mname === 'Spread' || mname === 'Point Spread' || mname === 'Puck Line' || mname === 'Run Line') {
+          // DK live spread selection labels look like:
+          //   "BOS Red Sox +1.5"  or "Celtics -3.5"
+          // Side is encoded by the sign in front of the numeric magnitude.
+          // We key the spread by the line magnitude and identify each side
+          // by matching the leading team name against bucket.homeTeam /
+          // awayTeam (last-word fallback to tolerate abbrev variants).
+          const labelRe = /^(.+?)\s*([+\-−–—])\s*(\d+(?:\.\d+)?)\s*$/;
+          const homeLast = bucket.homeTeam ? bucket.homeTeam.split(' ').pop() : null;
+          const awayLast = bucket.awayTeam ? bucket.awayTeam.split(' ').pop() : null;
+          const byLine = {};
+          for (const sel of sels) {
+            const m = labelRe.exec((sel.label || '').trim());
+            if (!m) continue;
+            const teamPart = m[1].trim();
+            const side = /[-−–—]/.test(m[2]) ? '-' : '+';
+            const line = parseFloat(m[3]);
+            if (!Number.isFinite(line)) continue;
+            let which = null;
+            if (homeLast && teamPart.includes(homeLast)) which = 'home';
+            else if (awayLast && teamPart.includes(awayLast)) which = 'away';
+            if (!which) continue;
+            (byLine[line] ||= {})[which] = { side, line, ...parseSelectionOdds(sel) };
+          }
+          const spreads = {};
+          let primary = null;
+          for (const [line, pair] of Object.entries(byLine)) {
+            if (!pair.home || !pair.away) continue;
+            if (pair.home.side === pair.away.side) continue;
+            const dv = devigPair(pair.home, pair.away);
+            if (!dv) continue;
+            spreads[line] = {
+              line: parseFloat(line),
+              home: { ...pair.home, displayFairProb: pair.home.fairProb },
+              away: { ...pair.away, displayFairProb: pair.away.fairProb },
+              books: 1,
+              vig: dv.vig,
+              source: 'dk-live',
+            };
+            if (primary == null) primary = parseFloat(line);
+          }
+          if (Object.keys(spreads).length > 0) {
+            spreads._primary = primary;
+            bucket.markets.spreads = spreads;
+          }
         }
       }
 
       const events = Object.values(liveByEvent).filter(e =>
-        e.homeTeam && e.awayTeam && (e.markets.h2h || e.markets.totals)
+        e.homeTeam && e.awayTeam && (e.markets.h2h || e.markets.totals || e.markets.spreads)
       );
       const data = {
         fetchedAt: new Date().toISOString(),
@@ -926,7 +993,10 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
         payloadCount: payloads.length,
       };
       liveCacheBySport[sport] = { at: Date.now(), data };
-      log.info('DkScraper', `${sport} live: ${events.length} in-progress events (${data.scrapeMs}ms, ${payloads.length} payloads)`);
+      const mlCount = events.filter(e => e.markets.h2h).length;
+      const spCount = events.filter(e => e.markets.spreads).length;
+      const toCount = events.filter(e => e.markets.totals).length;
+      log.info('DkScraper', `${sport} live: ${events.length} events (h2h:${mlCount} spreads:${spCount} totals:${toCount}) ${data.scrapeMs}ms, ${payloads.length} payloads`);
       return data;
     } finally {
       await browser.close();
