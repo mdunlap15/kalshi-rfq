@@ -3823,7 +3823,14 @@ function getLiveFairProb(sport, homeTeam, awayTeam, marketType, selection, line,
     return pick && pick.fairProb ? pick.fairProb : null;
   }
   if (marketType === 'spreads' && m.spreads) {
-    const group = m.spreads[lookupLine != null ? Math.abs(lookupLine) : (m.spreads._primary || 0)];
+    // Exact-line match first; fall back to the current primary line if the
+    // leg's line isn't present. Mirrors the totals behavior below — in-play
+    // odds sources typically publish only the current spread, so mid-game
+    // the original pre-game line (e.g. -9 when live is -14) isn't there.
+    // The primary's fair prob is still more accurate than the stale pre-game
+    // one for exposure tracking purposes.
+    let group = lookupLine != null ? m.spreads[Math.abs(lookupLine)] : null;
+    if (!group && m.spreads._primary != null) group = m.spreads[m.spreads._primary];
     if (!group) return null;
     const pick = sel === 'home' ? group.home : group.away;
     return pick && pick.fairProb ? pick.fairProb : null;
