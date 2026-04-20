@@ -4167,6 +4167,66 @@ function startStatusServer() {
     });
   });
 
+  // Per-line detail — what lines we're actually registered to quote on.
+  // Filter via query params to narrow down:
+  //   ?sport=basketball_nba
+  //   ?market=series_winner        (exact match)
+  //   ?market=series_              (prefix match if trailing underscore)
+  //   ?team=Lakers                 (substring match on teamName/home/away)
+  //   ?event=1500006697            (pxEventId exact)
+  //   ?limit=500                   (default 200, max 2000)
+  // Returns: [{ lineId, sport, pxEventId, pxEventName, marketType,
+  //             teamName, selection, line, homeTeam, awayTeam, startTime }]
+  app.get('/lines/detail', (req, res) => {
+    const idx = lineManager.__debugGetLineIndex();
+    const q = req.query || {};
+    const sportFilter = q.sport ? String(q.sport).toLowerCase() : null;
+    const marketFilter = q.market ? String(q.market).toLowerCase() : null;
+    const marketIsPrefix = marketFilter && marketFilter.endsWith('_');
+    const teamFilter = q.team ? String(q.team).toLowerCase() : null;
+    const eventFilter = q.event ? String(q.event) : null;
+    const limit = Math.min(parseInt(q.limit) || 200, 2000);
+
+    const out = [];
+    for (const [lineId, info] of Object.entries(idx)) {
+      if (!info) continue;
+      if (sportFilter && String(info.sport || '').toLowerCase() !== sportFilter) continue;
+      if (marketFilter) {
+        const mt = String(info.marketType || '').toLowerCase();
+        if (marketIsPrefix ? !mt.startsWith(marketFilter) : mt !== marketFilter) continue;
+      }
+      if (teamFilter) {
+        const hay = [info.teamName, info.homeTeam, info.awayTeam, info.pxEventName]
+          .filter(Boolean).join(' ').toLowerCase();
+        if (!hay.includes(teamFilter)) continue;
+      }
+      if (eventFilter && String(info.pxEventId || '') !== eventFilter) continue;
+      out.push({
+        lineId,
+        sport: info.sport,
+        pxEventId: info.pxEventId,
+        pxEventName: info.pxEventName,
+        marketType: info.marketType,
+        marketName: info.marketName,
+        teamName: info.teamName,
+        selection: info.selection,
+        line: info.line,
+        homeTeam: info.homeTeam,
+        awayTeam: info.awayTeam,
+        startTime: info.startTime,
+      });
+      if (out.length >= limit) break;
+    }
+    // Sort for easy scanning: sport → market → event → team
+    out.sort((a, b) =>
+      (a.sport || '').localeCompare(b.sport || '') ||
+      (a.marketType || '').localeCompare(b.marketType || '') ||
+      (a.pxEventName || '').localeCompare(b.pxEventName || '') ||
+      (a.teamName || '').localeCompare(b.teamName || '')
+    );
+    res.json({ count: out.length, lines: out });
+  });
+
   // Lineup tracker — MLB pitchers + NHL goalies, including recent changes.
   // Shows grace-window activity so we can audit declines labeled "lineup change".
   app.get('/lineups', (req, res) => {
