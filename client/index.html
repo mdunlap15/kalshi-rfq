@@ -1012,24 +1012,32 @@
       fetchJSON('/px-positions').then(pp => {
         if (pp && pp.ok) {
           window._pxPositions = pp;
-          renderPositions(orders);
+          // Wrap in rerenderWithFocus so an async arrival of PX positions
+          // doesn't blow away a focused search input mid-keystroke.
+          rerenderWithFocus(() => renderPositions(orders));
         }
       }).catch(() => {});
 
-      renderStatus(status);
-      updateNotificationBadge(orders);
-      renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
-      renderPortfolio(orders);
-      renderOrders(orders);
-      renderPositions(orders);
-      renderSettled(orders);
-      renderMarketIntel(intel);
-      window._lastIntel = intel;
-      window._lastOrders = orders;
-      renderWinRateHeatmap(intel, orders);
-      renderCompetitiveness(intel);
-      renderAnalytics(orders, intel);
-      renderHistory(orders);
+      // Wrap the synchronous render block in rerenderWithFocus so the
+      // 10s auto-refresh cycle preserves focus + caret in any visible
+      // search input (positions / settled / history / market intel /
+      // orders / exposure / game-exposure / portfolio).
+      rerenderWithFocus(() => {
+        renderStatus(status);
+        updateNotificationBadge(orders);
+        renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
+        renderPortfolio(orders);
+        renderOrders(orders);
+        renderPositions(orders);
+        renderSettled(orders);
+        renderMarketIntel(intel);
+        window._lastIntel = intel;
+        window._lastOrders = orders;
+        renderWinRateHeatmap(intel, orders);
+        renderCompetitiveness(intel);
+        renderAnalytics(orders, intel);
+        renderHistory(orders);
+      });
       addLog('system', 'Dashboard refreshed');
     } catch (err) {
       addLog('error', 'Failed to refresh: ' + err.message);
@@ -3361,17 +3369,22 @@
         : '';
     }
 
-    if (filtered.length === 0) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div>';
-      return;
-    }
+    // Don't early-return on filtered.length===0 with an innerHTML wipe —
+    // that destroys the filter toolbar including the search input, so the
+    // user can't clear their query to recover. Instead, render the toolbar
+    // normally below and show the empty message INSIDE the table area.
+    // The truly-empty case (no settled positions exist at all) is handled
+    // after the toolbar render.
+    const hasAnySettled = settled.length > 0;
 
     const sSortArrow = (col) => settledState.sortCol === col ? (settledState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
-    const sSortClick = (col, align) => 'onclick="event.stopPropagation(); settledState.sortCol=settledState.sortCol===\'' + col + '\'?settledState.sortCol:\'' + col + '\'; if(settledState.sortCol===\'' + col + '\') settledState.sortDir*=-1; else { settledState.sortCol=\'' + col + '\'; settledState.sortDir=-1; } renderSettled({recentOrders:[]});" style="cursor:pointer;' + (align?'text-align:'+align+';':'') + '"';
+    const sSortClick = (col, align) => 'onclick="event.stopPropagation(); settledState.sortCol=settledState.sortCol===\'' + col + '\'?settledState.sortCol:\'' + col + '\'; if(settledState.sortCol===\'' + col + '\') settledState.sortDir*=-1; else { settledState.sortCol=\'' + col + '\'; settledState.sortDir=-1; } rerenderWithFocus(function(){renderSettled({recentOrders:[]})});" style="cursor:pointer;' + (align?'text-align:'+align+';':'') + '"';
 
     const sDStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 6px; border-radius:4px; font-size:11px;';
     const sFSel = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;';
-    const rerend = "renderSettled({recentOrders:[]})";
+    // Wrap rerender in rerenderWithFocus so every keystroke in the search
+    // box — and every filter change — preserves focus + caret position.
+    const rerend = "rerenderWithFocus(function(){renderSettled({recentOrders:[]})})";
     let html = '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border);">'
       + '<input type="text" id="settled-search" placeholder="Search team..." value="' + settledState.search + '" oninput="settledState.search=this.value; ' + rerend + '" style="' + sFSel + ' width:150px;">'
       + '<select onchange="settledState.sportFilter=this.value; ' + rerend + '" style="' + sFSel + '"><option value="">All sports</option>'
@@ -3391,7 +3404,7 @@
       + '</div>';
 
     if (settledState.showAdvanced) {
-      const advUpdate = 'renderSettled({recentOrders:[]})';
+      const advUpdate = "rerenderWithFocus(function(){renderSettled({recentOrders:[]})})";
       html += '<div style="padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">'
         + '<span style="color:var(--text3);">Legs:</span>'
         + rangeFilterHtml('settledState', 'legsMin', 'legsMax', settledState, advUpdate, sDStyle, { title: 'Legs', width: '55px', step: '1' })
@@ -3404,6 +3417,18 @@
         + '<span style="color:var(--text3); margin-left:8px;">ROI %:</span>'
         + rangeFilterHtml('settledState', 'roiMin', 'roiMax', settledState, advUpdate, sDStyle, { title: 'ROI %', width: '60px' })
         + '</div>';
+    }
+
+    // Empty-state inside the table area — AFTER the toolbar + advanced
+    // panel so the user keeps access to all filter controls and can
+    // loosen their query to recover results without reloading the page.
+    if (filtered.length === 0) {
+      const msg = hasAnySettled
+        ? 'No settled positions match the current filter.'
+        : 'No settled positions yet.';
+      html += '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>' + msg + '</div></div>';
+      el.innerHTML = html;
+      return;
     }
 
     html += '<div style="overflow-x:auto;"><table>';
