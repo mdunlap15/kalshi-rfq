@@ -9164,11 +9164,25 @@
 
       const eventTime = startDate ? startDate.toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '-';
 
-      // Odds columns
-      const pinOdds = l.pinnacleOdds != null ? (l.pinnacleOdds >= 0 ? '+' : '') + l.pinnacleOdds : '-';
-      const fdOdds = l.fanduelOdds != null ? (l.fanduelOdds >= 0 ? '+' : '') + l.fanduelOdds : '-';
-      const klOdds = l.kalshiOdds != null ? (l.kalshiOdds >= 0 ? '+' : '') + l.kalshiOdds : '-';
-      const dkOdds = l.draftkingsOdds != null ? (l.draftkingsOdds >= 0 ? '+' : '') + l.draftkingsOdds : '-';
+      // Odds columns. For DNB legs (soccer 2-way moneyline derived from
+      // the 3-way h2h), raw book odds look much longer than what's
+      // actually offered on the DNB market because the 3-way implied
+      // includes the draw probability. We computed per-book DNB-adjusted
+      // implied probs at quote time (pinnacleDNBProb etc.); render those
+      // here as DNB-equivalent American odds so the per-leg columns
+      // compare apples-to-apples with FAIR and MY ODDS. "DNB" badge
+      // appended to the leg's market cell below signals the transform.
+      function _bookOddsCell(rawOdds, dnbProb) {
+        if (l.isDNB && dnbProb != null && dnbProb > 0 && dnbProb < 1) {
+          const am = decimalToAmerican(1 / dnbProb);
+          return am != null && Number.isFinite(am) ? (am >= 0 ? '+' : '') + am : '-';
+        }
+        return rawOdds != null ? (rawOdds >= 0 ? '+' : '') + rawOdds : '-';
+      }
+      const pinOdds = _bookOddsCell(l.pinnacleOdds, l.pinnacleDNBProb);
+      const fdOdds  = _bookOddsCell(l.fanduelOdds,  l.fanduelDNBProb);
+      const klOdds  = _bookOddsCell(l.kalshiOdds,   l.kalshiDNBProb);
+      const dkOdds  = _bookOddsCell(l.draftkingsOdds, l.draftkingsDNBProb);
       const fairProbDisplay = l.displayFairProb || l.fairProb;
       const fairOdds = fairProbDisplay ? decimalToAmerican(1 / fairProbDisplay) : '-';
       // bookPriceOverride legs (e.g. NBA series heavy favs past -500 FV)
@@ -9244,10 +9258,12 @@
       }
 
       // DNB badge for soccer 2-way moneyline legs so operators can tell
-      // apart DNB vs 3-way at a glance
+      // apart DNB vs 3-way at a glance. Pin/FD/Kalshi/DK odds columns
+      // on this row are DNB-equivalent (renormalized to exclude the draw)
+      // rather than raw 3-way — matches how FAIR and MY ODDS are computed.
       let dnbBadge = '';
       if (l.isDNB) {
-        dnbBadge = ' <span title="Draw No Bet — stake refunds on a draw" style="color:var(--blue); font-size:9px; padding:1px 4px; border:1px solid var(--blue); border-radius:3px; margin-left:4px;">DNB</span>';
+        dnbBadge = ' <span title="Draw No Bet — stake refunds on a draw. Pin/FD/DK/Kalshi odds columns on this leg show DNB-equivalent American odds (book 3-way prob renormalized as pHome/(pHome+pAway)), not the raw 3-way odds the book posts." style="color:var(--blue); font-size:9px; padding:1px 4px; border:1px solid var(--blue); border-radius:3px; margin-left:4px;">DNB</span>';
       }
 
       // Show the line whenever we have one. Originally gated on spread/total,
