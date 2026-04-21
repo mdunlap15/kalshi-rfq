@@ -619,13 +619,18 @@ async function handleRFQ(data) {
       const elapsed = Date.now() - startTime;
       stageTimings.submit = elapsed;
       rfqStages.submitted++;
-      recordResponseTime(parlayId, elapsed, result.meta.americanOdds, stageTimings);
-      // Persist latency + per-stage timings to the order record so we can
-      // later join with matched-outcome data for a real latency-vs-win-rate
-      // analysis (survives service restarts, unlike the in-memory rolling buffer).
-      orderTracker.updateOrderLatency(parlayId, elapsed, stageTimings);
-      updateRfqOutcome(parlayId, 'submitted', `odds ${result.meta.americanOdds}`);
-      log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms dispatch (resolve=${stageTimings.resolve || 0} decline=${stageTimings.decline || 0} price=${stageTimings.price || 0})`);
+      // Defer all post-submit bookkeeping to setImmediate. These calls
+      // don't affect the offer itself or subsequent RFQ eligibility; they
+      // only feed analytics/logging/db. Running them inline was stealing
+      // ~0.3-0.5ms of event-loop time from the next RFQ under burst load.
+      // setImmediate fires after the current tick, letting the next Pusher
+      // event queue first.
+      setImmediate(() => {
+        recordResponseTime(parlayId, elapsed, result.meta.americanOdds, stageTimings);
+        orderTracker.updateOrderLatency(parlayId, elapsed, stageTimings);
+        updateRfqOutcome(parlayId, 'submitted', `odds ${result.meta.americanOdds}`);
+        log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms dispatch (resolve=${stageTimings.resolve || 0} decline=${stageTimings.decline || 0} price=${stageTimings.price || 0})`);
+      });
       submitPromise.catch(err => {
         rfqStages.submitError++;
         updateRfqOutcome(parlayId, 'submit_error', err.message);
