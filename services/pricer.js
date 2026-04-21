@@ -644,6 +644,61 @@ async function priceParlay(legs, opts = {}) {
   const isSGPParlay = Object.values(_eventCounts).some(c => c >= 2);
   const sgpVigMult = isSGPParlay ? Math.max(1, config.pricing.sgpVigMultiplier || 1) : 1;
 
+  // ---- SGP CORRELATION ADJUSTMENT ----
+  // The naive product of fair leg probs understates the true joint prob
+  // for positively-correlated spread+total pairs, and overstates for
+  // negatively-correlated pairs. Apply a combo-specific multiplier to
+  // fairParlayProb BEFORE vig is computed.
+  //
+  // Spread+total correlation logic:
+  //   - Betting the MINUS-spread side (line<0, favorite cover) correlates
+  //     with OVER (blowouts are high-scoring).
+  //   - Betting the PLUS-spread side (line>0, dog cover) correlates with
+  //     UNDER (close games are lower-scoring).
+  //   - Matching directions (minus+over OR plus+under) → positive corr →
+  //     boost fairParlayProb via sgpCorrelationPositive (>1).
+  //   - Opposing directions (minus+under OR plus+over) → negative corr →
+  //     reduce fairParlayProb via sgpCorrelationNegative (<1).
+  //
+  // Unlike the old multiplicative OFFERED-price boost that PX rejected
+  // with "invalid estimated prices", this adjusts the INPUT fair prob —
+  // mathematically identical to FD/DK's internal SGP discount model and
+  // within PX's accepted estimated-price tolerance.
+  //
+  // Only applies to 2-leg spread_total SGPs — the only combo currently
+  // in SGP_ALLOWED_COMBOS. Future combos (ml_total, etc.) would need
+  // their own correlation-sign logic added here.
+  let sgpCorrelationFactor = 1;
+  const sgpCorrelationSign = (function() {
+    if (!isSGPParlay) return null;
+    if ((opts.sgpCombo || null) !== 'spread_total') return null;
+    if (pricedLegs.length !== 2) return null;
+    let spreadLeg = null, totalLeg = null;
+    for (const l of pricedLegs) {
+      const mt = l.lineInfo.marketType;
+      if (mt === 'spread') spreadLeg = l;
+      else if (mt === 'total') totalLeg = l;
+    }
+    if (!spreadLeg || !totalLeg) return null;
+    const spreadLine = spreadLeg.lineInfo.line;
+    const totalSelection = totalLeg.lineInfo.selection;
+    if (spreadLine == null || !totalSelection) return null;
+    const isMinusSide = spreadLine < 0;   // line -1.5 (fav cover) vs line +1.5 (dog cover)
+    const isOver = totalSelection === 'over';
+    // minus+over OR plus+under → same "direction" → positive correlation
+    return (isMinusSide === isOver) ? 'positive' : 'negative';
+  })();
+  if (sgpCorrelationSign === 'positive') {
+    sgpCorrelationFactor = config.pricing.sgpCorrelationPositive || 1;
+  } else if (sgpCorrelationSign === 'negative') {
+    sgpCorrelationFactor = config.pricing.sgpCorrelationNegative || 1;
+  }
+  if (sgpCorrelationFactor !== 1) {
+    const before = fairParlayProb;
+    fairParlayProb = Math.max(0.001, Math.min(0.99, fairParlayProb * sgpCorrelationFactor));
+    log.debug('Pricing', `SGP correlation ${sgpCorrelationSign} — fair ${(before*100).toFixed(2)}% × ${sgpCorrelationFactor} = ${(fairParlayProb*100).toFixed(2)}%`);
+  }
+
   // Apply vig to ODDS (multiplicative) rather than probability (additive).
   // This scales naturally: a 3% vig on -700 reduces the payout by 3%,
   // not by a fixed probability shift that distorts at extreme odds.
@@ -1050,6 +1105,12 @@ async function priceParlay(legs, opts = {}) {
       // allow-listed; it flows through opts so priceParlay can record it.
       sgpCombo: opts.sgpCombo || null,
       sgpVigMultiplier: isSGP ? sgpVigMult : 1,
+      // Correlation adjustment applied to the joint fair prob for this SGP
+      // before vig. Null if not an SGP or not a recognized combo. Stored
+      // so /sgp-stats + order audits can split acceptance + ROI by
+      // correlation sign as we tune the factors.
+      sgpCorrelationSign: sgpCorrelationSign,
+      sgpCorrelationFactor: sgpCorrelationFactor,
       pinRawCompound: pinRawCompound != null ? Math.round(pinRawCompound * 100000) / 100000 : null,
       pinMatchTarget: pinMatchTarget != null ? Math.round(pinMatchTarget * 100000) / 100000 : null,
       offeredImpliedProb: Math.round(cappedProb * 100000) / 100000,

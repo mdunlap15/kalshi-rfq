@@ -143,6 +143,21 @@ const config = {
     // 2.0 = double the normal vig on each leg of the SGP. Tunable while
     // we gather acceptance + ROI data on re-enabled SGPs.
     sgpVigMultiplier: parseFloat(process.env.SGP_VIG_MULTIPLIER) || 2.0,
+    // SGP correlation adjustment factors. The naive product of leg fair
+    // probs understates the true joint probability for positively-
+    // correlated combos (spread-fav + over, or spread-dog + under) and
+    // overstates for negatively-correlated combos (fav + under, dog +
+    // over). Applied as a multiplier to the joint fair prob BEFORE vig.
+    // Unlike a post-vig offered-price boost (which PX rejected with
+    // "invalid estimated prices"), this adjusts the INPUT fair prob —
+    // mathematically identical to what every major book does internally,
+    // and within PX's accepted pricing model.
+    //
+    // Empirical FD SGP discount is ~25-30% on spread+total pairs we've
+    // observed; start conservative at 1.15 / 0.90 and tune up based on
+    // acceptance + ROI data. Set POSITIVE=1 and NEGATIVE=1 to disable.
+    sgpCorrelationPositive: parseFloat(process.env.SGP_CORRELATION_POSITIVE) || 1.15,
+    sgpCorrelationNegative: parseFloat(process.env.SGP_CORRELATION_NEGATIVE) || 0.90,
     // startingBankroll anchors the account-based P&L calculation
     // (balance − starting). If env var is NOT set, leave as null so the
     // dashboard falls back to the tracker's runningPnL (derived from
