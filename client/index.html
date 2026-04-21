@@ -3091,7 +3091,7 @@
     // for SP losses, so losses silently sit as 'confirmed'.
     let positions = window._pxPositions?.positions
       ? window._pxPositions.positions
-      : allOrders.filter(o => o.status === 'confirmed' && !(o.meta && o.meta.phantom));
+      : allOrders.filter(o => o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom);
 
     // Belt-and-suspenders: strip anything the live order map shows as
     // already settled. _pxPositions is cached on the server (60s ledger
@@ -3803,9 +3803,10 @@
     });
 
     // Build lookup: team+eventId composite key → confirmed orders containing that team in that game.
-    // Exclude phantoms so the Team Exposure detail drop-down matches Open Positions.
+    // Exclude phantoms AND stale-phantoms (server-side flag) so the Team
+    // Exposure drill-down matches Open Positions and Risk Sim.
     const confirmedOrders = Object.values(orderState.allOrders).filter(o =>
-      o.status === 'confirmed' && !(o.meta && o.meta.phantom)
+      o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom
     );
     const teamParlayMap = {};
     for (const o of confirmedOrders) {
@@ -3979,7 +3980,7 @@
   function runRiskSimulation(nSims) {
     nSims = nSims || 10000;
     const confirmed = Object.values(orderState.allOrders || {}).filter(o =>
-      o.status === 'confirmed' && !(o.meta && o.meta.phantom)
+      o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom
     );
     if (confirmed.length === 0) return null;
 
@@ -4165,7 +4166,7 @@
     const sumEl = document.getElementById('risk-sim-summary');
     if (!el) return;
     const confirmedCount = Object.values(orderState.allOrders || {}).filter(o =>
-      o.status === 'confirmed' && !(o.meta && o.meta.phantom)
+      o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom
     ).length;
     if (confirmedCount === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No confirmed positions to simulate</div></div>';

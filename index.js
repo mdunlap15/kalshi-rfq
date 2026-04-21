@@ -618,10 +618,20 @@ function startStatusServer() {
 
   app.get('/orders', (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
+    // Stamp each order with isStalePhantom computed server-side so the
+    // client has a single truth-flag for "is this a real open position?"
+    // Previously the client only checked meta.phantom, which misses
+    // two failure modes isOrderStalePhantom catches:
+    //   (1) 'confirmed' with no orderUuid after 10min (finalize never came)
+    //   (2) all legs started >12h ago (stuck settlement)
+    // Without this flag the Risk Simulation was counting ~120 no-UUID
+    // ghosts as real positions, inflating Total SP risk to $22k when
+    // actual deployed capital was $5-7k.
+    const stamp = (o) => ({ ...o, isStalePhantom: orderTracker.isOrderStalePhantom(o) });
     res.json({
       stats: orderTracker.getStats(),
       pnlBySport: orderTracker.getPnLBySport(),
-      recentOrders: orderTracker.getRecentOrders(limit),
+      recentOrders: orderTracker.getRecentOrders(limit).map(stamp),
     });
   });
 
@@ -657,6 +667,9 @@ function startStatusServer() {
     const totalPnL = settled.reduce((s, o) => s + (o.pnl || 0), 0);
     const wins = settled.filter(o => o.status === 'settled_won').length;
     const losses = settled.filter(o => o.status === 'settled_lost').length;
+    // Stamp with isStalePhantom so the client has one flag for "is this
+    // a real open position?" — see /orders endpoint above for rationale.
+    const stamp = (o) => ({ ...o, isStalePhantom: orderTracker.isOrderStalePhantom(o) });
     res.json({
       filter,
       total: matched.length,
@@ -665,7 +678,7 @@ function startStatusServer() {
       losses,
       pushVoid: settled.length - wins - losses,
       totalPnL: Math.round(totalPnL * 100) / 100,
-      orders: matched,
+      orders: matched.map(stamp),
     });
   });
 

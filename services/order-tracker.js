@@ -1695,8 +1695,12 @@ function getRecentOrders(limit = 200) {
 function getStats() {
   return {
     ...stats,
+    // activeOrders is the "real open positions" count the dashboard shows.
+    // Match getTotalPortfolioRisk()'s filter so Active and Deployed always
+    // agree — both use isOrderStalePhantom to catch no-UUID ghosts and
+    // stale confirmeds that plain meta.phantom misses.
     activeOrders: Object.values(orders).filter(o =>
-      o.status === 'confirmed' && !(o.meta && o.meta.phantom)
+      o.status === 'confirmed' && !isOrderStalePhantom(o)
     ).length,
     openQuotes: Object.values(orders).filter(o => o.status === 'quoted').length,
     totalOrders: Object.keys(orders).length,
