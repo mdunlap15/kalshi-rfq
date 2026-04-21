@@ -4209,13 +4209,22 @@ function startStatusServer() {
       // and myOdds won't show until the user gets an actual RFQ.
       let fairProb = null;
       try {
+        // Pass the SIGNED line to getFairProb — critical for spreads
+        // where home -1.5 and home +1.5 are different bets. Previously
+        // Math.abs() was applied which stripped the sign and routed
+        // every spread to getAltLineFairProb with the wrong-sign
+        // homePoint bucket, returning the opposite side's fair prob
+        // (e.g. NHL home -1.5 returning 0.76 — the fair for home
+        // +1.5 — instead of 0.37, the actual fair for home -1.5).
+        // getFairProb applies Math.abs internally for totals, so
+        // signed input is safe for both markets.
         fairProb = oddsFeed.getFairProb(
           info.oddsApiSport || info.sport,
           info.homeTeam,
           info.awayTeam,
           info.oddsApiMarket || info.marketType,
           info.oddsApiSelection || info.selection,
-          info.line != null ? Math.abs(info.line) : null,
+          info.line != null ? info.line : null,
           info.startTime
         );
       } catch (_) { /* ignore */ }
