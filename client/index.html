@@ -1689,10 +1689,11 @@
       const resp = await fetch('/latency-baseline/capture', { method: 'POST' });
       const data = await resp.json();
       if (data.ok) {
+        const fmt = (v) => (v == null ? '0.00' : Number(v).toFixed(2));
         alert('Baseline captured at ' + new Date(data.baseline.capturedAt).toLocaleString()
-          + '\n\nEnd-to-end percentiles:\n  p50: ' + data.baseline.endToEnd.p50 + 'ms'
-          + '\n  p95: ' + data.baseline.endToEnd.p95 + 'ms'
-          + '\n  p99: ' + data.baseline.endToEnd.p99 + 'ms');
+          + '\n\nEnd-to-end percentiles:\n  p50: ' + fmt(data.baseline.endToEnd.p50) + 'ms'
+          + '\n  p95: ' + fmt(data.baseline.endToEnd.p95) + 'ms'
+          + '\n  p99: ' + fmt(data.baseline.endToEnd.p99) + 'ms');
         refreshLatencyMonitor();
       }
     } catch (err) {
@@ -1716,15 +1717,19 @@
     const stages = sample.rfqStages || {};
     const submissionRate = stages.received > 0 ? (stages.submitted / stages.received * 100).toFixed(1) + '%' : '-';
 
+    // Format ms values to 2 decimal places. performance.now()-backed
+    // samples have sub-ms precision; rounding to integer hides most of
+    // the useful signal at our current <2ms latency.
+    const fmtMs = (v) => (v == null ? '0.00' : Number(v).toFixed(2)) + 'ms';
     // Compact percentile row renderer
     const pctRow = (label, p, bColor) => {
       if (!p) return '';
       return '<tr>'
         + '<td style="padding:4px 10px; color:var(--text2); font-size:12px;">' + label + '</td>'
-        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + (p.p50 || 0) + 'ms</td>'
-        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + (p.p95 || 0) + 'ms</td>'
-        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + (p.p99 || 0) + 'ms</td>'
-        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--text3);">' + (p.max || 0) + 'ms</td>'
+        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + fmtMs(p.p50) + '</td>'
+        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + fmtMs(p.p95) + '</td>'
+        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px;">' + fmtMs(p.p99) + '</td>'
+        + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--text3);">' + fmtMs(p.max) + '</td>'
         + '</tr>';
     };
 
@@ -1759,7 +1764,7 @@
         if (!d) return '<td style="padding:4px 10px; text-align:right; color:var(--text3); font-size:12px;">-</td>';
         const sign = d.delta >= 0 ? '+' : '';
         const color = d.delta > 0 ? 'var(--red)' : d.delta < 0 ? 'var(--green)' : 'var(--text3)';
-        return '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:' + color + ';">' + sign + d.delta + 'ms (' + d.pctChange + ')</td>';
+        return '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:' + color + ';">' + sign + Number(d.delta).toFixed(2) + 'ms (' + d.pctChange + ')</td>';
       };
       html += '<tr style="border-top:1px solid var(--border);">'
         + '<td style="padding:4px 10px; color:var(--text2); font-size:12px; font-weight:600;">Δ vs baseline</td>'
@@ -1858,7 +1863,7 @@
             const selShort = selections.length > 60 ? selections.substring(0, 57) + '...' : selections;
             detail += '<tr>'
               + '<td style="padding:2px 6px; color:var(--text3);">' + t + '</td>'
-              + '<td style="padding:2px 6px; text-align:right; font-variant-numeric:tabular-nums;">' + p.elapsed + 'ms</td>'
+              + '<td style="padding:2px 6px; text-align:right; font-variant-numeric:tabular-nums;">' + (p.elapsed != null ? Number(p.elapsed).toFixed(2) : '0.00') + 'ms</td>'
               + '<td style="padding:2px 6px; text-align:right; font-variant-numeric:tabular-nums;">' + odds + '</td>'
               + '<td style="padding:2px 6px; text-align:right; font-variant-numeric:tabular-nums; color:var(--text3);">' + winOdds + '</td>'
               + '<td style="padding:2px 6px; text-align:right; font-variant-numeric:tabular-nums;">' + stake + '</td>'
