@@ -4537,11 +4537,41 @@ function normalizeTeamName(name) {
     .trim();
 }
 
+// SharpAPI sometimes returns team names with a city abbreviation prefix
+// (e.g. "BOS Red Sox") instead of the full city name ("Boston Red Sox")
+// that The Odds API, PX, and everything else uses. Without canonicalization
+// the same game ends up stored in the cache under TWO different keys —
+// "bos red sox|new york yankees" and "boston red sox|new york yankees" —
+// and the closest-by-time doubleheader matcher can't work across them.
+//
+// Observed consequence: April 2026, Red Sox @ Yankees 2-game series.
+// SharpAPI cached tonight's game as "BOS Red Sox"; Odds API cached
+// tomorrow's game as "Boston Red Sox". Line-manager asked for tonight's
+// fair prob with homeTeam="Boston Red Sox"; cache returned tomorrow's
+// entry. Red Sox fair came back as 0.421 (tomorrow's pitcher) when the
+// correct value for tonight was 0.537. Every parlay with a Red Sox leg
+// was priced ~12pp wrong, giving the bettor a ~20% EV edge.
+//
+// This map lists every team we've observed SharpAPI abbreviate. Extend
+// as new offenders appear. Keys + values are raw (pre-lowercase) so
+// cleanTeamName runs before normalizeTeamName.
+const TEAM_ABBREV_TO_CANONICAL = {
+  // MLB
+  'BOS Red Sox': 'Boston Red Sox',
+  'TOR Blue Jays': 'Toronto Blue Jays',
+  // NHL
+  'VGK Golden Knights': 'Vegas Golden Knights',
+  // Extend here: add any "<3-char-caps> <mascot>" variants we find in logs
+};
+
 /**
- * Clean team names from SharpAPI (removes pitcher info like "(TBD)").
+ * Clean team names from SharpAPI (removes pitcher info like "(TBD)")
+ * and canonicalize known abbreviation-prefixed names so they collide
+ * with the Odds API / PX full-name versions in the cache.
  */
 function cleanTeamName(name) {
-  return (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const stripped = (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+  return TEAM_ABBREV_TO_CANONICAL[stripped] || stripped;
 }
 
 /**
