@@ -9433,7 +9433,13 @@
     _rows: [],
   };
   window.linesState = linesState;
-  window.renderLinesTable = () => renderLinesTable();
+  // NOTE: do NOT do `window.renderLinesTable = () => renderLinesTable()`.
+  // At script top-level in a classic <script>, assigning window.X
+  // overwrites the same binding the top-level `function X()` creates,
+  // which turns every call to `renderLinesTable()` inside the arrow
+  // into a self-reference → infinite recursion → RangeError. Inline
+  // onclick/oninput="renderLinesTable()" handlers already resolve via
+  // the hoisted function declaration below; no wrapper needed.
   window.toggleLinesSort = (col) => {
     if (linesState.sortCol === col) linesState.sortDir *= -1;
     else { linesState.sortCol = col; linesState.sortDir = 1; }
