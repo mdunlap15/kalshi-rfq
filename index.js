@@ -16,6 +16,7 @@ const oddsFeed = require('./services/odds-feed');
 const lineManager = require('./services/line-manager');
 const websocket = require('./services/websocket');
 const orderTracker = require('./services/order-tracker');
+const pricer = require('./services/pricer');
 const pxLedger = require('./services/px-ledger');
 const dkScraper = require('./services/dk-scraper');
 const db = require('./services/db');
