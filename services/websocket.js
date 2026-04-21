@@ -272,11 +272,21 @@ const recentRfqIds = new Map(); // parlayId → timestamp
 const RFQ_DEDUP_MS = 2000;     // ignore same parlayId within 2 seconds
 
 async function handleRFQ(data) {
-  const startTime = Date.now();
-  // Per-stage cumulative-elapsed markers (ms since RFQ receipt). Populated
-  // progressively as the handler walks through each stage, then attached to
-  // the responseTime record so /latency-breakdown can compute deltas.
+  // Use performance.now() instead of Date.now() for sub-millisecond
+  // precision. At our current sub-2ms latency, Date.now()'s integer
+  // resolution rounds actual 0.55ms and 0.95ms both to "1ms", hiding
+  // real performance differences. performance.now() returns a
+  // floating-point DOMHighResTimeStamp with ~microsecond precision.
+  // Both startTime and recentRfqIds entries use the same clock source,
+  // so dedup comparisons stay consistent.
+  const startTime = performance.now();
+  // Per-stage cumulative-elapsed markers (ms since RFQ receipt, as float
+  // with 2 decimal places). Populated progressively as the handler walks
+  // through each stage, then attached to the responseTime record so
+  // /latency-breakdown can compute deltas.
   const stageTimings = {};
+  // Round a float ms value to 2 decimals for JSON-clean storage.
+  const elapsedMs = () => Math.round((performance.now() - startTime) * 100) / 100;
 
   rfqStages.received++;
 
@@ -331,11 +341,11 @@ async function handleRFQ(data) {
         log.info('RFQ', `On-demand resolved ${resolvedCount}/${unknownAtStart.length} unknown lines for parlay=${parlayId}`);
       }
     }
-    stageTimings.resolve = Date.now() - startTime;
+    stageTimings.resolve = elapsedMs();
 
     // Quick decline check
     const declineCheck = pricer.shouldDecline(legs);
-    stageTimings.decline = Date.now() - startTime;
+    stageTimings.decline = elapsedMs();
     if (declineCheck && declineCheck.declined) {
       const lineManager = require('./line-manager');
       const knownLegs = [];
@@ -543,7 +553,7 @@ async function handleRFQ(data) {
       resolvedLineInfos: declineCheck.resolvedLineInfos,
       sgpCombo: declineCheck.sgpCombo || null,
     });
-    stageTimings.price = Date.now() - startTime;
+    stageTimings.price = elapsedMs();
     if (!result) {
       // Near miss — all legs known but couldn't price. Get the specific blocker.
       const failure = pricer.getLastPriceFailure() || { reason: 'no fair value', detail: null, blockerLeg: null };
@@ -616,7 +626,7 @@ async function handleRFQ(data) {
       //       winning the RFQ auction), not as ACK round-trip.
       // Errors surface asynchronously in the .catch handler below.
       const submitPromise = px.submitOffer(callbackUrl, parlayId, [result.offer]);
-      const elapsed = Date.now() - startTime;
+      const elapsed = elapsedMs();
       stageTimings.submit = elapsed;
       rfqStages.submitted++;
       // Defer all post-submit bookkeeping to setImmediate. These calls
@@ -629,7 +639,8 @@ async function handleRFQ(data) {
         recordResponseTime(parlayId, elapsed, result.meta.americanOdds, stageTimings);
         orderTracker.updateOrderLatency(parlayId, elapsed, stageTimings);
         updateRfqOutcome(parlayId, 'submitted', `odds ${result.meta.americanOdds}`);
-        log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${elapsed}ms dispatch (resolve=${stageTimings.resolve || 0} decline=${stageTimings.decline || 0} price=${stageTimings.price || 0})`);
+        const f = (v) => (v == null ? '0' : Number(v).toFixed(2));
+        log.info('RFQ', `Offered: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}, vig=${result.meta.vig}, ${f(elapsed)}ms dispatch (resolve=${f(stageTimings.resolve)} decline=${f(stageTimings.decline)} price=${f(stageTimings.price)})`);
       });
       submitPromise.catch(err => {
         rfqStages.submitError++;
@@ -1148,7 +1159,9 @@ function _percentiles(sorted) {
     p95: pick(0.95),
     p99: pick(0.99),
     max: sorted[sorted.length - 1],
-    avg: Math.round(sorted.reduce((a, b) => a + b, 0) / sorted.length),
+    // Preserve 2-decimal precision on avg — with performance.now() inputs,
+    // rounding to integer would hide sub-ms stage differences.
+    avg: Math.round((sorted.reduce((a, b) => a + b, 0) / sorted.length) * 100) / 100,
   };
 }
 
@@ -1338,7 +1351,7 @@ function getResponseTimeStats() {
     count: times.length,
     min: times[0] || 0,
     max: times[times.length - 1] || 0,
-    avg: times.length ? Math.round(times.reduce((s, t) => s + t, 0) / times.length) : 0,
+    avg: times.length ? Math.round((times.reduce((s, t) => s + t, 0) / times.length) * 100) / 100 : 0,
     median: times[Math.floor(times.length / 2)] || 0,
     p95: times[Math.floor(times.length * 0.95)] || 0,
     recent: responseTimes.slice(0, 10),
