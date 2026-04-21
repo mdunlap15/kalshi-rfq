@@ -4223,26 +4223,29 @@ function startStatusServer() {
         ? pricer.computeSingleLegQuote(fairProb, info.sport, info.marketType)
         : null;
 
-      // Per-book raw odds for this selection. Pulled from the primary cache
-      // — alt lines won't populate unless they've been fetched into altLines.
-      // pinnacleOdds is only available on Sharp-tier SharpAPI (empty on
-      // Hobby) but via The Odds API alt-fetch path. kalshiOdds preserved
-      // for display reference only, not used in consensus.
+      // Per-book raw odds for this selection. Must be LINE-AWARE for
+      // spreads/totals — the previous implementation looked up
+      // market[book][selection] in the primary cache without passing
+      // the registered line, which returned the MAIN-line odds for
+      // every row including 20-point alt lines. That made e.g. NBA
+      // "Under 200.5" (true book price ≈ +500) display as -108 (the
+      // main-line 220.5 price), producing nonsense -37pp vsConsensus
+      // deltas on every alt row.
+      //
+      // Use the proper line-aware accessors which fall through to
+      // altLinesCache via getAltLineBookOdds when the registered line
+      // differs from the primary. Moneylines still need the line=null
+      // call since lineMatchesPrimary special-cases h2h.
       let bookOdds = { pinnacle: null, fanduel: null, draftkings: null, kalshi: null };
       try {
-        const event = oddsFeed.getEventMarkets(
-          info.oddsApiSport || info.sport,
-          info.homeTeam,
-          info.awayTeam,
-          info.startTime
-        );
-        const market = event && event.markets ? event.markets[info.oddsApiMarket || info.marketType] : null;
+        const oaSport = info.oddsApiSport || info.sport;
+        const oaMarket = info.oddsApiMarket || info.marketType;
         const sel = info.oddsApiSelection || info.selection;
-        if (market && sel) {
-          for (const b of Object.keys(bookOdds)) {
-            const bObj = market[b];
-            if (bObj && bObj[sel] != null) bookOdds[b] = bObj[sel];
-          }
+        if (sel) {
+          bookOdds.pinnacle   = oddsFeed.getPinnacleOdds(oaSport, info.homeTeam, info.awayTeam, oaMarket, sel, info.startTime, info.line);
+          bookOdds.fanduel    = oddsFeed.getFanDuelOdds(oaSport, info.homeTeam, info.awayTeam, oaMarket, sel, info.startTime, info.line);
+          bookOdds.draftkings = oddsFeed.getDraftKingsOdds(oaSport, info.homeTeam, info.awayTeam, oaMarket, sel, info.startTime, info.line);
+          bookOdds.kalshi     = oddsFeed.getKalshiOdds(oaSport, info.homeTeam, info.awayTeam, oaMarket, sel, info.startTime, info.line);
         }
       } catch (_) { /* ignore */ }
 
