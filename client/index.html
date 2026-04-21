@@ -3035,6 +3035,16 @@
       const legs = local.legs || (local.meta && local.meta.legs) || [];
       if (legs.length === 0) return false;
       if (anyLegResolved(legs)) return true;
+      // Series markets settle when the series concludes, not when Game 1
+      // ends. The startTime on a series leg is just Game 1, so the
+      // "latest start > 12h ago" heuristic misfires and hides genuinely-
+      // open series bets. Skip the time-based check entirely for any
+      // parlay with a series leg — only anyLegResolved can hide those.
+      const hasSeriesLeg = legs.some(l => {
+        const m = l.market || l.marketType;
+        return typeof m === 'string' && m.startsWith('series_');
+      });
+      if (hasSeriesLeg) return false;
       let latestStart = null;
       for (const l of legs) {
         const st = l.startTime || l.start_time;
@@ -3089,18 +3099,22 @@
       const riskVal = (o.confirmedStake && o.offeredOdds) ? calcBettorWager(o.confirmedStake, o.offeredOdds) : (o.confirmedStake || 0);
       if (!passesRangeFilter(riskVal, posState.riskMin, posState.riskMax)) return false;
       if (!passesRangeFilter(o.confirmedStake, posState.towinMin, posState.towinMax)) return false;
-      // Status filter
+      // Status filter — mirror the rendering-side logic (series-aware)
       if (posState.statusFilter) {
         const ls4 = o.meta?.legs || o.legs || [];
         const anyDead = ls4.some(l => getLegResult(l) === 'lost');
+        const hasSeries = ls4.some(l => {
+          const m = l.market || l.marketType;
+          return typeof m === 'string' && m.startsWith('series_');
+        });
         const starts = ls4.map(l => l.startTime ? new Date(l.startTime).getTime() : Infinity).filter(t => !isNaN(t));
         const earliest = starts.length > 0 ? Math.min(...starts) : Infinity;
         const latest = starts.length > 0 ? Math.max(...starts) : 0;
-        const GAME_DUR = 3.5*60*60*1000;
+        const GAME_DUR = hasSeries ? 14*24*60*60*1000 : 3.5*60*60*1000;
         const now = Date.now();
         let st = 'upcoming';
         if (anyDead) st = 'won';
-        else if (now >= earliest && now < latest + GAME_DUR) st = 'inprogress';
+        else if (now >= earliest && now < latest + GAME_DUR) st = hasSeries ? 'inseries' : 'inprogress';
         else if (now >= latest + GAME_DUR && starts.length > 0) st = 'awaiting';
         if (st !== posState.statusFilter) return false;
       }
@@ -3144,16 +3158,20 @@
           };
           va = wpCalcPos(a); vb = wpCalcPos(b); break;
         case 'status':
-          // Sort order: Won=0, In Progress=1, Upcoming=2, Awaiting Settle=3
+          // Sort order: Won=0, In Progress/In Series=1, Upcoming=2, Awaiting Settle=3
           const statusRank = (o) => {
             const ls3 = o.meta?.legs || o.legs || [];
             const anyDead = ls3.some(l => getLegResult(l) === 'lost');
             if (anyDead) return 0;
+            const hasSeries = ls3.some(l => {
+              const m = l.market || l.marketType;
+              return typeof m === 'string' && m.startsWith('series_');
+            });
             const starts = ls3.map(l => l.startTime ? new Date(l.startTime).getTime() : Infinity).filter(t => !isNaN(t));
             if (starts.length === 0) return 2;
             const earliest = Math.min(...starts);
             const latest = Math.max(...starts);
-            const GAME_DUR = 3.5*60*60*1000;
+            const GAME_DUR = hasSeries ? 14*24*60*60*1000 : 3.5*60*60*1000;
             const now = Date.now();
             if (now < earliest) return 2;
             if (now < latest + GAME_DUR) return 1;
@@ -3179,6 +3197,7 @@
         <option value="">All statuses</option>
         <option value="won"${posState.statusFilter==='won'?' selected':''}>Won ✓</option>
         <option value="inprogress"${posState.statusFilter==='inprogress'?' selected':''}>In Progress</option>
+        <option value="inseries"${posState.statusFilter==='inseries'?' selected':''}>In Series</option>
         <option value="upcoming"${posState.statusFilter==='upcoming'?' selected':''}>Upcoming</option>
         <option value="awaiting"${posState.statusFilter==='awaiting'?' selected':''}>Awaiting Settle</option>
       </select>
@@ -3238,10 +3257,20 @@
         ? calcSpProfit(order.confirmedStake, order.offeredOdds) : null;
       const toWin = profitVal != null ? fmtDollar(profitVal) : '-';
 
-      // Calculate game status based on leg start times
-      // Assume games last ~3.5 hours from start (covers most sports)
+      // Calculate game status based on leg start times.
+      // Normal game legs: assume ~3.5h from start. Series legs (playoff
+      // series_winner/spread/total): "event time" is only the FIRST game
+      // of the series, but the market doesn't settle until the whole
+      // series concludes — up to ~14 days for a full best-of-7. Treat
+      // series-containing parlays as "In Series" once Game 1 has started
+      // so they don't prematurely flip to "Awaiting Settle".
       const GAME_DURATION_MS = 3.5 * 60 * 60 * 1000;
+      const SERIES_DURATION_MS = 14 * 24 * 60 * 60 * 1000; // best-of-7 upper bound
       const now = Date.now();
+      const hasSeriesLeg = legs.some(l => {
+        const m = l.market || l.marketType;
+        return typeof m === 'string' && m.startsWith('series_');
+      });
       let gameStatus;
       const startTimes = legs.map(l => l.startTime ? new Date(l.startTime).getTime() : null).filter(t => t != null && !isNaN(t));
       if (startTimes.length === 0) {
@@ -3249,14 +3278,20 @@
       } else {
         const earliest = Math.min(...startTimes);
         const latest = Math.max(...startTimes);
-        const latestEnd = latest + GAME_DURATION_MS;
+        const durationMs = hasSeriesLeg ? SERIES_DURATION_MS : GAME_DURATION_MS;
+        const latestEnd = latest + durationMs;
         if (now < earliest) {
           // All legs are upcoming
           const hoursUntil = Math.round((earliest - now) / (1000 * 60 * 60) * 10) / 10;
           gameStatus = { label: 'Upcoming', color: 'var(--text3)', title: `Earliest game starts in ${hoursUntil}h` };
         } else if (now < latestEnd) {
-          // Some games in progress (or started)
-          gameStatus = { label: 'In Progress', color: 'var(--blue, #3b82f6)', title: 'One or more games currently in progress' };
+          // At least one game has started but the parlay hasn't fully resolved.
+          if (hasSeriesLeg) {
+            const daysSince = Math.round((now - earliest) / (1000 * 60 * 60 * 24) * 10) / 10;
+            gameStatus = { label: 'In Series', color: 'var(--blue, #3b82f6)', title: `Playoff series in progress — Game 1 was ${daysSince} days ago. Will settle when the series concludes (up to ~14 days from Game 1).` };
+          } else {
+            gameStatus = { label: 'In Progress', color: 'var(--blue, #3b82f6)', title: 'One or more games currently in progress' };
+          }
         } else {
           // All games likely ended — waiting on PX to settle
           const hoursAgo = Math.round((now - latestEnd) / (1000 * 60 * 60) * 10) / 10;
