@@ -1061,7 +1061,19 @@ function startStatusServer() {
       const trackerAdds = [];
       for (const o of orderTracker.getRecentOrders(500)) {
         if (o.status !== 'confirmed') continue;
-        if (o.meta?.phantom) continue;
+        // Apply the same stale/phantom filter getTotalPortfolioRisk uses.
+        // isOrderStalePhantom catches three failure modes that plain
+        // meta.phantom misses:
+        //   1. Explicit ghost-reconcile tag (meta.phantom=true)
+        //   2. 'confirmed' with no orderUuid >10min — finalize event
+        //      never arrived, fill almost certainly not placed on PX
+        //   3. Every leg started >12h ago — stuck settlement / zombie
+        // Without this filter, Open Positions was showing hundreds of
+        // stale tracker-only ghosts totaling $14k+ that /status's
+        // Deployed figure (already filtered) correctly excluded. Result:
+        // sum(My Risk) in the table was ~3x Deployed, which it shouldn't
+        // be — both are meant to represent the same thing.
+        if (orderTracker.isOrderStalePhantom(o)) continue;
         if (o.orderUuid && terminalUuids.has(o.orderUuid)) continue;
         if (coveredParlayIds.has(o.parlayId)) continue;
         if (o.orderUuid && coveredUuids.has(o.orderUuid)) continue;

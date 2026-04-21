@@ -4158,6 +4158,10 @@ module.exports = {
   findByOrderUuid,
   getTotalPortfolioRisk,
   getTotalToWin,
+  // Exposed so /px-positions can apply the same stale/phantom filter
+  // that getTotalPortfolioRisk uses — keeps the Open Positions table's
+  // sum of My Risk aligned with the Deployed figure on the dashboard.
+  isOrderStalePhantom,
   checkPortfolioRisk,
   getGameExposureSnapshot,
   checkGameExposure,
