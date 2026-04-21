@@ -687,7 +687,13 @@ function recordSettlement(orderUuid, result, payout, opts = {}) {
     }
 
     stats.totalSettlements++;
-    order.settledAt = new Date().toISOString();
+    // Preserve the ORIGINAL settlement timestamp on re-settle. If a bug
+    // somewhere triggers recordSettlement a second time on an already-
+    // settled order (the guard at line 656 is bypassed via the
+    // "Fixing stale settlement" revert path in pollOrderSettlements),
+    // we don't want the timestamp to drift forward and make the parlay
+    // reappear at the top of the Settled Positions list each poll cycle.
+    if (!order.settledAt) order.settledAt = new Date().toISOString();
     order.settlementResult = result; // 'won', 'lost', 'push', 'void'
 
     // Calculate P&L from SP perspective (house side).
@@ -2790,9 +2796,15 @@ async function pollOrderSettlements(px) {
       if (!settlementStatus || settlementStatus === 'tbd' || settlementStatus === 'requested') continue;
 
       // If order was somehow reverted to non-settled status, fix it
-      // by temporarily clearing the settled status so recordSettlement will run
+      // by temporarily clearing the settled status so recordSettlement will run.
+      // Enriched log captures the exact mismatch (stored vs expected) plus
+      // whether this is a reconstructed order, so recurring hits can be
+      // traced to a specific root cause (casing drift, parlayId mismatch,
+      // restart-induced reconstruction, etc.) via Railway logs.
       if (order.status && order.status.startsWith('settled_')) {
-        log.warn('Orders', `Fixing stale settlement for ${order.parlayId}: was ${order.status}, PX says ${settlementStatus}`);
+        const expected = `settled_${settlementStatus}`;
+        const reconstructed = !!(order.meta && order.meta.reconstructed);
+        log.warn('Orders', `Fixing stale settlement for ${order.parlayId} uuid=${uuid}: stored=${order.status} expected=${expected} pxRaw=${JSON.stringify(settlementStatus)} reconstructed=${reconstructed} prevSettledAt=${order.settledAt || 'null'} prevPnl=${order.pnl}`);
         // Reverse the old P&L before re-settling
         if (order.pnl != null) stats.runningPnL -= order.pnl;
         if (order.pnl > 0) stats.totalWins--;
