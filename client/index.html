@@ -2979,7 +2979,7 @@
     el.innerHTML = html;
   }
 
-  const posState = { sortCol: 'time', sortDir: -1, search: '', statusFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', _name: 'posState' };
+  const posState = { sortCol: 'time', sortDir: -1, search: '', statusFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', showHidden: false, _name: 'posState' };
   window.posRerender = () => renderPositions(window._lastPosData || { recentOrders: [] });
   window.togglePosSort = (col) => {
     if (posState.sortCol === col) posState.sortDir *= -1;
@@ -3047,19 +3047,29 @@
       return (nowMs - latestStart) > STALE_CONFIRMED_CUTOFF_MS;
     }
 
+    // Count hidden parlays (stale-confirmed) for the toolbar badge even
+    // when the toggle is off, so the operator knows they exist.
+    let hiddenStaleCount = 0;
     positions = positions.filter(p => {
       const local = localByParlayId[p.parlayId];
       if (local && typeof local.status === 'string'
           && local.status.startsWith('settled_')) return false;
-      if (isStaleConfirmed(p)) return false;
+      if (isStaleConfirmed(p)) {
+        hiddenStaleCount++;
+        return !!posState.showHidden; // keep if toggle is on, drop otherwise
+      }
       return true;
     });
+    window._openPositionsHiddenCount = hiddenStaleCount;
 
     window._openPositionsCount = positions.length;
     updatePositionsCountBadge();
 
     if (positions.length === 0) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No open positions</div></div>';
+      const suffix = hiddenStaleCount > 0
+        ? `<div style="color:var(--text3); font-size:12px; margin-top:6px;">${hiddenStaleCount} hidden (stale-confirmed). <a href="#" style="color:var(--accent);" onclick="event.preventDefault(); posState.showHidden=true; posRerender();">Show</a></div>`
+        : '';
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No open positions</div>' + suffix + '</div>';
       return;
     }
 
@@ -3174,6 +3184,10 @@
       </select>
       ${dateFilterHtml(posState, 'posRerender', dStyle)}
       <button onclick="posState.showAdvanced=!posState.showAdvanced; posRerender()" style="${pFSel} cursor:pointer;">${posState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
+      <label style="font-size:11px; color:var(--text2); display:inline-flex; align-items:center; gap:4px; cursor:pointer;" title="Show parlays hidden by the stale-confirmed heuristic — those where at least one leg already has a known result (inferredResult or settlement_status) while other legs are still in play or the game finished >12h ago.">
+        <input type="checkbox"${posState.showHidden ? ' checked' : ''} onchange="posState.showHidden=this.checked; posRerender()" style="vertical-align:middle;">
+        Show hidden${hiddenStaleCount > 0 ? ` <span style="color:var(--amber);">(${hiddenStaleCount})</span>` : ''}
+      </label>
       <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${positions.length}${(() => { const r = formatDateRange(filtered, 'confirmedAt'); return r ? ' · ' + r : ''; })()}</span>
     </div>`;
     if (posState.showAdvanced) {
