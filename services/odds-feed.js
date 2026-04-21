@@ -1243,21 +1243,24 @@ async function fetchFromTheOddsApi(sport) {
       }
     }
     if (mlPairs.length > 0) {
+      // Exclude Kalshi from averaging input — prediction-market thinness
+      // corrupts consensus. Still populated as a display column below.
+      const avgPairs = excludeKalshiFromConsensus(mlPairs);
       const fairHome = [], fairAway = [];
-      for (const p of mlPairs) {
+      for (const p of avgPairs) {
         const [fh, fa] = deVig2Way(p.home.odds_probability, p.away.odds_probability);
         fairHome.push(fh);
         fairAway.push(fa);
       }
       // Pinnacle floor only on heavy favorites (>65%) where de-vig over-corrects.
       // Use de-vigged Pinnacle (not raw implied) to avoid double-vig.
+      // Kalshi NOT used as fallback floor — operator intent: reference only.
       const pinPair = mlPairs.find(p => p.book === 'pinnacle');
-      const klPair = mlPairs.find(p => p.book === 'kalshi');
       const pinFairH = pinPair ? deVig2Way(pinPair.home.odds_probability, pinPair.away.odds_probability)[0] : 0;
       const pinFairA = pinPair ? deVig2Way(pinPair.home.odds_probability, pinPair.away.odds_probability)[1] : 0;
       const dvH = avg(fairHome), dvA = avg(fairAway);
-      const flrH = pinPair ? pinFairH : (klPair ? Math.min(klPair.home.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-      const flrA = pinPair ? pinFairA : (klPair ? Math.min(klPair.away.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+      const flrH = pinPair ? pinFairH : 0;
+      const flrA = pinPair ? pinFairA : 0;
       const maxHome = dvH >= 0.65 ? Math.max(dvH, flrH) : dvH;
       const maxAway = dvA >= 0.65 ? Math.max(dvA, flrA) : dvA;
       // Find named books for per-book display columns (previously unpopulated
@@ -1294,19 +1297,19 @@ async function fetchFromTheOddsApi(sport) {
       }
     }
     if (spreadPairs.length > 0) {
+      const avgSpreadPairs = excludeKalshiFromConsensus(spreadPairs);
       const fairHome = [], fairAway = [];
-      for (const p of spreadPairs) {
+      for (const p of avgSpreadPairs) {
         const [fh, fa] = deVig2Way(p.home.odds_probability, p.away.odds_probability);
         fairHome.push(fh);
         fairAway.push(fa);
       }
       const pinSpread = spreadPairs.find(p => p.book === 'pinnacle');
-      const klSpread = spreadPairs.find(p => p.book === 'kalshi');
       const pinFairH = pinSpread ? deVig2Way(pinSpread.home.odds_probability, pinSpread.away.odds_probability)[0] : 0;
       const pinFairA = pinSpread ? deVig2Way(pinSpread.home.odds_probability, pinSpread.away.odds_probability)[1] : 0;
       const dvSHome = avg(fairHome), dvSAway = avg(fairAway);
-      const flrSH = pinSpread ? pinFairH : (klSpread ? Math.min(klSpread.home.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-      const flrSA = pinSpread ? pinFairA : (klSpread ? Math.min(klSpread.away.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+      const flrSH = pinSpread ? pinFairH : 0;
+      const flrSA = pinSpread ? pinFairA : 0;
       const maxSHome = dvSHome >= 0.65 ? Math.max(dvSHome, flrSH) : dvSHome;
       const maxSAway = dvSAway >= 0.65 ? Math.max(dvSAway, flrSA) : dvSAway;
       const findBook = (name) => spreadPairs.find(p => p.book === name);
@@ -1342,19 +1345,19 @@ async function fetchFromTheOddsApi(sport) {
       }
     }
     if (totalPairs.length > 0) {
+      const avgTotalPairs = excludeKalshiFromConsensus(totalPairs);
       const fairOver = [], fairUnder = [];
-      for (const p of totalPairs) {
+      for (const p of avgTotalPairs) {
         const [fo, fu] = deVig2Way(p.over.odds_probability, p.under.odds_probability);
         fairOver.push(fo);
         fairUnder.push(fu);
       }
       const pinTotal = totalPairs.find(p => p.book === 'pinnacle');
-      const klTotal = totalPairs.find(p => p.book === 'kalshi');
       const pinFairO = pinTotal ? deVig2Way(pinTotal.over.odds_probability, pinTotal.under.odds_probability)[0] : 0;
       const pinFairU = pinTotal ? deVig2Way(pinTotal.over.odds_probability, pinTotal.under.odds_probability)[1] : 0;
       const dvTOver = avg(fairOver), dvTUnder = avg(fairUnder);
-      const flrTO = pinTotal ? pinFairO : (klTotal ? Math.min(klTotal.over.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-      const flrTU = pinTotal ? pinFairU : (klTotal ? Math.min(klTotal.under.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+      const flrTO = pinTotal ? pinFairO : 0;
+      const flrTU = pinTotal ? pinFairU : 0;
       const maxTOver = dvTOver >= 0.65 ? Math.max(dvTOver, flrTO) : dvTOver;
       const maxTUnder = dvTUnder >= 0.65 ? Math.max(dvTUnder, flrTU) : dvTUnder;
       const findBook = (name) => totalPairs.find(p => p.book === name);
@@ -1548,8 +1551,11 @@ function buildConsensusTeamTotals(bookPairs) {
     const matching = sidePairs.filter(bp => bp.over.line === primaryLine);
     if (matching.length === 0) continue;
 
+    // Exclude Kalshi from team-total averaging for the same reason as
+    // moneyline/spread/total consensus (prediction-market thinness).
+    const avgSet = excludeKalshiFromConsensus(matching);
     const devigged = { over: [], under: [] };
-    for (const { over, under } of matching) {
+    for (const { over, under } of avgSet) {
       const [fo, fu] = deVig2Way(over.odds_probability, under.odds_probability);
       devigged.over.push(fo);
       devigged.under.push(fu);
@@ -1582,6 +1588,23 @@ function buildConsensusTeamTotals(bookPairs) {
   return Object.keys(result).length > 0 ? result : null;
 }
 
+/**
+ * Drop Kalshi from consensus-averaging input. Kalshi is a prediction
+ * market with thin volume on sports and often leaves prices orphaned
+ * on the wrong side for hours — leading to the Guardians −142 market
+ * vs Kalshi +130 disagreement (15pp) that pulled our fair to ~50/50
+ * when real market was ~59/41. Operator intent: Kalshi is reference
+ * only. Preserved in allBooks so the dashboard's Kalshi column still
+ * populates as an eyeball-comparison reference, but NOT used for any
+ * pricing input (averaging or fallback floor). Defensive fallback:
+ * if Kalshi is the ONLY book in bookPairs, keep it rather than
+ * averaging an empty set.
+ */
+function excludeKalshiFromConsensus(bookPairs) {
+  const filtered = bookPairs.filter(bp => bp.book !== 'kalshi');
+  return filtered.length > 0 ? filtered : bookPairs;
+}
+
 function buildConsensusMoneyline(bookPairs) {
   // Preserve ALL books for display attribution (pinnacle/fd/dk/kalshi fields
   // are always populated from the full list so the dashboard can show every
@@ -1591,8 +1614,9 @@ function buildConsensusMoneyline(bookPairs) {
   // Filter high-vig books out of the averaging input. Prevents Saba-class
   // Asian bookmaking feeds from corrupting the de-vigged consensus mean
   // via unweighted averaging. See filterSharpBooks for rationale.
+  // Also exclude Kalshi — prediction-market thinness, see helper above.
   const sharpBooks = filterSharpBooks(
-    bookPairs,
+    excludeKalshiFromConsensus(bookPairs),
     bp => [bp.home.odds_probability, bp.away.odds_probability],
     'moneyline'
   );
@@ -1620,8 +1644,10 @@ function buildConsensusMoneyline(bookPairs) {
   const klBook = allBooks.find(bp => bp.book === 'kalshi');
   const pinFairHome = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[0] : 0;
   const pinFairAway = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[1] : 0;
-  const floorHome = pinBook ? pinFairHome : (klBook ? Math.min(klBook.home.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-  const floorAway = pinBook ? pinFairAway : (klBook ? Math.min(klBook.away.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+  // Pinnacle floor only. Kalshi no longer used as fallback floor —
+  // operator intent: reference/display only, not a pricing input.
+  const floorHome = pinBook ? pinFairHome : 0;
+  const floorAway = pinBook ? pinFairAway : 0;
   const pricingHome = dvHome >= 0.50 ? Math.max(dvHome, floorHome) : dvHome;
   const pricingAway = dvAway >= 0.50 ? Math.max(dvAway, floorAway) : dvAway;
 
@@ -1676,9 +1702,10 @@ function buildConsensusSpread(bookPairs) {
   if (matching.length === 0) return null;
 
   // Filter high-vig books out of the averaging input (see
-  // filterSharpBooks rationale in buildConsensusMoneyline).
+  // filterSharpBooks rationale in buildConsensusMoneyline). Kalshi
+  // also excluded — see excludeKalshiFromConsensus doc.
   const sharpMatching = filterSharpBooks(
-    matching,
+    excludeKalshiFromConsensus(matching),
     bp => [bp.home.odds_probability, bp.away.odds_probability],
     'spread'
   );
@@ -1695,15 +1722,15 @@ function buildConsensusSpread(bookPairs) {
 
   const pinBook = matching.find(bp => bp.book === 'pinnacle');
   const fdBook = matching.find(bp => bp.book === 'fanduel');
-  const klBookS = matching.find(bp => bp.book === 'kalshi');
   // Floor at Pinnacle's DE-VIGGED fair prob (not raw implied) — raw would
   // include Pinnacle's vig and cause double-vig when we apply ours on top.
   // Threshold lowered from 0.65 to 0.50 so any favorite side gets floored
   // against Pin's de-vigged prob whenever Pin is present.
+  // Kalshi no longer used as fallback floor — reference only per operator intent.
   const pinFairHomeS = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[0] : 0;
   const pinFairAwayS = pinBook ? deVig2Way(pinBook.home.odds_probability, pinBook.away.odds_probability)[1] : 0;
-  const floorHomeS = pinBook ? pinFairHomeS : (klBookS ? klBookS.home.odds_probability : 0);
-  const floorAwayS = pinBook ? pinFairAwayS : (klBookS ? klBookS.away.odds_probability : 0);
+  const floorHomeS = pinBook ? pinFairHomeS : 0;
+  const floorAwayS = pinBook ? pinFairAwayS : 0;
   const pricingHome = dvHome >= 0.50 ? Math.max(dvHome, floorHomeS) : dvHome;
   const pricingAway = dvAway >= 0.50 ? Math.max(dvAway, floorAwayS) : dvAway;
 
@@ -1756,8 +1783,9 @@ function buildTotalsForLine(bookPairs, pLine) {
   const matching = bookPairs.filter(bp => bp.over.line === pLine);
   if (matching.length === 0) return null;
 
+  // Exclude Kalshi from averaging (see excludeKalshiFromConsensus doc).
   const sharpMatching = filterSharpBooks(
-    matching,
+    excludeKalshiFromConsensus(matching),
     bp => [bp.over.odds_probability, bp.under.odds_probability],
     'total'
   );
@@ -1775,8 +1803,9 @@ function buildTotalsForLine(bookPairs, pLine) {
   const klBookT = matching.find(bp => bp.book === 'kalshi');
   const pinFairOver = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[0] : 0;
   const pinFairUnder = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[1] : 0;
-  const floorOver = pinBook ? pinFairOver : (klBookT ? Math.min(klBookT.over.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
-  const floorUnder = pinBook ? pinFairUnder : (klBookT ? Math.min(klBookT.under.odds_probability * (1 + KALSHI_BUFFER), 0.99) : 0);
+  // Pinnacle floor only. Kalshi no longer used as fallback floor.
+  const floorOver = pinBook ? pinFairOver : 0;
+  const floorUnder = pinBook ? pinFairUnder : 0;
   const pricingOver = dvOver >= 0.50 ? Math.max(dvOver, floorOver) : dvOver;
   const pricingUnder = dvUnder >= 0.50 ? Math.max(dvUnder, floorUnder) : dvUnder;
 
