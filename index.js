@@ -133,9 +133,13 @@ async function startup() {
       }
       // Ghost-confirmed reconcile runs after the full reconcile has
       // established the order baseline. Initial pass immediately, then
-      // every 5 minutes. Flags orders our tracker shows 'confirmed' but
+      // every 2 minutes. Flags orders our tracker shows 'confirmed' but
       // PX doesn't know about (or has already closed) as phantoms so
-      // they stop inflating the Deployed number.
+      // they stop inflating the Deployed number. Tightened from 5min to
+      // 2min after seeing 400+ ghosts accumulate between cycles during
+      // normal operation — a stray order.matched without a follow-up
+      // order.finalized stays a ghost until the next reconcile, so
+      // shorter interval → tighter Deployed accuracy.
       try {
         const ghost = await orderTracker.reconcileGhostConfirmed(px);
         if (ghost.ghostsFound > 0 || ghost.orderUuidFilledIn > 0 || ghost.settledFound > 0) {
@@ -150,7 +154,7 @@ async function startup() {
         } catch (err) {
           log.warn('GhostReconcile', `Periodic reconcile failed: ${err.message}`);
         }
-      }, 5 * 60 * 1000);
+      }, 2 * 60 * 1000);
     }
   })();
   // Don't await — let startup continue to odds/lines/WS immediately
