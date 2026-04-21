@@ -9409,6 +9409,10 @@
         + '<th style="text-align:right;">Line</th>'
         + '<th style="text-align:left;">Event</th>'
         + '<th style="text-align:left;">Starts</th>'
+        + '<th style="text-align:right;" title="De-vigged consensus fair probability for this selection. Null when we don\'t have odds data cached for this leg.">Fair %</th>'
+        + '<th style="text-align:right;" title="Fair American odds (1/fairProb − 1 → American). What the bet would be worth with zero vig.">Fair Odds</th>'
+        + '<th style="text-align:right;" title="American odds we would quote for this leg if it were the only leg of a 1-leg parlay. Applies base sport vig + favorite ramp + series/MMA floors. Real parlay quotes compound differently depending on other legs.">My Odds</th>'
+        + '<th style="text-align:right; color:var(--text3);" title="Effective vig applied (sport base + favorite ramp + floors).">Vig %</th>'
         + '<th style="text-align:left; color:var(--text3);">line_id</th>'
         + '</tr>';
       for (const r of rows) {
@@ -9427,6 +9431,11 @@
           ? new Date(r.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })
           : '-';
         const shortId = (r.lineId || '').substring(0, 8) + '…';
+        const fairPct = r.fairProb != null ? (r.fairProb * 100).toFixed(1) + '%' : '-';
+        const fairAm = r.fairAmerican != null ? ((r.fairAmerican >= 0 ? '+' : '') + r.fairAmerican) : '-';
+        const myAm = r.myOddsAmerican != null ? ((r.myOddsAmerican >= 0 ? '+' : '') + r.myOddsAmerican) : '-';
+        const myVig = r.myVigPct != null ? r.myVigPct.toFixed(1) + '%' : '-';
+        const missing = r.fairProb == null;
         html += '<tr>'
           + '<td style="padding:4px 8px;">' + escapeHtml(sportLabel) + '</td>'
           + '<td style="padding:4px 8px; font-family:monospace; color:var(--text2);">' + escapeHtml(r.marketType || '-') + '</td>'
@@ -9434,6 +9443,10 @@
           + '<td style="padding:4px 8px; text-align:right; font-family:monospace;">' + line + '</td>'
           + '<td style="padding:4px 8px; color:var(--text2);">' + escapeHtml(event) + '</td>'
           + '<td style="padding:4px 8px; color:var(--text3); font-size:11px;">' + starts + '</td>'
+          + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (missing ? 'var(--text3)' : 'var(--text2)') + ';">' + fairPct + '</td>'
+          + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (missing ? 'var(--text3)' : 'var(--text2)') + ';">' + fairAm + '</td>'
+          + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (missing ? 'var(--text3)' : 'var(--text)') + '; font-weight:600;">' + myAm + '</td>'
+          + '<td style="padding:4px 8px; text-align:right; color:var(--text3); font-size:11px;">' + myVig + '</td>'
           + '<td style="padding:4px 8px; font-family:monospace; font-size:11px; color:var(--text3);" title="' + escapeHtml(r.lineId || '') + '">' + shortId + '</td>'
           + '</tr>';
       }

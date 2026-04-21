@@ -180,6 +180,53 @@ function decimalToAmerican(dec) {
   return Math.round(-100 / (dec - 1));                   // -200, -150, etc.
 }
 
+/**
+ * Standalone (not-inside-priceParlay) vig computation for a single leg.
+ * Mirrors the closures inside priceParlay: base sport vig → favorite ramp
+ * → series/MMA floors. Used by the /lines/detail endpoint to show "what
+ * would I quote on this single leg if someone asked for it alone?"
+ * Not used in the actual pricing path — that stays in priceParlay.
+ */
+function computeSingleLegVig(fairProb, sport, marketType) {
+  if (!(fairProb > 0 && fairProb < 1)) return null;
+  const vigBySport = config.pricing.vigBySport || {};
+  const baseVig = (sport && vigBySport[sport] != null) ? vigBySport[sport] : config.pricing.defaultVig;
+  const favSlope = config.pricing.vigFavoriteSlope;
+  const favFloor = config.pricing.vigFavoriteFloor;
+  const seriesMinVig = config.pricing.vigSeriesMin || 0;
+  const mmaMinVig = config.pricing.vigMmaMin || 0;
+  let vig;
+  if (fairProb <= 0.5) {
+    vig = baseVig;
+  } else {
+    const ramp = baseVig + favSlope * (fairProb - 0.5);
+    vig = favFloor > 0 ? Math.max(favFloor, ramp) : ramp;
+  }
+  if (marketType === 'series_winner' && seriesMinVig > 0) vig = Math.max(vig, seriesMinVig);
+  if (sport === 'mma_mixed_martial_arts' && mmaMinVig > 0) vig = Math.max(vig, mmaMinVig);
+  return vig;
+}
+
+/**
+ * Given a fair probability + leg metadata, return what we'd quote if this
+ * were the ONLY leg of a 1-leg "parlay". Returns { vig, impliedProb,
+ * americanOdds } or null if inputs are invalid.
+ */
+function computeSingleLegQuote(fairProb, sport, marketType) {
+  const vig = computeSingleLegVig(fairProb, sport, marketType);
+  if (vig == null) return null;
+  const fairDecimal = 1 / fairProb;
+  const payout = fairDecimal - 1;
+  const viggedPayout = payout * (1 - vig);
+  const impliedProb = 1 / (1 + viggedPayout);
+  const decimalOdds = 1 / impliedProb;
+  return {
+    vig,
+    impliedProb,
+    americanOdds: decimalToAmerican(decimalOdds),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // PRICING ENGINE
 // ---------------------------------------------------------------------------
@@ -1278,4 +1325,6 @@ module.exports = {
   shouldDecline,
   validateForConfirmation,
   getLastPriceFailure,
+  computeSingleLegQuote,
+  decimalToAmerican,
 };

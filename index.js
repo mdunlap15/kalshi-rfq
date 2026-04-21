@@ -4201,6 +4201,26 @@ function startStatusServer() {
         if (!hay.includes(teamFilter)) continue;
       }
       if (eventFilter && String(info.pxEventId || '') !== eventFilter) continue;
+      // Best-effort fair prob + quote preview. Uses oddsFeed.getFairProb
+      // (synchronous; no on-demand alt-line fetch here — we don't want to
+      // spam the Odds API on a Lines tab browse). For series/MMA/golf
+      // lines that need their own fair-prob paths, fairProb will be null
+      // and myOdds won't show until the user gets an actual RFQ.
+      let fairProb = null;
+      try {
+        fairProb = oddsFeed.getFairProb(
+          info.oddsApiSport || info.sport,
+          info.homeTeam,
+          info.awayTeam,
+          info.oddsApiMarket || info.marketType,
+          info.oddsApiSelection || info.selection,
+          info.line != null ? Math.abs(info.line) : null,
+          info.startTime
+        );
+      } catch (_) { /* ignore */ }
+      const quote = (fairProb != null && fairProb > 0 && fairProb < 1)
+        ? pricer.computeSingleLegQuote(fairProb, info.sport, info.marketType)
+        : null;
       out.push({
         lineId,
         sport: info.sport,
@@ -4214,6 +4234,11 @@ function startStatusServer() {
         homeTeam: info.homeTeam,
         awayTeam: info.awayTeam,
         startTime: info.startTime,
+        fairProb: fairProb != null ? Math.round(fairProb * 10000) / 10000 : null,
+        fairAmerican: (fairProb != null && fairProb > 0 && fairProb < 1)
+          ? pricer.decimalToAmerican(1 / fairProb) : null,
+        myOddsAmerican: quote ? quote.americanOdds : null,
+        myVigPct: quote ? Math.round(quote.vig * 10000) / 100 : null,
       });
       if (out.length >= limit) break;
     }
