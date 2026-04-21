@@ -468,6 +468,87 @@
       color: var(--text);
       cursor: pointer;
     }
+
+    /* Dual-thumb range slider for numeric column filters on the Lines tab.
+       Two <input type="range"> stacked on top of each other; the track is
+       transparent (overridden here to hide the default rail), thumbs
+       intercept pointer events, and a colored <div> under the thumbs shows
+       the selected range. JS keeps the two thumbs from crossing. */
+    .dual-slider {
+      position: relative;
+      width: 180px;
+      height: 22px;
+    }
+    .dual-slider .ds-track {
+      position: absolute;
+      top: 9px;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: var(--surface3);
+      border-radius: 2px;
+      pointer-events: none;
+    }
+    .dual-slider .ds-fill {
+      position: absolute;
+      top: 9px;
+      height: 4px;
+      background: var(--blue);
+      border-radius: 2px;
+      pointer-events: none;
+    }
+    .dual-slider input[type="range"] {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 22px;
+      margin: 0;
+      background: none;
+      pointer-events: none;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    .dual-slider input[type="range"]:focus {
+      outline: none;
+    }
+    .dual-slider input[type="range"]::-webkit-slider-runnable-track {
+      background: transparent;
+      height: 4px;
+    }
+    .dual-slider input[type="range"]::-moz-range-track {
+      background: transparent;
+      height: 4px;
+    }
+    .dual-slider input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      pointer-events: auto;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--blue);
+      border: 2px solid var(--surface);
+      cursor: grab;
+      margin-top: -5px;
+      box-shadow: 0 0 0 1px var(--border);
+    }
+    .dual-slider input[type="range"]:active::-webkit-slider-thumb {
+      cursor: grabbing;
+      background: var(--text);
+    }
+    .dual-slider input[type="range"]::-moz-range-thumb {
+      pointer-events: auto;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--blue);
+      border: 2px solid var(--surface);
+      cursor: grab;
+      box-shadow: 0 0 0 1px var(--border);
+    }
+    .dual-slider.disabled .ds-fill { background: var(--surface3); }
+    .dual-slider.disabled input[type="range"]::-webkit-slider-thumb { background: var(--text3); cursor: not-allowed; }
+    .dual-slider.disabled input[type="range"]::-moz-range-thumb { background: var(--text3); cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -903,24 +984,14 @@
                   <option value="2000">2000</option>
                 </select>
               </label>
-              <button class="btn" onclick="document.getElementById('lines-advanced').style.display=document.getElementById('lines-advanced').style.display==='none'?'flex':'none';" style="font-size:12px; padding:4px 10px;" title="Show/hide numeric range filters">&#9662; Advanced</button>
+              <button class="btn" onclick="toggleLinesAdvanced()" style="font-size:12px; padding:4px 10px;" title="Show/hide numeric range filters">&#9662; Advanced</button>
               <button class="btn" onclick="loadLines()" style="font-size:12px; padding:4px 12px;">Refresh</button>
             </div>
-            <div id="lines-advanced" style="padding:8px 12px; display:none; flex-wrap:wrap; gap:10px; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">
-              <span style="color:var(--text3);">Fair %:</span>
-              <input type="number" placeholder="min" step="0.1" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.fairMin=this.value; renderLinesTable()">
-              <input type="number" placeholder="max" step="0.1" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.fairMax=this.value; renderLinesTable()">
-              <span style="color:var(--text3); margin-left:8px;">My Odds:</span>
-              <input type="number" placeholder="min" style="width:70px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.myMin=this.value; renderLinesTable()">
-              <input type="number" placeholder="max" style="width:70px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.myMax=this.value; renderLinesTable()">
-              <span style="color:var(--text3); margin-left:8px;">vs Cons (pp):</span>
-              <input type="number" placeholder="min" step="0.1" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.diffMin=this.value; renderLinesTable()">
-              <input type="number" placeholder="max" step="0.1" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.diffMax=this.value; renderLinesTable()">
-              <span style="color:var(--text3); margin-left:8px;">Line:</span>
-              <input type="number" placeholder="min" step="0.5" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.lineMin=this.value; renderLinesTable()">
-              <input type="number" placeholder="max" step="0.5" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.lineMax=this.value; renderLinesTable()">
-              <button onclick="linesState.fairMin=linesState.fairMax=linesState.myMin=linesState.myMax=linesState.diffMin=linesState.diffMax=linesState.lineMin=linesState.lineMax=''; document.querySelectorAll('#lines-advanced input[type=number]').forEach(i=>i.value=''); renderLinesTable();" style="margin-left:auto; background:var(--surface3); border:1px solid var(--border); color:var(--text2); padding:3px 10px; border-radius:4px; font-size:11px; cursor:pointer;">Clear</button>
-            </div>
+            <!-- Populated by renderLinesAdvancedFilters() after data loads
+                 (need bounds computed from current _rows). Starts hidden;
+                 shown via the Advanced toggle button which also forces
+                 a re-render of the filter UI in case data has arrived. -->
+            <div id="lines-advanced" style="padding:10px 12px; display:none; flex-wrap:wrap; gap:18px; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;"></div>
             <div id="lines-table"><div class="empty-state"><div class="icon">-</div><div>Select filters and click Refresh</div></div></div>
           </div>
         </div>
@@ -9478,6 +9549,12 @@
       linesState._rows = (data && data.lines) || [];
       linesState._totalFromServer = (data && data.count) || 0;
       stage = 'render';
+      // Advanced filter panel depends on data bounds (min/max for each
+      // numeric column) so it needs to re-render whenever the dataset
+      // changes. Only re-render if the panel is currently visible — no
+      // need to burn cycles on hidden UI.
+      const adv = document.getElementById('lines-advanced');
+      if (adv && adv.style.display !== 'none') renderLinesAdvancedFilters();
       renderLinesTable();
     } catch (err) {
       // Log to console so operator can see full stack trace in DevTools.
@@ -9496,6 +9573,175 @@
     if (a == null || !Number.isFinite(a)) return null;
     return a >= 0 ? 100 / (a + 100) : -a / (-a + 100);
   }
+
+  // ---------------------------------------------------------------------
+  // Advanced filter panel — dual-thumb range sliders
+  //
+  // Each filter column has bounds [dataMin, dataMax] computed from the
+  // currently loaded rows. The two <input type="range"> are stacked,
+  // both initially at the extremes. JS prevents the thumbs from crossing
+  // and writes back to linesState.{column}Min/Max on drag. linesState
+  // continues to store '' when the slider is at the extreme (so filter
+  // logic in renderLinesTable() — which already handles '' → null — is
+  // unchanged).
+  // ---------------------------------------------------------------------
+  function toggleLinesAdvanced() {
+    const adv = document.getElementById('lines-advanced');
+    if (!adv) return;
+    const showing = adv.style.display === 'none' || adv.style.display === '';
+    adv.style.display = showing ? 'flex' : 'none';
+    if (showing) renderLinesAdvancedFilters();
+  }
+
+  // Compute per-column data bounds from the currently cached rows.
+  // Returns { fair: {min, max, any}, my: {...}, diff: {...}, line: {...} }.
+  // `any` is false if no row had a numeric value for that column; the
+  // slider is rendered disabled in that case.
+  function _linesColumnBounds() {
+    const rows = linesState._rows || [];
+    const cols = {
+      fair: { extractor: (r) => r.fairProb != null ? r.fairProb * 100 : null },
+      my:   { extractor: (r) => Number.isFinite(r.myOddsAmerican) ? r.myOddsAmerican : null },
+      diff: { extractor: (r) => Number.isFinite(r.vsConsensusPp) ? r.vsConsensusPp : null },
+      line: { extractor: (r) => Number.isFinite(r.line) ? r.line : null },
+    };
+    const out = {};
+    for (const [k, c] of Object.entries(cols)) {
+      let min = Infinity, max = -Infinity, any = false;
+      for (const r of rows) {
+        const v = c.extractor(r);
+        if (v == null) continue;
+        any = true;
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      if (!any) { min = 0; max = 1; }
+      // Sensible defaults when min === max (single-valued dataset) so the
+      // slider still has a visible range. Also clamp to 2 decimal
+      // precision for a clean UI.
+      if (min === max) { min = min - 1; max = max + 1; }
+      out[k] = { min, max, any };
+    }
+    return out;
+  }
+
+  // Build one dual-slider block. Returns HTML string.
+  function _buildDualSlider(opts) {
+    const { id, label, minKey, maxKey, min, max, step, fmt, any } = opts;
+    const sMinRaw = parseFloat(linesState[minKey]);
+    const sMaxRaw = parseFloat(linesState[maxKey]);
+    const curMin = Number.isFinite(sMinRaw) ? Math.max(min, Math.min(max, sMinRaw)) : min;
+    const curMax = Number.isFinite(sMaxRaw) ? Math.max(min, Math.min(max, sMaxRaw)) : max;
+    const range = max - min;
+    const leftPct = range > 0 ? ((curMin - min) / range) * 100 : 0;
+    const rightPct = range > 0 ? ((curMax - min) / range) * 100 : 100;
+    const disabledAttr = any ? '' : 'disabled';
+    const disabledCls = any ? '' : ' disabled';
+    const onInp = `updateDualSlider('${id}','${minKey}','${maxKey}',${min},${max})`;
+    return `
+      <div style="display:flex; flex-direction:column; gap:2px; min-width:180px;">
+        <div style="display:flex; justify-content:space-between; align-items:baseline; color:var(--text3);">
+          <span>${label}</span>
+          <span id="${id}-lbl" style="color:var(--text2); font-family:monospace; font-size:10px;">${any ? fmt(curMin) + ' – ' + fmt(curMax) : 'no data'}</span>
+        </div>
+        <div class="dual-slider${disabledCls}" data-fmt="${id}">
+          <div class="ds-track"></div>
+          <div class="ds-fill" id="${id}-fill" style="left:${leftPct}%; right:${100 - rightPct}%;"></div>
+          <input type="range" id="${id}-min" min="${min}" max="${max}" step="${step}" value="${curMin}" ${disabledAttr}
+            oninput="${onInp}">
+          <input type="range" id="${id}-max" min="${min}" max="${max}" step="${step}" value="${curMax}" ${disabledAttr}
+            oninput="${onInp}">
+        </div>
+      </div>`;
+  }
+
+  // Format helpers — one per column so labels show the right units.
+  const _fmtFair = (v) => v.toFixed(1) + '%';
+  const _fmtMy   = (v) => { const r = Math.round(v); return (r >= 0 ? '+' : '') + r; };
+  const _fmtDiff = (v) => { const s = v.toFixed(2); return (v >= 0 ? '+' + s : s) + 'pp'; };
+  const _fmtLine = (v) => { const r = Math.round(v * 2) / 2; return (r > 0 ? '+' : '') + r; };
+  // Formatter registry keyed off the slider id so updateDualSlider can
+  // find the right formatter when refreshing the label.
+  const _dualSliderFmts = {
+    'ls-fair': _fmtFair,
+    'ls-my':   _fmtMy,
+    'ls-diff': _fmtDiff,
+    'ls-line': _fmtLine,
+  };
+
+  function renderLinesAdvancedFilters() {
+    const adv = document.getElementById('lines-advanced');
+    if (!adv) return;
+    const b = _linesColumnBounds();
+    // Round bounds out to sensible tick sizes so sliders don't display
+    // awkward fractional extremes.
+    const roundOut = (lo, hi, tick) => [Math.floor(lo / tick) * tick, Math.ceil(hi / tick) * tick];
+    const [fairLo, fairHi] = roundOut(Math.max(0, b.fair.min), Math.min(100, b.fair.max), 1);
+    const [myLo, myHi]     = roundOut(b.my.min, b.my.max, 10);
+    const [diffLo, diffHi] = roundOut(b.diff.min, b.diff.max, 1);
+    const [lineLo, lineHi] = roundOut(b.line.min, b.line.max, 0.5);
+    // Store the active bounds so updateDualSlider can use them for
+    // "clear when at extremes" checks.
+    linesState._sliderBounds = {
+      'ls-fair': [fairLo, fairHi],
+      'ls-my':   [myLo, myHi],
+      'ls-diff': [diffLo, diffHi],
+      'ls-line': [lineLo, lineHi],
+    };
+    let html = '';
+    html += _buildDualSlider({ id:'ls-fair', label:'Fair %', minKey:'fairMin', maxKey:'fairMax', min:fairLo, max:fairHi, step:0.5, fmt:_fmtFair, any:b.fair.any });
+    html += _buildDualSlider({ id:'ls-my',   label:'My Odds', minKey:'myMin',  maxKey:'myMax',   min:myLo,   max:myHi,   step:5,   fmt:_fmtMy,   any:b.my.any });
+    html += _buildDualSlider({ id:'ls-diff', label:'vs Cons (pp)', minKey:'diffMin', maxKey:'diffMax', min:diffLo, max:diffHi, step:0.1, fmt:_fmtDiff, any:b.diff.any });
+    html += _buildDualSlider({ id:'ls-line', label:'Line',   minKey:'lineMin', maxKey:'lineMax', min:lineLo, max:lineHi, step:0.5, fmt:_fmtLine, any:b.line.any });
+    html += `<button onclick="clearLinesSliders()" style="margin-left:auto; align-self:center; background:var(--surface3); border:1px solid var(--border); color:var(--text2); padding:4px 12px; border-radius:4px; font-size:11px; cursor:pointer;">Clear all</button>`;
+    adv.innerHTML = html;
+  }
+
+  // Live thumb-drag handler. Both thumbs fire the same oninput so we just
+  // read both and clamp whichever is being moved. We detect "which is
+  // moving" by comparing document.activeElement to the min input.
+  window.updateDualSlider = function(id, minKey, maxKey, minBound, maxBound) {
+    const minEl = document.getElementById(id + '-min');
+    const maxEl = document.getElementById(id + '-max');
+    const fillEl = document.getElementById(id + '-fill');
+    const lblEl = document.getElementById(id + '-lbl');
+    if (!minEl || !maxEl) return;
+    let minVal = parseFloat(minEl.value);
+    let maxVal = parseFloat(maxEl.value);
+    // Prevent thumbs from crossing. The active element tells us which
+    // thumb the user is dragging so we pin the OTHER one to it.
+    if (minVal > maxVal) {
+      if (document.activeElement === minEl) {
+        maxVal = minVal;
+        maxEl.value = String(maxVal);
+      } else {
+        minVal = maxVal;
+        minEl.value = String(minVal);
+      }
+    }
+    // Store '' when at the bound extremes so linesState stays tidy and
+    // renderLinesTable's null-filter logic skips the check entirely.
+    linesState[minKey] = minVal <= minBound ? '' : String(minVal);
+    linesState[maxKey] = maxVal >= maxBound ? '' : String(maxVal);
+    // Update visual track fill and numeric label.
+    const range = maxBound - minBound;
+    if (fillEl && range > 0) {
+      fillEl.style.left = ((minVal - minBound) / range) * 100 + '%';
+      fillEl.style.right = (100 - ((maxVal - minBound) / range) * 100) + '%';
+    }
+    const fmt = _dualSliderFmts[id];
+    if (lblEl && fmt) lblEl.textContent = fmt(minVal) + ' – ' + fmt(maxVal);
+    renderLinesTable();
+  };
+
+  window.clearLinesSliders = function() {
+    linesState.fairMin = linesState.fairMax = '';
+    linesState.myMin   = linesState.myMax   = '';
+    linesState.diffMin = linesState.diffMax = '';
+    linesState.lineMin = linesState.lineMax = '';
+    renderLinesAdvancedFilters();
+    renderLinesTable();
+  };
   // Pure-render from cached linesState._rows. Applies client-side sort and
   // range filters; no network call. Triggered by header clicks, filter
   // input changes, and drill-down toggles.
@@ -9539,27 +9785,41 @@
     });
 
     // --- Sort ---
+    // Blank/null cells always sort to the END regardless of direction.
+    // Previously getters mapped nulls to +Infinity / -Infinity which meant
+    // ascending kept them at the bottom but descending floated them to the
+    // top — operator complaint: "click ascending twice and the blanks
+    // come first." Now we return raw null and short-circuit the
+    // comparator so nulls stay anchored regardless of dir.
     const col = linesState.sortCol;
     const dir = linesState.sortDir || 1;
     const getter = {
       sport: (r) => r.sport || '',
       market: (r) => r.marketType || '',
       team: (r) => r.teamName || r.selection || '',
-      line: (r) => r.line != null ? r.line : Number.NEGATIVE_INFINITY,
+      line: (r) => r.line,
       event: (r) => r.pxEventName || '',
       starts: (r) => r.startTime || '',
-      fair: (r) => r.fairProb != null ? r.fairProb : -1,
-      my: (r) => r.myOddsAmerican != null ? r.myOddsAmerican : Number.POSITIVE_INFINITY,
-      pin: (r) => r.pinnacleOdds != null ? r.pinnacleOdds : Number.POSITIVE_INFINITY,
-      fd: (r) => r.fanduelOdds != null ? r.fanduelOdds : Number.POSITIVE_INFINITY,
-      dk: (r) => r.draftkingsOdds != null ? r.draftkingsOdds : Number.POSITIVE_INFINITY,
-      kalshi: (r) => r.kalshiOdds != null ? r.kalshiOdds : Number.POSITIVE_INFINITY,
-      cons: (r) => r.consensusAmerican != null ? r.consensusAmerican : Number.POSITIVE_INFINITY,
-      diff: (r) => r.vsConsensusPp != null ? r.vsConsensusPp : Number.NEGATIVE_INFINITY,
+      fair: (r) => r.fairProb,
+      my: (r) => r.myOddsAmerican,
+      pin: (r) => r.pinnacleOdds,
+      fd: (r) => r.fanduelOdds,
+      dk: (r) => r.draftkingsOdds,
+      kalshi: (r) => r.kalshiOdds,
+      cons: (r) => r.consensusAmerican,
+      diff: (r) => r.vsConsensusPp,
     }[col];
     if (getter) {
+      const isNullish = (v) =>
+        v == null ||
+        v === '' ||
+        (typeof v === 'number' && !Number.isFinite(v));
       rows = rows.slice().sort((a, b) => {
         const va = getter(a), vb = getter(b);
+        const aN = isNullish(va), bN = isNullish(vb);
+        if (aN && bN) return 0;
+        if (aN) return 1;   // null/blank → always after
+        if (bN) return -1;
         if (typeof va === 'string' && typeof vb === 'string') return dir * va.localeCompare(vb);
         if (va < vb) return -dir;
         if (va > vb) return dir;
