@@ -4222,6 +4222,47 @@ function startStatusServer() {
       const quote = (fairProb != null && fairProb > 0 && fairProb < 1)
         ? pricer.computeSingleLegQuote(fairProb, info.sport, info.marketType)
         : null;
+
+      // Per-book raw odds for this selection. Pulled from the primary cache
+      // — alt lines won't populate unless they've been fetched into altLines.
+      // pinnacleOdds is only available on Sharp-tier SharpAPI (empty on
+      // Hobby) but via The Odds API alt-fetch path. kalshiOdds preserved
+      // for display reference only, not used in consensus.
+      let bookOdds = { pinnacle: null, fanduel: null, draftkings: null, kalshi: null };
+      try {
+        const event = oddsFeed.getEventMarkets(
+          info.oddsApiSport || info.sport,
+          info.homeTeam,
+          info.awayTeam,
+          info.startTime
+        );
+        const market = event && event.markets ? event.markets[info.oddsApiMarket || info.marketType] : null;
+        const sel = info.oddsApiSelection || info.selection;
+        if (market && sel) {
+          for (const b of Object.keys(bookOdds)) {
+            const bObj = market[b];
+            if (bObj && bObj[sel] != null) bookOdds[b] = bObj[sel];
+          }
+        }
+      } catch (_) { /* ignore */ }
+
+      // Consensus = average implied prob across Pin / FD / DK (exclude Kalshi).
+      // Convert back to American odds for display. Diff vs my odds is in pp.
+      const consBooks = ['pinnacle', 'fanduel', 'draftkings']
+        .map(b => bookOdds[b])
+        .filter(o => o != null && Number.isFinite(o));
+      let consensusAmerican = null, consensusImplied = null;
+      if (consBooks.length > 0) {
+        const implied = consBooks.map(o => (o >= 0 ? 100 / (o + 100) : -o / (-o + 100)));
+        consensusImplied = implied.reduce((a, b) => a + b, 0) / implied.length;
+        if (consensusImplied > 0 && consensusImplied < 1) {
+          consensusAmerican = pricer.decimalToAmerican(1 / consensusImplied);
+        }
+      }
+      const vsConsensusPp = (consensusImplied != null && quote)
+        ? Math.round((quote.impliedProb - consensusImplied) * 10000) / 100
+        : null;
+
       out.push({
         lineId,
         sport: info.sport,
@@ -4240,6 +4281,16 @@ function startStatusServer() {
           ? pricer.decimalToAmerican(1 / fairProb) : null,
         myOddsAmerican: quote ? quote.americanOdds : null,
         myVigPct: quote ? Math.round(quote.vig * 10000) / 100 : null,
+        pinnacleOdds: bookOdds.pinnacle,
+        fanduelOdds: bookOdds.fanduel,
+        draftkingsOdds: bookOdds.draftkings,
+        kalshiOdds: bookOdds.kalshi,
+        consensusAmerican,
+        vsConsensusPp,
+        oddsApiSport: info.oddsApiSport || null,
+        oddsApiMarket: info.oddsApiMarket || null,
+        oddsApiSelection: info.oddsApiSelection || null,
+        isDNB: !!info.isDNB,
       });
       if (out.length >= limit) break;
     }

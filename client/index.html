@@ -903,7 +903,23 @@
                   <option value="2000">2000</option>
                 </select>
               </label>
+              <button class="btn" onclick="document.getElementById('lines-advanced').style.display=document.getElementById('lines-advanced').style.display==='none'?'flex':'none';" style="font-size:12px; padding:4px 10px;" title="Show/hide numeric range filters">&#9662; Advanced</button>
               <button class="btn" onclick="loadLines()" style="font-size:12px; padding:4px 12px;">Refresh</button>
+            </div>
+            <div id="lines-advanced" style="padding:8px 12px; display:none; flex-wrap:wrap; gap:10px; align-items:center; border-bottom:1px solid var(--border); background:var(--surface2); font-size:11px;">
+              <span style="color:var(--text3);">Fair %:</span>
+              <input type="number" placeholder="min" step="0.1" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.fairMin=this.value; renderLinesTable()">
+              <input type="number" placeholder="max" step="0.1" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.fairMax=this.value; renderLinesTable()">
+              <span style="color:var(--text3); margin-left:8px;">My Odds:</span>
+              <input type="number" placeholder="min" style="width:70px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.myMin=this.value; renderLinesTable()">
+              <input type="number" placeholder="max" style="width:70px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.myMax=this.value; renderLinesTable()">
+              <span style="color:var(--text3); margin-left:8px;">vs Cons (pp):</span>
+              <input type="number" placeholder="min" step="0.1" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.diffMin=this.value; renderLinesTable()">
+              <input type="number" placeholder="max" step="0.1" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.diffMax=this.value; renderLinesTable()">
+              <span style="color:var(--text3); margin-left:8px;">Line:</span>
+              <input type="number" placeholder="min" step="0.5" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.lineMin=this.value; renderLinesTable()">
+              <input type="number" placeholder="max" step="0.5" style="width:60px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px;" oninput="linesState.lineMax=this.value; renderLinesTable()">
+              <button onclick="linesState.fairMin=linesState.fairMax=linesState.myMin=linesState.myMax=linesState.diffMin=linesState.diffMax=linesState.lineMin=linesState.lineMax=''; document.querySelectorAll('#lines-advanced input[type=number]').forEach(i=>i.value=''); renderLinesTable();" style="margin-left:auto; background:var(--surface3); border:1px solid var(--border); color:var(--text2); padding:3px 10px; border-radius:4px; font-size:11px; cursor:pointer;">Clear</button>
             </div>
             <div id="lines-table"><div class="empty-state"><div class="icon">-</div><div>Select filters and click Refresh</div></div></div>
           </div>
@@ -9362,6 +9378,29 @@
     limit: 500,
     loaded: false,
     inFlight: false,
+    // Sort + UI state
+    sortCol: 'sport',
+    sortDir: 1,
+    expandedLineId: null,
+    showAdvanced: false,
+    // Range filters for numeric columns
+    fairMin: '', fairMax: '',
+    myMin: '', myMax: '',
+    diffMin: '', diffMax: '',
+    lineMin: '', lineMax: '',
+    // Data cache so re-sort/re-filter doesn't refetch
+    _rows: [],
+  };
+  window.linesState = linesState;
+  window.renderLinesTable = () => renderLinesTable();
+  window.toggleLinesSort = (col) => {
+    if (linesState.sortCol === col) linesState.sortDir *= -1;
+    else { linesState.sortCol = col; linesState.sortDir = 1; }
+    renderLinesTable();
+  };
+  window.toggleLinesDrillDown = (lineId) => {
+    linesState.expandedLineId = linesState.expandedLineId === lineId ? null : lineId;
+    renderLinesTable();
   };
   // Debounce text-input-driven refetches so every keystroke doesn't fire
   // an HTTP request. Dropdown changes call loadLines() directly (no need
@@ -9376,9 +9415,8 @@
   }
   async function loadLines() {
     const el = document.getElementById('lines-table');
-    const countEl = document.getElementById('lines-count-summary');
     if (!el) return;
-    if (linesState.inFlight) return; // simple debounce
+    if (linesState.inFlight) return;
     linesState.inFlight = true;
     try {
       const qs = new URLSearchParams();
@@ -9389,75 +9427,212 @@
       qs.set('limit', String(linesState.limit || 500));
       const data = await fetchJSON('/lines/detail?' + qs.toString());
       linesState.loaded = true;
-      const rows = (data && data.lines) || [];
-      const total = (data && data.count) || 0;
-      if (countEl) {
-        countEl.textContent = total > 0
-          ? total + ' line' + (total === 1 ? '' : 's')
-              + (total >= linesState.limit ? ' (limit reached — narrow filters or raise limit)' : '')
-          : 'No lines match';
-      }
-      if (rows.length === 0) {
-        el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>No registered lines match these filters.</div></div>';
-        return;
-      }
-      let html = '<div style="overflow-x:auto;"><table style="font-size:13px;">';
-      html += '<tr>'
-        + '<th style="text-align:left;">Sport</th>'
-        + '<th style="text-align:left;">Market</th>'
-        + '<th style="text-align:left;">Team / Selection</th>'
-        + '<th style="text-align:right;">Line</th>'
-        + '<th style="text-align:left;">Event</th>'
-        + '<th style="text-align:left;">Starts</th>'
-        + '<th style="text-align:right;" title="De-vigged consensus fair probability for this selection. Null when we don\'t have odds data cached for this leg.">Fair %</th>'
-        + '<th style="text-align:right;" title="Fair American odds (1/fairProb − 1 → American). What the bet would be worth with zero vig.">Fair Odds</th>'
-        + '<th style="text-align:right;" title="American odds we would quote for this leg if it were the only leg of a 1-leg parlay. Applies base sport vig + favorite ramp + series/MMA floors. Real parlay quotes compound differently depending on other legs.">My Odds</th>'
-        + '<th style="text-align:right; color:var(--text3);" title="Effective vig applied (sport base + favorite ramp + floors).">Vig %</th>'
-        + '<th style="text-align:left; color:var(--text3);">line_id</th>'
-        + '</tr>';
-      for (const r of rows) {
-        const sportLabel = ({
-          basketball_nba: 'NBA', basketball_ncaab: 'NCAAB', basketball_wnba: 'WNBA',
-          baseball_mlb: 'MLB', icehockey_nhl: 'NHL', tennis: 'Tennis',
-          soccer_usa_mls: 'MLS', soccer_epl: 'EPL', soccer_spain_la_liga: 'La Liga',
-          soccer_italy_serie_a: 'Serie A', soccer_germany_bundesliga: 'Bundesliga',
-          soccer_france_ligue_one: 'Ligue 1', mma_mixed_martial_arts: 'MMA',
-          boxing_boxing: 'Boxing', golf_matchups: 'Golf',
-        })[r.sport] || r.sport || '-';
-        const team = r.teamName || (r.selection || '-');
-        const line = (r.line != null ? (r.line > 0 ? '+' : '') + r.line : '-');
-        const event = r.pxEventName || ((r.awayTeam || '?') + ' @ ' + (r.homeTeam || '?'));
-        const starts = r.startTime
-          ? new Date(r.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-          : '-';
-        const shortId = (r.lineId || '').substring(0, 8) + '…';
-        const fairPct = r.fairProb != null ? (r.fairProb * 100).toFixed(1) + '%' : '-';
-        const fairAm = r.fairAmerican != null ? ((r.fairAmerican >= 0 ? '+' : '') + r.fairAmerican) : '-';
-        const myAm = r.myOddsAmerican != null ? ((r.myOddsAmerican >= 0 ? '+' : '') + r.myOddsAmerican) : '-';
-        const myVig = r.myVigPct != null ? r.myVigPct.toFixed(1) + '%' : '-';
-        const missing = r.fairProb == null;
-        html += '<tr>'
-          + '<td style="padding:4px 8px;">' + escapeHtml(sportLabel) + '</td>'
-          + '<td style="padding:4px 8px; font-family:monospace; color:var(--text2);">' + escapeHtml(r.marketType || '-') + '</td>'
-          + '<td style="padding:4px 8px;">' + escapeHtml(team) + '</td>'
-          + '<td style="padding:4px 8px; text-align:right; font-family:monospace;">' + line + '</td>'
-          + '<td style="padding:4px 8px; color:var(--text2);">' + escapeHtml(event) + '</td>'
-          + '<td style="padding:4px 8px; color:var(--text3); font-size:11px;">' + starts + '</td>'
-          + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (missing ? 'var(--text3)' : 'var(--text2)') + ';">' + fairPct + '</td>'
-          + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (missing ? 'var(--text3)' : 'var(--text2)') + ';">' + fairAm + '</td>'
-          + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (missing ? 'var(--text3)' : 'var(--text)') + '; font-weight:600;">' + myAm + '</td>'
-          + '<td style="padding:4px 8px; text-align:right; color:var(--text3); font-size:11px;">' + myVig + '</td>'
-          + '<td style="padding:4px 8px; font-family:monospace; font-size:11px; color:var(--text3);" title="' + escapeHtml(r.lineId || '') + '">' + shortId + '</td>'
-          + '</tr>';
-      }
-      html += '</table></div>';
-      el.innerHTML = html;
+      linesState._rows = (data && data.lines) || [];
+      linesState._totalFromServer = (data && data.count) || 0;
+      renderLinesTable();
     } catch (err) {
+      const countEl = document.getElementById('lines-count-summary');
       el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">!</div><div>Failed to load lines: ' + escapeHtml(err.message || String(err)) + '</div></div>';
       if (countEl) countEl.textContent = '';
     } finally {
       linesState.inFlight = false;
     }
+  }
+
+  // Convert American odds → implied probability.
+  function _amOddsToImplied(a) {
+    if (a == null || !Number.isFinite(a)) return null;
+    return a >= 0 ? 100 / (a + 100) : -a / (-a + 100);
+  }
+  // Pure-render from cached linesState._rows. Applies client-side sort and
+  // range filters; no network call. Triggered by header clicks, filter
+  // input changes, and drill-down toggles.
+  function renderLinesTable() {
+    const el = document.getElementById('lines-table');
+    const countEl = document.getElementById('lines-count-summary');
+    if (!el) return;
+    const rowsAll = linesState._rows || [];
+    const total = linesState._totalFromServer || 0;
+
+    // --- Apply range filters (min/max on numeric columns) ---
+    const numIn = (s) => { const v = parseFloat(s); return Number.isFinite(v) ? v : null; };
+    const minFair = numIn(linesState.fairMin), maxFair = numIn(linesState.fairMax);
+    const minMy = numIn(linesState.myMin),   maxMy = numIn(linesState.myMax);
+    const minDiff = numIn(linesState.diffMin), maxDiff = numIn(linesState.diffMax);
+    const minLine = numIn(linesState.lineMin), maxLine = numIn(linesState.lineMax);
+    const inRange = (v, lo, hi) => {
+      if (v == null) return lo == null && hi == null; // null values only pass if filter unset
+      if (lo != null && v < lo) return false;
+      if (hi != null && v > hi) return false;
+      return true;
+    };
+    let rows = rowsAll.filter(r => {
+      const fp = r.fairProb != null ? r.fairProb * 100 : null;
+      if ((minFair != null || maxFair != null) && !inRange(fp, minFair, maxFair)) return false;
+      if ((minMy != null || maxMy != null) && !inRange(r.myOddsAmerican, minMy, maxMy)) return false;
+      if ((minDiff != null || maxDiff != null) && !inRange(r.vsConsensusPp, minDiff, maxDiff)) return false;
+      if ((minLine != null || maxLine != null) && !inRange(r.line, minLine, maxLine)) return false;
+      return true;
+    });
+
+    // --- Sort ---
+    const col = linesState.sortCol;
+    const dir = linesState.sortDir || 1;
+    const getter = {
+      sport: (r) => r.sport || '',
+      market: (r) => r.marketType || '',
+      team: (r) => r.teamName || r.selection || '',
+      line: (r) => r.line != null ? r.line : Number.NEGATIVE_INFINITY,
+      event: (r) => r.pxEventName || '',
+      starts: (r) => r.startTime || '',
+      fair: (r) => r.fairProb != null ? r.fairProb : -1,
+      my: (r) => r.myOddsAmerican != null ? r.myOddsAmerican : Number.POSITIVE_INFINITY,
+      pin: (r) => r.pinnacleOdds != null ? r.pinnacleOdds : Number.POSITIVE_INFINITY,
+      fd: (r) => r.fanduelOdds != null ? r.fanduelOdds : Number.POSITIVE_INFINITY,
+      dk: (r) => r.draftkingsOdds != null ? r.draftkingsOdds : Number.POSITIVE_INFINITY,
+      kalshi: (r) => r.kalshiOdds != null ? r.kalshiOdds : Number.POSITIVE_INFINITY,
+      cons: (r) => r.consensusAmerican != null ? r.consensusAmerican : Number.POSITIVE_INFINITY,
+      diff: (r) => r.vsConsensusPp != null ? r.vsConsensusPp : Number.NEGATIVE_INFINITY,
+    }[col];
+    if (getter) {
+      rows = rows.slice().sort((a, b) => {
+        const va = getter(a), vb = getter(b);
+        if (typeof va === 'string' && typeof vb === 'string') return dir * va.localeCompare(vb);
+        if (va < vb) return -dir;
+        if (va > vb) return dir;
+        return 0;
+      });
+    }
+
+    if (countEl) {
+      const shown = rows.length;
+      const limitHit = total >= (linesState.limit || 500);
+      countEl.textContent = total > 0
+        ? shown + ' of ' + total + ' line' + (total === 1 ? '' : 's')
+            + (limitHit ? ' (server limit reached — narrow filters or raise limit)' : '')
+        : 'No lines match';
+    }
+
+    if (rows.length === 0) {
+      el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>No registered lines match these filters.</div></div>';
+      return;
+    }
+
+    const sortArrow = (c) => c === col ? (dir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const th = (c, label, align, tip) => {
+      const alignStr = align ? 'text-align:' + align + ';' : '';
+      const titleStr = tip ? ' title="' + escapeHtml(tip) + '"' : '';
+      return '<th' + titleStr + ' onclick="window.toggleLinesSort(\'' + c + '\')" style="cursor:pointer; user-select:none; ' + alignStr + '">' + label + sortArrow(c) + '</th>';
+    };
+
+    const sportLabelOf = (s) => ({
+      basketball_nba: 'NBA', basketball_ncaab: 'NCAAB', basketball_wnba: 'WNBA',
+      baseball_mlb: 'MLB', icehockey_nhl: 'NHL', tennis: 'Tennis',
+      soccer_usa_mls: 'MLS', soccer_epl: 'EPL', soccer_spain_la_liga: 'La Liga',
+      soccer_italy_serie_a: 'Serie A', soccer_germany_bundesliga: 'Bundesliga',
+      soccer_france_ligue_one: 'Ligue 1', mma_mixed_martial_arts: 'MMA',
+      boxing_boxing: 'Boxing', golf_matchups: 'Golf',
+    })[s] || s || '-';
+    const fmtAm = (v) => v == null ? '-' : (v >= 0 ? '+' : '') + v;
+
+    let html = '<div style="overflow-x:auto;"><table style="font-size:13px;">';
+    html += '<tr>';
+    html += th('sport', 'Sport', 'left');
+    html += th('market', 'Market', 'left');
+    html += th('team', 'Team / Selection', 'left');
+    html += th('line', 'Line', 'right');
+    html += th('event', 'Event', 'left');
+    html += th('starts', 'Starts', 'left');
+    html += th('fair', 'Fair %', 'right', 'De-vigged consensus fair probability for this selection.');
+    html += th('my', 'My Odds', 'right', 'American odds we would quote as a 1-leg parlay. Applies sport vig + favorite ramp + floors.');
+    html += th('pin', '<span style="color:var(--purple);">Pin</span>', 'right', 'Pinnacle raw American odds (Sharp-tier only — usually blank on Hobby plan).');
+    html += th('fd', '<span style="color:var(--blue);">FD</span>', 'right', 'FanDuel raw American odds.');
+    html += th('dk', '<span style="color:var(--green);">DK</span>', 'right', 'DraftKings raw American odds.');
+    html += th('kalshi', '<span style="color:var(--amber);">Kalshi</span>', 'right', 'Kalshi prediction-market price — REFERENCE ONLY, not used in consensus or our pricing.');
+    html += th('cons', 'Cons', 'right', 'Consensus American odds — average of Pin / FD / DK implied probs (Kalshi excluded), converted back to American.');
+    html += th('diff', 'vs Cons', 'right', 'My implied prob minus consensus implied prob, in pp. Positive = I\'m tighter than consensus (worse for bettor). Negative = looser.');
+    html += '</tr>';
+
+    for (const r of rows) {
+      const sportLbl = sportLabelOf(r.sport);
+      const team = r.teamName || (r.selection || '-');
+      const lineDisp = (r.line != null ? (r.line > 0 ? '+' : '') + r.line : '-');
+      const event = r.pxEventName || ((r.awayTeam || '?') + ' @ ' + (r.homeTeam || '?'));
+      const starts = r.startTime
+        ? new Date(r.startTime).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : '-';
+      const fairPct = r.fairProb != null ? (r.fairProb * 100).toFixed(1) + '%' : '-';
+      const myAm = fmtAm(r.myOddsAmerican);
+      const pinAm = fmtAm(r.pinnacleOdds);
+      const fdAm = fmtAm(r.fanduelOdds);
+      const dkAm = fmtAm(r.draftkingsOdds);
+      const klAm = fmtAm(r.kalshiOdds);
+      const consAm = fmtAm(r.consensusAmerican);
+      const diffStr = r.vsConsensusPp == null
+        ? '-'
+        : (r.vsConsensusPp >= 0 ? '+' : '') + r.vsConsensusPp.toFixed(2) + 'pp';
+      const diffColor = r.vsConsensusPp == null ? 'var(--text3)'
+        : (Math.abs(r.vsConsensusPp) < 0.5 ? 'var(--text2)'
+          : r.vsConsensusPp > 0 ? 'var(--green)'
+          : 'var(--red)');
+      const missing = r.fairProb == null;
+      const expanded = linesState.expandedLineId === r.lineId;
+      const rowStyle = 'cursor:pointer;' + (expanded ? ' background:var(--surface2);' : '');
+      html += '<tr onclick="window.toggleLinesDrillDown(\'' + r.lineId + '\')" style="' + rowStyle + '">'
+        + '<td style="padding:4px 8px;">' + escapeHtml(sportLbl) + '</td>'
+        + '<td style="padding:4px 8px; font-family:monospace; color:var(--text2);">' + escapeHtml(r.marketType || '-') + '</td>'
+        + '<td style="padding:4px 8px;">' + escapeHtml(team) + '</td>'
+        + '<td style="padding:4px 8px; text-align:right; font-family:monospace;">' + lineDisp + '</td>'
+        + '<td style="padding:4px 8px; color:var(--text2);">' + escapeHtml(event) + '</td>'
+        + '<td style="padding:4px 8px; color:var(--text3); font-size:11px;">' + starts + '</td>'
+        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (missing ? 'var(--text3)' : 'var(--text2)') + ';">' + fairPct + '</td>'
+        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (missing ? 'var(--text3)' : 'var(--text)') + '; font-weight:600;">' + myAm + '</td>'
+        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.pinnacleOdds==null?'var(--text3)':'var(--purple)') + ';">' + pinAm + '</td>'
+        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.fanduelOdds==null?'var(--text3)':'var(--blue)') + ';">' + fdAm + '</td>'
+        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.draftkingsOdds==null?'var(--text3)':'var(--green)') + ';">' + dkAm + '</td>'
+        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.kalshiOdds==null?'var(--text3)':'var(--amber)') + ';">' + klAm + '</td>'
+        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.consensusAmerican==null?'var(--text3)':'var(--text2)') + ';">' + consAm + '</td>'
+        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + diffColor + '; font-weight:500;">' + diffStr + '</td>'
+        + '</tr>';
+      if (expanded) {
+        // Drill-down detail row spanning all columns.
+        html += '<tr style="background:var(--surface2);"><td colspan="14" style="padding:12px 16px; border-top:1px solid var(--border);">';
+        html += '<div style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; font-size:12px;">';
+        const kv = (k, v) => '<div style="color:var(--text3);">' + escapeHtml(k) + '</div><div style="color:var(--text); font-family:monospace;">' + (v == null ? '-' : escapeHtml(String(v))) + '</div>';
+        html += kv('line_id', r.lineId);
+        html += kv('pxEventId', r.pxEventId);
+        html += kv('pxEventName', r.pxEventName);
+        html += kv('homeTeam', r.homeTeam);
+        html += kv('awayTeam', r.awayTeam);
+        html += kv('marketType', r.marketType);
+        if (r.marketName && r.marketName !== r.marketType) html += kv('marketName', r.marketName);
+        html += kv('selection', r.selection);
+        if (r.oddsApiSport)    html += kv('oddsApiSport', r.oddsApiSport);
+        if (r.oddsApiMarket)   html += kv('oddsApiMarket', r.oddsApiMarket);
+        if (r.oddsApiSelection) html += kv('oddsApiSelection', r.oddsApiSelection);
+        if (r.isDNB) html += kv('isDNB', 'true (draw-no-bet 2-way)');
+        html += kv('startTime', r.startTime);
+        html += kv('fairProb', r.fairProb != null ? (r.fairProb * 100).toFixed(2) + '% (' + r.fairProb.toFixed(4) + ')' : 'not cached');
+        html += kv('myVigPct', r.myVigPct != null ? r.myVigPct.toFixed(2) + '%' : '-');
+        // Book odds side-by-side with implied prob
+        const bookRow = (label, am) => {
+          if (am == null) return '';
+          const imp = _amOddsToImplied(am);
+          return kv(label + ' odds', (am >= 0 ? '+' : '') + am + '  (implied ' + (imp * 100).toFixed(1) + '%)');
+        };
+        html += bookRow('Pinnacle', r.pinnacleOdds);
+        html += bookRow('FanDuel', r.fanduelOdds);
+        html += bookRow('DraftKings', r.draftkingsOdds);
+        html += bookRow('Kalshi (ref)', r.kalshiOdds);
+        if (r.consensusAmerican != null) {
+          const consImp = _amOddsToImplied(r.consensusAmerican);
+          html += kv('Consensus (Pin/FD/DK)', (r.consensusAmerican >= 0 ? '+' : '') + r.consensusAmerican + '  (implied ' + (consImp * 100).toFixed(1) + '%)');
+        }
+        html += '</div></td></tr>';
+      }
+    }
+    html += '</table></div>';
+    el.innerHTML = html;
   }
 
   // History state — accumulates all orders across refreshes
