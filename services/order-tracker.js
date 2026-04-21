@@ -893,7 +893,17 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
         // SP-side (negated). Store the confirmed price in our format.
         ourQuote.confirmedOdds = -matchedOdds;
       } else {
-        ourQuote.confirmedOdds = ourQuote.offeredOdds;
+        // offeredOdds is stored in BETTOR-side convention (decimalToAmerican
+        // of the parlay's bettor decimal; positive for longshots). Our
+        // confirmedOdds contract is SP-side, so negate when falling back.
+        // Previously we stored offeredOdds directly, which meant every
+        // affected parlay had confirmedOdds with the wrong sign — and
+        // americanOddsToProfit(confirmedOdds, confirmedStake) used to
+        // derive bettor-wager flipped from its true value, inflating the
+        // "Stakes Held" column in Game/Team Exposure by a factor of
+        // roughly odds/100. Observed in production as $62k Stakes Held
+        // on games where actual bettor wagers summed to under $5k.
+        ourQuote.confirmedOdds = ourQuote.offeredOdds != null ? -ourQuote.offeredOdds : null;
       }
       if (matchedStake != null) ourQuote.confirmedStake = matchedStake;
       ourQuote.confirmedAt = ourQuote.confirmedAt || new Date().toISOString();
@@ -4956,6 +4966,31 @@ async function loadFromDb() {
 
     orders[o.parlayId] = o;
     if (o.orderUuid) ordersByUuid[o.orderUuid] = o.parlayId;
+
+    // Self-heal: confirmedOdds stored in bettor-side convention instead
+    // of SP-side. Triggered by the recordMatchedParlay fallback path
+    // that was setting `confirmedOdds = offeredOdds` (no negation) when
+    // matched_odds was missing from an order.matched broadcast. Since
+    // offeredOdds is bettor-side and confirmedOdds is SP-side, healthy
+    // orders NEVER have the two fields exactly equal — and exact
+    // equality is the crisp bug signature (same-sign after drift from
+    // a legitimate handleConfirm could coincidentally occur, but exact
+    // equality of the raw values cannot). Fix BEFORE addExposure runs
+    // below so the healed value flows into Stakes Held / P&L
+    // calculations immediately. Persist to DB so the heal is permanent.
+    if (
+      o.confirmedOdds != null &&
+      o.offeredOdds != null &&
+      o.confirmedOdds === o.offeredOdds &&
+      o.confirmedOdds !== 0
+    ) {
+      const old = o.confirmedOdds;
+      o.confirmedOdds = -o.confirmedOdds;
+      o.meta = o.meta || {};
+      o.meta.confirmedOddsSignHealed = { from: old, to: o.confirmedOdds, at: new Date().toISOString() };
+      db.saveOrder(o).catch(() => {});
+      log.warn('Orders', `Self-heal: negated bettor-side confirmedOdds for ${o.parlayId} (was ${old}, now ${o.confirmedOdds}; offered=${o.offeredOdds})`);
+    }
 
     // PURE HYDRATION: trust what's stored in the DB. No pattern matching,
     // no revert heuristics, no pnl recomputation.
