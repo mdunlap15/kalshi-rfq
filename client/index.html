@@ -9459,6 +9459,7 @@
     if (!el) return;
     if (linesState.inFlight) return;
     linesState.inFlight = true;
+    let stage = 'fetch';
     try {
       const qs = new URLSearchParams();
       if (linesState.sport) qs.set('sport', linesState.sport);
@@ -9470,10 +9471,14 @@
       linesState.loaded = true;
       linesState._rows = (data && data.lines) || [];
       linesState._totalFromServer = (data && data.count) || 0;
+      stage = 'render';
       renderLinesTable();
     } catch (err) {
+      // Log to console so operator can see full stack trace in DevTools.
+      // Stage tells us whether the fetch succeeded but render threw.
+      console.error('[loadLines] failed at stage=' + stage, err);
       const countEl = document.getElementById('lines-count-summary');
-      el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">!</div><div>Failed to load lines: ' + escapeHtml(err.message || String(err)) + '</div></div>';
+      el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">!</div><div>Failed to load lines (' + stage + '): ' + escapeHtml(err.message || String(err)) + '</div><div style="color:var(--text3); font-size:11px; margin-top:4px;">See browser console for full stack trace.</div></div>';
       if (countEl) countEl.textContent = '';
     } finally {
       linesState.inFlight = false;
@@ -9489,6 +9494,17 @@
   // range filters; no network call. Triggered by header clicks, filter
   // input changes, and drill-down toggles.
   function renderLinesTable() {
+    try {
+      return _renderLinesTableImpl();
+    } catch (err) {
+      console.error('[renderLinesTable] threw', err);
+      const el = document.getElementById('lines-table');
+      if (el) {
+        el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">!</div><div>Render error: ' + escapeHtml(err.message || String(err)) + '</div><div style="color:var(--text3); font-size:11px; margin-top:4px;">See browser console for full stack trace.</div></div>';
+      }
+    }
+  }
+  function _renderLinesTableImpl() {
     const el = document.getElementById('lines-table');
     const countEl = document.getElementById('lines-count-summary');
     if (!el) return;
