@@ -123,6 +123,26 @@ const config = {
     // exposure. Applied only when at least one leg is a series market.
     maxSeriesRiskPerParlay: parseFloat(process.env.MAX_SERIES_RISK_PER_PARLAY) || 500,
     maxSeriesGrossExposure: parseFloat(process.env.MAX_SERIES_GROSS_EXPOSURE) || 1000,
+
+    // Same-game parlay (SGP) handling. Historically all SGPs were blocked
+    // because a multiplicative correlation "boost" (+3-15%) caused PX to
+    // reject with "invalid estimated prices" on any offer we pushed above
+    // their internal SGP model. Now: allow specific market-pair combos,
+    // applying a wider per-leg vig (sgpVigMultiplier × normal vig) instead
+    // of a boost. PX accepts wider vig; it doesn't accept upward price
+    // corrections vs their model.
+    //
+    // SGP_ALLOWED_COMBOS: comma-separated list of combo keys.
+    //   'spread_total'  — spread + total on same game (moderate correlation)
+    //   'ml_total'      — moneyline + total (strong correlation, −37% ROI historically)
+    //   'ml_spread'     — still blocked by correlation rules regardless (highly correlated)
+    //   empty string    — no SGPs allowed (safe default-ish; matches pre-this-change)
+    sgpAllowedCombos: (process.env.SGP_ALLOWED_COMBOS || 'spread_total')
+      .split(',').map(s => s.trim()).filter(Boolean),
+    // Multiplier applied to per-leg effective vig when pricing an SGP.
+    // 2.0 = double the normal vig on each leg of the SGP. Tunable while
+    // we gather acceptance + ROI data on re-enabled SGPs.
+    sgpVigMultiplier: parseFloat(process.env.SGP_VIG_MULTIPLIER) || 2.0,
     // startingBankroll anchors the account-based P&L calculation
     // (balance − starting). If env var is NOT set, leave as null so the
     // dashboard falls back to the tracker's runningPnL (derived from

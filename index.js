@@ -4304,6 +4304,85 @@ function startStatusServer() {
     res.json({ count: out.length, lines: out });
   });
 
+  // SGP tracking — acceptance rate + ROI per combo. Built from the
+  // in-memory orders store rather than Supabase so it's always current.
+  app.get('/sgp-stats', (req, res) => {
+    const orders = orderTracker.getRecentOrders(5000);
+    const bycombo = {};
+    const overall = {
+      quoted: 0, confirmed: 0, rejected: 0,
+      settled: 0, wins: 0, losses: 0, pushes: 0,
+      stakeConfirmed: 0, stakeSettled: 0, pnl: 0,
+    };
+    const bucketOf = (k) => (bycombo[k] = bycombo[k] || {
+      quoted: 0, confirmed: 0, rejected: 0,
+      settled: 0, wins: 0, losses: 0, pushes: 0,
+      stakeConfirmed: 0, stakeSettled: 0, pnl: 0,
+      samples: [],
+    });
+    for (const o of orders) {
+      const meta = o.meta || {};
+      if (!meta.isSGP) continue;
+      const combo = meta.sgpCombo || 'unclassified';
+      const b = bucketOf(combo);
+      // Count every quoted row (quoted / confirmed / rejected / settled_*)
+      b.quoted++;
+      overall.quoted++;
+      const status = o.status || '';
+      if (status === 'rejected') { b.rejected++; overall.rejected++; }
+      if (status === 'confirmed' || status.startsWith('settled_')) {
+        b.confirmed++;
+        overall.confirmed++;
+        b.stakeConfirmed += Number(o.confirmedStake || 0);
+        overall.stakeConfirmed += Number(o.confirmedStake || 0);
+      }
+      if (status.startsWith('settled_')) {
+        b.settled++;
+        overall.settled++;
+        b.stakeSettled += Number(o.confirmedStake || 0);
+        overall.stakeSettled += Number(o.confirmedStake || 0);
+        const pnl = Number(o.pnl || 0);
+        b.pnl += pnl;
+        overall.pnl += pnl;
+        if (o.settlementResult === 'won')  { b.wins++;   overall.wins++; }
+        if (o.settlementResult === 'lost') { b.losses++; overall.losses++; }
+        if (o.settlementResult === 'push') { b.pushes++; overall.pushes++; }
+      }
+      // Keep a small sample for ad-hoc inspection
+      if (b.samples.length < 10) {
+        b.samples.push({
+          parlayId: o.parlayId,
+          status,
+          offeredOdds: o.offeredOdds,
+          fairParlayProb: meta.fairParlayProb,
+          vigRateUsed: meta.vigRateUsed,
+          sgpVigMultiplier: meta.sgpVigMultiplier,
+          confirmedStake: o.confirmedStake,
+          settlementResult: o.settlementResult,
+          pnl: o.pnl,
+          quotedAt: o.quotedAt,
+          confirmedAt: o.confirmedAt,
+          settledAt: o.settledAt,
+        });
+      }
+    }
+    // Compute derived metrics per bucket + overall
+    const derive = (b) => ({
+      ...b,
+      acceptanceRate: b.quoted > 0 ? b.confirmed / b.quoted : null,
+      winRate: (b.wins + b.losses) > 0 ? b.wins / (b.wins + b.losses) : null,
+      roi: b.stakeSettled > 0 ? b.pnl / b.stakeSettled : null,
+    });
+    res.json({
+      config: {
+        allowedCombos: config.pricing.sgpAllowedCombos || [],
+        vigMultiplier: config.pricing.sgpVigMultiplier,
+      },
+      overall: derive(overall),
+      byCombo: Object.fromEntries(Object.entries(bycombo).map(([k, v]) => [k, derive(v)])),
+    });
+  });
+
   // Lineup tracker — MLB pitchers + NHL goalies, including recent changes.
   // Shows grace-window activity so we can audit declines labeled "lineup change".
   app.get('/lineups', (req, res) => {

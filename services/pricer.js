@@ -595,6 +595,20 @@ async function priceParlay(legs, opts = {}) {
     return null;
   }
 
+  // Detect SGP early (any pxEventId shared by 2+ legs). Used below to
+  // widen per-leg vig for same-game parlays (compensates for positive
+  // correlation that independent-multiplication fair ignores). SGP is
+  // permitted here only for the combos that shouldDecline already
+  // allow-listed — this is just the pricing-side amplifier.
+  const _eventCounts = {};
+  for (const pl of pricedLegs) {
+    const eid = pl.lineInfo.pxEventId;
+    if (!eid) continue;
+    _eventCounts[eid] = (_eventCounts[eid] || 0) + 1;
+  }
+  const isSGPParlay = Object.values(_eventCounts).some(c => c >= 2);
+  const sgpVigMult = isSGPParlay ? Math.max(1, config.pricing.sgpVigMultiplier || 1) : 1;
+
   // Apply vig to ODDS (multiplicative) rather than probability (additive).
   // This scales naturally: a 3% vig on -700 reduces the payout by 3%,
   // not by a fixed probability shift that distorts at extreme odds.
@@ -606,6 +620,12 @@ async function priceParlay(legs, opts = {}) {
   //   Fair -700 (decimal 1.143): payout = 0.143, vigged = 0.143 × 0.97 = 0.139 → decimal 1.139 → -718
   //   Fair +150 (decimal 2.50):  payout = 1.50,  vigged = 1.50  × 0.97 = 1.455 → decimal 2.455 → +146
   //   Consistent % reduction in payout regardless of odds level.
+  //
+  // SGP amplifier: when the parlay is a same-game parlay, multiply the
+  // effective per-leg vig by config.pricing.sgpVigMultiplier (default 2×).
+  // This widens the price to compensate for positive same-game correlation
+  // without triggering PX's "invalid estimated prices" rejection that
+  // multiplicative correlation boosts used to hit.
   const globalBaseVig = config.pricing.defaultVig;
   const vigBySport = config.pricing.vigBySport || {};
 
@@ -655,6 +675,12 @@ async function priceParlay(legs, opts = {}) {
     const mmaMinVig = config.pricing.vigMmaMin || 0;
     if (sport === 'mma_mixed_martial_arts' && mmaMinVig > 0) {
       vig = Math.max(vig, mmaMinVig);
+    }
+    // SGP amplifier — compensate for same-game correlation. Capped at
+    // 20% to avoid runaway vig if favorite ramp + SGP multiplier stack
+    // on an extreme favorite; PX could still reject at absurd vig.
+    if (sgpVigMult > 1) {
+      vig = Math.min(0.20, vig * sgpVigMult);
     }
     return vig;
   }
@@ -796,14 +822,9 @@ async function priceParlay(legs, opts = {}) {
   let pinRawCompound = null;
   let pinMatchTarget = null;
 
-  // Detect SGP: any event id shared by 2+ legs
-  const eventCounts = {};
-  for (const pl of pricedLegs) {
-    const eid = pl.lineInfo.pxEventId;
-    if (!eid) continue;
-    eventCounts[eid] = (eventCounts[eid] || 0) + 1;
-  }
-  const isSGP = Object.values(eventCounts).some(c => c >= 2);
+  // SGP flag — already computed above as isSGPParlay. Kept here for
+  // backwards-compat naming in the blocks below (Pin-match floor etc.).
+  const isSGP = isSGPParlay;
 
   if (isSGP) {
     // PX rejects any SGP offer priced above its internal correlation model
@@ -988,6 +1009,12 @@ async function priceParlay(legs, opts = {}) {
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
       pricingMethod,
       isSGP,
+      // Same-game parlay tracking: which combo (spread_total, ml_total, etc.)
+      // and how much we amplified vig. `sgpCombo` is set upstream by
+      // shouldDecline when the parlay is a 2-leg same-event combo we
+      // allow-listed; it flows through opts so priceParlay can record it.
+      sgpCombo: opts.sgpCombo || null,
+      sgpVigMultiplier: isSGP ? sgpVigMult : 1,
       pinRawCompound: pinRawCompound != null ? Math.round(pinRawCompound * 100000) / 100000 : null,
       pinMatchTarget: pinMatchTarget != null ? Math.round(pinMatchTarget * 100000) / 100000 : null,
       offeredImpliedProb: Math.round(cappedProb * 100000) / 100000,
@@ -1175,10 +1202,12 @@ function shouldDecline(legs) {
     resolvedLegs.push({ lineId, lineInfo });
   }
 
-  // Block any same-game parlay. SGPs ran at −15.3% ROI over 134 settled
-  // fills (−$4,431) because independent-leg pricing ignores positive
-  // correlation that sportsbooks bake in. Blanket decline is safer than
-  // per-combo rules until we have a PX-accepted correlation adjustment.
+  // Same-game parlay gating. Previously blanket-declined because
+  // multiplicative correlation boosts triggered PX "invalid estimated
+  // prices" rejection. Now: allow configured market-pair combos only;
+  // pricing path applies a wider vig multiplier (config.pricing.
+  // sgpVigMultiplier) instead of a boost to compensate for positive
+  // same-game correlation in a way PX accepts.
   const byEvent = {};
   for (const l of resolvedLegs) {
     const eid = l.lineInfo.pxEventId;
@@ -1186,11 +1215,45 @@ function shouldDecline(legs) {
     if (!byEvent[eid]) byEvent[eid] = [];
     byEvent[eid].push({ market: l.lineInfo.marketType, team: l.lineInfo.teamName, home: l.lineInfo.homeTeam, away: l.lineInfo.awayTeam });
   }
+  // Classify a 2-leg SGP group into a stable combo key. Returns null if
+  // the group is 3+ legs or the market pair isn't a recognized combo
+  // (e.g. spread+spread — blocked by duplicate rules anyway).
+  const classifySgpCombo = (entries) => {
+    if (entries.length !== 2) return null;
+    const markets = entries.map(e => e.market).sort();
+    const key = markets.join('_');
+    // Only named combos users can opt in/out of via SGP_ALLOWED_COMBOS:
+    if (key === 'moneyline_total') return 'ml_total';
+    if (key === 'spread_total') return 'spread_total';
+    if (key === 'moneyline_spread') return 'ml_spread'; // also blocked below as correlated
+    return null; // any other pair: reject by default
+  };
+  const allowedCombos = new Set(config.pricing.sgpAllowedCombos || []);
+  // `sgpCombo` is captured on the whole parlay for downstream pricing +
+  // order-tracking. Currently we only support single-event SGP legs
+  // (length==2 on one pxEventId); multi-event SGPs not supported yet.
+  let sgpEventId = null;
+  let sgpCombo = null;
   for (const [eid, entries] of Object.entries(byEvent)) {
     if (entries.length <= 1) continue;
     const gameLabel0 = entries[0].away && entries[0].home ? `${entries[0].away} @ ${entries[0].home}` : `event ${eid}`;
-    log.info('Pricing', `Declined SGP: ${entries.length} legs on ${gameLabel0}`);
-    return { declined: true, reason: 'SGP blocked', detail: `${entries.length} legs on same game: ${gameLabel0} (same-game parlays disabled)` };
+    const combo = classifySgpCombo(entries);
+    if (!combo || !allowedCombos.has(combo)) {
+      log.info('Pricing', `Declined SGP: ${entries.length} legs on ${gameLabel0} (combo=${combo || 'unclassified'}, not in allowed list)`);
+      return {
+        declined: true,
+        reason: 'SGP not allowed',
+        detail: `${entries.length} legs on same game: ${gameLabel0} (combo=${combo || 'unclassified'} not in SGP_ALLOWED_COMBOS=${[...allowedCombos].join(',') || 'empty'})`,
+      };
+    }
+    // More than one SGP pair on the same parlay (e.g. two distinct
+    // same-game pairs on different events) — don't try to price.
+    if (sgpEventId != null) {
+      log.info('Pricing', `Declined SGP: multiple same-game pairs across events`);
+      return { declined: true, reason: 'SGP not allowed', detail: `multiple same-game pairs not supported` };
+    }
+    sgpEventId = eid;
+    sgpCombo = combo;
   }
   // ---- CROSS-EVENT SERIES CORRELATION ----
   // Series events and the underlying game events have DIFFERENT pxEventIds
@@ -1284,9 +1347,11 @@ function shouldDecline(legs) {
 
   // On success, surface the resolved lineInfos keyed by lineId so the caller
   // can pass them to priceParlay and skip redundant lookupLine() calls.
+  // Also surface the classified SGP combo (if any) so priceParlay can stamp
+  // it on meta for order-tracking and per-combo analytics.
   const resolvedLineInfos = new Map();
   for (const r of resolvedLegs) resolvedLineInfos.set(r.lineId, r.lineInfo);
-  return { declined: false, resolvedLineInfos };
+  return { declined: false, resolvedLineInfos, sgpCombo, sgpEventId };
 }
 
 /**

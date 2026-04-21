@@ -3027,40 +3027,53 @@
     for (const o of allOrders) {
       if (o && o.parlayId) localByParlayId[o.parlayId] = o;
     }
-    // Also hide "stale confirmed" parlays: orders that are still locally
-    // 'confirmed' but either (a) every leg's game started more than 12h
-    // ago, or (b) at least one leg already has a known result
-    // (inferredResult / settlement_status) so we KNOW the game is done.
-    // These are almost certainly settled or failed on PX — we just
-    // haven't reconciled because orderUuid is null on many orders (PX's
-    // price.confirm.new payload doesn't always include it) so the
-    // ghost-reconcile UUID lookup fails, and parlayId fallback misses
-    // anything outside PX's most-recent-500-orders window.
+    // Hide "stale confirmed" parlays: orders still locally 'confirmed'
+    // where every leg has either resolved or finished long ago. We're
+    // deliberately conservative here — a parlay with ANY unresolved
+    // leg (pending PX settlement, unplayed game, etc.) stays VISIBLE
+    // even if another leg is already dead. Operator explicitly wants
+    // visibility while ANY leg is still live: a 6-leg NHL parlay where
+    // leg 1 lost isn't stale even though outcome is determined, because
+    // the other 5 games still have live action to watch.
+    //
+    // Also exempt: series markets (settle over up to 14 days) and
+    // golf matchups (spread over 4-day tournaments) — time-based
+    // cutoff misfires on both.
     const STALE_CONFIRMED_CUTOFF_MS = 12 * 3600 * 1000;
     const nowMs = Date.now();
-    function anyLegResolved(legs) {
-      for (const l of legs || []) {
+    // Returns true only when EVERY leg has a known result AND the result
+    // isn't still waiting (pending/unknown).
+    function allLegsResolved(legs) {
+      if (!legs || legs.length === 0) return false;
+      for (const l of legs) {
         const r = l.inferredResult || l.settlementStatus || l.settlement_status;
-        if (r && r !== 'pending' && r !== 'unknown') return true;
+        if (!r || r === 'pending' || r === 'unknown') return false;
       }
-      return false;
+      return true;
     }
     function isStaleConfirmed(p) {
       const local = localByParlayId[p.parlayId] || p;
       if (!local || local.status !== 'confirmed') return false;
       const legs = local.legs || (local.meta && local.meta.legs) || [];
       if (legs.length === 0) return false;
-      if (anyLegResolved(legs)) return true;
-      // Series markets settle when the series concludes, not when Game 1
-      // ends. The startTime on a series leg is just Game 1, so the
-      // "latest start > 12h ago" heuristic misfires and hides genuinely-
-      // open series bets. Skip the time-based check entirely for any
-      // parlay with a series leg — only anyLegResolved can hide those.
-      const hasSeriesLeg = legs.some(l => {
+      // Series / golf markets span multiple days. The startTime on a
+      // series_* leg is Game 1; on a golf matchup it's one round of the
+      // tournament. The 12h cutoff misfires on both. Exempt from time
+      // check — only hide if ALL legs are resolved.
+      const multiDayExempt = legs.some(l => {
         const m = l.market || l.marketType;
-        return typeof m === 'string' && m.startsWith('series_');
+        const sp = l.sport || l.oddsApiSport;
+        return (typeof m === 'string' && m.startsWith('series_'))
+          || sp === 'golf_matchups';
       });
-      if (hasSeriesLeg) return false;
+      if (multiDayExempt) {
+        return allLegsResolved(legs);
+      }
+      // For regular parlays: hide only if EVERY leg has a known result
+      // OR all legs' games finished more than 12h ago. Single-leg
+      // resolution alone is NOT sufficient — operator wants the parlay
+      // visible while other legs still have live action.
+      if (allLegsResolved(legs)) return true;
       let latestStart = null;
       for (const l of legs) {
         const st = l.startTime || l.start_time;
@@ -5762,10 +5775,11 @@
       return portfolioState.sortDir * (va - vb);
     });
 
-    if (filtered.length === 0) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No settled positions' + (portfolioState.search || portfolioState.sportFilter || portfolioState.resultFilter ? ' matching filters' : '') + '</div></div>';
-      return;
-    }
+    // Don't early-return on 0 matches — that blows away the filter toolbar
+    // and leaves the user with no way to clear their query. Instead, render
+    // the toolbar normally and drop the empty-state message below it.
+    const hasAnySettled = settled.length > 0;
+    const hasActiveFilter = !!(portfolioState.search || portfolioState.sportFilter || portfolioState.resultFilter);
 
     const pSortArrow = (col) => portfolioState.sortCol === col ? (portfolioState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
     const pSortClick = (col, align) => 'onclick="event.stopPropagation(); togglePortfolioSort(\'' + col + '\')" style="cursor:pointer;' + (align?'text-align:'+align+';':'') + '"';
@@ -5804,6 +5818,17 @@
         + '<span style="color:var(--text3); margin-left:8px;">ROI %:</span>'
         + rangeFilterHtml('portfolioState', 'roiMin', 'roiMax', portfolioState, 'portfolioRerender()', psDStyle, { title: 'ROI %', width: '60px' })
         + '</div>';
+    }
+
+    // Empty-state inside the table area — keeps the toolbar visible above
+    // so the operator can clear filters inline without reloading.
+    if (filtered.length === 0) {
+      const msg = hasActiveFilter
+        ? 'No settled positions match the current filter.'
+        : (hasAnySettled ? 'No settled positions match.' : 'No settled positions yet.');
+      html += '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>' + msg + '</div></div>';
+      el.innerHTML = html;
+      return;
     }
 
     // Cumulative P&L

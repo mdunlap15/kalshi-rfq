@@ -539,7 +539,10 @@ async function handleRFQ(data) {
 
     // Price the parlay — pass already-resolved lineInfos from shouldDecline
     // so Phase 1 can skip redundant lookupLine() calls per leg.
-    const result = await pricer.priceParlay(legs, { resolvedLineInfos: declineCheck.resolvedLineInfos });
+    const result = await pricer.priceParlay(legs, {
+      resolvedLineInfos: declineCheck.resolvedLineInfos,
+      sgpCombo: declineCheck.sgpCombo || null,
+    });
     stageTimings.price = Date.now() - startTime;
     if (!result) {
       // Near miss — all legs known but couldn't price. Get the specific blocker.
