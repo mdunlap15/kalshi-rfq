@@ -1178,7 +1178,53 @@ async function fetchDynamicSports(sport, fallback, apiKey) {
     fetchedAt: Date.now(),
   };
 
+  // Duplicate-event audit: log WARN if two cache entries represent the
+  // same game under different team-name strings. This is the signature
+  // of the April 2026 Red Sox bug — SharpAPI stored "BOS Red Sox vs
+  // New York Yankees" while The Odds API stored "Boston Red Sox vs
+  // New York Yankees" for the SAME game, producing two cache keys
+  // that the closest-by-time matcher couldn't merge. Catching this at
+  // ingest gives us a chance to add an entry to TEAM_ABBREV_TO_CANONICAL
+  // before any RFQs get mispriced.
+  auditCacheForDuplicateEvents(sport);
+
   return parsed;
+}
+
+// Helpers + main loop for the duplicate-event audit.
+function _teamTail(name) {
+  // Last 1-2 tokens, lowercased. "BOS Red Sox" and "Boston Red Sox"
+  // both → "red sox"; "Chicago White Sox" → "white sox" (not confused
+  // with Red Sox). Singletons fall through to just their one token.
+  const toks = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (toks.length === 0) return '';
+  return toks.slice(-2).join(' ').toLowerCase();
+}
+function auditCacheForDuplicateEvents(sport) {
+  const cache = oddsCache[sport];
+  if (!cache || !cache.events) return;
+  // Group events by (home-tail, away-tail, date) — collisions under
+  // different full names signal a naming-variant bug.
+  const groups = {};
+  for (const [key, entry] of Object.entries(cache.events)) {
+    const list = Array.isArray(entry) ? entry : [entry];
+    for (const ev of list) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      const date = ev.commenceTime ? String(ev.commenceTime).substring(0, 10) : 'nodate';
+      const groupKey = _teamTail(ev.homeTeam) + '|' + _teamTail(ev.awayTeam) + '|' + date;
+      if (!groups[groupKey]) groups[groupKey] = [];
+      groups[groupKey].push({ cacheKey: key, homeTeam: ev.homeTeam, awayTeam: ev.awayTeam });
+    }
+  }
+  for (const [gk, members] of Object.entries(groups)) {
+    if (members.length < 2) continue;
+    // Only warn if at least two members have DIFFERENT full team-name
+    // strings (otherwise it's just the same event under one key, fine).
+    const distinct = new Set(members.map(m => m.homeTeam + '|' + m.awayTeam));
+    if (distinct.size < 2) continue;
+    const detail = members.map(m => `"${m.homeTeam}" vs "${m.awayTeam}"`).join(' AND ');
+    log.warn('OddsFeed', `Duplicate-event bug detected in ${sport} cache — same game cached under different team-name variants: ${detail}. Add entries to TEAM_ABBREV_TO_CANONICAL to collapse.`);
+  }
 }
 
 async function fetchFromTheOddsApi(sport) {
@@ -1461,6 +1507,8 @@ async function fetchFromTheOddsApi(sport) {
   oddsCache[sport] = { fetchedAt: Date.now(), events: parsed };
   const totalEvents = Object.values(parsed).reduce((s, arr) => s + arr.length, 0);
   log.info('OddsFeed', `Cached ${totalEvents} events (${Object.keys(parsed).length} matchups) for ${sport} (The Odds API fallback)`);
+  // Audit: same check as SharpAPI path (see auditCacheForDuplicateEvents).
+  auditCacheForDuplicateEvents(sport);
   return parsed;
 }
 
@@ -4561,6 +4609,7 @@ const TEAM_ABBREV_TO_CANONICAL = {
   'TOR Blue Jays': 'Toronto Blue Jays',
   // NHL
   'VGK Golden Knights': 'Vegas Golden Knights',
+  'LA Kings': 'Los Angeles Kings',
   // Extend here: add any "<3-char-caps> <mascot>" variants we find in logs
 };
 
