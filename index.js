@@ -4313,6 +4313,13 @@ function startStatusServer() {
       // lines that need their own fair-prob paths, fairProb will be null
       // and myOdds won't show until the user gets an actual RFQ.
       let fairProb = null;
+      // bookPriceOverride surfaces when the fair comes from a source
+      // that includes the raw book-offered price we want to quote AT
+      // (e.g. BetOnline manual upload for Zurich — operator preference
+      // is quote-as-book, not undercut). Non-null value is the raw
+      // implied prob from the source book; we display it as myOdds
+      // rather than applying our default vig on top of fair.
+      let bookPriceOverride = null;
       try {
         // Pass the SIGNED line to getFairProb — critical for spreads
         // where home -1.5 and home +1.5 are different bets. Previously
@@ -4339,12 +4346,28 @@ function startStatusServer() {
         // here so the Lines tab shows a fair for team-matchup lines,
         // matching what would actually be priced at RFQ time.
         if (fairProb == null && info.sport === 'golf_matchups') {
-          fairProb = pricer.getGolfMatchupFairProb(info);
+          const golfRes = pricer.getGolfMatchupFairProb(info);
+          if (golfRes != null && typeof golfRes === 'object') {
+            fairProb = golfRes.fairProb;
+            bookPriceOverride = golfRes.bookPriceOverride;
+          } else {
+            fairProb = golfRes;
+          }
         }
       } catch (_) { /* ignore */ }
-      const quote = (fairProb != null && fairProb > 0 && fairProb < 1)
-        ? pricer.computeSingleLegQuote(fairProb, info.sport, info.marketType)
-        : null;
+      // If bookPriceOverride is set, quote at that raw implied
+      // instead of fair + our vig. Mirrors the priceParlay behavior
+      // so /lines/detail display matches what we'd quote on an RFQ.
+      let quote = null;
+      if (bookPriceOverride != null && bookPriceOverride > 0 && bookPriceOverride < 1) {
+        quote = {
+          vig: fairProb != null ? (bookPriceOverride - fairProb) / fairProb : null,
+          impliedProb: bookPriceOverride,
+          americanOdds: pricer.decimalToAmerican(1 / bookPriceOverride),
+        };
+      } else if (fairProb != null && fairProb > 0 && fairProb < 1) {
+        quote = pricer.computeSingleLegQuote(fairProb, info.sport, info.marketType);
+      }
 
       // Per-book raw odds for this selection. Must be LINE-AWARE for
       // spreads/totals — the previous implementation looked up

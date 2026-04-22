@@ -151,11 +151,30 @@ function getGolfMatchupFairProb(lineInfo) {
   // Zurich Classic specifically. This path is Zurich-only today; the
   // scraper file is intentionally narrow so we can delete / repurpose
   // after the tournament without disturbing other sources.
+  //
+  // Return shape: { fairProb, bookPriceOverride } so priceParlay
+  // quotes AT the raw Bookmaker/BetOnline odds rather than applying
+  // our default vig on top of fair. Operator preference for this
+  // one-week feature — quote-as-book rather than undercut. Mirrors
+  // the NBA series heavy-favorite pattern (pricer.js:101).
   if (teamName) {
     try {
       const betonlineScraper = require('./betonline-scraper');
       const boHit = betonlineScraper.lookupZurichMatchupFairProb(teamName, lineInfo.roundNum ?? null);
-      if (boHit && boHit.fairProb != null) return boHit.fairProb;
+      if (boHit && boHit.fairProb != null) {
+        // Derive implied prob from the raw American odds if the
+        // scraper didn't populate it directly. This is the offered
+        // price we want to quote — pre-devig.
+        const rawAm = boHit.americanOdds;
+        let rawImplied = boHit.impliedProb;
+        if (rawImplied == null && Number.isFinite(rawAm)) {
+          rawImplied = rawAm >= 0 ? 100 / (rawAm + 100) : -rawAm / (-rawAm + 100);
+        }
+        if (rawImplied != null && rawImplied > 0 && rawImplied < 1) {
+          return { fairProb: boHit.fairProb, bookPriceOverride: rawImplied };
+        }
+        return boHit.fairProb;
+      }
     } catch (_) { /* scraper unavailable — fall through */ }
   }
   return null;
@@ -454,7 +473,18 @@ async function priceParlay(legs, opts = {}) {
     const mmaFair = getMmaFairProb(s.lineInfo);
     if (mmaFair != null) { fairProbs[i] = mmaFair; continue; }
     const golfFair = getGolfMatchupFairProb(s.lineInfo);
-    if (golfFair != null) { fairProbs[i] = golfFair; continue; }
+    if (golfFair != null) {
+      // Handle object-form return (carries bookPriceOverride when
+      // fair came from BetOnline manual upload). See NBA series
+      // pattern above for the same object-vs-number convention.
+      if (typeof golfFair === 'object') {
+        s.bookPriceOverride = golfFair.bookPriceOverride;
+        fairProbs[i] = golfFair.fairProb;
+      } else {
+        fairProbs[i] = golfFair;
+      }
+      continue;
+    }
     if (s.lineInfo.isDNB) {
       fairProbs[i] = oddsFeed.getDNBFairProb(
         s.lineInfo.oddsApiSport, s.lineInfo.homeTeam, s.lineInfo.awayTeam,
