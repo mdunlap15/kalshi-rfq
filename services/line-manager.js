@@ -484,10 +484,22 @@ async function seedAllLines() {
     // We price these against the DK scraper cache, not the odds feed,
     // so skip the odds-api match and use competitor names directly.
     const isSeriesEvent = /^\s*series\s*winner\b/i.test(event.name || '');
+    // Golf events where our odds cache didn't cover the pair. DataGolf
+    // covers individual 1v1 matchups but NOT team pairs (Zurich Classic
+    // is the one PGA event per year that's team-format). BetOnline
+    // manual-upload cache supplies the fair, and pricer's cascade hits
+    // it via lookupZurichMatchupFairProb. Register from PX competitor
+    // names directly so the line lives in our index; if pricing still
+    // fails at RFQ time, we decline cleanly — no harm done.
+    const isGolfEvent = event.sport_name === 'Golf';
     if (!matchedHome || !matchedAway) {
       if (isSeriesEvent) {
         matchedHome = homeComp.name;
         matchedAway = awayComp.name;
+      } else if (isGolfEvent) {
+        matchedHome = homeComp.name;
+        matchedAway = awayComp.name;
+        sportKey = 'golf_matchups';
       } else {
         unmatchedEvents.push({
           pxEvent: event.name,
@@ -501,7 +513,7 @@ async function seedAllLines() {
     // Verify this home/away pair exists as an actual Odds API event
     const pxScheduled = event.scheduled || null;
     const oddsEvent = matchedOddsEvent || oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxScheduled);
-    if (!oddsEvent && !isSeriesEvent) {
+    if (!oddsEvent && !isSeriesEvent && !isGolfEvent) {
       const oddsEventReversed = oddsFeed.getEventMarkets(sportKey, matchedAway, matchedHome, pxScheduled);
       if (!oddsEventReversed) {
         unmatchedEvents.push({
