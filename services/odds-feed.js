@@ -2505,8 +2505,10 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
 // off the critical path.
 // ---------------------------------------------------------------------------
 
-// Sports that actually publish alt spread/total markets on The Odds API.
-// Soccer and tennis don't, so skip them.
+// Sports that publish alt spread/total markets on The Odds API AND
+// are safe to aggressively pre-warm at every odds refresh cycle.
+// Tennis stays in (thin alt coverage but cheap to fetch; helps RFQs
+// on non-primary sets).
 const SPORTS_WITH_ALT_MARKETS = new Set([
   'basketball_nba', 'basketball_ncaab', 'basketball_wnba',
   'baseball_mlb',
@@ -2514,6 +2516,62 @@ const SPORTS_WITH_ALT_MARKETS = new Set([
   'americanfootball_nfl', 'americanfootball_ncaaf',
   'tennis',
 ]);
+
+// Sports where we want alt-line coverage but ONLY on-demand (no
+// pre-warming). Caps API cost to real RFQ volume. Soccer has lots of
+// events (10+ EPL per weekend, similar across major leagues), and
+// bettor parlays on non-primary lines are a moderate fraction — not
+// worth burning quota pre-warming every game.
+//
+// Alt-line fetches still happen from the getFairProbAsync path when
+// an RFQ hits a non-primary line; this set is additive to that
+// behavior, granting soccer the same dangerous-decline safeguards we
+// apply elsewhere (lineDiff sanity, min-book requirement).
+const SPORTS_WITH_ONDEMAND_ALT_MARKETS = new Set([
+  'soccer',
+  'soccer_usa_mls',
+  'soccer_epl',
+  'soccer_spain_la_liga',
+  'soccer_italy_serie_a',
+  'soccer_germany_bundesliga',
+  'soccer_france_ligue_one',
+  'soccer_uefa_champs_league',
+  'soccer_uefa_europa_league',
+]);
+
+// True when either gate (pre-warm or on-demand) applies. Use in
+// runtime code paths (getFairProb, fetchAltLines callers); use the
+// narrower SPORTS_WITH_ALT_MARKETS for pre-warm scheduling only.
+function sportSupportsAltLines(sport) {
+  return SPORTS_WITH_ALT_MARKETS.has(sport) || SPORTS_WITH_ONDEMAND_ALT_MARKETS.has(sport);
+}
+
+// Safety-sensitive sports get tighter lineDiff sanity gates and a
+// minimum-book requirement on alt-line acceptance. Mispricing an
+// alt line as primary is one of the worst bug classes we've hit
+// (NHL spreads, MLB totals) — soccer has the same risk profile with
+// even thinner book coverage on some leagues.
+function isStrictAltSanitySport(sport) {
+  return SPORTS_WITH_ONDEMAND_ALT_MARKETS.has(sport);
+}
+
+// Strict-mode lineDiff threshold: if |alt_line - primary_line| >=
+// this value, run the sanity check (direction makes sense, alt
+// fair is within plausible range). Default is 2.0; soccer is 1.0
+// because EPL goals span a narrow range (2-4 typical) so even a
+// 1-goal move between primary and alt is material.
+function altSanityLineDiffThreshold(sport) {
+  return isStrictAltSanitySport(sport) ? 1.0 : 2.0;
+}
+
+// Maximum distance |alt - primary| we'll quote on for strict-mode
+// sports. Beyond this, the alt is too far from primary to trust —
+// even if the alt cache has data, the de-vig can be wildly off on
+// extreme tails. Soccer cap is 3 goals (e.g. primary 2.5 max alt
+// 5.5); anything beyond declines.
+function altMaxLineDistance(sport) {
+  return isStrictAltSanitySport(sport) ? 3.0 : Infinity;
+}
 
 // Only pre-warm events starting within this window — avoids wasting API calls
 // on events days in the future that the bettor almost certainly won't RFQ.
@@ -3267,6 +3325,16 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
       const absLine = Math.abs(line);
       const lineDiff = Math.abs(Math.abs(market.line) - absLine);
       if (lineDiff > 0.01) {
+        // Strict-mode distance guard: for soccer (and other ondemand-alt
+        // sports), decline outright if the alt line is too far from
+        // primary. The further out on the tail, the less reliable the
+        // de-vigged fair, and correlation to primary weakens — sanity
+        // checks may not catch a bad one.
+        const maxDist = altMaxLineDistance(sport);
+        if (lineDiff > maxDist) {
+          log.warn('OddsFeed', `Alt ${marketType} distance guard: |${line} - ${market.line}| = ${lineDiff.toFixed(1)} > max ${maxDist} for ${sport} ${homeTeam} vs ${awayTeam} — declining`);
+          return null;
+        }
         // Line magnitude doesn't match primary. First try the per-line
         // consensus in market.byLine — populated by buildConsensusTotals
         // for every distinct line across books, so minority lines (e.g.
@@ -3285,16 +3353,41 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
         const key = normalizeEventKey(homeTeam, awayTeam);
         const altProb = getAltLineFairProb(key, marketType, selection, line);
         if (altProb != null) {
+          // Strict-mode sport check: require ≥ 2 books for the alt line.
+          // The Odds API soccer alt coverage is thin on Hobby tier; a
+          // single-book alt fair is too noisy to trust. This inspects
+          // the raw cache entry, which carries books + byBook from
+          // ingestion.
+          if (isStrictAltSanitySport(sport)) {
+            const altEntry = getAltLineCacheEntry(key, marketType, selection, line);
+            const bookCount = altEntry ? altEntry.books : 0;
+            if (bookCount < 2) {
+              log.warn('OddsFeed', `Alt ${marketType} strict-book check: ${sport} ${selection} ${line} has only ${bookCount} book(s) — declining (min 2)`);
+              return null;
+            }
+          }
           // Sanity: for totals far from primary, verify direction makes sense.
           // Over a low total (e.g. 4.5 when primary is 8.5) should be a heavy
           // favorite (fairProb >= 0.60). Under a low total should be an underdog.
           // Vice versa for high totals.  If violated, the alt line data may be
           // corrupted (swapped over/under, wrong point, stale cache).
-          if (marketType === 'totals' && lineDiff >= 2.0) {
+          const sanityThreshold = altSanityLineDiffThreshold(sport);
+          if (marketType === 'totals' && lineDiff >= sanityThreshold) {
             const expectHigh = (selection === 'over' && line < market.line) || (selection === 'under' && line > market.line);
             if (expectHigh && altProb < 0.55) {
               log.warn('OddsFeed', `Alt total sanity FAIL: ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} — expected heavy favorite, got underdog. Declining.`);
               return null;
+            }
+            // Strict sports also enforce the reverse: over-a-high-total
+            // should be an underdog (fairProb < 0.45) when we're clearly
+            // out on the tail. Catches swapped-side bugs where the alt
+            // cache returns the fair for the OPPOSITE direction.
+            if (isStrictAltSanitySport(sport)) {
+              const expectLow = (selection === 'over' && line > market.line) || (selection === 'under' && line < market.line);
+              if (expectLow && altProb > 0.55) {
+                log.warn('OddsFeed', `Alt total strict sanity FAIL: ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} — expected underdog, got favorite. Declining.`);
+                return null;
+              }
             }
           }
           // Sanity: for alt spreads far from primary, verify direction makes sense.
@@ -3735,24 +3828,59 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
     // So we proceed to fetchAltLines even when the event has no F5
     // primary cached, as long as we have an event record at all.
     if (event || marketType === 'spreads_f5' || marketType === 'totals_f5') {
+      // Strict-mode distance guard BEFORE network fetch, so we don't
+      // burn an API call on an out-of-range line we'd decline anyway.
+      // Only applies when we have the primary market cached (need
+      // market.line to compute distance). F5 fallthrough skips this
+      // since market can be null.
+      const primaryMarket = event ? event.markets[marketType] : null;
+      if (primaryMarket?.line != null) {
+        const lineDiff0 = Math.abs(Math.abs(primaryMarket.line) - Math.abs(line));
+        const maxDist = altMaxLineDistance(sport);
+        if (lineDiff0 > maxDist) {
+          log.warn('OddsFeed', `Alt ${marketType} distance guard (async): |${line} - ${primaryMarket.line}| = ${lineDiff0.toFixed(1)} > max ${maxDist} for ${sport} — declining`);
+          return null;
+        }
+      }
       await fetchAltLines(sport, homeTeam, awayTeam, targetTime);
       const key = normalizeEventKey(homeTeam, awayTeam);
       // Pass SIGNED line (not abs) so alt-line lookup routes to the correct
       // signed home_point bucket.
       const altProb = getAltLineFairProb(key, marketType, selection, line);
       if (altProb != null) {
+        // Strict-mode min-book gate: require ≥ 2 books for sports
+        // with thin alt coverage (soccer). Single-book alt fair is
+        // too noisy to quote on.
+        if (isStrictAltSanitySport(sport)) {
+          const altEntry = getAltLineCacheEntry(key, marketType, selection, line);
+          const bookCount = altEntry ? altEntry.books : 0;
+          if (bookCount < 2) {
+            log.warn('OddsFeed', `Alt ${marketType} strict-book check (async): ${sport} ${selection} ${line} has only ${bookCount} book(s) — declining (min 2)`);
+            return null;
+          }
+        }
         // Same directional sanity checks as getFairProb (see comments there).
         // `event` may be null for F5 fallthrough (no primary market cached);
         // skip the sanity block in that case — F5 line ranges are narrow
         // and rarely trigger the lineDiff >= 2.0 guard anyway.
         const market = event ? event.markets[marketType] : null;
+        const sanityThreshold = altSanityLineDiffThreshold(sport);
         if (marketType === 'totals' && market?.line != null) {
           const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
-          if (lineDiff >= 2.0) {
+          if (lineDiff >= sanityThreshold) {
             const expectHigh = (selection === 'over' && line < market.line) || (selection === 'under' && line > market.line);
             if (expectHigh && altProb < 0.55) {
               log.warn('OddsFeed', `Alt total sanity FAIL (async): ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} — declining`);
               return null;
+            }
+            // Strict-mode reverse sanity: expect-low directions should
+            // actually be underdogs. Catches swapped-side bugs.
+            if (isStrictAltSanitySport(sport)) {
+              const expectLow = (selection === 'over' && line > market.line) || (selection === 'under' && line < market.line);
+              if (expectLow && altProb > 0.55) {
+                log.warn('OddsFeed', `Alt total strict sanity FAIL (async): ${selection} ${line} (primary ${market.line}) fair=${altProb.toFixed(4)} — expected underdog, got favorite. Declining.`);
+                return null;
+              }
             }
           }
         }
@@ -3800,6 +3928,29 @@ function spreadHomePoint(line, selection) {
   if (line == null) return null;
   if (selection === 'home') return line;
   if (selection === 'away') return -line;
+  return null;
+}
+
+/**
+ * Look up the raw alt-line cache entry for a (marketType, line) pair.
+ * Returns { home|away|over|under (fair), books, byBook, ... } or null
+ * when no entry exists. Used by the strict-mode book-count gate so
+ * we can reject single-book alts before pricing on them.
+ */
+function getAltLineCacheEntry(eventKey, marketType, selection, line) {
+  const alt = altLinesCache[eventKey];
+  if (!alt) return null;
+  const isF5 = marketType === 'spreads_f5' || marketType === 'totals_f5';
+  if (marketType === 'spreads' || marketType === 'spreads_f5') {
+    const homePoint = spreadHomePoint(line, selection);
+    if (homePoint == null) return null;
+    const bucket = isF5 ? alt.altSpreadsF5 : alt.altSpreads;
+    return bucket?.[String(homePoint)] || null;
+  }
+  if (marketType === 'totals' || marketType === 'totals_f5') {
+    const bucket = isF5 ? alt.altTotalsF5 : alt.altTotals;
+    return bucket?.[Math.abs(line)] || null;
+  }
   return null;
 }
 
