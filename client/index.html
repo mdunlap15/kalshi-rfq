@@ -3111,8 +3111,16 @@
     // or all legs resolved + time-cutoff via isStaleConfirmed).
     const byParlayId = {};
     const noIdEntries = []; // reconstructed-from-PX positions may lack parlayId
+    // Require orderUuid — PX only issues orderUuid on order.finalized, i.e.
+    // after the bettor confirms the final terms. Tracker entries with
+    // status='confirmed' but no orderUuid are tentative matches where the
+    // bettor hasn't committed yet (or walked away during final-review).
+    // Showing those in Open Positions was misleading: they'd appear for
+    // 10 minutes then disappear when the phantom sweep picked them up.
+    // This filter makes the table show ONLY real committed bookings —
+    // matches the user-facing semantics of "position on the book."
     const trackerConfirmed = allOrders.filter(o =>
-      o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom
+      o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom && !!o.orderUuid
     );
     // Add tracker entries first, then let PX ledger entries overwrite on
     // parlayId match (PX has richer settlement metadata when available).

@@ -476,8 +476,20 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
       return order;
     }
 
-    // Don't double-count confirmations for the same parlay
-    if (order.status !== 'confirmed') {
+    // Count as a real fill only when an orderUuid arrives — i.e., when
+    // order.finalized fires, not on the tentative order.matched. PX's
+    // event model emits order.matched when the bettor initially selects
+    // our quote, but the bettor still has a final-terms review step
+    // where they can back out. Only order.finalized (which carries
+    // orderUuid) indicates the bettor actually committed.
+    //
+    // Previous logic incremented on any status change to 'confirmed',
+    // which inflated sessionFills with bettor-backout "phantoms"
+    // (~76% of matched events on 2026-04-22). Status still promotes to
+    // 'confirmed' on order.matched for exposure tracking during the
+    // review window — the 10-min isStalePhantom sweep cleans up orphans.
+    const wasCountedAsFill = order.orderUuid != null;
+    if (!wasCountedAsFill && orderUuid != null) {
       stats.totalConfirmations++;
       stats.sessionFills++;
     }
