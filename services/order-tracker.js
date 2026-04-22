@@ -517,8 +517,17 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
       ordersByUuid[orderUuid] = parlayId;
     }
 
-    // Track exposure per team/selection — real exposure supersedes pending
-    addExposure(order);
+    // Track exposure per team/selection — ONLY on real fills (orderUuid
+    // first arrival). Previously addExposure fired on order.matched too,
+    // which inflated Team/Game Exposure with tentative matches the
+    // bettor later walked away from. Surfaced as a visible bug: the
+    // Team Exposure table would show a team with $1,465 net exposure
+    // across 4 parlays, but clicking the drill-down found "No matching
+    // confirmed orders" because the filter there requires real fills.
+    // Ties exposure accounting to the same commit signal as sessionFills.
+    if (!wasCountedAsFill && orderUuid != null) {
+      addExposure(order);
+    }
     releasePending(parlayId);
 
     log.info('Orders', `Confirmed: parlay=${parlayId}, order=${orderUuid}, odds=${confirmedOdds}, stake=$${confirmedStake}`);
@@ -2376,10 +2385,21 @@ function rebuildAllExposure() {
   // already filters phantoms.
   let skippedFinished = 0;
   let skippedPhantom = 0;
+  let skippedNoUuid = 0;
   for (const order of Object.values(orders)) {
     diag.totalOrders++;
     if (order.status !== 'confirmed') continue;
     if (order.meta && order.meta.phantom) { skippedPhantom++; continue; }
+    // Also skip computed stale phantoms (confirmed>10min ago without an
+    // orderUuid, or all legs started >12h ago) — same policy as Open
+    // Positions. Without this, phantom "matches" that PX never finalized
+    // keep inflating Team/Game Exposure with tentative bookings the
+    // bettor walked away from.
+    if (isOrderStalePhantom(order)) { skippedPhantom++; continue; }
+    // Belt-and-suspenders: orders missing orderUuid AFTER phantom-sweep
+    // means order.finalized never fired. Don't count them — same logic
+    // as the exposure gate in recordConfirmation.
+    if (!order.orderUuid) { skippedNoUuid++; continue; }
     diag.confirmedOrders++;
     const legs = order.legs || order.meta?.legs || [];
     if (legs.length === 0) continue;
@@ -2398,11 +2418,14 @@ function rebuildAllExposure() {
   }
   if (skippedFinished > 0) log.info('Exposure', `Skipped ${skippedFinished} finished orders during rebuild`);
   if (skippedPhantom > 0) log.info('Exposure', `Skipped ${skippedPhantom} phantom-flagged orders during rebuild`);
+  if (skippedNoUuid > 0) log.info('Exposure', `Skipped ${skippedNoUuid} no-orderUuid (unfinalized) orders during rebuild`);
   const result = {
     ...diag,
     uniqueTeamKeys: diag.uniqueTeamKeys.size,
     exposureKeysAfter: Object.keys(exposure).length,
     gameKeysAfter: Object.keys(gameExposure).length,
+    skippedPhantom,
+    skippedNoUuid,
   };
   log.info('Exposure', `rebuildAllExposure: ${JSON.stringify(result)}`);
   return result;
