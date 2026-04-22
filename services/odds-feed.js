@@ -1120,6 +1120,30 @@ const PINNACLE_SPORT_MAP = {
   'basketball_nba': 'basketball_nba',
   'baseball_mlb': 'baseball_mlb',
   'icehockey_nhl': 'icehockey_nhl',
+  // Soccer leagues — The Odds API uses per-league sport keys that match our
+  // internal ones 1:1. Adds Pinnacle + DK + FD as supplement books on top of
+  // SharpAPI's DK/FD-only coverage. Pinnacle is widely considered the sharpest
+  // book for soccer, so including it meaningfully tightens fair-prob estimates.
+  // If a league has no active Pinnacle coverage for a given cycle, fetchPinnacleRows
+  // returns [] and the merge is a no-op — safe to add speculatively.
+  'soccer_epl': 'soccer_epl',
+  'soccer_spain_la_liga': 'soccer_spain_la_liga',
+  'soccer_italy_serie_a': 'soccer_italy_serie_a',
+  'soccer_germany_bundesliga': 'soccer_germany_bundesliga',
+  'soccer_france_ligue_one': 'soccer_france_ligue_one',
+  'soccer_uefa_champs_league': 'soccer_uefa_champs_league',
+  'soccer_uefa_europa_league': 'soccer_uefa_europa_league',
+  'soccer_usa_mls': 'soccer_usa_mls',
+  'soccer_usa_nwsl': 'soccer_usa_nwsl',
+  'soccer_mexico_ligamx': 'soccer_mexico_ligamx',
+  'soccer_brazil_campeonato': 'soccer_brazil_campeonato',
+  'soccer_conmebol_libertadores': 'soccer_conmebol_libertadores',
+  // MMA — Pinnacle posts UFC/major MMA events, adds a sharper reference to
+  // the existing SharpAPI-only coverage plus the DK scraper total_rounds market.
+  'mma_mixed_martial_arts': 'mma_mixed_martial_arts',
+  // Tennis intentionally omitted: The Odds API uses per-tournament sport keys
+  // (tennis_atp_french_open, tennis_atp_us_open, etc.) rather than a generic
+  // "tennis" key, so a 1:1 map doesn't work without tournament-aware routing.
 };
 
 // Market key mapping: The Odds API market → SharpAPI market_type (per sport)
