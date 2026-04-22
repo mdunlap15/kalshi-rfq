@@ -868,82 +868,114 @@ async function supplementMlbF5Markets(parsedEvents) {
 /**
  * Fetch 1st-Half markets for NBA from The Odds API and attach them
  * to the existing event cache as: h2h_h1, spreads_h1, totals_h1.
+ *
+ * IMPORTANT: Same endpoint gotcha as F5 and team_totals — the bulk
+ * /odds endpoint returns 422 INVALID_MARKET for h2h_h1/spreads_h1/
+ * totals_h1. Verified via probe 2026-04-22:
+ *   "Markets not supported by this endpoint: h2h_h1, spreads_h1, totals_h1"
+ * This is why the previous bulk-endpoint implementation produced zero
+ * 1H data for months. H1 markets live on the per-event endpoint.
  */
 async function supplementNbaH1Markets(parsedEvents) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   if (!theOddsApiKey) return;
 
-  const url = `https://api.the-odds-api.com/v4/sports/basketball_nba/odds`
-    + `?apiKey=${theOddsApiKey}`
-    + `&regions=us,eu`
-    + `&markets=h2h_h1,spreads_h1,totals_h1`
-    + `&bookmakers=pinnacle,draftkings,fanduel`
-    + `&oddsFormat=american`;
-
-  const resp = await fetch(url);
-  if (!resp.ok) {
-    log.warn('OddsFeed', `NBA H1 fetch failed (${resp.status})`);
+  // Collect candidates — skip events already populated with H1 data.
+  const candidates = [];
+  for (const entry of Object.values(parsedEvents)) {
+    const arr = Array.isArray(entry) ? entry : [entry];
+    for (const ev of arr) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      if (ev.markets && ev.markets.h2h_h1 && ev.markets.spreads_h1 && ev.markets.totals_h1) continue;
+      candidates.push(ev);
+    }
+  }
+  if (candidates.length === 0) {
+    log.info('OddsFeed', 'NBA H1 supplement: no candidates');
     return;
   }
-  const remaining = resp.headers.get('x-requests-remaining');
-  if (remaining != null) log.debug('OddsFeed', `The Odds API usage (NBA H1): ${remaining} remaining`);
 
-  const events = await resp.json();
-  let matched = 0;
-  for (const event of events) {
-    const entry = findParsedEntryFuzzy(parsedEvents, event.home_team, event.away_team);
-    if (!entry) continue;
-    const eventArr = Array.isArray(entry) ? entry : [entry];
-    const evDate = event.commence_time ? new Date(event.commence_time).toISOString().substring(0, 10) : '';
-    const matchedEv = eventArr.find(e => {
-      const d = e.commenceTime ? new Date(e.commenceTime).toISOString().substring(0, 10) : '';
-      return !evDate || !d || d === evDate;
-    }) || eventArr[0];
-    if (!matchedEv) continue;
+  let calls = 0, matchFails = 0, apiFails = 0;
+  let h2hCount = 0, spreadCount = 0, totalCount = 0;
+  const CONCURRENCY = 3;
+  let idx = 0;
+  async function worker() {
+    while (idx < candidates.length) {
+      const ev = candidates[idx++];
+      const resolved = await resolveOddsApiEventId('basketball_nba', ev.homeTeam, ev.awayTeam, ev.commenceTime);
+      if (!resolved) { matchFails++; continue; }
 
-    const mlPairs = [], spreadPairs = [], totalPairs = [];
-    for (const book of (event.bookmakers || [])) {
-      for (const m of (book.markets || [])) {
-        if (m.key === 'h2h_h1') {
-          const home = m.outcomes?.find(o => o.name === event.home_team);
-          const away = m.outcomes?.find(o => o.name === event.away_team);
-          if (home && away) {
-            mlPairs.push({
-              book: book.key,
-              home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price },
-              away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price },
-            });
-          }
-        } else if (m.key === 'spreads_h1') {
-          const home = m.outcomes?.find(o => o.name === event.home_team);
-          const away = m.outcomes?.find(o => o.name === event.away_team);
-          if (home && away) {
-            spreadPairs.push({
-              book: book.key,
-              home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price, point: home.point, line: home.point },
-              away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price, point: away.point, line: away.point },
-            });
-          }
-        } else if (m.key === 'totals_h1') {
-          const over = m.outcomes?.find(o => o.name === 'Over');
-          const under = m.outcomes?.find(o => o.name === 'Under');
-          if (over && under) {
-            totalPairs.push({
-              book: book.key,
-              over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
-              under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
-            });
+      const url = `https://api.the-odds-api.com/v4/sports/basketball_nba/events/${resolved.eventId}/odds`
+        + `?apiKey=${theOddsApiKey}`
+        + `&regions=us,eu`
+        + `&markets=h2h_h1,spreads_h1,totals_h1`
+        + `&bookmakers=pinnacle,draftkings,fanduel`
+        + `&oddsFormat=american`;
+
+      try {
+        const resp = await fetch(url);
+        calls++;
+        if (!resp.ok) { apiFails++; continue; }
+        const data = await resp.json();
+
+        const mlPairs = [], spreadPairs = [], totalPairs = [];
+        for (const book of (data.bookmakers || [])) {
+          for (const m of (book.markets || [])) {
+            if (m.key === 'h2h_h1') {
+              const home = m.outcomes?.find(o => o.name === data.home_team);
+              const away = m.outcomes?.find(o => o.name === data.away_team);
+              if (home && away) {
+                mlPairs.push({
+                  book: book.key,
+                  home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price },
+                  away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price },
+                });
+              }
+            } else if (m.key === 'spreads_h1') {
+              const home = m.outcomes?.find(o => o.name === data.home_team);
+              const away = m.outcomes?.find(o => o.name === data.away_team);
+              if (home && away) {
+                spreadPairs.push({
+                  book: book.key,
+                  home: { odds_probability: americanToImpliedProb(home.price), odds_american: home.price, point: home.point, line: home.point },
+                  away: { odds_probability: americanToImpliedProb(away.price), odds_american: away.price, point: away.point, line: away.point },
+                });
+              }
+            } else if (m.key === 'totals_h1') {
+              const over = m.outcomes?.find(o => o.name === 'Over');
+              const under = m.outcomes?.find(o => o.name === 'Under');
+              if (over && under) {
+                totalPairs.push({
+                  book: book.key,
+                  over: { odds_probability: americanToImpliedProb(over.price), odds_american: over.price, point: over.point, line: over.point },
+                  under: { odds_probability: americanToImpliedProb(under.price), odds_american: under.price, point: under.point, line: under.point },
+                });
+              }
+            }
           }
         }
+
+        if (mlPairs.length > 0) {
+          const mk = buildConsensusMoneyline(mlPairs);
+          if (mk) { ev.markets.h2h_h1 = mk; h2hCount++; }
+        }
+        if (spreadPairs.length > 0) {
+          const sp = buildConsensusSpread(spreadPairs);
+          if (sp) { ev.markets.spreads_h1 = sp; spreadCount++; }
+        }
+        if (totalPairs.length > 0) {
+          ev.markets.totals_h1 = buildConsensusTotals(totalPairs);
+          totalCount++;
+        }
+      } catch (err) {
+        apiFails++;
       }
     }
-
-    if (mlPairs.length > 0 || spreadPairs.length > 0 || totalPairs.length > 0) matched++;
-    if (mlPairs.length > 0) matchedEv.markets.h2h_h1 = buildConsensusMoneyline(mlPairs);
-    if (spreadPairs.length > 0) matchedEv.markets.spreads_h1 = buildConsensusSpread(spreadPairs);
-    if (totalPairs.length > 0) matchedEv.markets.totals_h1 = buildConsensusTotals(totalPairs);
   }
-  log.info('OddsFeed', `NBA H1: attached to ${matched} events`);
+  const workers = [];
+  for (let i = 0; i < Math.min(CONCURRENCY, candidates.length); i++) workers.push(worker());
+  await Promise.all(workers);
+  log.info('OddsFeed', `NBA H1 supplement (per-event): ${calls}/${candidates.length} calls, h2h+${h2hCount} spread+${spreadCount} total+${totalCount}, matchFails=${matchFails} apiFails=${apiFails}`);
 }
 
 /**
