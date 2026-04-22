@@ -7659,6 +7659,12 @@
     // 'all' | sport key (e.g. 'baseball_mlb') | 'soccer' (all soccer_*) | 'multi'
     window._parlayVsBooksSport = 'all';
   }
+  if (!window._parlayVsBooksCustomRange) {
+    // Used when _parlayVsBooksRange === 'custom'. startMs/endMs are epoch ms
+    // in local browser TZ (datetime-local inputs are interpreted locally).
+    // When null, the corresponding side is unbounded.
+    window._parlayVsBooksCustomRange = { startMs: null, endMs: null };
+  }
   const RANGE_OPTIONS = [
     // 'session' = current server session (everything since last boot).
     // ms: null signals "derive cutoff from window._lastIntel.sessionStartedAt".
@@ -7691,6 +7697,79 @@
     if (window._parlayVsBooksData) renderChartParlayVsBooks(null);
   }
 
+  // Format epoch ms as the YYYY-MM-DDTHH:MM string datetime-local inputs expect.
+  // Uses local browser TZ; matches how the inputs emit their values on change.
+  function _msToLocalInput(ms) {
+    if (!Number.isFinite(ms)) return '';
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  // Called when user types/picks in either datetime-local input. Flips the
+  // chart into 'custom' range mode and re-renders. `which` is 'start' | 'end';
+  // `isoString` is the datetime-local value (local TZ, no zone suffix).
+  function setParlayVsBooksCustom(which, isoString) {
+    const ms = isoString ? new Date(isoString).getTime() : null;
+    if (ms == null || !Number.isFinite(ms)) return;
+    window._parlayVsBooksCustomRange = window._parlayVsBooksCustomRange || { startMs: null, endMs: null };
+    if (which === 'start') window._parlayVsBooksCustomRange.startMs = ms;
+    else if (which === 'end') window._parlayVsBooksCustomRange.endMs = ms;
+    window._parlayVsBooksRange = 'custom';
+    if (window._parlayVsBooksRawQuotes) {
+      window._parlayVsBooksData = null;
+      renderChartParlayVsBooks(window._parlayVsBooksRawQuotes);
+    }
+  }
+
+  // Slider drag preview (oninput): imperatively updates the fill bar and the
+  // datetime inputs so the user sees live feedback WITHOUT re-rendering the
+  // chart (which would destroy the slider DOM and break the drag). The real
+  // filter re-render fires on `change` (release) via commit handler below.
+  function previewParlayVsBooksDateSlider() {
+    const lo = document.getElementById('pvb-date-min');
+    const hi = document.getElementById('pvb-date-max');
+    const fillEl = document.getElementById('pvb-date-fill');
+    const startInput = document.getElementById('pvb-date-start-input');
+    const endInput = document.getElementById('pvb-date-end-input');
+    if (!lo || !hi) return;
+    let minMs = parseFloat(lo.value);
+    let maxMs = parseFloat(hi.value);
+    if (!Number.isFinite(minMs) || !Number.isFinite(maxMs)) return;
+    // Keep thumbs from crossing — pin the other thumb to whoever is active.
+    if (minMs > maxMs) {
+      if (document.activeElement === lo) { maxMs = minMs; hi.value = String(maxMs); }
+      else { minMs = maxMs; lo.value = String(minMs); }
+    }
+    const boundMin = parseFloat(lo.min);
+    const boundMax = parseFloat(lo.max);
+    const range = boundMax - boundMin;
+    if (fillEl && range > 0) {
+      fillEl.style.left = ((minMs - boundMin) / range) * 100 + '%';
+      fillEl.style.right = (100 - ((maxMs - boundMin) / range) * 100) + '%';
+    }
+    if (startInput) startInput.value = _msToLocalInput(minMs);
+    if (endInput) endInput.value = _msToLocalInput(maxMs);
+  }
+
+  // Slider drag commit (onchange, fires on mouseup). Persists the new range
+  // and triggers a full chart re-render with the filtered data.
+  function commitParlayVsBooksDateSlider() {
+    const lo = document.getElementById('pvb-date-min');
+    const hi = document.getElementById('pvb-date-max');
+    if (!lo || !hi) return;
+    const minMs = parseFloat(lo.value);
+    const maxMs = parseFloat(hi.value);
+    if (!Number.isFinite(minMs) || !Number.isFinite(maxMs)) return;
+    window._parlayVsBooksCustomRange = { startMs: minMs, endMs: maxMs };
+    window._parlayVsBooksRange = 'custom';
+    if (window._parlayVsBooksRawQuotes) {
+      window._parlayVsBooksData = null;
+      renderChartParlayVsBooks(window._parlayVsBooksRawQuotes);
+    }
+  }
+
   function renderChartParlayVsBooks(allQuoted) {
     const el = document.getElementById('chart-parlay-vs-books');
     if (!el) return;
@@ -7699,18 +7778,27 @@
     if (allQuoted) {
       window._parlayVsBooksRawQuotes = allQuoted;
       data = [];
-      const rangeOpt = RANGE_OPTIONS.find(r => r.key === window._parlayVsBooksRange) || RANGE_OPTIONS[3];
-      // 'session' range: cutoff = server session start. Null ms = no cutoff
-      // (all). Positive ms = rolling window from now.
-      let cutoff = null;
-      if (rangeOpt.key === 'session' && window._lastIntel?.sessionStartedAt) {
-        cutoff = window._lastIntel.sessionStartedAt;
+      const isCustomRange = window._parlayVsBooksRange === 'custom';
+      const rangeOpt = isCustomRange
+        ? { key: 'custom' }
+        : (RANGE_OPTIONS.find(r => r.key === window._parlayVsBooksRange) || RANGE_OPTIONS[3]);
+      // 'session' range: startCutoff = server session start. Null = no cutoff
+      // (all). Positive ms = rolling window from now. 'custom' uses both ends.
+      let startCutoff = null;
+      let endCutoff = null;
+      if (rangeOpt.key === 'custom') {
+        const cr = window._parlayVsBooksCustomRange || {};
+        if (Number.isFinite(cr.startMs)) startCutoff = new Date(cr.startMs).toISOString();
+        if (Number.isFinite(cr.endMs)) endCutoff = new Date(cr.endMs).toISOString();
+      } else if (rangeOpt.key === 'session' && window._lastIntel?.sessionStartedAt) {
+        startCutoff = window._lastIntel.sessionStartedAt;
       } else if (rangeOpt.ms && rangeOpt.ms > 0) {
-        cutoff = new Date(Date.now() - rangeOpt.ms).toISOString();
+        startCutoff = new Date(Date.now() - rangeOpt.ms).toISOString();
       }
       for (const o of allQuoted) {
         const qDate = o.quotedAt || o.confirmedAt;
-        if (cutoff && qDate && qDate < cutoff) continue;
+        if (startCutoff && qDate && qDate < startCutoff) continue;
+        if (endCutoff && qDate && qDate > endCutoff) continue;
         if (!o.offeredOdds) continue;
         const legs = o.meta?.legs || o.legs || [];
         if (legs.length === 0) continue;
@@ -7812,13 +7900,75 @@
     }
     // Date range selector
     const R = window._parlayVsBooksRange;
+    const isCustomR = R === 'custom';
     const btnStyle = (active) => 'cursor:pointer; padding:3px 10px; border-radius:4px; font-size:11px; border:1px solid var(--border); background:' + (active ? 'var(--accent)' : 'transparent') + '; color:' + (active ? '#fff' : 'var(--text3)') + ';';
     html += '<span style="margin-left:auto; display:flex; gap:4px; align-items:center;">';
     html += '<span style="font-size:11px; color:var(--text3); margin-right:2px;">Range:</span>';
     for (const ro of RANGE_OPTIONS) {
       html += '<button onclick="setParlayVsBooksRange(\'' + ro.key + '\')" style="' + btnStyle(R === ro.key) + '">' + ro.label + '</button>';
     }
+    // 'Custom' badge — non-clickable indicator that lights when a custom range is active.
+    // Editing either datetime input / dragging the slider flips the state into 'custom'.
+    html += '<span style="' + btnStyle(isCustomR) + ' padding:3px 8px; font-size:10px;">Custom</span>';
     html += '</span>';
+    html += '</div>';
+
+    // --- Custom date range row: datetime inputs + dual-thumb slider ---
+    // Slider bounds: [earliestQuoteInData, now]. If data is loaded, find the
+    // earliest quotedAt; otherwise fall back to 30 days ago so the slider is
+    // still usable before any raw data is cached.
+    const nowMs_pvb = Date.now();
+    let dataMinMs_pvb = nowMs_pvb - 30 * 24 * 3600 * 1000;
+    const rawForBounds = window._parlayVsBooksRawQuotes || [];
+    for (const o of rawForBounds) {
+      const qd = o.quotedAt || o.confirmedAt;
+      if (!qd) continue;
+      const t = new Date(qd).getTime();
+      if (Number.isFinite(t) && t < dataMinMs_pvb) dataMinMs_pvb = t;
+    }
+    // Resolve the active preset locally — the `rangeOpt` used above in the
+    // data-loading branch is scoped to `if (allQuoted)` and isn't visible here.
+    const rangeOptUI = isCustomR
+      ? { key: 'custom' }
+      : (RANGE_OPTIONS.find(r => r.key === R) || RANGE_OPTIONS[3]);
+    // Effective start/end for populating inputs. Prefer the user-typed custom
+    // range when active; otherwise derive from the currently-selected preset so
+    // the fields stay live and reflect what's actually being filtered.
+    let effStartMs_pvb, effEndMs_pvb;
+    const crNow = window._parlayVsBooksCustomRange || {};
+    if (isCustomR) {
+      effStartMs_pvb = Number.isFinite(crNow.startMs) ? crNow.startMs : dataMinMs_pvb;
+      effEndMs_pvb = Number.isFinite(crNow.endMs) ? crNow.endMs : nowMs_pvb;
+    } else if (rangeOptUI.key === 'session' && window._lastIntel?.sessionStartedAt) {
+      effStartMs_pvb = new Date(window._lastIntel.sessionStartedAt).getTime();
+      effEndMs_pvb = nowMs_pvb;
+    } else if (rangeOptUI.ms && rangeOptUI.ms > 0) {
+      effStartMs_pvb = nowMs_pvb - rangeOptUI.ms;
+      effEndMs_pvb = nowMs_pvb;
+    } else {
+      // 'all'
+      effStartMs_pvb = dataMinMs_pvb;
+      effEndMs_pvb = nowMs_pvb;
+    }
+    // Clamp to slider bounds so min/max inputs are always valid.
+    const clampStart_pvb = Math.max(dataMinMs_pvb, Math.min(nowMs_pvb, effStartMs_pvb));
+    const clampEnd_pvb = Math.max(dataMinMs_pvb, Math.min(nowMs_pvb, effEndMs_pvb));
+    const totalMs_pvb = nowMs_pvb - dataMinMs_pvb;
+    const leftPct_pvb = totalMs_pvb > 0 ? ((clampStart_pvb - dataMinMs_pvb) / totalMs_pvb) * 100 : 0;
+    const rightPct_pvb = totalMs_pvb > 0 ? ((clampEnd_pvb - dataMinMs_pvb) / totalMs_pvb) * 100 : 100;
+    const sliderStep_pvb = 5 * 60 * 1000; // 5-minute snap
+    const inputStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;';
+    html += '<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; font-size:11px;">';
+    html += '<span style="color:var(--text3);">Custom range:</span>';
+    html += '<input type="datetime-local" id="pvb-date-start-input" value="' + _msToLocalInput(clampStart_pvb) + '" onchange="setParlayVsBooksCustom(\'start\', this.value)" style="' + inputStyle + '">';
+    html += '<span style="color:var(--text3);">to</span>';
+    html += '<input type="datetime-local" id="pvb-date-end-input" value="' + _msToLocalInput(clampEnd_pvb) + '" onchange="setParlayVsBooksCustom(\'end\', this.value)" style="' + inputStyle + '">';
+    html += '<div class="dual-slider" style="width:260px; margin-left:8px;">';
+    html += '<div class="ds-track"></div>';
+    html += '<div class="ds-fill" id="pvb-date-fill" style="left:' + leftPct_pvb + '%; right:' + (100 - rightPct_pvb) + '%;"></div>';
+    html += '<input type="range" id="pvb-date-min" min="' + dataMinMs_pvb + '" max="' + nowMs_pvb + '" step="' + sliderStep_pvb + '" value="' + clampStart_pvb + '" oninput="previewParlayVsBooksDateSlider()" onchange="commitParlayVsBooksDateSlider()">';
+    html += '<input type="range" id="pvb-date-max" min="' + dataMinMs_pvb + '" max="' + nowMs_pvb + '" step="' + sliderStep_pvb + '" value="' + clampEnd_pvb + '" oninput="previewParlayVsBooksDateSlider()" onchange="commitParlayVsBooksDateSlider()">';
+    html += '</div>';
     html += '</div>';
     // Confirmed / Not-filled filter + sport filter
     const F = window._parlayVsBooksFilter;
