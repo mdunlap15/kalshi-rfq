@@ -434,15 +434,29 @@ function parseMarketSelections(market) {
   }
 
   // PX uses the same market.type ('moneyline', 'spread', 'total') for both
-  // full-game and First 5 Innings markets, distinguishing them only by
-  // market.name. Detect F5 by name and override the marketType so downstream
-  // code (line-manager, pricer) routes to the correct cache entry (h2h_f5, etc).
+  // full-game and sub-period markets (First 5 Innings for MLB, First Half
+  // for NBA), distinguishing them only by market.name. Detect by name and
+  // override the marketType so downstream code (line-manager, pricer) routes
+  // to the correct cache entry (h2h_f5, h2h_h1, etc).
+  //
+  // IMPORTANT: the previous F5 regex included `1st\s*half` as an alternate
+  // which incorrectly classified NBA 1st-Half markets as MLB F5. H1 and F5
+  // are now detected separately with non-overlapping patterns.
   const marketName = market.name || '';
-  const isF5ByName = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings|f5\b|1st\s*half/i.test(marketName);
+  const isF5ByName = /1st[-\s]?5th.*inning|first\s*5\s*inning|first\s*five\s*innings|\bf5\b/i.test(marketName);
   if (isF5ByName) {
     if (marketType === 'moneyline') marketType = 'first_5_innings_moneyline';
     else if (marketType === 'spread') marketType = 'first_5_innings_run_line';
     else if (marketType === 'total') marketType = 'first_5_innings_total';
+  }
+  // First-Half (NBA primarily; may apply to other sports if PX posts them).
+  // Must run AFTER the F5 check and skip if F5 already matched, so a
+  // hypothetical "First Half of 1st 5 Innings" wouldn't double-classify.
+  const isH1ByName = !isF5ByName && /first\s*half|1st\s*half/i.test(marketName);
+  if (isH1ByName) {
+    if (marketType === 'moneyline') marketType = 'first_half_moneyline';
+    else if (marketType === 'spread') marketType = 'first_half_spread';
+    else if (marketType === 'total') marketType = 'first_half_total';
   }
 
   // Team totals are also typed as 'total' by PX. The only way to distinguish
