@@ -3517,6 +3517,57 @@ function startStatusServer() {
     }
   });
 
+  // Inspect the actual shape of SharpAPI's 1st_inning_moneyline market.
+  // Confirmed it has data; this tells us whether it's standard home/away
+  // moneyline or a YRFI/NRFI-style yes/no binary prop. Shows distinct
+  // selection + selection_type values across 50 sampled rows, plus the
+  // book coverage.
+  app.get('/debug-sharp-1st-inning-detail', async (req, res) => {
+    const fetch = require('node-fetch');
+    const key = process.env.SHARP_ODDS_API_KEY || process.env.ODDS_API_KEY;
+    const baseUrl = 'https://api.sharpapi.io/api/v1';
+    if (!key) return res.status(500).json({ ok: false, error: 'no SHARP_ODDS_API_KEY' });
+    const url = `${baseUrl}/odds?league=mlb&market=1st_inning_moneyline&live=false&limit=50`;
+    try {
+      const resp = await fetch(url, { headers: { 'X-API-Key': key } });
+      const body = await resp.json();
+      const rows = body.data || [];
+      // Tally distinct selections + selection_types + books, and
+      // pair up per-event to show what both-sides of a market look like.
+      const selections = new Set();
+      const selectionTypes = new Set();
+      const books = new Set();
+      const byEvent = {};
+      for (const r of rows) {
+        selections.add(r.selection);
+        selectionTypes.add(r.selection_type);
+        books.add(r.sportsbook);
+        const k = r.event_id;
+        if (!byEvent[k]) byEvent[k] = { teams: `${r.away_team} @ ${r.home_team}`, entries: [] };
+        byEvent[k].entries.push({
+          book: r.sportsbook,
+          selection: r.selection,
+          selection_type: r.selection_type,
+          odds_american: r.odds_american,
+          line: r.line,
+        });
+      }
+      // First event with both sides, for human inspection
+      const sampleEvent = Object.values(byEvent).find(ev => ev.entries.length >= 2) || Object.values(byEvent)[0];
+      res.json({
+        ok: true,
+        rowCount: rows.length,
+        distinctSelections: [...selections],
+        distinctSelectionTypes: [...selectionTypes],
+        books: [...books],
+        eventCount: Object.keys(byEvent).length,
+        sampleEvent,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Probe SharpAPI with candidate 1st-inning market-type names.
   // YRFI/NRFI (Yes/No Run First Inning) is a popular bet but The
   // Odds API doesn't support any 1st-inning markets. SharpAPI may
