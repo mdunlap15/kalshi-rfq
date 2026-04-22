@@ -1810,12 +1810,20 @@
         + '<th style="text-align:right; padding:4px 10px;">Won</th>'
         + '<th style="text-align:right; padding:4px 10px;">Lost</th>'
         + '<th style="text-align:right; padding:4px 10px;">Unknown</th>'
-        + '<th style="text-align:right; padding:4px 10px;">Win rate</th>'
+        + '<th style="text-align:right; padding:4px 10px;" title="Wins divided by resolved matches (unknowns excluded)">Win rate</th>'
+        + '<th style="text-align:right; padding:4px 10px;" title="Wins divided by total quoted (counts unknowns as unfilled)">Fill rate</th>'
         + '</tr>';
       for (let bi = 0; bi < buckets.length; bi++) {
         const b = buckets[bi];
         const wr = b.winRate || '-';
         const wrColor = (b.won + b.lost) > 0 ? (b.won > b.lost ? 'var(--green)' : 'var(--amber)') : 'var(--text3)';
+        // Fill rate = wins / all quotes (unknowns treated as unfilled). Answers
+        // "how often did we get the fill?" — orthogonal to win rate, which
+        // conditions on PX surfacing a match outcome.
+        const fillRateStr = b.quoted > 0 ? (b.won / b.quoted * 100).toFixed(1) + '%' : '-';
+        const fillRateColor = b.quoted > 0
+          ? (b.won > 0 ? 'var(--green)' : 'var(--text3)')
+          : 'var(--text3)';
         const bucketId = 'lat-bucket-' + bi;
         const isExpanded = expandedRows.has(bucketId);
         // Only show WON parlays in the expanded detail. Unknown / lost rows
@@ -1832,6 +1840,7 @@
           + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--red);">' + b.lost + '</td>'
           + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:var(--text3);">' + b.unknown + '</td>'
           + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:' + wrColor + ';">' + wr + '</td>'
+          + '<td style="padding:4px 10px; text-align:right; font-variant-numeric:tabular-nums; font-size:12px; color:' + fillRateColor + ';">' + fillRateStr + '</td>'
           + '</tr>';
         if (hasDetails) {
           let detail = '<div style="padding:6px 10px; background:var(--surface2); font-size:11px;">';
@@ -1872,7 +1881,7 @@
               + '</tr>';
           }
           detail += '</table></div>';
-          html += '<tr id="' + bucketId + '" style="display:' + (isExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">' + detail + '</td></tr>';
+          html += '<tr id="' + bucketId + '" style="display:' + (isExpanded ? 'table-row' : 'none') + ';"><td colspan="7" style="padding:0;">' + detail + '</td></tr>';
         }
       }
       html += '</table>';
