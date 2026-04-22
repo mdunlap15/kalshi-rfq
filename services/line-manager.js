@@ -351,10 +351,13 @@ const FIRST_HALF_MARKET_TYPES = [
  */
 async function seedAllLines() {
   log.info('Lines', '=== Starting line seed ===');
+  log.info('Lines', '[golf-debug] seedAllLines starting — golf bypass code v2 is live');
 
   // 1. Fetch PX events
   const allEvents = await px.fetchSportEvents();
   const pxSportNames = Object.values(config.sportNameMap);
+  const golfEventCount = allEvents.filter(e => e.sport_name === 'Golf').length;
+  log.info('Lines', `[golf-debug] PX returned ${allEvents.length} total events, ${golfEventCount} with sport_name="Golf"`);
 
   // Build tournament + event index from ALL events (not just supported)
   for (const e of allEvents) {
@@ -391,9 +394,29 @@ async function seedAllLines() {
   let totalLines = 0;
   let matchedLines = 0;
   let unmatchedEvents = [];
+  // Golf-seed trace counters. Populated during the main event loop so
+  // we can inspect drop points without trawling Railway logs. Exposed
+  // in the /refresh-lines response via lastSeedStats.
+  const golfTrace = {
+    eventsFiltered: 0,       // golf events that passed the outer pxSportNames filter
+    bypassFired: 0,          // event-level bypass set matchedHome from competitors
+    marketsFound: 0,         // golf markets returned by PX fetchMarkets
+    marketsPassedFilter: 0,  // golf markets that survived mainMarkets filter
+    selectionsParsed: 0,     // individual selections across golf markets
+    selectionsSkipped: 0,    // selections that got `continue` at the oddsApiSelection check
+    linesRegistered: 0,      // golf lines that made it into lineIndex
+    sampleEventName: null,
+    sampleMarketName: null,
+    sampleSelectionTeam: null,
+  };
 
   // 3-4. Fetch markets and parse for each event
   for (const event of events) {
+    const _isGolfTrace = event.sport_name === 'Golf';
+    if (_isGolfTrace) {
+      golfTrace.eventsFiltered++;
+      if (!golfTrace.sampleEventName) golfTrace.sampleEventName = event.name;
+    }
     // Determine sport key(s) — some PX sport names map to multiple keys
     // (e.g., "Basketball" → basketball_nba AND basketball_ncaab)
     const possibleSportKeys = Object.entries(config.sportNameMap)
@@ -500,6 +523,7 @@ async function seedAllLines() {
         matchedHome = homeComp.name;
         matchedAway = awayComp.name;
         sportKey = 'golf_matchups';
+        golfTrace.bypassFired++;
         log.info('Lines', `[golf-debug] Event-level bypass fired: ${event.name} → home="${matchedHome}" away="${matchedAway}" sportKey="${sportKey}"`);
       } else {
         unmatchedEvents.push({
@@ -537,6 +561,10 @@ async function seedAllLines() {
     } catch (err) {
       log.error('Lines', `Failed to fetch markets for ${event.name}: ${err.message}`);
       continue;
+    }
+    if (_isGolfTrace) {
+      golfTrace.marketsFound += markets.length;
+      if (!golfTrace.sampleMarketName && markets[0]) golfTrace.sampleMarketName = `${markets[0].name} (type=${markets[0].type})`;
     }
 
     // Filter to FULL-GAME main markets only.
@@ -677,6 +705,9 @@ async function seedAllLines() {
       const parsed = px.parseMarketSelections(market);
       if (isGolfSport) {
         log.info('Lines', `[golf-debug] Parsed market "${market.name}" type=${market.type} → ${parsed.length} selections`);
+        golfTrace.marketsPassedFilter++;
+        golfTrace.selectionsParsed += parsed.length;
+        if (!golfTrace.sampleSelectionTeam && parsed[0]) golfTrace.sampleSelectionTeam = parsed[0].teamName;
       }
       // Detect 2-way / Draw No Bet soccer moneylines.
       // PX labels the 2-way soccer ML market as "Moneyline (2 Way)".
@@ -820,6 +851,7 @@ async function seedAllLines() {
         if (!oddsApiSelection || !oddsApiMarket) {
           if (isGolfSport) {
             log.warn('Lines', `[golf-debug] Skipping selection: team="${sel.teamName}" market=${sel.marketType} oddsApiSelection=${oddsApiSelection} oddsApiMarket=${oddsApiMarket}`);
+            golfTrace.selectionsSkipped++;
           }
           continue;
         }
@@ -854,6 +886,7 @@ async function seedAllLines() {
         }
         const startTime = event.scheduled || oddsEvt?.commenceTime || null;
 
+        if (isGolfSport) golfTrace.linesRegistered++;
         lineIndex[sel.lineId] = {
           sport: sportKey,
           pxEventId: event.event_id,
@@ -910,6 +943,7 @@ async function seedAllLines() {
     matchedLines,
     registeredLines: lineIds.length,
     unmatchedEvents: unmatchedEvents.length,
+    golfTrace,
   };
 
   log.info('Lines', `=== Seed complete: ${events.length} events, ${totalLines} lines parsed, ${matchedLines} matched, ${lineIds.length} registered ===`);
