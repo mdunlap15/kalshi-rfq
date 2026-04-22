@@ -7878,10 +7878,10 @@
       window._parlayVsBooksData = data;
     }
 
-    if (!data || data.length < 3) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ quoted parlays with fair prob data</div></div>';
-      return;
-    }
+    // Empty data is handled AFTER the toolbar is built so the user can always
+    // see the filter controls and widen the date range back out. Treat null
+    // the same as empty for the rest of the render path.
+    if (!data) data = [];
 
     const T = window._parlayVsBooksToggle;
     const series = [
@@ -8036,6 +8036,19 @@
       + filtered.length + ' parlays · ' + confirmedCount + ' confirmed · ' + rangeLabel
       + sportSuffix
       + ' · &#9679; solid = confirmed · &#9675; hollow = not filled · size ∝ stake</div>';
+
+    // No-data guard: short-circuit here — AFTER the toolbar HTML is built —
+    // so the user still sees the range slider / filter controls and can widen
+    // the window back out. Previously this returned early and wiped the entire
+    // section, leaving the user stuck staring at just the empty-state message.
+    if (filtered.length < 3) {
+      html += '<div class="empty-state" style="padding:40px 12px;">'
+        + '<div class="icon" style="font-size:18px;">—</div>'
+        + '<div>No parlays in this range. Widen the date span or pick a different sport/filter above.</div>'
+        + '</div>';
+      el.innerHTML = html;
+      return;
+    }
 
     // --- Scatter ---
     const W = 900, H = 450, pad = { l: 60, r: 20, t: 25, b: 58 };
@@ -8278,10 +8291,9 @@
       window._legVsBooksData = data;
     }
 
-    if (!data || data.length < 3) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 3+ legs with fair prob + book odds</div></div>';
-      return;
-    }
+    // Keep filter controls visible even when data is sparse — check happens
+    // after the toolbar is built, same pattern as the parlay chart.
+    if (!data) data = [];
 
     const T = window._legVsBooksToggle;
     const series = [
@@ -8330,6 +8342,16 @@
       + data.length + ' legs &middot; ' + confirmedCount + ' from confirmed parlays &middot; '
       + _sLegRangeLabel
       + ' &middot; X = leg fair prob (0-100%) &middot; Y = pp above fair (negative = bettor friendlier)</div>';
+
+    // Empty-data guard after toolbar, so range/filter controls stay visible.
+    if (data.length < 3) {
+      html += '<div class="empty-state" style="padding:40px 12px;">'
+        + '<div class="icon" style="font-size:18px;">—</div>'
+        + '<div>Need 3+ legs with fair prob + book odds. Widen the range or filter above.</div>'
+        + '</div>';
+      el.innerHTML = html;
+      return;
+    }
 
     const W = 900, H = 450, pad = { l: 60, r: 20, t: 25, b: 58 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
