@@ -7242,14 +7242,26 @@
     window._dvLastOrders = allOrders;
     if (!window._dvSort) window._dvSort = {}; // dayId -> {col, dir}
 
-    // Group confirmed orders by day.
-    // Exclude reconstructed orders we never actually quoted (quotedAt is null
-    // AND meta.reconstructed is true) — these are old PX orders pulled in by
+    // Group REAL fills by day.
+    //  - settled_* orders are real by definition (phantoms never settle)
+    //  - confirmed orders require orderUuid (= order.finalized arrived) AND
+    //    must not be flagged as phantom — either by reconcileGhostConfirmed
+    //    (meta.phantom) or by the computed stale-phantom sweep
+    //    (isStalePhantom). Phantoms are tentative matches the bettor walked
+    //    away from at final-terms review — they don't represent real risk,
+    //    real volume, or real P&L.
+    // Also exclude reconstructed orders we never actually quoted (quotedAt
+    // null AND meta.reconstructed true) — old PX orders pulled in by
     // fullPxReconcile from before the SP was actively trading.
-    const confirmed = allOrders.filter(o =>
-      (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
-      && (o.quotedAt || !(o.meta && o.meta.reconstructed))
-    );
+    const confirmed = allOrders.filter(o => {
+      const isSettled = o.status && o.status.startsWith('settled_');
+      const isRealConfirmed = o.status === 'confirmed'
+        && !!o.orderUuid
+        && !o.isStalePhantom
+        && !(o.meta && o.meta.phantom);
+      if (!isSettled && !isRealConfirmed) return false;
+      return o.quotedAt || !(o.meta && o.meta.reconstructed);
+    });
     if (confirmed.length < 1) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>';
       return;
