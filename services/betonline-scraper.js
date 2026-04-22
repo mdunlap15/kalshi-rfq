@@ -360,8 +360,126 @@ function lookupZurichMatchupFairProb(teamName, roundNum) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// MANUAL UPLOAD PATH
+//
+// BetOnline blocks our Puppeteer session (data-center IP, unauthenticated).
+// Operator supplied odds by hand as a one-time manual upload — prices
+// move little between Tuesday/Wednesday and Thursday tee-off for a
+// team event like Zurich Classic, so a static snapshot is good enough.
+//
+// Accepts two input shapes:
+//   { scope: 'tournament'|'round_1', text: "<raw paste from BetOnline>" }
+//     Parsed with a regex — flexible, tolerates the copy-paste text
+//     layout BetOnline produces (id - Name/Name + odds nearby).
+//   { scope: 'tournament'|'round_1', matchups: [{teamA,oddsA,teamB,oddsB},...] }
+//     Direct JSON — for scripted bulk upload.
+//
+// Upload REPLACES any existing matchups with the same scope; matchups
+// in other scopes stay. Cache flagged source='betonline-manual' so we
+// can tell manually-uploaded data apart from scraped data in logs.
+// ---------------------------------------------------------------------------
+function loadManualMatchups(body) {
+  const scope = (body && body.scope) || 'tournament';
+  if (scope !== 'tournament' && !/^round_\d+$/.test(scope)) {
+    throw new Error(`Invalid scope "${scope}" — use "tournament" or "round_N"`);
+  }
+  let newMatchups;
+  if (body && typeof body.text === 'string' && body.text.trim()) {
+    newMatchups = parseManualText(body.text, scope);
+    if (newMatchups.length === 0) {
+      throw new Error('Text parse yielded 0 matchups — check format (expected "<id> - Name/Name" with American odds nearby)');
+    }
+  } else if (body && Array.isArray(body.matchups)) {
+    newMatchups = body.matchups.map(m => ({
+      scope,
+      teams: [
+        { team: String(m.teamA || m.team_a || '').trim(), odds: Number(m.oddsA ?? m.odds_a) },
+        { team: String(m.teamB || m.team_b || '').trim(), odds: Number(m.oddsB ?? m.odds_b) },
+      ],
+    })).filter(m => m.teams[0].team && m.teams[1].team && Number.isFinite(m.teams[0].odds) && Number.isFinite(m.teams[1].odds));
+    if (newMatchups.length === 0) throw new Error('No valid matchups in array — require teamA, teamB, oddsA, oddsB on each entry');
+  } else {
+    throw new Error('Payload must include either `text` (raw paste) or `matchups` (array)');
+  }
+
+  // Merge: keep matchups from OTHER scopes, replace the uploaded scope.
+  const existing = (cache.zurich && cache.zurich.data && cache.zurich.data.matchups) || [];
+  const kept = existing.filter(m => m.scope !== scope);
+  const merged = [...kept, ...newMatchups];
+
+  cache.zurich = {
+    at: Date.now(),
+    data: {
+      fetchedAt: new Date().toISOString(),
+      source: 'betonline-manual',
+      matchups: merged,
+      scrapeMs: 0,
+    },
+  };
+  // Invalidate fair probs so the lookup code recomputes (devigMatchup
+  // runs lazily; by not setting .vig on the new matchups it'll fire
+  // on first lookup with the fresh odds).
+  log.info('BetOnlineScraper', `Manual upload: ${newMatchups.length} ${scope} matchups loaded (total cache: ${merged.length})`);
+  return {
+    loadedScope: scope,
+    loadedCount: newMatchups.length,
+    totalInCache: merged.length,
+    sampleLoaded: newMatchups.slice(0, 3).map(m => ({
+      scope: m.scope,
+      teamA: m.teams[0].team, oddsA: m.teams[0].odds,
+      teamB: m.teams[1].team, oddsB: m.teams[1].odds,
+    })),
+  };
+}
+
+/**
+ * Regex-parse a block of text copy-pasted from BetOnline's matchups
+ * page. Looks for "<3-5 digit id> - <Name>/<Name>" rows followed by
+ * an American odds value on the same OR the next few lines, and
+ * pairs them sequentially.
+ */
+function parseManualText(text, scope) {
+  const lines = String(text).split(/\r?\n/);
+  // Team row pattern — tolerates en/em dash and accented chars.
+  const teamRe = /(\d{3,5})\s*[-\u2013\u2014]\s*([A-Za-zÀ-ÿ'.\- ]+\/[A-Za-zÀ-ÿ'.\- ]+)/;
+  // American odds standalone anywhere on the line.
+  const oddsRe = /([+-]\d{3,5})/;
+
+  const entries = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const tm = teamRe.exec(line);
+    if (!tm) continue;
+    const team = tm[2].trim();
+    // Try to find the odds on the SAME line first (BetOnline's text
+    // export typically has odds on the same row); fall back to the
+    // next 3 lines if not found.
+    let odds = null;
+    const sameLine = oddsRe.exec(line.slice(line.indexOf(team) + team.length));
+    if (sameLine) {
+      odds = parseInt(sameLine[1], 10);
+    } else {
+      for (let j = i + 1; j <= Math.min(i + 3, lines.length - 1); j++) {
+        const nxt = oddsRe.exec(lines[j]);
+        if (nxt) { odds = parseInt(nxt[1], 10); break; }
+      }
+    }
+    if (team && Number.isFinite(odds)) entries.push({ team, odds });
+  }
+
+  // Pair sequentially: entries[0]+entries[1] = matchup, entries[2]+entries[3] = matchup, etc.
+  const results = [];
+  for (let i = 0; i + 1 < entries.length; i += 2) {
+    results.push({ scope, teams: [entries[i], entries[i + 1]] });
+  }
+  return results;
+}
+
 module.exports = {
   fetchZurichMatchups,
   lookupZurichMatchupFairProb,
+  loadManualMatchups,
+  parseManualText,
   normalizePairName,
 };

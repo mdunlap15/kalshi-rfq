@@ -1052,6 +1052,21 @@ function startStatusServer() {
       res.status(500).json({ ok: false, error: err.message });
     }
   });
+  // Manual upload path. Scraper is blocked (anti-bot); operator
+  // supplies odds by hand as a one-shot static snapshot. Prices
+  // don't move much between Wed posting and Thu tee-off for a
+  // team event so a snapshot is good enough. POST body:
+  //   { scope: 'tournament'|'round_1', text: "<raw paste>" } OR
+  //   { scope: ..., matchups: [{teamA,oddsA,teamB,oddsB}, ...] }
+  app.post('/betonline-zurich/upload', (req, res) => {
+    try {
+      const betonlineScraper = require('./services/betonline-scraper');
+      const result = betonlineScraper.loadManualMatchups(req.body || {});
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
+  });
 
   // Authoritative PX-native P&L. Pulls full order history from PX and
   // aggregates realized P&L, open exposure, and net balance impact
