@@ -4332,6 +4332,15 @@ function startStatusServer() {
           info.line != null ? info.line : null,
           info.startTime
         );
+        // Golf matchup fallback: oddsFeed only covers DataGolf 1v1
+        // pairs. For team events (Zurich) the fair prob lives in the
+        // DK scraper or BetOnline manual cache, which the pricer's
+        // getGolfMatchupFairProb cascades through. Use that helper
+        // here so the Lines tab shows a fair for team-matchup lines,
+        // matching what would actually be priced at RFQ time.
+        if (fairProb == null && info.sport === 'golf_matchups') {
+          fairProb = pricer.getGolfMatchupFairProb(info);
+        }
       } catch (_) { /* ignore */ }
       const quote = (fairProb != null && fairProb > 0 && fairProb < 1)
         ? pricer.computeSingleLegQuote(fairProb, info.sport, info.marketType)

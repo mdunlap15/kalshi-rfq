@@ -1526,4 +1526,9 @@ module.exports = {
   getLastPriceFailure,
   computeSingleLegQuote,
   decimalToAmerican,
+  // Exposed so /lines/detail can resolve golf fair probs through the
+  // same DataGolf → DK → BetOnline cascade that the live pricing
+  // path uses. Without this, the Lines tab shows no fair for any
+  // golf matchup line even when pricing would succeed at RFQ time.
+  getGolfMatchupFairProb,
 };
