@@ -500,6 +500,7 @@ async function seedAllLines() {
         matchedHome = homeComp.name;
         matchedAway = awayComp.name;
         sportKey = 'golf_matchups';
+        log.info('Lines', `[golf-debug] Event-level bypass fired: ${event.name} → home="${matchedHome}" away="${matchedAway}" sportKey="${sportKey}"`);
       } else {
         unmatchedEvents.push({
           pxEvent: event.name,
@@ -674,6 +675,9 @@ async function seedAllLines() {
         continue;
       }
       const parsed = px.parseMarketSelections(market);
+      if (isGolfSport) {
+        log.info('Lines', `[golf-debug] Parsed market "${market.name}" type=${market.type} → ${parsed.length} selections`);
+      }
       // Detect 2-way / Draw No Bet soccer moneylines.
       // PX labels the 2-way soccer ML market as "Moneyline (2 Way)".
       // Also catch explicit "Draw No Bet" / "DNB" / "Moneyline 2W" variants.
@@ -813,7 +817,12 @@ async function seedAllLines() {
           }
         }
 
-        if (!oddsApiSelection || !oddsApiMarket) continue;
+        if (!oddsApiSelection || !oddsApiMarket) {
+          if (isGolfSport) {
+            log.warn('Lines', `[golf-debug] Skipping selection: team="${sel.teamName}" market=${sel.marketType} oddsApiSelection=${oddsApiSelection} oddsApiMarket=${oddsApiMarket}`);
+          }
+          continue;
+        }
 
         // Register line — fair value check happens at RFQ pricing time
         // For moneylines, verify fair value exists now
