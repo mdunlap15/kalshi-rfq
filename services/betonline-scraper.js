@@ -314,7 +314,12 @@ function normalizePairName(name) {
     .split(/\s*[\/,]\s*/)
     .map(p => p.trim().toLowerCase()
       .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/[.,]/g, '')
+      .replace(/[.,']/g, '')
+      // Hyphens (and en/em dashes) → spaces so "Neergaard-Petersen"
+      // and "Neergaard Petersen" normalize to the same form. Different
+      // data sources use different conventions — BetOnline/Bookmaker
+      // typed "Neergaard Petersen" while PX returns "Neergaard-Petersen".
+      .replace(/[-\u2013\u2014]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim())
     .filter(Boolean)
