@@ -71,23 +71,25 @@ async function fetchZurichMatchups({ force = false } = {}) {
       await page.setViewport({ width: 1400, height: 900 });
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-      // Diagnostic: collect every JSON XHR URL + response schema so if
-      // DOM parsing fails we can see what API endpoints BetOnline uses
-      // and switch to XHR interception on a second pass.
+      // Diagnostic: collect every JSON XHR — no domain filter, because
+      // BetOnline uses Kambi (or similar third-party provider) as its
+      // sportsbook widget. Provider XHRs are on OTHER domains (kambi,
+      // sas, bv-linesfeed, etc.). We want to see them all so we can
+      // spot matchup-shaped payloads for targeted parsing later.
       const xhrDiag = [];
       page.on('response', async (resp) => {
-        const url = resp.url();
-        // BetOnline proxies markets through a few domains (bv-linesfeed,
-        // betonline.ag itself). Capture broadly so we don't miss it.
-        if (!/betonline|linesfeed/i.test(url)) return;
         try {
+          const url = resp.url();
           const ct = resp.headers()['content-type'] || '';
           if (!ct.includes('json')) return;
           const data = await resp.json();
+          // Only keep non-trivial responses (not manifests, tiny configs).
+          const jsonSize = JSON.stringify(data).length;
+          if (jsonSize < 500) return;
           xhrDiag.push({
-            url: url.slice(0, 200),
-            topKeys: data && typeof data === 'object' ? Object.keys(data).slice(0, 10) : [],
-            sampleSize: JSON.stringify(data).length,
+            url: url.slice(0, 240),
+            topKeys: data && typeof data === 'object' ? Object.keys(data).slice(0, 12) : [],
+            sampleSize: jsonSize,
           });
         } catch { /* ignore */ }
       });
@@ -97,14 +99,27 @@ async function fetchZurichMatchups({ force = false } = {}) {
       for (const { scope, url } of BETONLINE_URLS) {
         try {
           await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-          await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
-          const res = await parseScope(page, scope);
+          // Wait significantly longer — BetOnline's sportsbook widget is a
+          // React SPA that hydrates after the initial HTML, and inside a
+          // web component / iframe. 10s was not enough. 25s is over-kill
+          // but this scraper runs every 10 min in the background, not on
+          // any hot path, so cost is irrelevant.
+          await new Promise(r => setTimeout(r, 25000));
+          // Walk the main frame AND every iframe — Kambi-style widgets
+          // typically mount in an iframe whose DOM our main-frame walker
+          // can't reach.
+          const res = await parseAllFrames(page, scope);
           allMatchups.push(...res.matchups);
           perScopeDiag[scope] = {
             matchups: res.matchups.length,
             teamCellsFound: res.teamCellsFound,
             oddsCellsFound: res.oddsCellsFound,
             sampleText: res.sampleText,
+            frameCount: res.frameCount,
+            // Record landing URL + title so we can detect auth redirects
+            // or challenge pages that silently replace the target page.
+            landingUrl: page.url(),
+            title: await page.title(),
           };
         } catch (err) {
           log.warn('BetOnlineScraper', `${scope} nav failed: ${err.message}`);
@@ -138,7 +153,40 @@ async function fetchZurichMatchups({ force = false } = {}) {
 }
 
 /**
- * Scan the current page DOM for matchup data. BetOnline renders team
+ * Walk the main frame + every iframe and run parseScope on each.
+ * Kambi-style sportsbook widgets (BetOnline, Bet365, etc.) mount
+ * inside an iframe whose DOM is invisible to a main-frame walker.
+ */
+async function parseAllFrames(page, scope) {
+  const frames = page.frames();
+  let aggMatchups = [];
+  let aggTeamCells = 0, aggOddsCells = 0;
+  let aggSample = [];
+  for (const frame of frames) {
+    try {
+      const res = await parseScope(frame, scope);
+      aggMatchups = aggMatchups.concat(res.matchups);
+      aggTeamCells += res.teamCellsFound;
+      aggOddsCells += res.oddsCellsFound;
+      if (aggSample.length < 5) {
+        aggSample = aggSample.concat(res.sampleText.slice(0, 5 - aggSample.length));
+      }
+    } catch (_) {
+      // Cross-origin iframes (Google tag manager, ad networks, etc.)
+      // throw on page.evaluate; swallow and continue.
+    }
+  }
+  return {
+    matchups: aggMatchups,
+    teamCellsFound: aggTeamCells,
+    oddsCellsFound: aggOddsCells,
+    sampleText: aggSample,
+    frameCount: frames.length,
+  };
+}
+
+/**
+ * Scan the current frame DOM for matchup data. BetOnline renders team
  * names as "<4-digit id> - <Lastname>/<Lastname>" and odds as
  * standalone "+NNN" / "-NNN" text. We find all matches in DOM order
  * and pair them sequentially (team, odds, team, odds → one matchup).
