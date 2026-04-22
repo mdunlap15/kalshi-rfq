@@ -711,6 +711,20 @@ async function fetchOddsForSport(sport, opts) {
     }
   }
 
+  // Supplement with team-total markets for NBA/MLB/NHL. SharpAPI Hobby
+  // plan's team_total market currently returns no data for these leagues,
+  // so we gap-fill from The Odds API on the same refresh cycle (pre-warmed
+  // cache — zero RFQ latency impact, in contrast to on-demand alt-line
+  // fetches). Primary-cycle gap-fill is the general pattern for any
+  // market SharpAPI doesn't surface for us; see also supplementNbaH1Markets.
+  if (!liveMode && ['basketball_nba', 'baseball_mlb', 'icehockey_nhl'].includes(sport)) {
+    try {
+      await supplementTeamTotals(parsed, sport);
+    } catch (err) {
+      log.warn('OddsFeed', `${sport} team_totals supplement failed: ${err.message}`);
+    }
+  }
+
   log.info('OddsFeed', `Cached ${Object.keys(parsed).length} ${liveMode ? 'LIVE ' : ''}events for ${mapping.value}`);
   return parsed;
 }
@@ -930,6 +944,129 @@ async function supplementNbaH1Markets(parsedEvents) {
     if (totalPairs.length > 0) matchedEv.markets.totals_h1 = buildConsensusTotals(totalPairs);
   }
   log.info('OddsFeed', `NBA H1: attached to ${matched} events`);
+}
+
+/**
+ * Fetch team_totals markets from The Odds API and attach them to the
+ * existing event cache as `markets.team_totals`. Used as a gap-fill for
+ * SharpAPI's Hobby plan which does not currently return team_total data
+ * for NBA/MLB/NHL despite those being requested. Called per-sport on the
+ * primary refresh cycle so the data is pre-warmed in the cache; RFQ
+ * pricing paths pay zero incremental latency vs. full-game totals.
+ *
+ * The Odds API team_totals payload shape (per outcome):
+ *   { name: 'Over'|'Under', description: '<Team Name>', price: <american>, point: <line> }
+ * We group outcomes by description (team) into over/under pairs, then
+ * emit one bookPair per (book, teamSide) for buildConsensusTeamTotals.
+ */
+async function supplementTeamTotals(parsedEvents, sport) {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return;
+
+  // Our internal sport keys match The Odds API's for these three leagues.
+  const OA_SPORT_KEYS = {
+    basketball_nba: 'basketball_nba',
+    baseball_mlb: 'baseball_mlb',
+    icehockey_nhl: 'icehockey_nhl',
+  };
+  const oaSport = OA_SPORT_KEYS[sport];
+  if (!oaSport) return;
+
+  const url = `https://api.the-odds-api.com/v4/sports/${oaSport}/odds`
+    + `?apiKey=${theOddsApiKey}`
+    + `&regions=us,eu`
+    + `&markets=team_totals`
+    + `&bookmakers=pinnacle,draftkings,fanduel`
+    + `&oddsFormat=american`;
+
+  let events;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      log.warn('OddsFeed', `${sport} team_totals fetch failed (${resp.status}): ${text.substring(0, 120)}`);
+      return;
+    }
+    const remaining = resp.headers.get('x-requests-remaining');
+    if (remaining != null) log.debug('OddsFeed', `The Odds API usage (${sport} team_totals): ${remaining} remaining`);
+    events = await resp.json();
+  } catch (err) {
+    log.warn('OddsFeed', `${sport} team_totals fetch error: ${err.message}`);
+    return;
+  }
+
+  if (!Array.isArray(events) || events.length === 0) {
+    log.info('OddsFeed', `${sport} team_totals: API returned 0 events`);
+    return;
+  }
+
+  let matched = 0;
+  let emptyPayload = 0;
+  for (const event of events) {
+    const entry = findParsedEntryFuzzy(parsedEvents, event.home_team, event.away_team);
+    if (!entry) continue;
+    const eventArr = Array.isArray(entry) ? entry : [entry];
+    const evDate = event.commence_time ? new Date(event.commence_time).toISOString().substring(0, 10) : '';
+    const matchedEv = eventArr.find(e => {
+      const d = e.commenceTime ? new Date(e.commenceTime).toISOString().substring(0, 10) : '';
+      return !evDate || !d || d === evDate;
+    }) || eventArr[0];
+    if (!matchedEv) continue;
+
+    // Build bookPairs: one entry per (book × teamSide) with { over, under }.
+    // Each book's team_totals market has 4 outcomes (home+away × over+under)
+    // which we group by `description` (team name) then resolve to home/away.
+    const bookPairs = [];
+    for (const book of (event.bookmakers || [])) {
+      for (const m of (book.markets || [])) {
+        if (m.key !== 'team_totals') continue;
+        const byTeam = {};
+        for (const o of (m.outcomes || [])) {
+          const team = o.description;
+          if (!team) continue;
+          if (!byTeam[team]) byTeam[team] = {};
+          if (o.name === 'Over') {
+            byTeam[team].over = {
+              odds_probability: americanToImpliedProb(o.price),
+              odds_american: o.price,
+              line: o.point,
+            };
+          } else if (o.name === 'Under') {
+            byTeam[team].under = {
+              odds_probability: americanToImpliedProb(o.price),
+              odds_american: o.price,
+              line: o.point,
+            };
+          }
+        }
+        for (const [team, pair] of Object.entries(byTeam)) {
+          if (!pair.over || !pair.under) continue;
+          let teamSide = null;
+          if (team === event.home_team) teamSide = 'home';
+          else if (team === event.away_team) teamSide = 'away';
+          else continue; // unknown team label — skip defensively
+          bookPairs.push({
+            book: book.key,
+            teamSide,
+            over: pair.over,
+            under: pair.under,
+          });
+        }
+      }
+    }
+
+    if (bookPairs.length === 0) {
+      emptyPayload++;
+      continue;
+    }
+
+    const tt = buildConsensusTeamTotals(bookPairs);
+    if (tt) {
+      matchedEv.markets.team_totals = tt;
+      matched++;
+    }
+  }
+  log.info('OddsFeed', `${sport} team_totals supplement: ${events.length} API events, ${matched} attached, ${emptyPayload} with no usable pairs`);
 }
 
 // ---------------------------------------------------------------------------
@@ -3462,6 +3599,18 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
     const dir = parts[1];  // "over" or "under"
     const teamData = market[side];
     if (!teamData) return null;
+    // Require a line match against the cached primary. Without this, an
+    // alt team-total registered by PX (e.g. Lakers Over 114.5) would
+    // receive the primary line's fair prob (e.g. Over 115.5) — wrong
+    // enough to leak money systematically. Same safeguard rationale as
+    // totals/spreads above. Line 0.01 tolerance for float noise.
+    if (line == null) {
+      log.warn('OddsFeed', `getFairProb: null line for team_totals ${side}_${dir} ${homeTeam} vs ${awayTeam} — declining`);
+      return null;
+    }
+    if (teamData.line != null && Math.abs(teamData.line - line) > 0.01) {
+      return null;
+    }
     if (dir === 'over') return teamData.over?.fairProb || null;
     if (dir === 'under') return teamData.under?.fairProb || null;
   } else if (marketType === 'btts') {

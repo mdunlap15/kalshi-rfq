@@ -3313,6 +3313,71 @@ function startStatusServer() {
     }
   });
 
+  // Generic Odds API probe — used to diagnose coverage for any sport+market
+  // combination. Pre-canned URLs for team_totals and NBA 1H below.
+  //   /debug-odds-market-probe?sport=basketball_nba&markets=team_totals
+  //   /debug-odds-market-probe?sport=basketball_nba&markets=h2h_h1,spreads_h1,totals_h1
+  //   /debug-odds-market-probe?sport=baseball_mlb&markets=team_totals
+  //   /debug-odds-market-probe?sport=icehockey_nhl&markets=team_totals
+  app.get('/debug-odds-market-probe', async (req, res) => {
+    const key = process.env.THE_ODDS_API_KEY;
+    if (!key) return res.status(500).json({ error: 'no key' });
+    const sport = req.query.sport;
+    const markets = req.query.markets;
+    if (!sport || !markets) {
+      return res.status(400).json({ error: 'need ?sport=...&markets=...' });
+    }
+    const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds`
+      + `?apiKey=${key}&regions=us,eu&markets=${markets}`
+      + `&bookmakers=pinnacle,draftkings,fanduel`
+      + `&oddsFormat=american`;
+    try {
+      const r = await fetch(url);
+      const text = await r.text();
+      let body;
+      try { body = JSON.parse(text); } catch { body = null; }
+      if (!Array.isArray(body)) {
+        return res.json({ ok: false, status: r.status, sport, markets, rawBody: text.slice(0, 800) });
+      }
+      // Aggregate coverage across events
+      const marketCoverage = {};
+      let outcomeExemplar = null;
+      for (const e of body) {
+        for (const b of (e.bookmakers || [])) {
+          for (const m of (b.markets || [])) {
+            if (!marketCoverage[m.key]) marketCoverage[m.key] = { events: 0, books: new Set(), outcomes: 0 };
+            marketCoverage[m.key].events++;
+            marketCoverage[m.key].books.add(b.key);
+            marketCoverage[m.key].outcomes += (m.outcomes || []).length;
+            if (!outcomeExemplar && (m.outcomes || []).length > 0) {
+              outcomeExemplar = { market: m.key, book: b.key, outcomes: m.outcomes.slice(0, 4) };
+            }
+          }
+        }
+      }
+      res.json({
+        ok: true,
+        status: r.status,
+        sport, markets,
+        eventCount: body.length,
+        remainingCalls: r.headers.get('x-requests-remaining'),
+        marketCoverage: Object.fromEntries(
+          Object.entries(marketCoverage).map(([k, v]) => [k, { events: v.events, books: [...v.books], outcomes: v.outcomes }])
+        ),
+        outcomeExemplar,
+        sampleEvents: body.slice(0, 2).map(e => ({
+          home: e.home_team,
+          away: e.away_team,
+          commenceTime: e.commence_time,
+          bookCount: (e.bookmakers || []).length,
+          marketsPresent: [...new Set((e.bookmakers || []).flatMap(b => (b.markets || []).map(m => m.key)))],
+        })),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/debug-oapi-mlb-f5', async (req, res) => {
     const key = process.env.THE_ODDS_API_KEY;
     if (!key) return res.status(500).json({ error: 'no key' });
