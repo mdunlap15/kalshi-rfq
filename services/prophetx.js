@@ -476,6 +476,14 @@ function parseMarketSelections(market) {
   // F5 spread/total uses same structure as full-game spread/total (market_lines)
   const isF5Spread = /first_5_innings_run_line|first_five_innings_run_line/.test(marketType);
   const isF5Total = /first_5_innings_total|first_five_innings_total/.test(marketType);
+  // H1 (First Half) markets use the same structures as full-game — moneyline
+  // uses .selections, spread/total uses .market_lines. We need these booleans
+  // separate from the string equality checks below (marketType is now
+  // 'first_half_moneyline'/'first_half_spread'/'first_half_total' after the
+  // name-detection override above).
+  const isH1Moneyline = /first_half_moneyline|1st_half_moneyline/.test(marketType);
+  const isH1Spread = /first_half_spread|1st_half_spread/.test(marketType);
+  const isH1Total = /first_half_total|1st_half_total/.test(marketType);
 
   // PX uses `type: 'sup_moneyline'` for Series Game Spread + Series Total
   // Games (live probe 2026-04-18). Selections are structured like moneyline
@@ -545,14 +553,14 @@ function parseMarketSelections(market) {
     return results;
   }
 
-  if ((marketType === 'moneyline' || isF5Moneyline) && market.selections) {
+  if ((marketType === 'moneyline' || isF5Moneyline || isH1Moneyline) && market.selections) {
     // Moneyline: selections is array of arrays, each inner array has one object
     for (const selGroup of market.selections) {
       for (const sel of selGroup) {
         if (!sel.line_id) continue;
         results.push({
           lineId: sel.line_id,
-          marketType, // preserves F5 market type name
+          marketType, // preserves F5/H1 market type name
           selection: sel.competitor_id ? 'team' : 'unknown',
           teamName: cleanSelectionName(sel.display_name || sel.name || ''),
           line: null,
@@ -561,7 +569,7 @@ function parseMarketSelections(market) {
         });
       }
     }
-  } else if ((marketType === 'spread' || marketType === 'total' || marketType === 'team_total' || isF5Spread || isF5Total) && market.market_lines) {
+  } else if ((marketType === 'spread' || marketType === 'total' || marketType === 'team_total' || isF5Spread || isF5Total || isH1Spread || isH1Total) && market.market_lines) {
     // Spread/Total: market_lines array, each with selections
     // Include ALL alternate lines so we can respond to any RFQ
     //
@@ -585,9 +593,9 @@ function parseMarketSelections(market) {
           if (!sel.line_id) continue;
 
           let selection = 'unknown';
-          if (marketType === 'spread' || isF5Spread) {
+          if (marketType === 'spread' || isF5Spread || isH1Spread) {
             selection = sel.line < 0 ? 'favorite' : 'underdog';
-          } else if (marketType === 'total' || marketType === 'team_total' || isF5Total) {
+          } else if (marketType === 'total' || marketType === 'team_total' || isF5Total || isH1Total) {
             const nameLC = (sel.name || sel.display_name || '').toLowerCase();
             selection = nameLC.includes('over') ? 'over' : nameLC.includes('under') ? 'under' : 'unknown';
           }
