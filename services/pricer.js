@@ -135,7 +135,7 @@ function getGolfMatchupFairProb(lineInfo) {
     }
   }
 
-  // Fallback: DK scraper. Covers team matchups (Zurich Classic team
+  // Fallback 1: DK scraper. Covers team matchups (Zurich Classic team
   // events that DataGolf doesn't publish) and any other matchup
   // DataGolf happens to miss. Look up by the full team-pair name so
   // "McIlroy / Lowry" resolves regardless of which side PX identifies
@@ -144,6 +144,19 @@ function getGolfMatchupFairProb(lineInfo) {
   if (teamName) {
     const dkHit = dkScraper.lookupGolfMatchupFairProb(teamName, lineInfo.roundNum ?? null);
     if (dkHit && dkHit.fairProb != null) return dkHit.fairProb;
+  }
+
+  // Fallback 2: BetOnline scraper. DK and BetOnline publish DIFFERENT
+  // matchup pairings — BetOnline's pairings mirror PX's for the
+  // Zurich Classic specifically. This path is Zurich-only today; the
+  // scraper file is intentionally narrow so we can delete / repurpose
+  // after the tournament without disturbing other sources.
+  if (teamName) {
+    try {
+      const betonlineScraper = require('./betonline-scraper');
+      const boHit = betonlineScraper.lookupZurichMatchupFairProb(teamName, lineInfo.roundNum ?? null);
+      if (boHit && boHit.fairProb != null) return boHit.fairProb;
+    } catch (_) { /* scraper unavailable — fall through */ }
   }
   return null;
 }

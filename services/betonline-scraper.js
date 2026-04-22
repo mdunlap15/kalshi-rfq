@@ -1,0 +1,319 @@
+/**
+ * BetOnline scraper for Zurich Classic team matchups.
+ *
+ * Context: DataGolf publishes 1v1 player matchups for regular tour
+ * events but NOT team pairs. DK publishes team matchups but their
+ * pairings don't overlap PX's pairings. BetOnline's matchup listings
+ * mirror PX's pairings (operator-confirmed) — this is the one week
+ * per year where BetOnline is our best source.
+ *
+ * Scope: narrow and temporary. Zurich Classic only. Deleted or
+ * repurposed for future PGA team events (Ryder Cup, Presidents Cup)
+ * when they show up on PX.
+ *
+ * URL layout on BetOnline:
+ *   tournament-length matchups:
+ *     /sportsbook/golf/fed-ex-events/zurich-classic-of-new-orleans
+ *   Round 1 matchups:
+ *     /sportsbook/golf/fed-ex-round-1/zurich-classic-of-new-orleans
+ *
+ * DOM pattern per matchup (visible on BetOnline page):
+ *   ID-prefixed team cell:  "7017 - Bauchou/Stevens"
+ *   Odds cell:              "-110" | "+105" | etc.
+ *   Two such pairs per matchup row.
+ *
+ * We pull both URLs in a single Puppeteer session, walk the rendered
+ * DOM for text matching "<4 digits> - Name/Name" + adjacent American
+ * odds, and pair them sequentially.
+ */
+const log = require('./logger');
+const { config } = require('../config');
+
+const CACHE_TTL_MS = 15 * 60 * 1000;
+const NAV_TIMEOUT_MS = 60000;
+const POST_NAV_WAIT_MS = 10000;
+
+let _puppeteer = null;
+function puppeteer() {
+  if (!_puppeteer) _puppeteer = require('puppeteer');
+  return _puppeteer;
+}
+
+const cache = {};
+const inFlight = {};
+
+const BETONLINE_URLS = [
+  {
+    scope: 'tournament',
+    url: 'https://www.betonline.ag/sportsbook/golf/fed-ex-events/zurich-classic-of-new-orleans',
+  },
+  {
+    scope: 'round_1',
+    url: 'https://www.betonline.ag/sportsbook/golf/fed-ex-round-1/zurich-classic-of-new-orleans',
+  },
+];
+
+async function fetchZurichMatchups({ force = false } = {}) {
+  const key = 'zurich';
+  if (!force && cache[key] && Date.now() - cache[key].at < CACHE_TTL_MS) {
+    return cache[key].data;
+  }
+  if (inFlight[key]) return inFlight[key];
+
+  inFlight[key] = (async () => {
+    const startedAt = Date.now();
+    const browser = await puppeteer().launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1400, height: 900 });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+      // Diagnostic: collect every JSON XHR URL + response schema so if
+      // DOM parsing fails we can see what API endpoints BetOnline uses
+      // and switch to XHR interception on a second pass.
+      const xhrDiag = [];
+      page.on('response', async (resp) => {
+        const url = resp.url();
+        // BetOnline proxies markets through a few domains (bv-linesfeed,
+        // betonline.ag itself). Capture broadly so we don't miss it.
+        if (!/betonline|linesfeed/i.test(url)) return;
+        try {
+          const ct = resp.headers()['content-type'] || '';
+          if (!ct.includes('json')) return;
+          const data = await resp.json();
+          xhrDiag.push({
+            url: url.slice(0, 200),
+            topKeys: data && typeof data === 'object' ? Object.keys(data).slice(0, 10) : [],
+            sampleSize: JSON.stringify(data).length,
+          });
+        } catch { /* ignore */ }
+      });
+
+      const allMatchups = [];
+      const perScopeDiag = {};
+      for (const { scope, url } of BETONLINE_URLS) {
+        try {
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+          await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
+          const res = await parseScope(page, scope);
+          allMatchups.push(...res.matchups);
+          perScopeDiag[scope] = {
+            matchups: res.matchups.length,
+            teamCellsFound: res.teamCellsFound,
+            oddsCellsFound: res.oddsCellsFound,
+            sampleText: res.sampleText,
+          };
+        } catch (err) {
+          log.warn('BetOnlineScraper', `${scope} nav failed: ${err.message}`);
+          perScopeDiag[scope] = { error: err.message };
+        }
+      }
+
+      const payload = {
+        fetchedAt: new Date().toISOString(),
+        source: 'betonline',
+        matchups: allMatchups,
+        scrapeMs: Date.now() - startedAt,
+        // Diagnostics only when parsing came up empty — helps pinpoint
+        // whether the issue is anti-bot block, selector change, or
+        // BetOnline genuinely hasn't posted the lines yet.
+        diagnostics: allMatchups.length === 0 ? {
+          perScope: perScopeDiag,
+          xhrCount: xhrDiag.length,
+          sampleXhrs: xhrDiag.slice(0, 8),
+        } : undefined,
+      };
+      cache[key] = { at: Date.now(), data: payload };
+      log.info('BetOnlineScraper', `Zurich matchups: ${allMatchups.length} captured in ${payload.scrapeMs}ms`);
+      return payload;
+    } finally {
+      await browser.close();
+      delete inFlight[key];
+    }
+  })().catch(err => { delete inFlight[key]; throw err; });
+  return inFlight[key];
+}
+
+/**
+ * Scan the current page DOM for matchup data. BetOnline renders team
+ * names as "<4-digit id> - <Lastname>/<Lastname>" and odds as
+ * standalone "+NNN" / "-NNN" text. We find all matches in DOM order
+ * and pair them sequentially (team, odds, team, odds → one matchup).
+ *
+ * Returns { matchups, teamCellsFound, oddsCellsFound, sampleText }.
+ * The diag counts + sample help debug parse failures without needing
+ * to re-run Puppeteer manually.
+ */
+function parseScope(page, scope) {
+  return page.evaluate((scopeArg) => {
+    // Pattern: "7017 - Bauchou/Stevens" (allow en-dash or em-dash,
+    // tolerate whitespace). Captures the team-pair part only.
+    const teamRe = /^\s*\d{3,5}\s*[-\u2013\u2014]\s*([A-Za-zÀ-ÿ'.\- ]+\/[A-Za-zÀ-ÿ'.\- ]+)\s*$/;
+    // American odds standalone: "+105", "-125", "+2400", etc.
+    const oddsRe = /^\s*([+-]\d{3,5})\s*$/;
+
+    const teams = [];
+    const odds = [];
+
+    // Walk a shallow subtree — BetOnline nests team/odds a few levels
+    // deep but we just care about the leaf text nodes. Use a
+    // TreeWalker on TEXT_NODE for speed + completeness.
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+    let i = 0;
+    while (walker.nextNode()) {
+      const t = (walker.currentNode.nodeValue || '').trim();
+      if (!t) continue;
+      const tm = teamRe.exec(t);
+      if (tm) {
+        teams.push({ text: tm[1].trim(), domOrder: i });
+      } else {
+        const om = oddsRe.exec(t);
+        if (om) odds.push({ text: om[1].trim(), domOrder: i });
+      }
+      i++;
+    }
+
+    // Pair team + odds in DOM order. Expected layout per matchup:
+    //   team1, odds1, team2, odds2
+    // We walk sequentially by position in the combined sorted list.
+    const combined = [
+      ...teams.map(t => ({ kind: 'team', ...t })),
+      ...odds.map(o => ({ kind: 'odds', ...o })),
+    ].sort((a, b) => a.domOrder - b.domOrder);
+
+    const matchups = [];
+    let buffer = [];
+    for (const item of combined) {
+      // Expected cycle: team odds team odds
+      const expectedKind = ['team', 'odds', 'team', 'odds'][buffer.length];
+      if (item.kind !== expectedKind) {
+        // Cycle got desynced — reset buffer. Happens if page has extra
+        // odds cells (e.g. cashout pricing, parlay boost) mixed in.
+        if (item.kind === 'team') buffer = [item];
+        else buffer = [];
+        continue;
+      }
+      buffer.push(item);
+      if (buffer.length === 4) {
+        matchups.push({
+          scope: scopeArg,
+          teams: [
+            { team: buffer[0].text, odds: parseInt(buffer[1].text, 10) },
+            { team: buffer[2].text, odds: parseInt(buffer[3].text, 10) },
+          ],
+        });
+        buffer = [];
+      }
+    }
+
+    return {
+      matchups,
+      teamCellsFound: teams.length,
+      oddsCellsFound: odds.length,
+      sampleText: teams.slice(0, 3).map(t => t.text),
+    };
+  }, scope);
+}
+
+/**
+ * De-vig a 2-way pair and set fair probs on both teams. Returns the
+ * mutated matchup with fairProb on each team entry. Dropped if odds
+ * are missing or invalid.
+ */
+function devigMatchup(m) {
+  const [a, b] = m.teams;
+  if (!Number.isFinite(a?.odds) || !Number.isFinite(b?.odds)) return null;
+  const impA = a.odds >= 0 ? 100 / (a.odds + 100) : -a.odds / (-a.odds + 100);
+  const impB = b.odds >= 0 ? 100 / (b.odds + 100) : -b.odds / (-b.odds + 100);
+  const sum = impA + impB;
+  if (sum <= 0) return null;
+  // Proportional de-vig with the same favMaxShare cap as other scrapers.
+  const favMaxShare = (config.pricing && config.pricing.devigFavMaxShare != null)
+    ? config.pricing.devigFavMaxShare : 0.5;
+  const [fav, dog] = impA >= impB ? [a, b] : [b, a];
+  const favImp = Math.max(impA, impB);
+  const overround = sum - 1;
+  const favShare = Math.min(favImp / sum, favMaxShare);
+  fav.impliedProb = fav.odds >= 0 ? 100 / (fav.odds + 100) : -fav.odds / (-fav.odds + 100);
+  dog.impliedProb = dog.odds >= 0 ? 100 / (dog.odds + 100) : -dog.odds / (-dog.odds + 100);
+  fav.fairProb = fav.impliedProb - favShare * overround;
+  dog.fairProb = dog.impliedProb - (1 - favShare) * overround;
+  m.vig = Math.round(overround * 10000) / 10000;
+  return m;
+}
+
+/**
+ * Normalize a team-pair name into a sort-invariant canonical form.
+ * Works for last-name-only ("Bauchou/Stevens") and full-name
+ * ("Hayden Bauchou / Sam Stevens") formats since normalization
+ * splits on / and sorts alphabetically.
+ */
+function normalizePairName(name) {
+  if (!name) return '';
+  return String(name)
+    .replace(/&/g, '/')
+    .split(/\s*[\/,]\s*/)
+    .map(p => p.trim().toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[.,]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim())
+    .filter(Boolean)
+    .sort()
+    .join('|');
+}
+
+/**
+ * Match a candidate vs target with exact normalized match OR
+ * last-name-only fallback. BetOnline uses last names only; PX may
+ * send full names. Last-name fallback bridges that gap.
+ */
+function pairNameMatches(candidate, target) {
+  if (!candidate || !target) return false;
+  if (candidate === target) return true;
+  const lastOnly = (s) => s.split('|').map(p => p.split(' ').pop()).sort().join('|');
+  return lastOnly(candidate) === lastOnly(target);
+}
+
+/**
+ * Look up a Zurich matchup fair prob. Matches both tournament-length
+ * (roundNum=null) and per-round (roundNum=1..4) markets. Returns
+ * { fairProb, americanOdds, source, scope } or null.
+ */
+function lookupZurichMatchupFairProb(teamName, roundNum) {
+  const c = cache.zurich;
+  if (!c || !c.data) return null;
+  // De-vig every matchup lazily on first lookup (parser intentionally
+  // separates DOM-extract from fair-prob math so parse bugs don't
+  // corrupt cached fair values).
+  for (const m of (c.data.matchups || [])) {
+    if (m.vig == null) devigMatchup(m);
+  }
+  const target = normalizePairName(teamName);
+  if (!target) return null;
+  const wantScope = roundNum == null ? 'tournament' : `round_${roundNum}`;
+  for (const m of (c.data.matchups || [])) {
+    if (m.scope !== wantScope) continue;
+    for (const t of m.teams) {
+      const cand = normalizePairName(t.team);
+      if (pairNameMatches(cand, target) && t.fairProb != null) {
+        return {
+          fairProb: t.fairProb,
+          americanOdds: t.odds,
+          source: 'betonline',
+          scope: m.scope,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+module.exports = {
+  fetchZurichMatchups,
+  lookupZurichMatchupFairProb,
+  normalizePairName,
+};

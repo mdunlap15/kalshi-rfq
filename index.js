@@ -411,6 +411,16 @@ async function startup() {
     } catch (err) {
       log.warn('DkScraper', `Initial golf matchups prime failed: ${err.message}`);
     }
+    // Prime BetOnline Zurich matchups (temporary, this-week scraper).
+    // DataGolf + DK don't cover PX's Zurich Classic team-matchup
+    // pairings; BetOnline does. Fails harmlessly when not tournament
+    // week (no data to scrape, empty matchups).
+    try {
+      const betonlineScraper = require('./services/betonline-scraper');
+      await betonlineScraper.fetchZurichMatchups();
+    } catch (err) {
+      log.warn('BetOnlineScraper', `Initial Zurich prime failed: ${err.message}`);
+    }
   })();
   setInterval(async () => {
     await Promise.all(['nba', 'nhl'].map(sport =>
@@ -428,6 +438,12 @@ async function startup() {
       await dkScraper.fetchGolfMatchups({ force: true });
     } catch (err) {
       log.warn('DkScraper', `Periodic golf matchups refresh failed: ${err.message}`);
+    }
+    try {
+      const betonlineScraper = require('./services/betonline-scraper');
+      await betonlineScraper.fetchZurichMatchups({ force: true });
+    } catch (err) {
+      log.warn('BetOnlineScraper', `Periodic Zurich refresh failed: ${err.message}`);
     }
   }, 10 * 60 * 1000);
 
@@ -1018,6 +1034,19 @@ function startStatusServer() {
     try {
       const force = req.query.force === '1' || req.query.force === 'true';
       const data = await dkScraper.fetchGolfMatchups({ force });
+      res.json({ ok: true, ...data });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+  // BetOnline Zurich Classic matchups (this-week-only scraper).
+  // DataGolf and DK don't publish the team pairings PX uses for Zurich;
+  // BetOnline mirrors PX's pairings. `?force=1` busts the 15-min cache.
+  app.get('/betonline-zurich', async (req, res) => {
+    try {
+      const betonlineScraper = require('./services/betonline-scraper');
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const data = await betonlineScraper.fetchZurichMatchups({ force });
       res.json({ ok: true, ...data });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
