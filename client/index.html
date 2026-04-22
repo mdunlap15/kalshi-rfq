@@ -7834,10 +7834,14 @@
         const fdProb  = compound('fanduelOdds');
         const kProb   = compound('kalshiOdds');
 
+        // Use formatParlaySelections per leg so bare "Over"/"Under" legs get
+        // enriched with game context (AWAY @ HOME + line) just like the
+        // Team/Selection column in the positions table. Calling it with a
+        // one-leg array produces the same enriched string for that leg.
         const selections = legs.map(l => {
-          const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
+          const label = formatParlaySelections([l]) || (l.team || l.teamName || l.selection || '?');
           const dt = l.startTime ? new Date(l.startTime).toLocaleDateString([], { month: 'numeric', day: 'numeric' }) : '';
-          return '• ' + name + (dt ? ' (' + dt + ')' : '');
+          return '• ' + label + (dt ? ' (' + dt + ')' : '');
         }).join('\n');
 
         // Distinct sports touched by this parlay — used by the sport filter.
@@ -8014,8 +8018,22 @@
     }
     const confirmedCount = filtered.filter(d => d.isConfirmed).length;
     const sportSuffix = (SPORT && SPORT !== 'all') ? ' · ' + (sportLabelMap[SPORT] || SPORT) + ' only' : '';
+    // Range label. 'custom' describes the user-picked datetime span; presets
+    // use their preset label. Guard against R not being in RANGE_OPTIONS so
+    // an unrecognized key never throws on .label.
+    let rangeLabel;
+    if (R === 'all') rangeLabel = 'all time';
+    else if (R === 'session') rangeLabel = 'this session';
+    else if (R === 'custom') {
+      const cr = window._parlayVsBooksCustomRange || {};
+      const fmt = (ms) => Number.isFinite(ms) ? _msToLocalInput(ms).replace('T', ' ') : '—';
+      rangeLabel = 'custom ' + fmt(cr.startMs) + ' → ' + fmt(cr.endMs);
+    } else {
+      const preset = RANGE_OPTIONS.find(r => r.key === R);
+      rangeLabel = preset ? 'last ' + preset.label : 'last 7d';
+    }
     html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">'
-      + filtered.length + ' parlays · ' + confirmedCount + ' confirmed · ' + (R === 'all' ? 'all time' : R === 'session' ? 'this session' : 'last ' + RANGE_OPTIONS.find(r => r.key === R).label)
+      + filtered.length + ' parlays · ' + confirmedCount + ' confirmed · ' + rangeLabel
       + sportSuffix
       + ' · &#9679; solid = confirmed · &#9675; hollow = not filled · size ∝ stake</div>';
 
@@ -8231,11 +8249,16 @@
           const fdProb  = bookProb(l.fanduelOdds);
           const kProb   = bookProb(l.kalshiOdds);
           const distFromFair = (p) => p != null ? (p - fp) * 100 : null;
+          // Match the Team/Selection column in the positions table — for bare
+          // "Over"/"Under" totals, formatParlaySelections([l]) enriches with
+          // "AWAY @ HOME side line" so the label identifies the game.
+          const enrichedLegLabel = formatParlaySelections([l])
+            || ((l.teamName || l.team || l.selection || '?')
+                + (l.line != null ? ' ' + l.line : '')
+                + (l.market ? ' (' + l.market + ')' : ''));
           data.push({
             parlayId: o.parlayId,
-            legLabel: (l.teamName || l.team || l.selection || '?')
-              + (l.line != null ? ' ' + l.line : '')
-              + (l.market ? ' (' + l.market + ')' : ''),
+            legLabel: enrichedLegLabel,
             sport: l.sport || '?',
             isConfirmed,
             stake: o.confirmedStake || o.maxStake || 0,
@@ -8296,9 +8319,16 @@
 
     const filtered = F === 'all' ? data : data.filter(d => F === 'confirmed' ? d.isConfirmed : !d.isConfirmed);
     const confirmedCount = data.filter(d => d.isConfirmed).length;
+    // Guard against unrecognized keys (e.g. 'custom' reserved for the parlay
+    // chart) so .label lookup can't throw when this chart is shown in the
+    // same session.
+    const _sLegRangePreset = RANGE_OPTIONS.find(r => r.key === R);
+    const _sLegRangeLabel = R === 'all' ? 'all time'
+      : R === 'session' ? 'this session'
+      : (_sLegRangePreset ? 'last ' + _sLegRangePreset.label : 'custom range');
     html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">'
       + data.length + ' legs &middot; ' + confirmedCount + ' from confirmed parlays &middot; '
-      + (R === 'all' ? 'all time' : R === 'session' ? 'this session' : 'last ' + RANGE_OPTIONS.find(r => r.key === R).label)
+      + _sLegRangeLabel
       + ' &middot; X = leg fair prob (0-100%) &middot; Y = pp above fair (negative = bettor friendlier)</div>';
 
     const W = 900, H = 450, pad = { l: 60, r: 20, t: 25, b: 58 };
