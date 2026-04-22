@@ -1503,17 +1503,38 @@
     const maxDrawdown = portfolio?.maxDrawdown || 0;
     const portfolioPct = maxDrawdown > 0 ? (portfolioRisk / maxDrawdown * 100) : 0;
 
-    // Show banner if: any recent limit declines/rejects, OR portfolio is >80% utilized
+    // Separate REAL risk-related incidents from bettor-side noise.
+    // - declineByReason buckets (team/game/portfolio limits, odds too high,
+    //   etc.) are pricing/risk-policy actions we took — always signal.
+    // - rejectByBucket includes PX's post-match rejections. Most common is
+    //   "PX confirm rejected (order_not_valid)" which just means the bettor
+    //   cancelled or the match expired before confirm — out of our control,
+    //   VERY common in the current PX event model (same phantom pattern we
+    //   diagnosed). Surfacing each one as a yellow "risk limits" warning
+    //   is pure noise. Treat these as noise unless clustered (3+).
+    const NOISY_REJECT_RE = /^PX confirm rejected \((order_not_valid|order_expired|order_not_found|order_already_matched)\)/i;
+    let noisyRejectCount = 0;
+    let riskRejectCount = 0;
+    for (const [bucket, info] of Object.entries(alerts.rejectByBucket || {})) {
+      const n = info?.count || 0;
+      if (NOISY_REJECT_RE.test(bucket)) noisyRejectCount += n;
+      else riskRejectCount += n;
+    }
+    // What the banner considers "real" (triggers display + red/amber alerting).
+    // Noisy rejects still get shown in the list but don't themselves raise a banner.
+    const realIncidents = declineCount + riskRejectCount;
+    const noisyClusterThreshold = 3;
+    const noisyCluster = noisyRejectCount >= noisyClusterThreshold;
+
     const highUtil = portfolioPct >= 80;
-    const hasLimitHits = declineCount > 0 || rejectCount > 0;
-    if (!hasLimitHits && !highUtil) {
+    const hasRealHits = realIncidents > 0 || noisyCluster;
+    if (!hasRealHits && !highUtil) {
       banner.style.display = 'none';
-      // Clear dismissal when all-clear, so next incident triggers fresh alert
       window._dismissedAlert = null;
       return;
     }
 
-    const totalIncidents = declineCount + rejectCount;
+    const totalIncidents = realIncidents + (noisyCluster ? noisyRejectCount : 0);
     window._lastAlertData = { totalIncidents, portfolioPct };
 
     // Respect dismissal unless severity has risen
@@ -1532,15 +1553,24 @@
     }
 
     const parts = [];
-    // Header
-    let headerIcon = highUtil && portfolioPct >= 95 ? '&#9888;' : '&#9888;';
-    let headerColor = highUtil && portfolioPct >= 95 ? 'var(--red)' : 'var(--amber)';
+    // Header — accurate to what actually happened. "Missing quotes due to
+    // risk limits" was firing for bettor-cancellations ('order_not_valid')
+    // which aren't risk limits at all.
+    let headerIcon = '&#9888;';
+    let headerColor = (highUtil && portfolioPct >= 95) ? 'var(--red)' : 'var(--amber)';
     let headerText;
-    if (hasLimitHits) {
-      const total = declineCount + rejectCount;
-      headerText = `Missing quotes due to risk limits: ${total} in the last ${alerts.windowMinutes} min`;
-    } else {
+    if (declineCount > 0 && riskRejectCount > 0) {
+      headerText = `Missing quotes due to risk limits: ${declineCount + riskRejectCount} in the last ${alerts.windowMinutes} min`;
+    } else if (declineCount > 0) {
+      headerText = `Declined ${declineCount} RFQ${declineCount === 1 ? '' : 's'} on exposure limits in the last ${alerts.windowMinutes} min`;
+    } else if (riskRejectCount > 0) {
+      headerText = `PX rejected ${riskRejectCount} of our quote${riskRejectCount === 1 ? '' : 's'} in the last ${alerts.windowMinutes} min`;
+    } else if (noisyCluster) {
+      headerText = `${noisyRejectCount} bettor-cancel rejections in the last ${alerts.windowMinutes} min (clustered — investigate)`;
+    } else if (highUtil) {
       headerText = `Portfolio risk is high: ${portfolioPct.toFixed(0)}% of drawdown limit`;
+    } else {
+      headerText = `Recent activity`; // defensive fallback, shouldn't hit
     }
     parts.push(`<div style="font-weight:600; color:${headerColor}; margin-bottom:6px;"><span style="font-size:16px;">${headerIcon}</span> ${headerText}</div>`);
 
