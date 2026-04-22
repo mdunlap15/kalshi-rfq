@@ -3517,6 +3517,62 @@ function startStatusServer() {
     }
   });
 
+  // Probe SharpAPI with candidate 1st-inning market-type names.
+  // YRFI/NRFI (Yes/No Run First Inning) is a popular bet but The
+  // Odds API doesn't support any 1st-inning markets. SharpAPI may
+  // expose it via a different naming convention — test which (if
+  // any) return data. Also tries common variants for 1st inning
+  // totals, moneyline, and team totals.
+  app.get('/debug-sharp-1st-inning', async (req, res) => {
+    const fetch = require('node-fetch');
+    const key = process.env.SHARP_ODDS_API_KEY || process.env.ODDS_API_KEY;
+    const baseUrl = 'https://api.sharpapi.io/api/v1';
+    if (!key) return res.status(500).json({ ok: false, error: 'no SHARP_ODDS_API_KEY' });
+    const candidates = [
+      // Full naming per SharpAPI F5 convention
+      '1st_inning_moneyline', '1st_inning_total', '1st_inning_run_line',
+      'first_inning_moneyline', 'first_inning_total', 'first_inning_run_line',
+      'moneyline_1st_inning', 'total_1st_inning',
+      'moneyline_first_inning', 'total_first_inning',
+      // YRFI / NRFI binary prop
+      'yrfi', 'nrfi', 'yrfi_nrfi',
+      'yes_run_first_inning', 'no_run_first_inning',
+      'first_inning_run', 'run_first_inning',
+      'run_in_1st_inning', 'run_in_first_inning',
+      '1st_inning_run_scored', 'first_inning_run_scored',
+      // Team-specific 1st inning
+      '1st_inning_team_total', 'first_inning_team_total',
+    ];
+    const results = [];
+    for (const mt of candidates) {
+      const url = `${baseUrl}/odds?league=mlb&market=${mt}&live=false&limit=5`;
+      try {
+        const resp = await fetch(url, { headers: { 'X-API-Key': key } });
+        const text = await resp.text();
+        let rowCount = 0;
+        let sample = null;
+        try {
+          const body = JSON.parse(text);
+          rowCount = (body.data || []).length;
+          sample = body.data && body.data[0] ? body.data[0] : null;
+        } catch (_) {}
+        results.push({
+          market: mt,
+          status: resp.status,
+          rows: rowCount,
+          sampleKeys: sample ? Object.keys(sample) : null,
+          bodySnippet: rowCount === 0 ? text.slice(0, 200) : null,
+        });
+      } catch (err) {
+        results.push({ market: mt, error: err.message });
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    // Compact summary: which variants actually returned rows
+    const hits = results.filter(r => r.rows > 0);
+    res.json({ ok: true, baseUrl, hitCount: hits.length, hits, allResults: results });
+  });
+
   // TEMPORARY: probe SharpAPI with candidate F5 market-type names to see
   // which (if any) return data. Answers whether we can drop the Odds-API
   // F5 supplement in favor of SharpAPI as primary. Remove after confirming.
