@@ -3093,14 +3093,38 @@
     const el = document.getElementById('positions-table');
     const countEl = document.getElementById('positions-count');
     const allOrders = data.recentOrders || [];
-    // Prefer PX-native open positions list (authoritative — reflects
-    // PX's finalized orders). Fall back to tracker-confirmed only if
-    // the /px-positions fetch hasn't populated yet on initial load.
-    // The tracker list drifts high because PX never emits order.matched
-    // for SP losses, so losses silently sit as 'confirmed'.
-    let positions = window._pxPositions?.positions
-      ? window._pxPositions.positions
-      : allOrders.filter(o => o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom);
+    // Build positions as the UNION of:
+    //   (a) PX-native open positions (authoritative, reflects PX's ledger)
+    //   (b) local tracker's still-'confirmed' orders that aren't phantoms
+    //
+    // Previously this preferred (a) exclusively, falling back to (b) only on
+    // initial load. Problem: /px-positions is server-side cached on a 60s
+    // TTL ledger and can transiently omit recently-confirmed parlays — or
+    // drop older confirmed parlays during refresh inconsistency. When that
+    // happened, a parlay visibly present earlier would disappear from the
+    // table without any real settlement event. Operator feedback: "parlays
+    // should not fall out of the table once in it."
+    //
+    // New policy: show everything either source confirms as live. Only
+    // remove when positive settlement/phantom evidence arrives (enforced
+    // below: status.startsWith('settled_'), meta.phantom, isStalePhantom,
+    // or all legs resolved + time-cutoff via isStaleConfirmed).
+    const byParlayId = {};
+    const noIdEntries = []; // reconstructed-from-PX positions may lack parlayId
+    const trackerConfirmed = allOrders.filter(o =>
+      o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom
+    );
+    // Add tracker entries first, then let PX ledger entries overwrite on
+    // parlayId match (PX has richer settlement metadata when available).
+    for (const p of trackerConfirmed) {
+      if (p.parlayId) byParlayId[p.parlayId] = p;
+      else noIdEntries.push(p);
+    }
+    for (const p of (window._pxPositions?.positions || [])) {
+      if (p.parlayId) byParlayId[p.parlayId] = p;
+      else noIdEntries.push(p);
+    }
+    let positions = [...Object.values(byParlayId), ...noIdEntries];
 
     // Belt-and-suspenders: strip anything the live order map shows as
     // already settled. _pxPositions is cached on the server (60s ledger
