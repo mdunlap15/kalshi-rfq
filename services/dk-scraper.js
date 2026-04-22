@@ -1109,6 +1109,12 @@ async function fetchGolfMatchups({ force = false } = {}) {
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
       const payloads = [];
+      // Diagnostics: track EVERY market name seen in XHRs, not just the
+      // ones our regex matched. If matchups come back empty we include
+      // this in the response so we can tell whether DK is genuinely
+      // silent on matchups vs whether our regex is too strict and
+      // needs expanding for a new market-name variant.
+      const seenMarketNames = new Set();
       page.on('response', async (resp) => {
         const url = resp.url();
         if (!url.includes('sportsbook-nash.draftkings.com')) return;
@@ -1117,6 +1123,10 @@ async function fetchGolfMatchups({ force = false } = {}) {
           if (!ct.includes('json')) return;
           const data = await resp.json();
           if (!data || !data.selections || !data.events || !data.markets) return;
+          for (const m of (data.markets || [])) {
+            const n = m.marketType?.name;
+            if (n) seenMarketNames.add(n);
+          }
           const hasMatchup = (data.markets || []).some(m => GOLF_MATCHUP_MARKET_RE.test(m.marketType?.name || ''));
           if (hasMatchup) payloads.push(data);
         } catch { /* ignore */ }
@@ -1139,6 +1149,10 @@ async function fetchGolfMatchups({ force = false } = {}) {
         matchups,
         scrapeMs: Date.now() - startedAt,
         payloadCount: payloads.length,
+        // Only included when matchups is empty — lets operators see
+        // which market names DK DID return, so a regex miss is
+        // diagnosable without re-running Puppeteer in debug mode.
+        seenMarketNames: matchups.length === 0 ? [...seenMarketNames].sort() : undefined,
       };
       cacheBySport.golf = { at: Date.now(), data: payload };
       const byScope = {};
