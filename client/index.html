@@ -8098,6 +8098,7 @@
             distFd:   distFromFair(fdProb),
             distK:    distFromFair(kProb),
             quotedAt: qDate,
+            confirmedAt: o.confirmedAt || null,
           });
         }
       }
@@ -8192,11 +8193,31 @@
       svg += svgText(x, pad.t + chartH + 16, (p * 100).toFixed(0) + '%', { size: 11, fill: 'var(--text3)' });
     }
 
+    const fmtConfirmedAt = (iso) => {
+      if (!iso) return null;
+      try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return null;
+        // Format as ET short: "4/22 10:45:07 AM ET"
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/New_York',
+          month: 'numeric', day: 'numeric',
+          hour: 'numeric', minute: '2-digit', second: '2-digit',
+          hour12: true,
+        }).formatToParts(d).reduce((a, p) => { a[p.type] = p.value; return a; }, {});
+        return parts.month + '/' + parts.day + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second + ' ' + parts.dayPeriod + ' ET';
+      } catch (e) {
+        return null;
+      }
+    };
+
     const tipFor = (d, label) => {
       const fmtPp = (v) => v == null ? 'n/a' : (v >= 0 ? '+' : '') + v.toFixed(2) + 'pp';
+      const confirmedTs = d.isConfirmed ? fmtConfirmedAt(d.confirmedAt) : null;
       return '[' + label + ']\n'
         + d.legLabel + ' · ' + d.sport
         + (d.isConfirmed ? ' · CONFIRMED' : '')
+        + (confirmedTs ? '\nConfirmed: ' + confirmedTs : '')
         + '\nFair: ' + (d.fairProb * 100).toFixed(2) + '% · My: ' + (d.myProb * 100).toFixed(2) + '%'
         + '\nMy dist:  ' + fmtPp(d.distMine)
         + '\nPIN dist: ' + fmtPp(d.distPin)
