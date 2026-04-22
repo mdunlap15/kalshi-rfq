@@ -415,8 +415,14 @@ async function startup() {
     // DataGolf + DK don't cover PX's Zurich Classic team-matchup
     // pairings; BetOnline does. Fails harmlessly when not tournament
     // week (no data to scrape, empty matchups).
+    //
+    // Order matters: restore from Supabase KV FIRST so manually-uploaded
+    // matchups survive Railway redeploys. Only then attempt the live
+    // scrape — it usually fails (BetOnline blocks our data-center IP)
+    // but the restored cache remains authoritative either way.
     try {
       const betonlineScraper = require('./services/betonline-scraper');
+      await betonlineScraper.restoreFromPersistence();
       await betonlineScraper.fetchZurichMatchups();
     } catch (err) {
       log.warn('BetOnlineScraper', `Initial Zurich prime failed: ${err.message}`);

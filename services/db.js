@@ -841,6 +841,55 @@ async function deletePushSubscription(endpoint) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// KEY-VALUE STORE
+// ---------------------------------------------------------------------------
+// Generic JSONB store for small pieces of state that need to survive
+// service restarts but don't warrant a dedicated table. One row per key.
+//
+// Schema expected:
+//   create table if not exists kv_store (
+//     key         text primary key,
+//     value       jsonb not null,
+//     updated_at  timestamptz default now()
+//   );
+//
+// First used for the BetOnline Zurich manual-upload cache — operator
+// uploads once, cache survives Railway redeploys without re-posting.
+
+async function saveKV(key, value) {
+  const db = getClient();
+  if (!db) return;
+  try {
+    const { error } = await db
+      .from('kv_store')
+      .upsert({ key, value, updated_at: new Date().toISOString() });
+    if (error) log.warn('DB', `saveKV(${key}) error: ${error.message}`);
+  } catch (err) {
+    log.warn('DB', `saveKV(${key}) exception: ${err.message}`);
+  }
+}
+
+async function loadKV(key) {
+  const db = getClient();
+  if (!db) return null;
+  try {
+    const { data, error } = await db
+      .from('kv_store')
+      .select('value')
+      .eq('key', key)
+      .maybeSingle();
+    if (error) {
+      log.warn('DB', `loadKV(${key}) error: ${error.message}`);
+      return null;
+    }
+    return data?.value || null;
+  } catch (err) {
+    log.warn('DB', `loadKV(${key}) exception: ${err.message}`);
+    return null;
+  }
+}
+
 module.exports = {
   getClient,
   isEnabled,
@@ -854,6 +903,8 @@ module.exports = {
   saveDecline,
   loadDeclines,
   lookupDecline,
+  saveKV,
+  loadKV,
   saveLineCache,
   loadLineCacheEntry,
   loadLineCacheBulk,

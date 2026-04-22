@@ -141,8 +141,16 @@ async function fetchZurichMatchups({ force = false } = {}) {
           sampleXhrs: xhrDiag.slice(0, 8),
         } : undefined,
       };
-      cache[key] = { at: Date.now(), data: payload };
-      log.info('BetOnlineScraper', `Zurich matchups: ${allMatchups.length} captured in ${payload.scrapeMs}ms`);
+      // Only overwrite cache when the scrape ACTUALLY found data. An
+      // empty result shouldn't clobber a previously-persisted manual
+      // upload — scraper is blocked most of the time, manual upload
+      // is the authoritative source for the Zurich week.
+      if (allMatchups.length > 0) {
+        cache[key] = { at: Date.now(), data: payload };
+        log.info('BetOnlineScraper', `Zurich matchups: ${allMatchups.length} captured in ${payload.scrapeMs}ms — cache updated`);
+      } else {
+        log.info('BetOnlineScraper', `Zurich scrape returned 0 matchups in ${payload.scrapeMs}ms — keeping prior cache (${(cache[key]?.data?.matchups?.length) || 0} matchups, source=${cache[key]?.data?.source || 'none'})`);
+      }
       return payload;
     } finally {
       await browser.close();
@@ -417,6 +425,16 @@ function loadManualMatchups(body) {
       scrapeMs: 0,
     },
   };
+  // Persist to Supabase KV so the manual upload survives Railway
+  // redeploys. In-memory cache is ephemeral; without this, every
+  // code push forces a re-upload. Fire-and-forget — if Supabase is
+  // down we still serve the in-memory copy for this session.
+  try {
+    const db = require('./db');
+    db.saveKV('betonline_zurich', cache.zurich.data).catch(e => {
+      log.warn('BetOnlineScraper', `KV persist failed: ${e.message}`);
+    });
+  } catch (e) { /* db module load failed — skip */ }
   // Invalidate fair probs so the lookup code recomputes (devigMatchup
   // runs lazily; by not setting .vig on the new matchups it'll fire
   // on first lookup with the fresh odds).
@@ -431,6 +449,27 @@ function loadManualMatchups(body) {
       teamB: m.teams[1].team, oddsB: m.teams[1].odds,
     })),
   };
+}
+
+/**
+ * On startup, restore previously-uploaded matchups from Supabase KV.
+ * Called once during boot so the in-memory cache is warm before the
+ * first RFQ arrives. No-ops cleanly if Supabase isn't configured or
+ * there's no prior upload.
+ */
+async function restoreFromPersistence() {
+  try {
+    const db = require('./db');
+    const stored = await db.loadKV('betonline_zurich');
+    if (!stored || !Array.isArray(stored.matchups) || stored.matchups.length === 0) {
+      log.info('BetOnlineScraper', 'No persisted Zurich matchups to restore');
+      return;
+    }
+    cache.zurich = { at: Date.now(), data: stored };
+    log.info('BetOnlineScraper', `Restored ${stored.matchups.length} Zurich matchups from Supabase KV (originally uploaded ${stored.fetchedAt})`);
+  } catch (err) {
+    log.warn('BetOnlineScraper', `Restore from persistence failed: ${err.message}`);
+  }
 }
 
 /**
@@ -480,6 +519,7 @@ module.exports = {
   fetchZurichMatchups,
   lookupZurichMatchupFairProb,
   loadManualMatchups,
+  restoreFromPersistence,
   parseManualText,
   normalizePairName,
 };
