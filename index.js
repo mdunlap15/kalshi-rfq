@@ -515,6 +515,8 @@ function startStatusServer() {
         maxLegs: config.pricing.maxLegs,
         maxExposurePerTeam: config.pricing.maxExposurePerTeam,
         stalePriceMinutes: config.pricing.stalePriceMinutes,
+        pendingReservationDiscount: config.pricing.pendingReservationDiscount,
+        parlayLevelVig: !!config.pricing.parlayLevelVig,
         sports: config.supportedSports,
         baseUrl: config.px.baseUrl,
       },

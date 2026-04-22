@@ -2174,6 +2174,14 @@ function checkSeriesExposure(legs, additionalRisk, maxPerSeries) {
  */
 function checkGameExposure(legs, estPayout, maxPerGame) {
   if (!maxPerGame || maxPerGame <= 0) return { allowed: true };
+  // Same fill-fraction discount as checkExposureLimits — scales quote-time
+  // projections only. Real confirmed exposure stays raw.
+  let discount = 1.0;
+  try {
+    const { config } = require('../config');
+    const d = config?.pricing?.pendingReservationDiscount;
+    if (Number.isFinite(d) && d > 0 && d <= 1) discount = d;
+  } catch { /* ignore */ }
 
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
@@ -2192,21 +2200,29 @@ function checkGameExposure(legs, estPayout, maxPerGame) {
       if (j === i) continue;
       otherProb *= (legs[j].lineInfo?.fairProb || legs[j].fairProb || 0.5);
     }
-    const newWeightedRisk = estPayout * otherProb;
+    const newWeightedRiskRaw = estPayout * otherProb;
+    const newWeightedRiskEff = newWeightedRiskRaw * discount;
 
     // Current net exposure for this game (real confirmations) + pending quotes
     const currentNet = gameExposure[gameKey]?.netExposure || 0;
-    const pendingNet = getPendingGameRisk(gameKey);
+    const pendingNetRaw = getPendingGameRisk(gameKey);
+    const pendingNetEff = pendingNetRaw * discount;
 
     // Conservative: add full weighted risk (worst case is no offsetting)
-    if (currentNet + pendingNet + newWeightedRisk > maxPerGame) {
+    if (currentNet + pendingNetEff + newWeightedRiskEff > maxPerGame) {
       const gameName = gameExposure[gameKey]?.name || gameKey;
-      const wouldBe = currentNet + pendingNet + newWeightedRisk;
+      const wouldBe = currentNet + pendingNetEff + newWeightedRiskEff;
+      const discTag = discount < 1 ? ` (discount ${Math.round(discount * 100)}%)` : '';
       return {
         allowed: false,
-        reason: `Game "${gameName}" net $${Math.round(currentNet)} + pending $${Math.round(pendingNet)} + new $${Math.round(newWeightedRisk)} > max $${Math.round(maxPerGame)}`,
+        reason: `Game "${gameName}" net $${Math.round(currentNet)} + pending $${Math.round(pendingNetEff)} + new $${Math.round(newWeightedRiskEff)} > max $${Math.round(maxPerGame)}${discTag}`,
         wouldBe,
         limit: maxPerGame,
+        pendingRaw: Math.round(pendingNetRaw * 100) / 100,
+        pendingEffective: Math.round(pendingNetEff * 100) / 100,
+        newRiskRaw: Math.round(newWeightedRiskRaw * 100) / 100,
+        newRiskEffective: Math.round(newWeightedRiskEff * 100) / 100,
+        reservationDiscount: discount,
       };
     }
   }
@@ -2220,6 +2236,14 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
   if (!maxNetExposure || maxNetExposure <= 0) {
     return { allowed: true, reason: null, violations: [] };
   }
+  // Lazy-require config so this module stays decoupled from circular import
+  // risk during bootstrap. Default to 1.0 (no discount) if config is missing.
+  let discount = 1.0;
+  try {
+    const { config } = require('../config');
+    const d = config?.pricing?.pendingReservationDiscount;
+    if (Number.isFinite(d) && d > 0 && d <= 1) discount = d;
+  } catch { /* ignore */ }
 
   const violations = [];
   for (let i = 0; i < legs.length; i++) {
@@ -2244,22 +2268,30 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
       otherProb *= (legs[j].fairProb || legs[j].lineInfo?.fairProb || 0.5);
     }
 
-    const newRisk = payout * otherProb;
+    // Raw values (for logging + UI transparency) and effective values (the
+    // ones actually compared to the limit). Discount applies only to
+    // quote-time projections — confirmed exposure (currentNet) stays raw.
+    const newRiskRaw = payout * otherProb;
+    const newRiskEff = newRiskRaw * discount;
     const currentNet = exposure[key]?.netExposure || 0;
     // Pending = in-flight reservations from quotes not yet confirmed.
     // Including this closes the race window where N concurrent RFQs for the
     // same team all pass because none has been confirmed yet.
-    const pendingNet = getPendingTeamRisk(key);
-    const afterAdd = currentNet + pendingNet + newRisk;
+    const pendingNetRaw = getPendingTeamRisk(key);
+    const pendingNetEff = pendingNetRaw * discount;
+    const afterAdd = currentNet + pendingNetEff + newRiskEff;
 
     if (afterAdd > maxNetExposure) {
       violations.push({
         team: name,
         currentExposure: Math.round(currentNet * 100) / 100,
-        pendingExposure: Math.round(pendingNet * 100) / 100,
-        newRisk: Math.round(newRisk * 100) / 100,
+        pendingExposure: Math.round(pendingNetRaw * 100) / 100,
+        pendingEffective: Math.round(pendingNetEff * 100) / 100,
+        newRisk: Math.round(newRiskRaw * 100) / 100,
+        newRiskEffective: Math.round(newRiskEff * 100) / 100,
         wouldBe: Math.round(afterAdd * 100) / 100,
         limit: maxNetExposure,
+        reservationDiscount: discount,
       });
     }
   }

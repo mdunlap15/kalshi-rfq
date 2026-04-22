@@ -89,6 +89,22 @@ const config = {
     // Toggle at runtime via POST /config/vig {parlayLevelVig:true|false}.
     parlayLevelVig: process.env.PARLAY_LEVEL_VIG === 'true' || process.env.PARLAY_LEVEL_VIG === '1',
     maxRiskPerParlay: parseFloat(process.env.MAX_RISK_PER_PARLAY) || 500,
+    // Quote-time exposure checks use max_risk × otherProb as the "pending"
+    // risk estimate per outstanding RFQ — but bettors essentially never
+    // wager the full max. Historical fills on this cluster: median 1.7% of
+    // max_risk, p90 ~14%, p99 ~62%. Without a discount, 2-3 simultaneous
+    // quotes on the same team can fill up a $4k team limit in pending
+    // reservations alone and block further RFQs whose actual expected risk
+    // would be trivially small. This factor scales the pending + new-risk
+    // numbers at check time only; confirmed exposure (real stakes) is
+    // never discounted. Default 0.20 covers the p90 of historical fill
+    // sizes with modest margin. 1.0 disables the discount (pre-existing
+    // behavior). Tunable via PENDING_RESERVATION_DISCOUNT env var.
+    pendingReservationDiscount: (() => {
+      const v = parseFloat(process.env.PENDING_RESERVATION_DISCOUNT);
+      if (!Number.isFinite(v) || v <= 0 || v > 1) return 0.20;
+      return v;
+    })(),
     maxLegs: parseInt(process.env.MAX_LEGS) || 8,
     stalePriceMinutes: parseInt(process.env.STALE_PRICE_MINUTES) || 5,
     // Per-sport override for stale threshold (minutes). Tighter for fast-moving
