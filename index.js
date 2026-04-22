@@ -3313,6 +3313,65 @@ function startStatusServer() {
     }
   });
 
+  // Probe PX's raw market catalog for an event. Useful for diagnosing why
+  // a market type we "think" we support doesn't end up in the line index —
+  // usually because PX's actual `m.type` string doesn't match our allowlist.
+  //   /debug-px-markets?eventId=30025304
+  //   /debug-px-markets?sport=basketball_nba   (shows first 2 events' data)
+  app.get('/debug-px-markets', async (req, res) => {
+    try {
+      let eventIds = [];
+      if (req.query.eventId) {
+        eventIds = [req.query.eventId];
+      } else if (req.query.sport) {
+        // Fetch sport events, filter to requested sport, take first few
+        const sportKey = req.query.sport;
+        const all = await px.fetchSportEvents();
+        const matches = (all || []).filter(e => {
+          const sn = (e.sport_name || '').toLowerCase();
+          const tn = (e.tournament_name || '').toLowerCase();
+          if (sportKey === 'basketball_nba') return /nba/.test(sn + tn);
+          if (sportKey === 'baseball_mlb') return /mlb/.test(sn + tn);
+          if (sportKey === 'icehockey_nhl') return /nhl/.test(sn + tn);
+          return false;
+        });
+        eventIds = matches.slice(0, 2).map(e => e.event_id);
+      } else {
+        return res.status(400).json({ error: 'need ?eventId=... or ?sport=...' });
+      }
+
+      const results = [];
+      for (const eid of eventIds) {
+        const markets = await px.fetchMarkets(eid);
+        const typeCounts = {};
+        for (const m of markets) typeCounts[m.type] = (typeCounts[m.type] || 0) + 1;
+        const h1Candidates = markets.filter(m =>
+          /first\s*half|1st\s*half|h1\b/i.test(m.name || '') ||
+          /first_half|1st_half|_h1\b|_half|half_/i.test(m.type || '')
+        ).map(m => ({
+          type: m.type,
+          name: m.name,
+          status: m.status,
+          lineCount: (m.market_lines || []).length,
+          sampleLine: (m.market_lines || [])[0] ? {
+            line: m.market_lines[0].line,
+            selection_name: m.market_lines[0].selection_name,
+          } : null,
+        }));
+        results.push({
+          eventId: eid,
+          totalMarkets: markets.length,
+          typeCounts,
+          h1Candidates,
+          sampleMarketNames: markets.slice(0, 20).map(m => ({ type: m.type, name: m.name })),
+        });
+      }
+      res.json({ ok: true, eventIds, results });
+    } catch (err) {
+      res.status(500).json({ error: err.message, stack: err.stack });
+    }
+  });
+
   // Generic Odds API probe — used to diagnose coverage for any sport+market
   // combination. Pre-canned URLs for team_totals and NBA 1H below.
   //   /debug-odds-market-probe?sport=basketball_nba&markets=team_totals
