@@ -3247,6 +3247,70 @@ function startStatusServer() {
   // list + current odds-cache teams + per-event registered status.
   // TEMPORARY: probe The Odds API for MLB F5 markets to see which
   // games actually have F5 h2h / spreads / totals vs missing.
+  // Generic probe — pass ?markets=... to test arbitrary Odds API market
+  // keys. Defaults to 1st-inning markets since that's the current
+  // question. Returns per-event per-market book coverage so we can
+  // see which books report what.
+  app.get('/debug-oapi-mlb-probe', async (req, res) => {
+    const key = process.env.THE_ODDS_API_KEY;
+    if (!key) return res.status(500).json({ error: 'no key' });
+    const markets = req.query.markets ||
+      'h2h_1st_1_innings,spreads_1st_1_innings,totals_1st_1_innings';
+    const url = 'https://api.the-odds-api.com/v4/sports/baseball_mlb/odds'
+      + '?apiKey=' + key
+      + '&regions=us,eu'
+      + '&markets=' + markets
+      + '&bookmakers=pinnacle,draftkings,fanduel,betonlineag,bovada,betmgm'
+      + '&oddsFormat=american';
+    try {
+      const r = await fetch(url);
+      const text = await r.text();
+      let body;
+      try { body = JSON.parse(text); } catch { body = null; }
+      if (!Array.isArray(body)) {
+        return res.json({ ok: false, status: r.status, markets, rawBody: text.slice(0, 800) });
+      }
+      // Aggregate: how many events had each market, and which books posted it
+      const marketCoverage = {};
+      for (const e of body) {
+        for (const b of (e.bookmakers || [])) {
+          for (const m of (b.markets || [])) {
+            if (!marketCoverage[m.key]) marketCoverage[m.key] = { events: 0, books: new Set() };
+            marketCoverage[m.key].events++;
+            marketCoverage[m.key].books.add(b.key);
+          }
+        }
+      }
+      // Sample output: first 3 events with their market breakdown
+      const sample = body.slice(0, 3).map(e => {
+        const mkTypes = {};
+        for (const b of (e.bookmakers || [])) {
+          for (const m of (b.markets || [])) {
+            if (!mkTypes[m.key]) mkTypes[m.key] = new Set();
+            mkTypes[m.key].add(b.key);
+          }
+        }
+        return {
+          home: e.home_team, away: e.away_team,
+          commenceTime: e.commence_time,
+          markets: Object.fromEntries(Object.entries(mkTypes).map(([k, v]) => [k, [...v]])),
+        };
+      });
+      res.json({
+        ok: true,
+        status: r.status,
+        markets,
+        eventCount: body.length,
+        marketCoverage: Object.fromEntries(
+          Object.entries(marketCoverage).map(([k, v]) => [k, { events: v.events, books: [...v.books] }])
+        ),
+        sample,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/debug-oapi-mlb-f5', async (req, res) => {
     const key = process.env.THE_ODDS_API_KEY;
     if (!key) return res.status(500).json({ error: 'no key' });
