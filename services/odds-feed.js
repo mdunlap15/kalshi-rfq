@@ -963,7 +963,6 @@ async function supplementTeamTotals(parsedEvents, sport) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
   if (!theOddsApiKey) return;
 
-  // Our internal sport keys match The Odds API's for these three leagues.
   const OA_SPORT_KEYS = {
     basketball_nba: 'basketball_nba',
     baseball_mlb: 'baseball_mlb',
@@ -972,101 +971,111 @@ async function supplementTeamTotals(parsedEvents, sport) {
   const oaSport = OA_SPORT_KEYS[sport];
   if (!oaSport) return;
 
-  const url = `https://api.the-odds-api.com/v4/sports/${oaSport}/odds`
-    + `?apiKey=${theOddsApiKey}`
-    + `&regions=us,eu`
-    + `&markets=team_totals`
-    + `&bookmakers=pinnacle,draftkings,fanduel`
-    + `&oddsFormat=american`;
+  // IMPORTANT: The Odds API's bulk /odds endpoint does NOT support
+  // team_totals — returns 422 INVALID_MARKET. Same gotcha as F5.
+  // team_totals lives on the per-event endpoint /events/{id}/odds.
+  // We resolve each parsed event to its Odds API event ID, then fetch
+  // per-event with bounded concurrency (mirrors supplementMlbF5Markets).
 
-  let events;
-  try {
-    const resp = await fetch(url);
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => '');
-      log.warn('OddsFeed', `${sport} team_totals fetch failed (${resp.status}): ${text.substring(0, 120)}`);
-      return;
+  // Collect candidates (skip events that already have team_totals populated
+  // from SharpAPI — no need to overwrite with Odds API data).
+  const candidates = [];
+  for (const entry of Object.values(parsedEvents)) {
+    const arr = Array.isArray(entry) ? entry : [entry];
+    for (const ev of arr) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      if (ev.markets && ev.markets.team_totals) continue;
+      candidates.push(ev);
     }
-    const remaining = resp.headers.get('x-requests-remaining');
-    if (remaining != null) log.debug('OddsFeed', `The Odds API usage (${sport} team_totals): ${remaining} remaining`);
-    events = await resp.json();
-  } catch (err) {
-    log.warn('OddsFeed', `${sport} team_totals fetch error: ${err.message}`);
+  }
+  if (candidates.length === 0) {
+    log.info('OddsFeed', `${sport} team_totals supplement: no candidates`);
     return;
   }
 
-  if (!Array.isArray(events) || events.length === 0) {
-    log.info('OddsFeed', `${sport} team_totals: API returned 0 events`);
-    return;
-  }
+  let calls = 0, matchFails = 0, apiFails = 0, attached = 0, emptyPayload = 0;
+  const CONCURRENCY = 3;
+  let idx = 0;
+  async function worker() {
+    while (idx < candidates.length) {
+      const ev = candidates[idx++];
+      const resolved = await resolveOddsApiEventId(oaSport, ev.homeTeam, ev.awayTeam, ev.commenceTime);
+      if (!resolved) { matchFails++; continue; }
 
-  let matched = 0;
-  let emptyPayload = 0;
-  for (const event of events) {
-    const entry = findParsedEntryFuzzy(parsedEvents, event.home_team, event.away_team);
-    if (!entry) continue;
-    const eventArr = Array.isArray(entry) ? entry : [entry];
-    const evDate = event.commence_time ? new Date(event.commence_time).toISOString().substring(0, 10) : '';
-    const matchedEv = eventArr.find(e => {
-      const d = e.commenceTime ? new Date(e.commenceTime).toISOString().substring(0, 10) : '';
-      return !evDate || !d || d === evDate;
-    }) || eventArr[0];
-    if (!matchedEv) continue;
+      const url = `https://api.the-odds-api.com/v4/sports/${oaSport}/events/${resolved.eventId}/odds`
+        + `?apiKey=${theOddsApiKey}`
+        + `&regions=us,eu`
+        + `&markets=team_totals`
+        + `&bookmakers=pinnacle,draftkings,fanduel`
+        + `&oddsFormat=american`;
 
-    // Build bookPairs: one entry per (book × teamSide) with { over, under }.
-    // Each book's team_totals market has 4 outcomes (home+away × over+under)
-    // which we group by `description` (team name) then resolve to home/away.
-    const bookPairs = [];
-    for (const book of (event.bookmakers || [])) {
-      for (const m of (book.markets || [])) {
-        if (m.key !== 'team_totals') continue;
-        const byTeam = {};
-        for (const o of (m.outcomes || [])) {
-          const team = o.description;
-          if (!team) continue;
-          if (!byTeam[team]) byTeam[team] = {};
-          if (o.name === 'Over') {
-            byTeam[team].over = {
-              odds_probability: americanToImpliedProb(o.price),
-              odds_american: o.price,
-              line: o.point,
-            };
-          } else if (o.name === 'Under') {
-            byTeam[team].under = {
-              odds_probability: americanToImpliedProb(o.price),
-              odds_american: o.price,
-              line: o.point,
-            };
+      try {
+        const resp = await fetch(url);
+        calls++;
+        if (!resp.ok) { apiFails++; continue; }
+        const data = await resp.json();
+
+        // Build bookPairs: one entry per (book × teamSide) with { over, under }.
+        // Per-event response shape: data.bookmakers[].markets[].outcomes[] where
+        // each outcome has { name:'Over'|'Under', description:<team>, price, point }.
+        const bookPairs = [];
+        for (const book of (data.bookmakers || [])) {
+          for (const m of (book.markets || [])) {
+            if (m.key !== 'team_totals') continue;
+            const byTeam = {};
+            for (const o of (m.outcomes || [])) {
+              const team = o.description;
+              if (!team) continue;
+              if (!byTeam[team]) byTeam[team] = {};
+              if (o.name === 'Over') {
+                byTeam[team].over = {
+                  odds_probability: americanToImpliedProb(o.price),
+                  odds_american: o.price,
+                  line: o.point,
+                };
+              } else if (o.name === 'Under') {
+                byTeam[team].under = {
+                  odds_probability: americanToImpliedProb(o.price),
+                  odds_american: o.price,
+                  line: o.point,
+                };
+              }
+            }
+            for (const [team, pair] of Object.entries(byTeam)) {
+              if (!pair.over || !pair.under) continue;
+              let teamSide = null;
+              if (team === data.home_team) teamSide = 'home';
+              else if (team === data.away_team) teamSide = 'away';
+              else continue;
+              bookPairs.push({
+                book: book.key,
+                teamSide,
+                over: pair.over,
+                under: pair.under,
+              });
+            }
           }
         }
-        for (const [team, pair] of Object.entries(byTeam)) {
-          if (!pair.over || !pair.under) continue;
-          let teamSide = null;
-          if (team === event.home_team) teamSide = 'home';
-          else if (team === event.away_team) teamSide = 'away';
-          else continue; // unknown team label — skip defensively
-          bookPairs.push({
-            book: book.key,
-            teamSide,
-            over: pair.over,
-            under: pair.under,
-          });
+
+        if (bookPairs.length === 0) {
+          emptyPayload++;
+          continue;
         }
+
+        const tt = buildConsensusTeamTotals(bookPairs);
+        if (tt) {
+          ev.markets.team_totals = tt;
+          attached++;
+        }
+      } catch (err) {
+        apiFails++;
       }
     }
-
-    if (bookPairs.length === 0) {
-      emptyPayload++;
-      continue;
-    }
-
-    const tt = buildConsensusTeamTotals(bookPairs);
-    if (tt) {
-      matchedEv.markets.team_totals = tt;
-      matched++;
-    }
   }
-  log.info('OddsFeed', `${sport} team_totals supplement: ${events.length} API events, ${matched} attached, ${emptyPayload} with no usable pairs`);
+  const workers = [];
+  for (let i = 0; i < Math.min(CONCURRENCY, candidates.length); i++) workers.push(worker());
+  await Promise.all(workers);
+  log.info('OddsFeed', `${sport} team_totals supplement (per-event): ${calls}/${candidates.length} calls, ${attached} attached, matchFails=${matchFails} apiFails=${apiFails} emptyPayload=${emptyPayload}`);
 }
 
 // ---------------------------------------------------------------------------
