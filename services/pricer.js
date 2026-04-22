@@ -120,16 +120,32 @@ function getGolfMatchupFairProb(lineInfo) {
   if (!sport.includes('golf')) return null;
   const mt = lineInfo?.marketType || '';
   if (mt !== 'moneyline') return null; // golf matchups are h2h only
+
+  // Primary path: DataGolf via oddsFeed.getGolfMatchupEvent. Covers
+  // individual 1v1 player matchups for regular tour events.
   const event = oddsFeed.getGolfMatchupEvent(
     lineInfo.homeTeam, lineInfo.awayTeam, lineInfo.roundNum ?? null
   );
-  if (!event) return null;
-  const h2h = event.markets?.h2h;
-  if (!h2h) return null;
-  const sel = lineInfo.oddsApiSelection;
-  const side = sel === 'home' ? h2h.home : sel === 'away' ? h2h.away : null;
-  if (!side || side.fairProb == null) return null;
-  return side.fairProb;
+  if (event) {
+    const h2h = event.markets?.h2h;
+    if (h2h) {
+      const sel = lineInfo.oddsApiSelection;
+      const side = sel === 'home' ? h2h.home : sel === 'away' ? h2h.away : null;
+      if (side && side.fairProb != null) return side.fairProb;
+    }
+  }
+
+  // Fallback: DK scraper. Covers team matchups (Zurich Classic team
+  // events that DataGolf doesn't publish) and any other matchup
+  // DataGolf happens to miss. Look up by the full team-pair name so
+  // "McIlroy / Lowry" resolves regardless of which side PX identifies
+  // as "home" vs "away".
+  const teamName = lineInfo?.teamName || '';
+  if (teamName) {
+    const dkHit = dkScraper.lookupGolfMatchupFairProb(teamName, lineInfo.roundNum ?? null);
+    if (dkHit && dkHit.fairProb != null) return dkHit.fairProb;
+  }
+  return null;
 }
 
 /**

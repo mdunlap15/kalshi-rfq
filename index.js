@@ -402,6 +402,15 @@ async function startup() {
     } catch (err) {
       log.warn('DkScraper', `Initial MMA prime failed: ${err.message}`);
     }
+    // Prime golf matchups cache. DataGolf covers individual 1v1 player
+    // matchups; this DK path covers team matchups (Zurich Classic) and
+    // any other PGA event DataGolf misses. A cold call is only ~10-15s
+    // and between-tournament runs return an empty set harmlessly.
+    try {
+      await dkScraper.fetchGolfMatchups();
+    } catch (err) {
+      log.warn('DkScraper', `Initial golf matchups prime failed: ${err.message}`);
+    }
   })();
   setInterval(async () => {
     await Promise.all(['nba', 'nhl'].map(sport =>
@@ -414,6 +423,11 @@ async function startup() {
       await oddsFeed.mergeDkMmaFights();
     } catch (err) {
       log.warn('DkScraper', `Periodic MMA refresh failed: ${err.message}`);
+    }
+    try {
+      await dkScraper.fetchGolfMatchups({ force: true });
+    } catch (err) {
+      log.warn('DkScraper', `Periodic golf matchups refresh failed: ${err.message}`);
     }
   }, 10 * 60 * 1000);
 
@@ -992,6 +1006,18 @@ function startStatusServer() {
     try {
       const force = req.query.force === '1' || req.query.force === 'true';
       const data = await dkScraper.fetchMmaFightOdds({ force });
+      res.json({ ok: true, ...data });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+  // DK golf matchups (PGA tour team + individual H2H). Covers Zurich
+  // Classic team pairs and any PGA event DataGolf doesn't publish.
+  // `?force=1` bypasses the 15-min scraper cache and hits DK fresh.
+  app.get('/golf-matchups', async (req, res) => {
+    try {
+      const force = req.query.force === '1' || req.query.force === 'true';
+      const data = await dkScraper.fetchGolfMatchups({ force });
       res.json({ ok: true, ...data });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });

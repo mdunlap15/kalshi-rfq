@@ -1053,6 +1053,238 @@ async function fetchLiveMarkets(sport, { force = false } = {}) {
   return liveInFlightBySport[sport];
 }
 
+// ---------------------------------------------------------------------------
+// GOLF MATCHUPS SCRAPER
+//
+// DataGolf covers individual 1v1 player matchups but NOT team pairs (the
+// Zurich Classic is the only regular-season 2-man-team PGA event). Also
+// covers us for any tour event DataGolf doesn't publish (the odd fringe
+// tournaments, team events, silly-season stuff).
+//
+// DK publishes both tournament-length and per-round matchups under
+// /leagues/golf/pga?category=matchups with per-round subcategory slugs.
+// We pull them all in one session and tag each matchup with its scope:
+//   'tournament' — tournament-length H2H
+//   'round_1' … 'round_4' — single-round H2H
+//
+// Player pair names normalize sort-invariantly so "McIlroy/Lowry" and
+// "Lowry/McIlroy" map to the same team. Last-name-only fallback
+// tolerates minor name formatting variants (periods, accents).
+// ---------------------------------------------------------------------------
+
+// DK's marketType.name for golf matchups includes the round scope in
+// the name itself. Pattern covers both "Tournament Matchups" and
+// "Round N Matchups" (also "R1 Matchups" / "Rd 1 Matchups" variants).
+const GOLF_MATCHUP_MARKET_RE = /^(tournament|round\s*\d+|rd\s*\d+|r\s*\d+)\s*match[-\s]?ups?/i;
+
+// DK's golf league page hosts multiple subcategories under
+// /category=matchups. We navigate each to make sure XHRs for every
+// scope fire. Empty cells on any individual scope are fine — a
+// tournament with no Round 3 lines yet will just produce no payloads
+// for that slug.
+const GOLF_MATCHUP_BASE = 'https://sportsbook.draftkings.com/leagues/golf/pga';
+const GOLF_MATCHUP_SUBCATEGORIES = [
+  { slug: 'tournament-matchups', scope: 'tournament' },
+  { slug: 'round-1-matchups', scope: 'round_1' },
+  { slug: 'round-2-matchups', scope: 'round_2' },
+  { slug: 'round-3-matchups', scope: 'round_3' },
+  { slug: 'round-4-matchups', scope: 'round_4' },
+];
+
+async function fetchGolfMatchups({ force = false } = {}) {
+  if (!force && cacheBySport.golf && Date.now() - cacheBySport.golf.at < CACHE_TTL_MS) {
+    return cacheBySport.golf.data;
+  }
+  if (inFlightBySport.golf) return inFlightBySport.golf;
+
+  inFlightBySport.golf = (async () => {
+    const startedAt = Date.now();
+    const browser = await puppeteer().launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1400, height: 900 });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+      const payloads = [];
+      page.on('response', async (resp) => {
+        const url = resp.url();
+        if (!url.includes('sportsbook-nash.draftkings.com')) return;
+        try {
+          const ct = resp.headers()['content-type'] || '';
+          if (!ct.includes('json')) return;
+          const data = await resp.json();
+          if (!data || !data.selections || !data.events || !data.markets) return;
+          const hasMatchup = (data.markets || []).some(m => GOLF_MATCHUP_MARKET_RE.test(m.marketType?.name || ''));
+          if (hasMatchup) payloads.push(data);
+        } catch { /* ignore */ }
+      });
+
+      for (const sc of GOLF_MATCHUP_SUBCATEGORIES) {
+        const url = `${GOLF_MATCHUP_BASE}?category=matchups&subcategory=${sc.slug}`;
+        try {
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+          await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
+        } catch (err) {
+          log.debug('DkScraper', `Golf ${sc.slug} navigation failed: ${err.message}`);
+        }
+      }
+
+      const matchups = parseGolfMatchupData(payloads);
+      const payload = {
+        fetchedAt: new Date().toISOString(),
+        sport: 'golf',
+        matchups,
+        scrapeMs: Date.now() - startedAt,
+        payloadCount: payloads.length,
+      };
+      cacheBySport.golf = { at: Date.now(), data: payload };
+      const byScope = {};
+      for (const m of matchups) byScope[m.scope] = (byScope[m.scope] || 0) + 1;
+      const scopeStr = Object.entries(byScope).map(([k, v]) => `${k}:${v}`).join(' ');
+      log.info('DkScraper', `Golf matchups: ${matchups.length} captured (${scopeStr || 'none'}) ${payload.scrapeMs}ms, ${payloads.length} payloads`);
+      return payload;
+    } finally {
+      await browser.close();
+      delete inFlightBySport.golf;
+    }
+  })().catch(err => { delete inFlightBySport.golf; throw err; });
+  return inFlightBySport.golf;
+}
+
+/**
+ * Parse DK golf matchup payloads. Each market is a 2-way between
+ * two entries (single player or team pair). We don't distinguish
+ * player-vs-player from team-vs-team in the parse — normalization
+ * handles both. Tag each entry with its scope derived from the
+ * marketType.name.
+ */
+function parseGolfMatchupData(payloads) {
+  const eventsById = {};
+  const marketsById = {};
+  const selectionsByMarketId = {};
+  const seenSelIds = new Set();
+  for (const payload of (payloads || [])) {
+    for (const e of (payload.events || [])) if (!eventsById[e.id]) eventsById[e.id] = e;
+    for (const m of (payload.markets || [])) {
+      if (!GOLF_MATCHUP_MARKET_RE.test(m.marketType?.name || '')) continue;
+      if (!marketsById[m.id]) marketsById[m.id] = m;
+    }
+    for (const sel of (payload.selections || [])) {
+      if (!marketsById[sel.marketId]) continue;
+      if (seenSelIds.has(sel.id)) continue;
+      seenSelIds.add(sel.id);
+      (selectionsByMarketId[sel.marketId] ||= []).push(sel);
+    }
+  }
+  const matchups = [];
+  for (const marketId of Object.keys(selectionsByMarketId)) {
+    const market = marketsById[marketId];
+    const event = eventsById[market.eventId];
+    if (!event) continue;
+    const sels = selectionsByMarketId[marketId];
+    // Golf matchups on DK are always 2-way. Ties are listed as separate
+    // bets (3-way) on some events — for those the matchup is a 3-outcome
+    // which we skip (can't cleanly de-vig 3-way here; would need to
+    // handle "tie" outcome explicitly to use the data).
+    if (sels.length !== 2) continue;
+    const mtypeName = market.marketType?.name || '';
+    const roundMatch = /(?:round|rd|r)\s*(\d+)/i.exec(mtypeName);
+    const scope = /tournament/i.test(mtypeName)
+      ? 'tournament'
+      : (roundMatch ? `round_${roundMatch[1]}` : 'unknown');
+    const teams = sels.map(sel => ({ name: (sel.label || '').trim(), ...parseSelectionOdds(sel) }));
+    const dv = devigPair(teams[0], teams[1]);
+    if (!dv) continue;
+    matchups.push({
+      eventId: event.id,
+      eventName: event.name,
+      startTime: event.startEventDate,
+      marketId: market.id,
+      marketName: mtypeName,
+      scope,
+      roundNum: roundMatch ? parseInt(roundMatch[1], 10) : null,
+      teams,
+      vig: dv.vig,
+      devigFavShare: dv.devigFavShare,
+    });
+  }
+  matchups.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || '') || a.scope.localeCompare(b.scope));
+  return matchups;
+}
+
+/**
+ * Normalize a golf team/player name into a sort-invariant canonical form.
+ * "Rory McIlroy / Shane Lowry" and "Shane Lowry / Rory McIlroy" both
+ * produce the same key. Tolerates common separators (/ & ,).
+ */
+function normalizeGolfPairName(name) {
+  if (!name) return '';
+  return String(name)
+    .replace(/&/g, '/')
+    .split(/\s*[\/,]\s*/)
+    .map(p => p.trim().toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[.,]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim())
+    .filter(Boolean)
+    .sort()
+    .join('|');
+}
+
+/**
+ * Match candidate against target with exact + last-name fallback.
+ * Works for both single-player ("Rory McIlroy") and team-pair
+ * ("Rory McIlroy / Shane Lowry") names since both normalize into
+ * the same sorted-pipe form.
+ */
+function golfPairNameMatches(candidate, target) {
+  if (!candidate || !target) return false;
+  if (candidate === target) return true;
+  const lastNames = (s) => s.split('|').map(p => p.split(' ').pop()).sort().join('|');
+  return lastNames(candidate) === lastNames(target);
+}
+
+/**
+ * Look up a golf team-matchup fair prob by PX team name + optional round.
+ * Returns null if DK cache is cold or the team isn't in a matchup at
+ * the requested scope. Round null matches the tournament-length
+ * matchup; round 1-4 matches that specific round's H2H.
+ *
+ * Caller (pricer.js getGolfMatchupFairProb) uses this as a fallback
+ * after the DataGolf path returns null — which it will for team
+ * events like the Zurich Classic.
+ */
+function lookupGolfMatchupFairProb(teamName, roundNum) {
+  const cache = cacheBySport.golf;
+  if (!cache || !cache.data) return null;
+  const target = normalizeGolfPairName(teamName);
+  if (!target) return null;
+  const wantScope = roundNum == null ? 'tournament' : `round_${roundNum}`;
+  for (const m of (cache.data.matchups || [])) {
+    if (m.scope !== wantScope) continue;
+    for (const t of m.teams) {
+      const candidate = normalizeGolfPairName(t.name);
+      if (golfPairNameMatches(candidate, target)) {
+        return {
+          fairProb: t.fairProb,
+          decimalOdds: t.decimalOdds,
+          americanOdds: t.americanOdds,
+          source: 'dk',
+          eventName: m.eventName,
+          startTime: m.startTime,
+          scope: m.scope,
+          roundNum: m.roundNum,
+        };
+      }
+    }
+  }
+  return null;
+}
+
 module.exports = {
   fetchSeriesMarkets,
   fetchSeriesWinners,
@@ -1063,14 +1295,18 @@ module.exports = {
   fetchNbaSeriesTotals,
   fetchNhlSeriesTotals,
   fetchMmaFightOdds,
+  fetchGolfMatchups,
   fetchLiveMarkets,
   parseSeriesData,
   parseSeriesWinnerData,
   parseSeriesSpreadData,
   parseSeriesTotalData,
+  parseGolfMatchupData,
   lookupSeriesFairProb,
   lookupSeriesSpreadFairProb,
   lookupSeriesTotalFairProb,
   lookupMmaFairProb,
+  lookupGolfMatchupFairProb,
   normalizeTeamName,
+  normalizeGolfPairName,
 };
