@@ -565,6 +565,12 @@ async function seedAllLines() {
     const isMmaSport = sportKey === 'mma_mixed_martial_arts';
     const isBoxingSport = sportKey === 'boxing_boxing';
     const isCombatSport = isBoxingSport; // only boxing keeps the ML-only restriction
+    // Golf matchups are H2H moneyline only. PX labels the market name
+    // "Tournament Matchup" / "Round 1 Matchup" rather than "Moneyline",
+    // so the name-allowlist filter below drops them. Flag here so we
+    // can bypass the name filter just for this sport without loosening
+    // anything else.
+    const isGolfSport = sportKey === 'golf_matchups';
 
     // Series markets (winner/spread/total-games) are priced from the DK
     // scraper cache rather than the odds feed. Allow them through the
@@ -585,7 +591,9 @@ async function seedAllLines() {
         ? ['moneyline']
         : isMmaSport
           ? ['moneyline', 'total']
-          : ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
+          : isGolfSport
+            ? ['moneyline']
+            : ['moneyline', 'spread', 'total', 'team_total', 'btts', 'both_teams_to_score', 'double_chance'];
       // Series markets include PX's 'sup_moneyline' type (Series Game Spread,
       // Series Total Games — live probe 2026-04-18). Let those through the
       // supportedBase check; parseMarketSelections retags them to 'spread'
@@ -616,7 +624,11 @@ async function seedAllLines() {
       // fail because their names don't contain "Spread", "Moneyline", etc.
       // Additional safety comes from excludePatterns (above) and sport-aware
       // line bounds (below).
-      if (!isF5 && !isH1) {
+      // Golf markets on PX use names like "Tournament Matchup" or
+      // "Round 1 Matchup" — none contain "Moneyline". Since the sport
+      // is already gated to moneyline-only via supportedBase above,
+      // no further name check is needed for golf.
+      if (!isF5 && !isH1 && !isGolfSport) {
         const allowed = fullGameNames[m.type];
         if (allowed) {
           const nameL = (m.name || '').toLowerCase();
