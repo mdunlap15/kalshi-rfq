@@ -269,6 +269,11 @@ async function startup() {
   // a warm cache entry.
   oddsFeed.startPinVerifyWarmLoop();
 
+  // Template-exposure prune loop: sweeps out signatures whose in-window
+  // confirmations have all aged past the TTL (default 24h). Keeps the
+  // in-memory map bounded even over multi-day sessions.
+  require('./services/template-exposure').startPruneLoop();
+
   // Start periodic timers
   const refreshMs = config.refreshIntervalMinutes * 60 * 1000;
   oddsRefreshTimer = setInterval(async () => {
@@ -822,6 +827,15 @@ function startStatusServer() {
   // drop as this climbs.
   app.get('/px-markets-cache-stats', (req, res) => {
     res.json(px.getMarketsCacheStats());
+  });
+
+  // Template-exposure ramp: per-parlay-signature counts + stakes
+  // inside the rolling window, plus ramp-firing stats. Use this to
+  // verify the ramp is catching template stacking as intended and to
+  // see top-active signatures on any given day.
+  app.get('/template-exposure-stats', (req, res) => {
+    const templateExposure = require('./services/template-exposure');
+    res.json(templateExposure.getStats());
   });
   app.post('/warm-alt-lines', async (req, res) => {
     const sport = req.query.sport || req.body?.sport;

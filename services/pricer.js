@@ -4,6 +4,7 @@ const lineManager = require('./line-manager');
 const oddsFeed = require('./odds-feed');
 const orderTracker = require('./order-tracker');
 const dkScraper = require('./dk-scraper');
+const templateExposure = require('./template-exposure');
 const { performance } = require('perf_hooks');
 
 /**
@@ -937,11 +938,42 @@ async function priceParlay(legs, opts = {}) {
     longshotAdd = lsMaxAdd * (1 - vigFair / lsThreshold);
   }
 
+  // ---------------------------------------------------------------------
+  // TEMPLATE-EXPOSURE RAMP
+  //
+  // Checks how many identical parlays (same canonical signature) have
+  // already confirmed inside the rolling window (default 24h). Returns
+  // a graduated vig add, or a decline signal when concentration exceeds
+  // the hard cap. Empirical: April 18 cliff was 80%+ driven by two
+  // parlay signatures each copied 6-9 times — see template-exposure.js
+  // for the full counterfactual derivation.
+  //
+  // ADDITIVE with longshotAdd (both in vig rate units); capped at 0.20
+  // downstream so runaway stacking can't happen.
+  // ---------------------------------------------------------------------
+  const templateLegsForSig = pricedLegs.map(l => ({
+    team: l.lineInfo.teamName,
+    market: l.lineInfo.marketType,
+    line: l.lineInfo.line,
+  }));
+  const templateDecision = templateExposure.getRampDecision(templateLegsForSig);
+  if (templateDecision.decline) {
+    log.info('Pricing', `Declined: ${templateDecision.reason} (stake so far $${templateDecision.totalStake.toFixed(2)})`);
+    priceParlay._lastFailure = {
+      reason: 'template exposure cap',
+      detail: templateDecision.reason,
+      blockerLeg: null,
+    };
+    return null;
+  }
+  const templateRampAdd = templateDecision.extraVig || 0;
+  const templatePriorCount = templateDecision.count || 0;
+
   if (config.pricing.parlayLevelVig) {
     // Parlay-level: single vig application using max per-leg rate (over vig legs only).
     const perLegVigs = vigLegs.map(l => getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType));
     const maxVig = perLegVigs.length > 0 ? Math.max(...perLegVigs) : config.pricing.defaultVig;
-    const effectiveVig = Math.min(0.20, maxVig + longshotAdd);
+    const effectiveVig = Math.min(0.20, maxVig + longshotAdd + templateRampAdd);
     if (vigLegs.length > 0) {
       const fairDecimal = 1 / vigFair;
       const payout = fairDecimal - 1;
@@ -958,12 +990,13 @@ async function priceParlay(legs, opts = {}) {
     for (const leg of vigLegs) {
       offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType);
     }
-    // Longshot widening applied as a final parlay-level haircut on the
-    // post-compounding offered prob so the sensitivity matches parlay-
-    // level mode's behavior for low-prob parlays.
-    if (longshotAdd > 0 && vigLegs.length > 0 && offeredImpliedProb > 0) {
+    // Longshot widening + template ramp applied as a final parlay-level
+    // haircut on the post-compounding offered prob so the sensitivity
+    // matches parlay-level mode's behavior for low-prob parlays.
+    const totalParlayAdd = longshotAdd + templateRampAdd;
+    if (totalParlayAdd > 0 && vigLegs.length > 0 && offeredImpliedProb > 0) {
       const payout = (1 / offeredImpliedProb) - 1;
-      const cappedAdd = Math.min(longshotAdd, 0.20);
+      const cappedAdd = Math.min(totalParlayAdd, 0.20);
       const adjustedPayout = payout * (1 - cappedAdd);
       offeredImpliedProb = (1 / (1 + adjustedPayout));
     }
@@ -972,7 +1005,7 @@ async function priceParlay(legs, opts = {}) {
     const avgVig = vigLegs.length > 0
       ? vigLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType), 0) / vigLegs.length
       : 0;
-    vigRateUsed = Math.min(0.20, avgVig + longshotAdd);
+    vigRateUsed = Math.min(0.20, avgVig + longshotAdd + templateRampAdd);
   }
 
   // -------------------------------------------------------------------
@@ -1244,6 +1277,13 @@ async function priceParlay(legs, opts = {}) {
       // Exposed so dashboard can flag which quotes used the ramp and we
       // can A/B measure acceptance-rate impact.
       longshotAdd: Math.round((longshotAdd || 0) * 10000) / 10000,
+      // Template-exposure ramp contribution + prior-confirmation count
+      // for the quote's canonical parlay signature. 0 / 0 when ramp
+      // didn't fire. Lets the dashboard flag quotes penalized for
+      // template stacking and retroactively measure whether we actually
+      // lost volume on the 2nd/3rd/4th-of-identical bets.
+      templateRampAdd: Math.round((templateRampAdd || 0) * 10000) / 10000,
+      templatePriorCount: templatePriorCount || 0,
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
       pricingMethod,
       isSGP,

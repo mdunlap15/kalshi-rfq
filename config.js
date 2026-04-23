@@ -104,6 +104,26 @@ const config = {
     // disable. Tunable via VIG_LONGSHOT_THRESHOLD and VIG_LONGSHOT_MAX_ADD.
     vigLongshotThreshold: parseFloat(process.env.VIG_LONGSHOT_THRESHOLD) || 0.25,
     vigLongshotMaxAdd: parseFloat(process.env.VIG_LONGSHOT_MAX_ADD) || 0.010,
+    // Template-exposure ramp: penalizes bets whose canonical parlay signature
+    // (sorted team+market+line tuple) has already confirmed N times inside a
+    // rolling window. Catches the April 18 failure mode: multiple bettors
+    // stacking the IDENTICAL parlay — a hidden correlation dimension the
+    // existing team/event exposure caps can't see. See
+    // services/template-exposure.js for mechanism + empirical derivation.
+    //
+    // Defaults calibrated from 9-day (Apr 14-22) counterfactual analysis:
+    // blocking the 4th+ same-template bet would have avoided $5,443 in
+    // losses at a cost of $64 in foregone wins across the window.
+    //
+    // Tier adds are ADDITIVE to the base vig (same units as vigLongshotMaxAdd).
+    // Capped downstream in the pricer at 0.20 so they can't stack runaway.
+    templateRampEnabled:
+      process.env.TEMPLATE_RAMP_ENABLED !== 'false' && process.env.TEMPLATE_RAMP_ENABLED !== '0',
+    templateRampWindowHours: parseFloat(process.env.TEMPLATE_RAMP_WINDOW_HOURS) || 24,
+    templateRampTier2Add: parseFloat(process.env.TEMPLATE_RAMP_TIER2_ADD) || 0.0025,  // +0.25pp on 2nd bet
+    templateRampTier3Add: parseFloat(process.env.TEMPLATE_RAMP_TIER3_ADD) || 0.010,   // +1.00pp on 3rd
+    templateRampTier4Add: parseFloat(process.env.TEMPLATE_RAMP_TIER4_ADD) || 0.030,   // +3.00pp on 4th
+    templateRampDeclineAt: parseInt(process.env.TEMPLATE_RAMP_DECLINE_AT) || 4,       // decline 5th+ bet (priorCount >= 4)
     // A/B-testable pricing mode for parlays. When true, vig is applied
     // ONCE at the parlay level using the MAX per-leg effective rate, rather
     // than compounded per-leg. Per-leg compounding penalizes multi-leg

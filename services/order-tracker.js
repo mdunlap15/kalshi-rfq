@@ -1,5 +1,6 @@
 const log = require('./logger');
 const db = require('./db');
+const templateExposure = require('./template-exposure');
 
 // ---------------------------------------------------------------------------
 // IN-MEMORY ORDER STORE (backed by Supabase for persistence)
@@ -527,6 +528,16 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
     // Ties exposure accounting to the same commit signal as sessionFills.
     if (!wasCountedAsFill && orderUuid != null) {
       addExposure(order);
+      // Template-exposure dimension: hash legs into a canonical signature
+      // and record this confirmed bet against the rolling window. Feeds
+      // the pricer's template ramp on subsequent RFQs with the same
+      // signature. See services/template-exposure.js.
+      try {
+        const legs = order.meta?.legs || order.legs || [];
+        templateExposure.recordConfirmation(legs, parlayId, confirmedStake, order.confirmedAt);
+      } catch (err) {
+        log.warn('TemplateExposure', `recordConfirmation failed: ${err.message}`);
+      }
     }
     releasePending(parlayId);
 
@@ -2419,6 +2430,15 @@ function rebuildAllExposure() {
   if (skippedFinished > 0) log.info('Exposure', `Skipped ${skippedFinished} finished orders during rebuild`);
   if (skippedPhantom > 0) log.info('Exposure', `Skipped ${skippedPhantom} phantom-flagged orders during rebuild`);
   if (skippedNoUuid > 0) log.info('Exposure', `Skipped ${skippedNoUuid} no-orderUuid (unfinalized) orders during rebuild`);
+  // Also rebuild template-exposure from the same order set so the ramp
+  // sees in-window signature counts after a restart. The module's
+  // rebuildFromOrders skips anything older than its window (24h default)
+  // and anything without orderUuid + stake + confirmedAt.
+  try {
+    templateExposure.rebuildFromOrders(Object.values(orders));
+  } catch (err) {
+    log.warn('TemplateExposure', `rebuildFromOrders failed: ${err.message}`);
+  }
   const result = {
     ...diag,
     uniqueTeamKeys: diag.uniqueTeamKeys.size,
