@@ -176,9 +176,82 @@ async function fetchSportEvents() {
   return data.data?.sport_events || [];
 }
 
-async function fetchMarkets(eventId) {
-  const data = await pxFetch(`/partner/mm/get_markets?event_id=${eventId}`);
-  return data.data?.markets || [];
+// ---------------------------------------------------------------------------
+// fetchMarkets cache + in-flight coalescing
+// ---------------------------------------------------------------------------
+// Two callers exercise this endpoint heavily:
+//   1. seedAllLines — fetches markets for every supported PX event at seed time
+//      (one call per event, unique event_id → no cache contention)
+//   2. resolveUnknownLine — fetches markets for an event the first time an
+//      unknown line_id arrives from that event. The hot path.
+//
+// Latency instrumentation showed receive_to_resolve p95 ≈ 160ms, traced to
+// the PX get_markets round-trip inside resolveUnknownLine. Two classes of
+// wasted work:
+//   a. Multiple concurrent RFQs for the same fresh event each fire their
+//      own fetchMarkets call (line-manager's inFlightResolutions map only
+//      dedupes per-lineId, not per-eventId).
+//   b. Rapid back-to-back RFQs across different lineIds in the same
+//      event re-fetch identical market data.
+//
+// 30s TTL + in-flight promise map collapses both. Markets metadata (market
+// types, lines, selection ids) is structural and changes slowly — the
+// odds inside it aren't read here, so a 30s stale window is safe. Seed-
+// time calls still hit the network because seed iterates unique events
+// sequentially with 100ms spacing between them — TTL won't come into
+// play unless the same event is re-seeded inside 30s (refreshLines is
+// on a 2-min cadence, so no).
+const _marketsCache = {};          // eventId -> { markets, fetchedAt }
+const _marketsInFlight = {};       // eventId -> Promise<markets[]>
+const MARKETS_CACHE_TTL_MS = 30 * 1000;
+const _marketsCacheStats = { hits: 0, coalesced: 0, fetched: 0, errors: 0 };
+
+async function fetchMarkets(eventId, opts = {}) {
+  const bypass = opts.bypass === true;
+  const now = Date.now();
+
+  // Fast path: fresh cache entry.
+  if (!bypass) {
+    const cached = _marketsCache[eventId];
+    if (cached && (now - cached.fetchedAt) < MARKETS_CACHE_TTL_MS) {
+      _marketsCacheStats.hits++;
+      return cached.markets;
+    }
+    // Coalesce: another caller is already fetching this eventId.
+    const pending = _marketsInFlight[eventId];
+    if (pending) {
+      _marketsCacheStats.coalesced++;
+      return pending;
+    }
+  }
+
+  const promise = (async () => {
+    try {
+      const data = await pxFetch(`/partner/mm/get_markets?event_id=${eventId}`);
+      const markets = data.data?.markets || [];
+      _marketsCache[eventId] = { markets, fetchedAt: Date.now() };
+      _marketsCacheStats.fetched++;
+      return markets;
+    } catch (err) {
+      _marketsCacheStats.errors++;
+      throw err;
+    } finally {
+      delete _marketsInFlight[eventId];
+    }
+  })();
+  _marketsInFlight[eventId] = promise;
+  return promise;
+}
+
+function getMarketsCacheStats() {
+  const total = _marketsCacheStats.hits + _marketsCacheStats.coalesced + _marketsCacheStats.fetched;
+  return {
+    ..._marketsCacheStats,
+    ttlMs: MARKETS_CACHE_TTL_MS,
+    cacheSize: Object.keys(_marketsCache).length,
+    inFlight: Object.keys(_marketsInFlight).length,
+    hitRate: total > 0 ? (_marketsCacheStats.hits + _marketsCacheStats.coalesced) / total : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +777,7 @@ module.exports = {
   pxFetch,
   fetchSportEvents,
   fetchMarkets,
+  getMarketsCacheStats,
   fetchAffiliateSportEvents,
   fetchAffiliateMultipleMarkets,
   fetchAffiliateTournaments,

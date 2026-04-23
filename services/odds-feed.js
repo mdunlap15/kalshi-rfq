@@ -3502,6 +3502,18 @@ const PIN_VERIFY_WARM_DELAY_MS = 120;          // inter-request pacing
 const PIN_VERIFY_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
 const _pinVerifyRfqTouch = {}; // comboKey -> last-RFQ timestamp
 
+// Core sports always stay in the warm rotation regardless of recent
+// RFQ activity. These are our primary volume drivers — we accept the
+// 6 fetches / 20s cost for them to avoid ever paying cold-verify on a
+// primary-line RFQ in an active league. Everything NOT in this set
+// goes demand-aware (soccer niche leagues, MMA, etc.). Cost: ~18
+// fetches/min always-on; still ~80% below the pre-patch baseline.
+const _pinVerifyAlwaysWarmSports = new Set([
+  'basketball_nba',
+  'baseball_mlb',
+  'icehockey_nhl',
+]);
+
 // Persistent-error cooldown. If a combo fails N cycles in a row, park
 // it for 10 min — typically means Pinnacle doesn't cover that sport/
 // market on The Odds API's event-list endpoint (verified for NWSL,
@@ -3572,10 +3584,18 @@ async function _runPinVerifyWarmCycle() {
     // in the activity window. First-time combos get one grace cycle so
     // the cache is populated before any RFQ lands; thereafter they must
     // earn continued warming via RFQ traffic.
+    //
+    // Always-warm core sports (NBA/MLB/NHL) bypass this gate — we
+    // accept the fetch cost to guarantee no cold-verify tails for
+    // primary volume drivers. They still get Gate A (error cooldown)
+    // and Gate C (skip-if-very-fresh).
     const lastRfq = _pinVerifyRfqTouch[comboKey];
     stats.lastRfqAt = lastRfq ? new Date(lastRfq).toISOString() : null;
+    // `apiSport` value happens to equal our internal sport key for the
+    // always-warm trio; Pinnacle mapping is identity for those.
+    const isAlwaysWarm = _pinVerifyAlwaysWarmSports.has(apiSport);
     const hasEverWarmed = stats.fetched > 0;
-    if (hasEverWarmed && (!lastRfq || (now - lastRfq) > PIN_VERIFY_ACTIVITY_WINDOW_MS)) {
+    if (!isAlwaysWarm && hasEverWarmed && (!lastRfq || (now - lastRfq) > PIN_VERIFY_ACTIVITY_WINDOW_MS)) {
       stats.skippedInactive++;
       _pinVerifyWarmStats.totalSkippedInactive++;
       _pinVerifyWarmStats.perCombo[comboKey] = stats;

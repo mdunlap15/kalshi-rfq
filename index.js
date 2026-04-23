@@ -774,6 +774,14 @@ function startStatusServer() {
   app.get('/pin-verify-stats', (req, res) => {
     res.json(oddsFeed.getPinVerifyWarmStats());
   });
+
+  // PX fetchMarkets cache hit-rate. Watch hitRate and coalesced to
+  // confirm the cache is collapsing concurrent on-demand resolutions
+  // for the same event. Tail latency on the "resolve" stage should
+  // drop as this climbs.
+  app.get('/px-markets-cache-stats', (req, res) => {
+    res.json(px.getMarketsCacheStats());
+  });
   app.post('/warm-alt-lines', async (req, res) => {
     const sport = req.query.sport || req.body?.sport;
     try {
