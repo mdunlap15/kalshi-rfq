@@ -552,6 +552,7 @@ async function handleRFQ(data) {
     const result = await pricer.priceParlay(legs, {
       resolvedLineInfos: declineCheck.resolvedLineInfos,
       sgpCombo: declineCheck.sgpCombo || null,
+      parlayId,
     });
     stageTimings.price = elapsedMs();
     // Carry forward pricer's internal phase markers so /latency-breakdown

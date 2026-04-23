@@ -274,6 +274,34 @@ async function startup() {
   // in-memory map bounded even over multi-day sessions.
   require('./services/template-exposure').startPruneLoop();
 
+  // v2 pricing engine: train calibration from the loaded historical
+  // orders once (non-blocking). Later refits run on a weekly timer.
+  // Non-fatal if training data is sparse — calibration just returns
+  // neutral corrections until the refit accumulates enough history.
+  try {
+    const v2 = require('./services/v2');
+    const allOrders = orderTracker.getRecentOrders ? orderTracker.getRecentOrders(100000) : [];
+    if (allOrders.length > 0) {
+      v2.calibration.trainFromOrders(allOrders);
+      const stats = v2.calibration.getStats();
+      log.info('V2Pricing', `Boot-time calibration: ${stats.legsAnalyzed} legs across ${Object.keys(stats.buckets || {}).length} buckets`);
+    } else {
+      log.info('V2Pricing', 'No loaded orders yet for calibration; will refit on /v2-refit');
+    }
+    // Weekly refit timer (7 days)
+    setInterval(() => {
+      try {
+        const orders = orderTracker.getRecentOrders(100000);
+        v2.calibration.trainFromOrders(orders);
+        log.info('V2Pricing', `Weekly refit: ${v2.calibration.getStats().legsAnalyzed} legs`);
+      } catch (err) {
+        log.warn('V2Pricing', `weekly refit failed: ${err.message}`);
+      }
+    }, 7 * 24 * 60 * 60 * 1000);
+  } catch (err) {
+    log.warn('V2Pricing', `boot-time setup failed: ${err.message}`);
+  }
+
   // Start periodic timers
   const refreshMs = config.refreshIntervalMinutes * 60 * 1000;
   oddsRefreshTimer = setInterval(async () => {
@@ -836,6 +864,33 @@ function startStatusServer() {
   app.get('/template-exposure-stats', (req, res) => {
     const templateExposure = require('./services/template-exposure');
     res.json(templateExposure.getStats());
+  });
+
+  // ---- v2 pricing engine diagnostics (shadow-mode data) ----
+  // Calibration fit summary: per-bucket bias/correction/sample-size.
+  // Use to inspect where the calibration layer is actively shifting
+  // v2 predictions vs raw de-vig.
+  app.get('/v2-calibration-stats', (req, res) => {
+    res.json(require('./services/v2').calibration.getStats());
+  });
+  // Shadow-mode comparison log: last N v1-vs-v2 records, median deltas,
+  // correlation lifts. Populates only when PRICING_V2_ENABLED=true.
+  app.get('/v2-shadow-stats', (req, res) => {
+    res.json(require('./services/v2').getShadowStats());
+  });
+  // Manual refit trigger. Normally runs automatically on a weekly
+  // timer and at boot; call this after loading fresh history or
+  // adjusting the calibration trainer.
+  app.post('/v2-refit', (req, res) => {
+    try {
+      const v2 = require('./services/v2');
+      const orders = orderTracker.getRecentOrders(100000);
+      v2.calibration.trainFromOrders(orders);
+      const stats = v2.calibration.getStats();
+      res.json({ ok: true, legsAnalyzed: stats.legsAnalyzed, buckets: Object.keys(stats.buckets || {}).length, overall: stats.overall });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
   });
   app.post('/warm-alt-lines', async (req, res) => {
     const sport = req.query.sport || req.body?.sport;

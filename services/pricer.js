@@ -1210,15 +1210,66 @@ async function priceParlay(legs, opts = {}) {
     phase3Ms: phase2EndMs != null ? Math.round((phase3EndMs - phase2EndMs) * 100) / 100 : null,
   };
 
+  // ---------------------------------------------------------------------
+  // V2 SHADOW MODE
+  //
+  // When pricingV2Enabled, run the v2 pipeline alongside v1 and log a
+  // side-by-side comparison record. Never affects the live offer (v1
+  // number still goes to PX). Gate in template-ramp + longshot-add is
+  // passed through so v2 sees the same exposure context as v1.
+  //
+  // When pricingV2Live is also true, OVERRIDE the v1 americanOdds with
+  // v2's computed value. Ships code-dark until Mike flips the flag.
+  // ---------------------------------------------------------------------
+  let _v2Shadow = null;
+  if (config.pricing.pricingV2Enabled) {
+    try {
+      const v2 = require('./v2');
+      _v2Shadow = v2.shadowCompare({
+        parlayId: opts.parlayId || '(unknown)',
+        pricedLegs,
+        v1OfferedAmericanOdds: americanOdds,
+        v1FairParlayProb: fairParlayProb,
+        opts: {
+          targetEdge: config.pricing.pricingV2TargetEdge,
+          kSigma: config.pricing.pricingV2KSigma,
+          templateRampAdd: templateRampAdd || 0,
+        },
+      });
+    } catch (err) {
+      log.warn('V2Pricing', `shadow failed: ${err.message}`);
+    }
+  }
+
+  // If v2 is LIVE, replace the offer's odds with v2's result.
+  let finalAmericanOdds = americanOdds;
+  let finalOfferedImpliedProb = offeredImpliedProb;
+  if (config.pricing.pricingV2Live && _v2Shadow && _v2Shadow.v2.offeredAmericanOdds != null) {
+    finalAmericanOdds = _v2Shadow.v2.offeredAmericanOdds;
+    finalOfferedImpliedProb = _v2Shadow.v2.offeredImpliedProb;
+    log.info('V2Pricing', `live: v1=${americanOdds} → v2=${finalAmericanOdds} (Δ ${finalAmericanOdds - americanOdds})`);
+  }
+
   return {
     offer: {
       valid_until: validUntil,
-      odds: americanOdds, // American odds for PX
+      odds: finalAmericanOdds, // American odds for PX
       max_risk: maxRisk,
       estimated_price: estimatedPrice,
     },
     meta: {
       _timings,
+      _v2Shadow: _v2Shadow ? {
+        v1American: _v2Shadow.v1.offeredAmericanOdds,
+        v2American: _v2Shadow.v2.offeredAmericanOdds,
+        americanDelta: _v2Shadow.delta.americanOddsDelta,
+        v2FairParlay: _v2Shadow.v2.parlayFairProb,
+        v2CorrelationLift: _v2Shadow.v2.correlationLift,
+        v2Uncertainty: _v2Shadow.v2.parlayUncertainty,
+        v2EffectiveEdge: _v2Shadow.v2.effectiveEdge,
+        calibrationApplied: _v2Shadow.v2.calibrationApplied,
+        liveMode: !!config.pricing.pricingV2Live,
+      } : null,
       legs: pricedLegs.map(l => {
         // For totals/spreads, build a descriptive label: "Over 6.5 (NYM vs CHC)"
         let team = l.lineInfo.teamName;

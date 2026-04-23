@@ -124,6 +124,24 @@ const config = {
     templateRampTier3Add: parseFloat(process.env.TEMPLATE_RAMP_TIER3_ADD) || 0.010,   // +1.00pp on 3rd
     templateRampTier4Add: parseFloat(process.env.TEMPLATE_RAMP_TIER4_ADD) || 0.030,   // +3.00pp on 4th
     templateRampDeclineAt: parseInt(process.env.TEMPLATE_RAMP_DECLINE_AT) || 4,       // decline 5th+ bet (priorCount >= 4)
+    // v2 pricing engine: shadow-mode by default. When enabled, runs the
+    // unified calibration-corrected + correlation-aware + EV-targeted
+    // pipeline alongside v1 and logs the comparison. Does NOT affect
+    // live offers until pricingV2Live is true.
+    //
+    // Two flags so we can ship code without behavior change:
+    //   pricingV2Enabled — compute v2 alongside v1, log deltas (observation mode)
+    //   pricingV2Live    — use v2 as the authoritative offer (A/B or cutover)
+    //
+    // Knobs:
+    //   pricingV2TargetEdge — single vig parameter replacing the v1 stack
+    //   pricingV2KSigma     — conservative uncertainty shift (0.5 = half-sigma)
+    pricingV2Enabled:
+      process.env.PRICING_V2_ENABLED === 'true' || process.env.PRICING_V2_ENABLED === '1',
+    pricingV2Live:
+      process.env.PRICING_V2_LIVE === 'true' || process.env.PRICING_V2_LIVE === '1',
+    pricingV2TargetEdge: parseFloat(process.env.PRICING_V2_TARGET_EDGE) || 0.02,
+    pricingV2KSigma: parseFloat(process.env.PRICING_V2_K_SIGMA) || 0.5,
     // A/B-testable pricing mode for parlays. When true, vig is applied
     // ONCE at the parlay level using the MAX per-leg effective rate, rather
     // than compounded per-leg. Per-leg compounding penalizes multi-leg
