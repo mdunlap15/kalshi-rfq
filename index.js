@@ -19,6 +19,7 @@ const orderTracker = require('./services/order-tracker');
 const pricer = require('./services/pricer');
 const pxLedger = require('./services/px-ledger');
 const dkScraper = require('./services/dk-scraper');
+const bovadaAltScraper = require('./services/bovada-alt-scraper');
 const db = require('./services/db');
 const express = require('express');
 const path = require('path');
@@ -3311,6 +3312,42 @@ function startStatusServer() {
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // Bovada alt-line scraper — status + manual refresh triggers.
+  // Phase 1 scaffolding: scraper runs in isolation, NOT yet wired into
+  // the pricer cascade. Use these endpoints to verify it works before
+  // integration (Phase 2).
+  app.get('/bovada-alt-status', (req, res) => {
+    res.json({ ok: true, status: bovadaAltScraper.getStatus() });
+  });
+
+  // Force a refresh. ?sport=basketball_nba|icehockey_nhl|baseball_mlb
+  // or no query to refresh all three.
+  app.post('/bovada-alt-refresh', async (req, res) => {
+    try {
+      if (req.query.sport) {
+        const result = await bovadaAltScraper.refreshSport(req.query.sport);
+        res.json({ ok: true, sport: req.query.sport, result });
+      } else {
+        const results = await bovadaAltScraper.refreshAll();
+        res.json({ ok: true, results });
+      }
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Inspect a single cached event's parsed market data. Useful for
+  // spot-checking that the scraper produces what we expect before
+  // Phase 2 pricer integration goes live.
+  //   /bovada-alt-event?home=Atlanta+Hawks&away=New+York+Knicks
+  app.get('/bovada-alt-event', (req, res) => {
+    const { home, away } = req.query;
+    if (!home || !away) return res.status(400).json({ error: 'need ?home=...&away=...' });
+    const entry = bovadaAltScraper.getCachedEvent('', home, away);
+    if (!entry) return res.json({ ok: false, reason: 'no cache entry', searchedKey: bovadaAltScraper.normalizeEventKey(home, away) });
+    res.json({ ok: true, event: entry });
   });
 
   // Bovada API discovery probe — tests Bovada's public coupon API.
