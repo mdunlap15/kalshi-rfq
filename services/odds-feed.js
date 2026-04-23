@@ -3445,11 +3445,15 @@ async function warmAllSports() {
 
 // Periodic-warm loop handle so callers (and tests) can start/stop it cleanly.
 let _warmLoopTimer = null;
-// 30s interval halves the window where a newly-registered PX event hasn't
-// been pre-warmed yet. Individual warm calls early-exit when the alt cache
-// entry is still fresh under ALT_LINES_TTL_MS (10 min), so this doesn't
-// multiply API quota 2x — it just tightens new-event coverage latency.
-const WARM_LOOP_INTERVAL_MS = 30 * 1000;
+// 15s interval (tightened from 30s 2026-04-22). Bounds the window between a
+// newly-registered PX event and its first alt-line warm — i.e., the window
+// where the first RFQ touching a non-primary line pays on-demand fetch
+// latency. TTL gating (ALT_LINES_TTL_MS = 10 min) means events already
+// warm get skipped, so the tighter interval doesn't meaningfully multiply
+// API quota — it just shortens the new-event coverage gap. With soccer now
+// in the pre-warm set (see SPORTS_WITH_ALT_MARKETS), 15s is a better
+// match to how quickly soccer RFQ flow can hit a freshly-registered game.
+const WARM_LOOP_INTERVAL_MS = 15 * 1000;
 
 /**
  * Start the background warm loop. Safe to call multiple times — second calls
