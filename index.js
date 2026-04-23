@@ -750,6 +750,15 @@ function startStatusServer() {
   app.get('/jit-warm-stats', (req, res) => {
     res.json(oddsFeed.getJitWarmStats());
   });
+
+  // Sync alt-line fast-path stats — per-reason miss breakdown for RFQs
+  // that fell through to the async fetchAltLines path instead of being
+  // resolved sync. Use this to distinguish stale-cache misses (warm loop
+  // gap) from line-not-cached misses (alt line outside cached range) or
+  // sanity-gate rejections.
+  app.get('/sync-alt-stats', (req, res) => {
+    res.json(oddsFeed.getAltSyncStats());
+  });
   app.post('/warm-alt-lines', async (req, res) => {
     const sport = req.query.sport || req.body?.sport;
     try {

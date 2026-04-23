@@ -4231,18 +4231,55 @@ async function verifyLineWithPinnacle(sport, homeTeam, awayTeam, marketType, cac
  * completeness — e.g., sanity fail on stale sync data might pass once
  * the async refetch brings fresh numbers.
  */
+// Per-reason counter for sync alt-line hit/miss paths. Lets us diagnose
+// which miss class drives the RFQs that still fall through to the async
+// path (cache stale vs line_not_cached vs sanity gates). Each call
+// increments exactly one counter. `not_applicable` covers market types
+// sync can't answer for (h2h, h1 variants, team_totals) — those are
+// expected misses that route to the async Bovada fallback, not
+// regressions. `last_miss_*` buckets a rolling sample of recent
+// non-hit legs for hands-on debugging without burning log volume.
+const _altSyncStats = {
+  hit: 0,
+  not_applicable: 0,
+  cache_empty: 0,
+  cache_stale: 0,
+  distance_guard: 0,
+  line_not_cached: 0,
+  min_books_gate: 0,
+  totals_sanity_fail: 0,
+  spreads_sanity_fail: 0,
+  lastHitAt: null,
+  lastMissAt: null,
+  recentMisses: [], // { reason, sport, home, away, marketType, selection, line, at }
+};
+function _recordAltSyncMiss(reason, ctx) {
+  _altSyncStats[reason]++;
+  _altSyncStats.lastMissAt = new Date().toISOString();
+  // Keep last 20 misses for quick inspection
+  _altSyncStats.recentMisses.push({ reason, ...ctx, at: _altSyncStats.lastMissAt });
+  if (_altSyncStats.recentMisses.length > 20) _altSyncStats.recentMisses.shift();
+}
+
 function getAltLineFairProbSync(sport, homeTeam, awayTeam, marketType, selection, line, targetTime) {
   // Only spread/total (incl. F5) have alt-line caches. Other market
   // types (h1 variants, team_totals) flow through getFairProbAsync to
   // the Bovada fallback and must not short-circuit here.
   const isSpreadOrTotal = marketType === 'spreads' || marketType === 'totals'
                          || marketType === 'spreads_f5' || marketType === 'totals_f5';
-  if (!isSpreadOrTotal || line == null) return null;
+  if (!isSpreadOrTotal || line == null) {
+    _altSyncStats.not_applicable++;
+    return null;
+  }
 
+  const ctx = { sport, home: homeTeam, away: awayTeam, marketType, selection, line };
   const key = normalizeEventKey(homeTeam, awayTeam);
   const cached = altLinesCache[key];
-  // Require fresh cache. Stale → let async path refetch.
-  if (!cached || (Date.now() - cached.fetchedAt) >= ALT_LINES_TTL_MS) return null;
+  if (!cached) { _recordAltSyncMiss('cache_empty', ctx); return null; }
+  if ((Date.now() - cached.fetchedAt) >= ALT_LINES_TTL_MS) {
+    _recordAltSyncMiss('cache_stale', { ...ctx, ageMs: Date.now() - cached.fetchedAt });
+    return null;
+  }
 
   // Distance guard (strict-mode) — mirrors async path line-by-line.
   const event = getEventMarkets(sport, homeTeam, awayTeam, targetTime);
@@ -4250,17 +4287,23 @@ function getAltLineFairProbSync(sport, homeTeam, awayTeam, marketType, selection
   if (primaryMarket?.line != null) {
     const lineDiff0 = Math.abs(Math.abs(primaryMarket.line) - Math.abs(line));
     const maxDist = altMaxLineDistance(sport);
-    if (lineDiff0 > maxDist) return null;
+    if (lineDiff0 > maxDist) {
+      _recordAltSyncMiss('distance_guard', { ...ctx, primary: primaryMarket.line, diff: lineDiff0 });
+      return null;
+    }
   }
 
   const altProb = getAltLineFairProb(key, marketType, selection, line);
-  if (altProb == null) return null;
+  if (altProb == null) { _recordAltSyncMiss('line_not_cached', ctx); return null; }
 
   // Strict-mode min-book gate
   if (isStrictAltSanitySport(sport)) {
     const altEntry = getAltLineCacheEntry(key, marketType, selection, line);
     const bookCount = altEntry ? altEntry.books : 0;
-    if (bookCount < 2) return null;
+    if (bookCount < 2) {
+      _recordAltSyncMiss('min_books_gate', { ...ctx, books: bookCount });
+      return null;
+    }
   }
 
   // Directional sanity checks (mirror async path)
@@ -4270,10 +4313,16 @@ function getAltLineFairProbSync(sport, homeTeam, awayTeam, marketType, selection
     const lineDiff = Math.abs(Math.abs(market.line) - Math.abs(line));
     if (lineDiff >= sanityThreshold) {
       const expectHigh = (selection === 'over' && line < market.line) || (selection === 'under' && line > market.line);
-      if (expectHigh && altProb < 0.55) return null;
+      if (expectHigh && altProb < 0.55) {
+        _recordAltSyncMiss('totals_sanity_fail', { ...ctx, primary: market.line, altProb });
+        return null;
+      }
       if (isStrictAltSanitySport(sport)) {
         const expectLow = (selection === 'over' && line > market.line) || (selection === 'under' && line < market.line);
-        if (expectLow && altProb > 0.55) return null;
+        if (expectLow && altProb > 0.55) {
+          _recordAltSyncMiss('totals_sanity_fail', { ...ctx, primary: market.line, altProb, strict: true });
+          return null;
+        }
       }
     }
   }
@@ -4285,13 +4334,37 @@ function getAltLineFairProbSync(sport, homeTeam, awayTeam, marketType, selection
         const easierToCover = (selection === 'home')
           ? (line > market.line)
           : (line < market.line);
-        if (easierToCover && altProb < primaryProb - 0.05) return null;
-        if (!easierToCover && altProb > primaryProb + 0.05) return null;
+        if (easierToCover && altProb < primaryProb - 0.05) {
+          _recordAltSyncMiss('spreads_sanity_fail', { ...ctx, primary: market.line, altProb, primaryProb });
+          return null;
+        }
+        if (!easierToCover && altProb > primaryProb + 0.05) {
+          _recordAltSyncMiss('spreads_sanity_fail', { ...ctx, primary: market.line, altProb, primaryProb });
+          return null;
+        }
       }
     }
   }
 
+  _altSyncStats.hit++;
+  _altSyncStats.lastHitAt = new Date().toISOString();
   return altProb;
+}
+
+function getAltSyncStats() {
+  const totalMisses = _altSyncStats.cache_empty + _altSyncStats.cache_stale
+    + _altSyncStats.distance_guard + _altSyncStats.line_not_cached
+    + _altSyncStats.min_books_gate + _altSyncStats.totals_sanity_fail
+    + _altSyncStats.spreads_sanity_fail;
+  const totalCalls = _altSyncStats.hit + _altSyncStats.not_applicable + totalMisses;
+  return {
+    ..._altSyncStats,
+    totalCalls,
+    totalMisses,
+    hitRateOfApplicable: (_altSyncStats.hit + totalMisses) > 0
+      ? _altSyncStats.hit / (_altSyncStats.hit + totalMisses)
+      : null,
+  };
 }
 
 async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection, line, targetTime) {
@@ -5577,6 +5650,7 @@ module.exports = {
   getFairProb,
   getFairProbAsync,
   getAltLineFairProbSync,
+  getAltSyncStats,
   verifyLineWithPinnacle,
   getPinnacleOdds,
   getDisplayFairProb,
