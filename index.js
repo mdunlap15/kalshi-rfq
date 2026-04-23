@@ -3378,13 +3378,17 @@ function startStatusServer() {
                 ? events[0].displayGroups.slice(0, 20).map(dg => ({
                     description: dg.description,
                     marketCount: Array.isArray(dg.markets) ? dg.markets.length : null,
+                    // Raised from 8 to 50 so we can see complete market lists
+                    // in groups like Alternate Lines (18 markets — 8-limit
+                    // was truncating exactly what we need to identify).
                     sampleMarkets: Array.isArray(dg.markets)
-                      ? dg.markets.slice(0, 8).map(m => ({
+                      ? dg.markets.slice(0, 50).map(m => ({
                           description: m.description,
                           period: m.period?.description,
+                          periodId: m.period?.id,
                           outcomeCount: Array.isArray(m.outcomes) ? m.outcomes.length : null,
                           sampleOutcomes: Array.isArray(m.outcomes)
-                            ? m.outcomes.slice(0, 3).map(o => ({
+                            ? m.outcomes.slice(0, 2).map(o => ({
                                 description: o.description,
                                 american: o.price?.american,
                                 handicap: o.price?.handicap,
