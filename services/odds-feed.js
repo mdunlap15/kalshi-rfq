@@ -3492,15 +3492,42 @@ function startAltLineWarmLoop() {
 let _pinVerifyWarmTimer = null;
 const PIN_VERIFY_WARM_INTERVAL_MS = 20 * 1000; // 20s inside 30s TTL
 const PIN_VERIFY_WARM_DELAY_MS = 120;          // inter-request pacing
+
+// Demand-aware gating. Only warm combos that have been touched by an
+// RFQ's verifyLineWithPinnacle call in the last N minutes. Quiet combos
+// (e.g. MMA with 73 events but zero RFQs this hour) stop consuming
+// Odds API quota. Newly-active combos pay one cold-cache verify (~20ms)
+// on the first RFQ after a cold period — acceptable trade vs. the
+// ~60-75% quota reduction when most leagues sit idle.
+const PIN_VERIFY_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
+const _pinVerifyRfqTouch = {}; // comboKey -> last-RFQ timestamp
+
+// Persistent-error cooldown. If a combo fails N cycles in a row, park
+// it for 10 min — typically means Pinnacle doesn't cover that sport/
+// market on The Odds API's event-list endpoint (verified for NWSL,
+// Libertadores). Saves wasted fetches without permanently blocking
+// retries in case coverage returns.
+const PIN_VERIFY_ERROR_COOLDOWN_MS = 10 * 60 * 1000;
+const PIN_VERIFY_ERROR_THRESHOLD = 3;
+const _pinVerifyErrorStreak = {}; // comboKey -> { count, cooldownStartAt }
+
 const _pinVerifyWarmStats = {
   cyclesRun: 0,
   cyclesCompletedAt: null,
   lastCycleMs: null,
   totalFetches: 0,
   totalSkippedFresh: 0,
+  totalSkippedInactive: 0,
+  totalSkippedErrorCooldown: 0,
   totalErrors: 0,
-  perCombo: {}, // `${sport}|${market}` -> { fetched, skippedFresh, errors, lastFetchedAt }
+  perCombo: {}, // `${sport}|${market}` -> { fetched, skippedFresh, skippedInactive, errors, lastFetchedAt, lastRfqAt, errorStreak, cooldownUntil }
 };
+
+// Called from verifyLineWithPinnacle on every hot-path invocation so the
+// warm loop knows which combos are actually serving RFQs.
+function _touchPinVerifyCombo(comboKey) {
+  _pinVerifyRfqTouch[comboKey] = Date.now();
+}
 
 async function _runPinVerifyWarmCycle() {
   const t0 = Date.now();
@@ -3520,29 +3547,78 @@ async function _runPinVerifyWarmCycle() {
     if (i > 0) await new Promise(r => setTimeout(r, PIN_VERIFY_WARM_DELAY_MS));
     const { apiSport, market } = combos[i];
     const comboKey = apiSport + '|' + market;
-    const stats = _pinVerifyWarmStats.perCombo[comboKey] || { fetched: 0, skippedFresh: 0, errors: 0, lastFetchedAt: null };
+    const stats = _pinVerifyWarmStats.perCombo[comboKey] || {
+      fetched: 0, skippedFresh: 0, skippedInactive: 0, errors: 0,
+      lastFetchedAt: null, lastRfqAt: null, errorStreak: 0, cooldownUntil: null,
+    };
+    const now = Date.now();
+
+    // Gate A: error cooldown. If we've seen N consecutive failures, park
+    // this combo for PIN_VERIFY_ERROR_COOLDOWN_MS before trying again.
+    const err = _pinVerifyErrorStreak[comboKey];
+    if (err && err.cooldownStartAt && (now - err.cooldownStartAt) < PIN_VERIFY_ERROR_COOLDOWN_MS) {
+      _pinVerifyWarmStats.totalSkippedErrorCooldown++;
+      stats.cooldownUntil = new Date(err.cooldownStartAt + PIN_VERIFY_ERROR_COOLDOWN_MS).toISOString();
+      _pinVerifyWarmStats.perCombo[comboKey] = stats;
+      continue;
+    }
+    // Cooldown expired or never triggered — clear any stale state.
+    if (err && err.cooldownStartAt && (now - err.cooldownStartAt) >= PIN_VERIFY_ERROR_COOLDOWN_MS) {
+      delete _pinVerifyErrorStreak[comboKey];
+      stats.cooldownUntil = null;
+    }
+
+    // Gate B: demand activity. Skip combos that haven't served an RFQ
+    // in the activity window. First-time combos get one grace cycle so
+    // the cache is populated before any RFQ lands; thereafter they must
+    // earn continued warming via RFQ traffic.
+    const lastRfq = _pinVerifyRfqTouch[comboKey];
+    stats.lastRfqAt = lastRfq ? new Date(lastRfq).toISOString() : null;
+    const hasEverWarmed = stats.fetched > 0;
+    if (hasEverWarmed && (!lastRfq || (now - lastRfq) > PIN_VERIFY_ACTIVITY_WINDOW_MS)) {
+      stats.skippedInactive++;
+      _pinVerifyWarmStats.totalSkippedInactive++;
+      _pinVerifyWarmStats.perCombo[comboKey] = stats;
+      continue;
+    }
+
+    // Gate C: skip if entry was refreshed very recently. With 20s cycle
+    // + 30s TTL, refresh when age >= 10s to keep cache always ≥ 10s
+    // from expiry when an RFQ hits.
     const cached = _pinVerifyCache[comboKey];
-    // Skip if entry has plenty of TTL remaining. With 20s cycle + 30s
-    // TTL, refresh when age >= 10s to keep cache always ≥ 10s from
-    // expiry when an RFQ hits.
-    if (cached && (Date.now() - cached.fetchedAt) < 10 * 1000) {
+    if (cached && (now - cached.fetchedAt) < 10 * 1000) {
       stats.skippedFresh++;
       _pinVerifyWarmStats.totalSkippedFresh++;
       _pinVerifyWarmStats.perCombo[comboKey] = stats;
       continue;
     }
+
     try {
       const events = await _fetchPinVerifyEvents(apiSport, market, theOddsApiKey);
       if (events) {
         stats.fetched++;
         stats.lastFetchedAt = new Date().toISOString();
+        stats.errorStreak = 0;
         _pinVerifyWarmStats.totalFetches++;
+        delete _pinVerifyErrorStreak[comboKey]; // success clears any streak
       } else {
         stats.errors++;
+        stats.errorStreak = (stats.errorStreak || 0) + 1;
         _pinVerifyWarmStats.totalErrors++;
+        // Track consecutive errors. Trip cooldown on threshold.
+        const streak = (_pinVerifyErrorStreak[comboKey] || { count: 0 }).count + 1;
+        _pinVerifyErrorStreak[comboKey] = {
+          count: streak,
+          cooldownStartAt: streak >= PIN_VERIFY_ERROR_THRESHOLD ? Date.now() : null,
+        };
+        if (streak >= PIN_VERIFY_ERROR_THRESHOLD) {
+          stats.cooldownUntil = new Date(Date.now() + PIN_VERIFY_ERROR_COOLDOWN_MS).toISOString();
+          log.info('OddsFeed', `Pin verify cooldown ${comboKey} (${streak} consecutive errors)`);
+        }
       }
-    } catch (err) {
+    } catch (e) {
       stats.errors++;
+      stats.errorStreak = (stats.errorStreak || 0) + 1;
       _pinVerifyWarmStats.totalErrors++;
     }
     _pinVerifyWarmStats.perCombo[comboKey] = stats;
@@ -4285,6 +4361,12 @@ async function verifyLineWithPinnacle(sport, homeTeam, awayTeam, marketType, cac
 
   try {
     const market = marketType === 'spreads' ? 'spreads' : 'totals';
+    // Mark this combo as RFQ-active so the warm loop keeps it hot.
+    // Quiet combos get demoted out of the warm rotation after
+    // PIN_VERIFY_ACTIVITY_WINDOW_MS; this call brings them back in.
+    if (typeof _touchPinVerifyCombo === 'function') {
+      _touchPinVerifyCombo(oddsApiSport + '|' + market);
+    }
     const events = await _fetchPinVerifyEvents(oddsApiSport, market, theOddsApiKey);
     if (!events) return { ok: true }; // fetch failed, allow
 

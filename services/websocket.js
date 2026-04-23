@@ -554,6 +554,16 @@ async function handleRFQ(data) {
       sgpCombo: declineCheck.sgpCombo || null,
     });
     stageTimings.price = elapsedMs();
+    // Carry forward pricer's internal phase markers so /latency-breakdown
+    // can decompose the "price" stage into phase1 (sync validation),
+    // phase2 (parallel fair-prob + Pinnacle verify), phase3 (post-process
+    // + American-odds compute). Only present on happy-path returns.
+    if (result && result.meta && result.meta._timings) {
+      const t = result.meta._timings;
+      stageTimings.price_phase1Ms = t.phase1Ms;
+      stageTimings.price_phase2Ms = t.phase2Ms;
+      stageTimings.price_phase3Ms = t.phase3Ms;
+    }
     if (!result) {
       // Near miss — all legs known but couldn't price. Get the specific blocker.
       const failure = pricer.getLastPriceFailure() || { reason: 'no fair value', detail: null, blockerLeg: null };
@@ -1191,6 +1201,18 @@ function getLatencyBreakdown() {
     stageStats[k] = _percentiles(vals);
   }
 
+  // Price-phase durations (non-cumulative — each value is the length of
+  // that specific phase in ms). Populated by pricer's phase markers and
+  // only present on successfully-offered RFQs.
+  const priceSubStats = {};
+  for (const k of ['price_phase1Ms', 'price_phase2Ms', 'price_phase3Ms']) {
+    const vals = withStages
+      .map(r => (r.stages && r.stages[k] != null) ? r.stages[k] : null)
+      .filter(v => v != null)
+      .sort((a, b) => a - b);
+    priceSubStats[k] = _percentiles(vals);
+  }
+
   // Per-stage deltas (how long each stage actually took, not cumulative)
   const deltaStats = {};
   const deltaPairs = [
@@ -1283,6 +1305,7 @@ function getLatencyBreakdown() {
     endToEnd: _percentiles(endToEnd),
     stagesCumulative: stageStats,
     stageDeltas: deltaStats,
+    pricePhases: priceSubStats,
     winRateByLatencyBucket: winRateBuckets,
   };
 }

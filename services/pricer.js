@@ -4,6 +4,7 @@ const lineManager = require('./line-manager');
 const oddsFeed = require('./odds-feed');
 const orderTracker = require('./order-tracker');
 const dkScraper = require('./dk-scraper');
+const { performance } = require('perf_hooks');
 
 /**
  * Detect a series-winner leg and look up its fair probability from the
@@ -324,6 +325,14 @@ async function priceParlay(legs, opts = {}) {
   const pricedLegs = [];
   let fairParlayProb = 1.0;
 
+  // Phase-timing markers. We emit these on the happy path via the
+  // result.meta._timings field so the websocket layer can decompose the
+  // composite "price" stage. Failure paths (early returns) skip this —
+  // only successful offers produce timings.
+  const phaseStartMs = performance.now();
+  let phase1EndMs = null;
+  let phase2EndMs = null;
+
   // ------------------------- PHASE 1: Sync validation -------------------------
   const legStates = [];
   const nowMs = Date.now();
@@ -445,6 +454,9 @@ async function priceParlay(legs, opts = {}) {
     legStates.push({ lineId, lineInfo, legLabel, legDescriptor, needsVerify, verifyCachedLine });
   }
 
+  // Phase 1 complete — captured before Phase 2 dispatches any async work.
+  phase1EndMs = performance.now();
+
   // ------------------- PHASE 2: Per-leg fair probs + line verify ----------------
   // Try sync resolution first. All fair-prob paths EXCEPT getFairProbAsync's
   // alt-line fallback are actually synchronous under the hood (series / MMA /
@@ -565,6 +577,9 @@ async function priceParlay(legs, opts = {}) {
       for (const idx of pendingVerifyIdx) verifyResults[idx] = settled[k++];
     }
   }
+
+  // Phase 2 complete — await(s) have resolved; everything below is sync.
+  phase2EndMs = performance.now();
 
   // -------------------- PHASE 3: Post-process results per leg -------------------
   for (let legIdx = 0; legIdx < legStates.length; legIdx++) {
@@ -1120,6 +1135,15 @@ async function priceParlay(legs, opts = {}) {
   // valid_until in nanoseconds
   const validUntil = Math.floor((Date.now() / 1000 + config.pricing.offerValidSeconds) * 1e9);
 
+  // Compose phase-level durations for latency instrumentation. Rounded
+  // to 0.01ms — sub-microsecond noise isn't useful here.
+  const phase3EndMs = performance.now();
+  const _timings = {
+    phase1Ms: phase1EndMs != null ? Math.round((phase1EndMs - phaseStartMs) * 100) / 100 : null,
+    phase2Ms: (phase1EndMs != null && phase2EndMs != null) ? Math.round((phase2EndMs - phase1EndMs) * 100) / 100 : null,
+    phase3Ms: phase2EndMs != null ? Math.round((phase3EndMs - phase2EndMs) * 100) / 100 : null,
+  };
+
   return {
     offer: {
       valid_until: validUntil,
@@ -1128,6 +1152,7 @@ async function priceParlay(legs, opts = {}) {
       estimated_price: estimatedPrice,
     },
     meta: {
+      _timings,
       legs: pricedLegs.map(l => {
         // For totals/spreads, build a descriptive label: "Over 6.5 (NYM vs CHC)"
         let team = l.lineInfo.teamName;
