@@ -705,6 +705,24 @@ async function handleConfirm(data) {
     log.info('Confirm', `Received: parlay=${parlayId}, order=${orderUuid}, odds=${confirmedOdds}, stake=$${confirmedStake}`);
     log.info('Confirm', `FULL PAYLOAD: ${JSON.stringify(payload)}`);
 
+    // Pause gate. `handleAsk` stops creating new offers when paused, but PX
+    // can still deliver confirms on offers already in flight (or past their
+    // valid_until in sandbox). Pause MUST mean no new risk — reject every
+    // confirm regardless of state, so operator-initiated pause fully stops
+    // the book growing.
+    if (paused) {
+      log.info('Confirm', `[PAUSED] Rejecting confirm: parlay=${parlayId}, stake=$${confirmedStake}, odds=${confirmedOdds}`);
+      orderTracker.recordRejection(parlayId, 'service paused');
+      if (callbackUrl) {
+        try {
+          await px.confirmOrder(callbackUrl, orderUuid, 'reject');
+        } catch (e) {
+          log.warn('Confirm', `Paused-reject POST failed for ${parlayId}: ${e.message}`);
+        }
+      }
+      return;
+    }
+
     // Find our original quote
     const originalOrder = orderTracker.findByParlayId(parlayId);
     if (!originalOrder) {
