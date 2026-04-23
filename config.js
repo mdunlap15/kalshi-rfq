@@ -79,6 +79,31 @@ const config = {
     // top of the normal baseVig + favorite ramp. Tunable via
     // VIG_MMA_MIN env var.
     vigMmaMin: parseFloat(process.env.VIG_MMA_MIN) || 0.03,
+    // Longshot vig widening: add extra vig on low-PARLAY-fair-prob quotes
+    // (long odds). Per-leg favorite ramp only fires above fairProb 0.5 —
+    // it doesn't help multi-leg parlays made of dog legs, which hit a low
+    // parlay-product fair prob without any single leg triggering the ramp.
+    // Observed (2026-04-23): our parlay offer avg sits +0.76pp above fair
+    // while Pinnacle averages +1.11pp on comparable parlays, with the
+    // biggest gap in the low-prob region. Bettors are less price-sensitive
+    // on long odds — an extra 20¢ on a +500 offer is invisible to them
+    // but is meaningful EV for us.
+    //
+    // Formula: if parlayFairProb < threshold, add a linear ramp that
+    // peaks at maxAdd when parlayFairProb → 0:
+    //   ramp = maxAdd * (1 - parlayFairProb / threshold)
+    //
+    // Sample with threshold=0.25, maxAdd=0.010:
+    //   parlayFair=0.05 → +0.8pp vig
+    //   parlayFair=0.10 → +0.6pp
+    //   parlayFair=0.15 → +0.4pp
+    //   parlayFair=0.20 → +0.2pp
+    //   parlayFair≥0.25 → 0 (no change)
+    //
+    // Applied in both parlay-level and per-leg modes. Set maxAdd=0 to
+    // disable. Tunable via VIG_LONGSHOT_THRESHOLD and VIG_LONGSHOT_MAX_ADD.
+    vigLongshotThreshold: parseFloat(process.env.VIG_LONGSHOT_THRESHOLD) || 0.25,
+    vigLongshotMaxAdd: parseFloat(process.env.VIG_LONGSHOT_MAX_ADD) || 0.010,
     // A/B-testable pricing mode for parlays. When true, vig is applied
     // ONCE at the parlay level using the MAX per-leg effective rate, rather
     // than compounded per-leg. Per-leg compounding penalizes multi-leg

@@ -913,33 +913,66 @@ async function priceParlay(legs, opts = {}) {
   const vigLegs = pricedLegs.filter(l => l.bookPriceOverride == null);
   const overrideProduct = overrideLegs.reduce((p, l) => p * l.bookPriceOverride, 1);
 
+  // Parlay fair prob over vig legs — reused by both modes and by the
+  // longshot ramp below.
+  const vigFair = vigLegs.reduce((p, l) => p * l.fairProb, 1);
+
+  // ---------------------------------------------------------------------
+  // LONGSHOT VIG WIDENING (parlay-level)
+  //
+  // The per-leg favorite ramp only fires above fairProb 0.5, so multi-leg
+  // parlays built out of dog legs never trigger it — their parlay-product
+  // fair prob lands low (5-20%) but each leg uses base vig. That's where
+  // our chart showed the biggest gap vs Pinnacle. This ramp closes that
+  // gap by adding vig linearly as parlay fair prob approaches 0.
+  //
+  // Applied as an ADDITIVE increment to the vig rate used below. Capped
+  // at 0.20 downstream (same ceiling as the SGP multiplier) so we can't
+  // stack runaway vig on extreme long shots.
+  // ---------------------------------------------------------------------
+  const lsThreshold = config.pricing.vigLongshotThreshold || 0;
+  const lsMaxAdd = config.pricing.vigLongshotMaxAdd || 0;
+  let longshotAdd = 0;
+  if (lsMaxAdd > 0 && lsThreshold > 0 && vigFair > 0 && vigFair < lsThreshold) {
+    longshotAdd = lsMaxAdd * (1 - vigFair / lsThreshold);
+  }
+
   if (config.pricing.parlayLevelVig) {
     // Parlay-level: single vig application using max per-leg rate (over vig legs only).
     const perLegVigs = vigLegs.map(l => getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType));
     const maxVig = perLegVigs.length > 0 ? Math.max(...perLegVigs) : config.pricing.defaultVig;
-    const vigFair = vigLegs.reduce((p, l) => p * l.fairProb, 1);
+    const effectiveVig = Math.min(0.20, maxVig + longshotAdd);
     if (vigLegs.length > 0) {
       const fairDecimal = 1 / vigFair;
       const payout = fairDecimal - 1;
-      const viggedPayout = payout * (1 - maxVig);
+      const viggedPayout = payout * (1 - effectiveVig);
       offeredImpliedProb = (1 / (1 + viggedPayout)) * overrideProduct;
     } else {
       offeredImpliedProb = overrideProduct;
     }
     vigMode = 'parlay-level';
-    vigRateUsed = maxVig;
+    vigRateUsed = effectiveVig;
   } else {
     // Per-leg: vig applied to each leg's odds then compounded (legacy).
     offeredImpliedProb = overrideProduct;
     for (const leg of vigLegs) {
       offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType);
     }
+    // Longshot widening applied as a final parlay-level haircut on the
+    // post-compounding offered prob so the sensitivity matches parlay-
+    // level mode's behavior for low-prob parlays.
+    if (longshotAdd > 0 && vigLegs.length > 0 && offeredImpliedProb > 0) {
+      const payout = (1 / offeredImpliedProb) - 1;
+      const cappedAdd = Math.min(longshotAdd, 0.20);
+      const adjustedPayout = payout * (1 - cappedAdd);
+      offeredImpliedProb = (1 / (1 + adjustedPayout));
+    }
     vigMode = 'per-leg';
     // For per-leg, expose the AVERAGE per-leg rate as the "used" value (vig legs only).
     const avgVig = vigLegs.length > 0
       ? vigLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType), 0) / vigLegs.length
       : 0;
-    vigRateUsed = avgVig;
+    vigRateUsed = Math.min(0.20, avgVig + longshotAdd);
   }
 
   // -------------------------------------------------------------------
@@ -1206,6 +1239,11 @@ async function priceParlay(legs, opts = {}) {
       // so /market-intel can split win rate by mode for A/B analysis.
       vigMode,
       vigRateUsed: Math.round((vigRateUsed || 0) * 10000) / 10000,
+      // Additional vig added by longshot ramp (parlay-level, applied when
+      // parlay fair prob < vigLongshotThreshold). 0 when not triggered.
+      // Exposed so dashboard can flag which quotes used the ramp and we
+      // can A/B measure acceptance-rate impact.
+      longshotAdd: Math.round((longshotAdd || 0) * 10000) / 10000,
       fairParlayProb: Math.round(fairParlayProb * 100000) / 100000,
       pricingMethod,
       isSGP,
