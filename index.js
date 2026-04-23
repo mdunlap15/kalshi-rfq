@@ -3313,6 +3313,89 @@ function startStatusServer() {
     }
   });
 
+  // BetMGM API discovery probe — tries to fetch JSON directly from MGM's
+  // public cds-api endpoints. Unlike DK, BetMGM exposes market data via
+  // a REST API that typically doesn't require full browser rendering.
+  // If these endpoints work with vanilla fetch, we skip Puppeteer entirely
+  // for the MGM scraper — much faster and more reliable than SPA scraping.
+  //
+  //   /debug-mgm-probe                     — tries a handful of default URLs
+  //   /debug-mgm-probe?url=<full_url>      — probe a specific URL
+  //   /debug-mgm-probe?subdivision=US-NJ   — try a specific state subdomain
+  app.get('/debug-mgm-probe', async (req, res) => {
+    const userUrl = req.query.url;
+    // MGM has state-specific subdomains (NJ, MI, PA, etc.). Some data is
+    // accessible across states; some is gated. Try a few defaults.
+    const subdivision = req.query.subdivision || 'US-NJ';
+    const state = subdivision.split('-')[1]?.toLowerCase() || 'nj';
+
+    // Common MGM API URL patterns to probe. Each tests a different endpoint
+    // shape; we want to find one that returns JSON without requiring
+    // auth tokens beyond basic query-string params.
+    const defaultProbes = [
+      // Public fixtures list (most-useful if accessible)
+      `https://sports.${state}.betmgm.com/cds-api/bettingoffer/fixtures?x-bwin-accessid=aW50Om1vYjo&lang=en-us&country=US&userCountry=US&subdivision=${subdivision}&sportIds=7&state=Upcoming`,
+      // Alternative: competitions (NBA)
+      `https://sports.${state}.betmgm.com/cds-api/bettingoffer/competitions?x-bwin-accessid=aW50Om1vYjo&lang=en-us&country=US&userCountry=US&subdivision=${subdivision}&sportIds=7`,
+      // Nested fixtures under NBA league id (103 is NBA on MGM typically)
+      `https://sports.${state}.betmgm.com/cds-api/bettingoffer/fixtures?x-bwin-accessid=aW50Om1vYjo&lang=en-us&country=US&userCountry=US&subdivision=${subdivision}&sportIds=7&competitionIds=103`,
+    ];
+    const probes = userUrl ? [userUrl] : defaultProbes;
+    const results = [];
+    for (const url of probes) {
+      const t0 = Date.now();
+      try {
+        const r = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
+        });
+        const elapsedMs = Date.now() - t0;
+        const ct = r.headers.get('content-type') || '';
+        const bodyText = await r.text();
+        let bodyJson = null, parseErr = null;
+        if (ct.includes('json')) {
+          try { bodyJson = JSON.parse(bodyText); } catch (e) { parseErr = e.message; }
+        }
+        // Extract useful summary from the JSON if present
+        let summary = null;
+        if (bodyJson) {
+          const keys = Object.keys(bodyJson).slice(0, 10);
+          // Common MGM shapes
+          const fixtures = bodyJson.fixtures || bodyJson.Fixtures || bodyJson.events || bodyJson.payload?.fixtures;
+          const competitions = bodyJson.competitions || bodyJson.Competitions;
+          summary = {
+            topLevelKeys: keys,
+            fixtureCount: Array.isArray(fixtures) ? fixtures.length : null,
+            competitionCount: Array.isArray(competitions) ? competitions.length : null,
+            sampleFixture: Array.isArray(fixtures) && fixtures[0] ? {
+              id: fixtures[0].id,
+              name: fixtures[0].name?.value || fixtures[0].name,
+              startDate: fixtures[0].startDate || fixtures[0].startTime,
+              hasGames: !!fixtures[0].games,
+              gameCount: Array.isArray(fixtures[0].games) ? fixtures[0].games.length : null,
+            } : null,
+          };
+        }
+        results.push({
+          url,
+          status: r.status,
+          elapsedMs,
+          contentType: ct,
+          parseErr,
+          bodyLength: bodyText.length,
+          bodyPreview: bodyText.slice(0, 300),
+          summary,
+        });
+      } catch (err) {
+        results.push({ url, error: err.message });
+      }
+    }
+    res.json({ ok: true, subdivision, probeCount: probes.length, results });
+  });
+
   // DK scraper discovery probe — navigates to a DK URL, optionally follows
   // up with a per-event detail-page visit, and returns a summary of every
   // marketType.name captured from XHRs plus sample selection shapes.
