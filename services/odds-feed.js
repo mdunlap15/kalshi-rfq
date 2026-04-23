@@ -1751,7 +1751,23 @@ function getBookPairsForTotals(odds) {
  * SharpAPI team_total selection_type: "home_over", "home_under", "away_over", "away_under"
  */
 function getBookPairsForTeamTotals(odds) {
-  const byBookSide = {};
+  // Key by (book, side, LINE) to guarantee Over/Under pair at the SAME
+  // line per book.
+  //
+  // Root-cause fix for 2026-04-23 ATL Braves mispricing
+  // (parlay 019dbae7-632b-7647): prior version keyed by (book, side)
+  // only, so when a book posted multiple alt lines for one team
+  // (common on FanDuel MLB team_totals — a single feed response can
+  // include Under 4.5, 5.5, 6.5 for the same team), the last-written
+  // `under` row overwrote earlier ones. Over 4.5 (-136) ended up
+  // paired with Under 6.5 (-225), producing a 127% overround.
+  // Proportional de-vig then assigned ~45% to the Over side when
+  // real FanDuel-fair was ~55% — a ~10pp miss in the losing direction.
+  //
+  // With line-keyed pairing, each line gets its own over/under pair
+  // (matching by same-book same-line). Only pairs where BOTH Over and
+  // Under exist at that line flow downstream to buildConsensusTeamTotals.
+  const byKey = {};
   for (const row of odds) {
     // Determine team side and direction from selection_type
     const st = row.selection_type || '';
@@ -1770,16 +1786,19 @@ function getBookPairsForTeamTotals(odds) {
       side = row.selection_type === 'home' ? 'home' : row.selection_type === 'away' ? 'away' : null;
       if (!side) continue;
     }
-    const key = `${row.sportsbook}|${side}`;
-    if (!byBookSide[key]) byBookSide[key] = {};
-    byBookSide[key][dir] = row;
+    // Need a line to pair safely. Rows without line would conflate
+    // multiple alt lines into one pair (the original bug).
+    if (row.line == null) continue;
+    const key = `${row.sportsbook}|${side}|${row.line}`;
+    if (!byKey[key]) {
+      byKey[key] = { book: row.sportsbook, teamSide: side, line: row.line };
+    }
+    byKey[key][dir] = row;
   }
-  return Object.entries(byBookSide)
-    .filter(([_, sides]) => sides.over && sides.under)
-    .map(([key, sides]) => {
-      const [book, teamSide] = key.split('|');
-      return { book, teamSide, over: sides.over, under: sides.under };
-    });
+  // Keep only entries where BOTH sides of the same line exist. Books
+  // that post only one side at a line (rare, but possible mid-update)
+  // are silently dropped rather than mispaired.
+  return Object.values(byKey).filter(p => p.over && p.under);
 }
 
 /**
