@@ -652,29 +652,62 @@ async function loadLineCacheByEventIds(eventIds) {
 // DAILY P&L — query settled orders grouped by settlement date
 // ---------------------------------------------------------------------------
 
-async function getDailyPnL(days = 30) {
+async function getDailyPnL(days = 30, opts = {}) {
   const db = getClient();
   if (!db) return [];
 
+  // groupBy selects which column buckets a row into a day:
+  //   - 'settled_at' (default): date the outcome landed — matches the
+  //     prior behaviour and the settlement-centric P&L view.
+  //   - 'quoted_at': date the offer was made — matches the dashboard's
+  //     Daily Volume & P&L chart, which groups by quote date so the
+  //     forensic "what happened on April 18" question lines up with
+  //     what the operator sees.
+  const groupBy = opts.groupBy === 'quoted_at' ? 'quoted_at' : 'settled_at';
+
   try {
     const cutoff = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
-    const { data, error } = await db.from('parlay_orders')
-      .select('parlay_id, status, pnl, confirmed_stake, offered_odds, settled_at')
-      .like('status', 'settled_%')
-      .gte('settled_at', cutoff)
-      .order('settled_at', { ascending: true });
-
-    if (error) {
-      log.warn('DB', `getDailyPnL error: ${error.message}`);
-      return [];
+    // Paginate past Supabase's default 1,000-row ceiling. At ~150 fills/day
+    // of confirmed volume, ~30 days of settled rows easily exceeds that
+    // limit; prior behaviour silently truncated at whichever 10-ish days
+    // filled the first page.
+    const PAGE_SIZE = 1000;
+    const MAX_PAGE_RETRIES = 4;
+    const MAX_ROWS = 50000;
+    const rows = [];
+    let offset = 0;
+    while (rows.length < MAX_ROWS) {
+      const pageSize = Math.min(PAGE_SIZE, MAX_ROWS - rows.length);
+      let pageData = null;
+      let lastError = null;
+      for (let attempt = 0; attempt < MAX_PAGE_RETRIES; attempt++) {
+        const result = await db.from('parlay_orders')
+          .select('parlay_id, status, pnl, confirmed_stake, offered_odds, settled_at, quoted_at')
+          .like('status', 'settled_%')
+          .gte(groupBy, cutoff)
+          .order(groupBy, { ascending: true })
+          .range(offset, offset + pageSize - 1);
+        if (!result.error) { pageData = result.data; lastError = null; break; }
+        lastError = result.error;
+        await new Promise(r => setTimeout(r, 250 * Math.pow(2, attempt)));
+      }
+      if (lastError) {
+        log.warn('DB', `getDailyPnL offset ${offset}: gave up after ${MAX_PAGE_RETRIES} retries: ${lastError.message}`);
+        break;
+      }
+      if (!pageData || pageData.length === 0) break;
+      for (const row of pageData) rows.push(row);
+      if (pageData.length < pageSize) break;
+      offset += pageSize;
     }
-    if (!data || data.length === 0) return [];
+    if (rows.length === 0) return [];
 
-    // Group by date (YYYY-MM-DD in local timezone)
+    // Group by date (YYYY-MM-DD in local timezone) using the selected column.
     const byDay = {};
-    for (const row of data) {
-      if (!row.settled_at) continue;
-      const day = new Date(row.settled_at).toLocaleDateString('en-CA'); // YYYY-MM-DD
+    for (const row of rows) {
+      const bucketTs = row[groupBy];
+      if (!bucketTs) continue;
+      const day = new Date(bucketTs).toLocaleDateString('en-CA'); // YYYY-MM-DD
       if (!byDay[day]) byDay[day] = { date: day, pnl: 0, wins: 0, losses: 0, pushes: 0, risk: 0, fills: 0 };
       const d = byDay[day];
       d.pnl += (row.pnl || 0);
@@ -685,11 +718,64 @@ async function getDailyPnL(days = 30) {
       d.risk += (row.confirmed_stake || 0);
     }
 
-    // Return sorted array
     return Object.values(byDay).sort((a, b) => a.date.localeCompare(b.date));
   } catch (err) {
     log.warn('DB', `getDailyPnL error: ${err.message}`);
     return [];
+  }
+}
+
+/**
+ * Load fully-hydrated orders for a date range. Read-only forensic
+ * endpoint — pulls everything needed to decompose a single day's P&L
+ * by sport, parlay structure, shared legs, counterparty, etc. Paginated
+ * with retries matching loadFillBucketRowsSince's pattern so it can pull
+ * days that blow past Supabase's default 1,000-row ceiling.
+ *
+ * groupBy: 'quoted_at' (default) or 'settled_at' — which timestamp
+ * column drives the range filter.
+ */
+async function loadOrdersInDateRange(fromIso, toIso, opts = {}) {
+  const db = getClient();
+  if (!db) return [];
+  const groupBy = opts.groupBy === 'settled_at' ? 'settled_at' : 'quoted_at';
+  const statusFilter = opts.status; // optional — e.g. 'settled_lost'
+  const PAGE_SIZE = 1000;
+  const MAX_PAGE_RETRIES = 4;
+  const MAX_ROWS = opts.maxRows || 10000;
+  const rows = [];
+  let offset = 0;
+  const startMs = Date.now();
+  try {
+    while (rows.length < MAX_ROWS) {
+      const pageSize = Math.min(PAGE_SIZE, MAX_ROWS - rows.length);
+      let pageData = null;
+      let lastError = null;
+      for (let attempt = 0; attempt < MAX_PAGE_RETRIES; attempt++) {
+        let query = db.from('parlay_orders')
+          .select('parlay_id, status, legs, offered_odds, confirmed_odds, confirmed_stake, max_risk, fair_parlay_prob, pnl, quoted_at, confirmed_at, settled_at, settlement_result, order_uuid, meta')
+          .gte(groupBy, fromIso)
+          .lte(groupBy, toIso);
+        if (statusFilter) query = query.eq('status', statusFilter);
+        const result = await query.order(groupBy, { ascending: true }).range(offset, offset + pageSize - 1);
+        if (!result.error) { pageData = result.data; lastError = null; break; }
+        lastError = result.error;
+        await new Promise(r => setTimeout(r, 250 * Math.pow(2, attempt)));
+      }
+      if (lastError) {
+        log.warn('DB', `loadOrdersInDateRange offset ${offset}: gave up after ${MAX_PAGE_RETRIES} retries: ${lastError.message}`);
+        break;
+      }
+      if (!pageData || pageData.length === 0) break;
+      for (const row of pageData) rows.push(row);
+      if (pageData.length < pageSize) break;
+      offset += pageSize;
+    }
+    log.info('DB', `loadOrdersInDateRange ${fromIso}..${toIso} (${groupBy}${statusFilter ? ',' + statusFilter : ''}): ${rows.length} rows (${Date.now() - startMs}ms)`);
+    return rows;
+  } catch (err) {
+    log.warn('DB', `loadOrdersInDateRange error: ${err.message}`);
+    return rows;
   }
 }
 
@@ -911,6 +997,7 @@ module.exports = {
   loadLineCacheByEventIds,
   getDailyPnL,
   getTotalPnL,
+  loadOrdersInDateRange,
   savePushSubscription,
   loadPushSubscriptions,
   deletePushSubscription,

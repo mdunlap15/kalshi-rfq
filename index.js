@@ -687,13 +687,54 @@ function startStatusServer() {
     });
   });
 
-  // Daily P&L from Supabase (settled orders grouped by date)
+  // Daily P&L from Supabase (settled orders grouped by date).
+  // Optional ?groupBy=quoted_at|settled_at — defaults to settled_at.
+  // The dashboard's "Daily Volume & P&L" chart groups by quoted_at, so
+  // use that param to match what's visualized when investigating a day.
+  // Paginates past Supabase's 1,000-row limit so multi-week windows
+  // don't silently truncate.
   app.get('/daily-pnl', async (req, res) => {
     const days = parseInt(req.query.days) || 30;
+    const groupBy = req.query.groupBy === 'quoted_at' ? 'quoted_at' : 'settled_at';
     try {
-      const daily = await db.getDailyPnL(days);
+      const daily = await db.getDailyPnL(days, { groupBy });
       const totalPnL = await db.getTotalPnL();
-      res.json({ daily, totalPnL });
+      res.json({ daily, totalPnL, groupBy });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Forensic orders pull by date range — hits Supabase directly with
+  // pagination, returns fully-hydrated rows (legs, odds, P&L, meta).
+  // Query params:
+  //   from=YYYY-MM-DD (required)
+  //   to=YYYY-MM-DD   (required)
+  //   groupBy=quoted_at|settled_at (default quoted_at)
+  //   status=settled_lost (optional filter)
+  //   maxRows=10000 (cap; default 10000, ceiling 50000)
+  // Use for ad-hoc forensic investigations of specific days.
+  app.get('/orders-by-date', async (req, res) => {
+    const from = req.query.from;
+    const to = req.query.to;
+    if (!from || !to) {
+      return res.status(400).json({ error: 'need ?from=YYYY-MM-DD&to=YYYY-MM-DD' });
+    }
+    const groupBy = req.query.groupBy === 'settled_at' ? 'settled_at' : 'quoted_at';
+    const status = req.query.status || null;
+    const maxRows = Math.min(parseInt(req.query.maxRows) || 10000, 50000);
+    // Date-only inputs become full-day ISO ranges. "to" gets a 23:59:59.999
+    // end so a same-day request (from=to=2026-04-18) spans the full day.
+    const fromIso = from.length === 10 ? `${from}T00:00:00.000Z` : from;
+    const toIso = to.length === 10 ? `${to}T23:59:59.999Z` : to;
+    try {
+      const rows = await db.loadOrdersInDateRange(fromIso, toIso, { groupBy, status, maxRows });
+      res.json({
+        from: fromIso, to: toIso, groupBy, status, maxRows,
+        count: rows.length,
+        truncated: rows.length >= maxRows,
+        orders: rows,
+      });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
