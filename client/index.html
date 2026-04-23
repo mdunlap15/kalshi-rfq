@@ -1615,33 +1615,40 @@
         </div>`);
     }
 
-    // Action hint — show only the env vars that actually exist. Percent-
-    // based caps (game-pct, drawdown-pct, risk-pct) were removed; what
-    // remains is MAX_LEGS, MAX_ODDS, MAX_RISK_PER_PARLAY, MAX_EXPOSURE_PER_TEAM.
-    // PX-side confirm rejections (order_not_valid, etc.) aren't fixable via
-    // env vars — suppress the hint entirely in that case.
+    // Action hint — tailor to the dominant reason category. Hint is wrong
+    // (and actively misleading) when it suggests MAX_RISK env-var changes for
+    // price-drift or bettor-cancel rejections that aren't fixable that way.
     const allReasons = [
       ...Object.keys(alerts.declineByReason || {}),
       ...Object.keys(alerts.rejectByBucket || {}),
     ].join(' ').toLowerCase();
-    const isPxReject = allReasons.includes('px confirm rejected');
     const code = (v) => `<code style="background:var(--surface3); padding:1px 4px; border-radius:3px;">${v}</code>`;
-    if (!isPxReject) {
-      let hintVar = '';
-      if (allReasons.includes('team exposure')) hintVar = code('MAX_EXPOSURE_PER_TEAM');
-      else if (allReasons.includes('risk') && allReasons.includes('max')) hintVar = code('MAX_RISK_PER_PARLAY');
-      else if (allReasons.includes('too many legs')) hintVar = code('MAX_LEGS');
-      else if (allReasons.includes('odds too high')) hintVar = code('MAX_ODDS');
-      else hintVar = code('MAX_RISK_PER_PARLAY') + ' or ' + code('MAX_EXPOSURE_PER_TEAM');
-      parts.push(`<div style="margin-top:8px; font-size:11px; color:var(--text3);">
-        Adjust ${hintVar} in Railway env vars.
-      </div>`);
-    } else {
-      parts.push(`<div style="margin-top:8px; font-size:11px; color:var(--text3);">
-        ProphetX rejected our accept &mdash; no env-var fix. Usually means the
+    const isPxReject = allReasons.includes('px confirm rejected');
+    const isPriceDrift = allReasons.includes('price drift');
+    let hint = '';
+    if (isPriceDrift) {
+      hint = `Self-protective reject: fair prob moved more than ${code('CONFIRMATION_DRIFT_THRESHOLD')}
+        (default 3%) between our quote and PX's confirm round-trip. Usually real
+        market movement &mdash; accepting would lock in a stale price. If
+        rejecting too many fills, raise the env var (e.g. 0.05 for 5%).`;
+    } else if (isPxReject) {
+      hint = `ProphetX rejected our accept &mdash; no env-var fix. Usually the
         bettor cancelled or the order expired between our quote and the confirm
-        round-trip. Safe to ignore if rare; investigate if clustered.
-      </div>`);
+        round-trip. Safe to ignore if rare; investigate if clustered.`;
+    } else if (allReasons.includes('team exposure')) {
+      hint = `Adjust ${code('MAX_EXPOSURE_PER_TEAM')} in Railway env vars.`;
+    } else if (allReasons.includes('risk') && allReasons.includes('max')) {
+      hint = `Adjust ${code('MAX_RISK_PER_PARLAY')} in Railway env vars.`;
+    } else if (allReasons.includes('too many legs')) {
+      hint = `Adjust ${code('MAX_LEGS')} in Railway env vars.`;
+    } else if (allReasons.includes('odds too high')) {
+      hint = `Adjust ${code('MAX_ODDS')} in Railway env vars.`;
+    } else if (declineCount > 0) {
+      // Mixed decline reasons — generic hint
+      hint = `Adjust ${code('MAX_RISK_PER_PARLAY')} or ${code('MAX_EXPOSURE_PER_TEAM')} in Railway env vars.`;
+    }
+    if (hint) {
+      parts.push(`<div style="margin-top:8px; font-size:11px; color:var(--text3);">${hint}</div>`);
     }
 
     content.innerHTML = parts.join('');
