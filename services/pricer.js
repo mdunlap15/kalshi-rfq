@@ -503,8 +503,26 @@ async function priceParlay(legs, opts = {}) {
       s.lineInfo.startTime
     );
     if (syncPrimary != null) { fairProbs[i] = syncPrimary; continue; }
-    // Missing from cache — fall back to the async path which can fetch
-    // alt lines / do event-id resolution.
+
+    // Alt-line sync fast path. When altLinesCache is fresh for this
+    // event, fair + sanity checks resolve synchronously — no await, no
+    // microtask hop. This restores sub-1ms pricing for cache-hit alt
+    // legs. Falls through to async on cache miss/stale so network
+    // refetch + non-spread/total market types (h1, team_totals via
+    // Bovada) stay covered by getFairProbAsync.
+    const syncAlt = oddsFeed.getAltLineFairProbSync(
+      s.lineInfo.oddsApiSport,
+      s.lineInfo.homeTeam,
+      s.lineInfo.awayTeam,
+      s.lineInfo.oddsApiMarket,
+      s.lineInfo.oddsApiSelection,
+      s.lineInfo.line,
+      s.lineInfo.startTime
+    );
+    if (syncAlt != null) { fairProbs[i] = syncAlt; continue; }
+
+    // Missing from both sync paths — fall back to the async path which can fetch
+    // alt lines / do event-id resolution / consult Bovada fallback.
     if (!pendingAsyncFair) pendingAsyncFair = [];
     pendingAsyncFair.push([i, oddsFeed.getFairProbAsync(
       s.lineInfo.oddsApiSport,
