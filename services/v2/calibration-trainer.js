@@ -55,9 +55,20 @@ const ODDS_BANDS = [
   { name: 'heavy_fav',  min: 0.75, max: 1.00 },
 ];
 
-// Minimum sample size per bucket before we apply a non-zero correction.
-// Below this, the shrinkage-weighted correction trends to 0.
-const SHRINKAGE_K = 30;
+// Beta-binomial shrinkage prior strength. Effective correction weight
+// is n / (n + K) — a bucket with n=K gets 50% of its raw bias
+// applied. Raised from 30 → 50 after a $5.7K adverse-selection loss on
+// an NHL moneyline parlay (2026-04-23): NHL buckets cap out at n=30
+// and the 50% shrinkage weight let noise drive a meaningful correction.
+const SHRINKAGE_K = 50;
+
+// Hard floor on sample size before ANY non-zero correction applies.
+// Buckets thinner than this are treated as neutral (correction=0) so
+// noise from small-N sports doesn't get fitted as calibration signal.
+// Set at 50 so only well-established MLB/NBA buckets participate;
+// NHL will accumulate data under v1 pricing until its buckets reach
+// this threshold.
+const MIN_N_FOR_CORRECTION = 50;
 
 // Cap corrections at ±15pp to guard against outlier buckets with
 // surprising small-sample extreme biases.
@@ -142,8 +153,11 @@ function fitBuckets(deduped) {
     const shrinkWeight = n / (n + SHRINKAGE_K);
     const shrunkBias = rawBias * shrinkWeight;
 
-    // Cap at ±MAX_CORRECTION
-    let correction = -shrunkBias;
+    // Hard floor: don't apply any correction until the bucket has
+    // enough samples to trust. Shrinkage alone isn't enough — a bucket
+    // with n=30 and rawBias=0.10 still applies a 3.7pp correction
+    // under K=50, which on bucket-boundary parlays can swing 5pp+.
+    let correction = n >= MIN_N_FOR_CORRECTION ? -shrunkBias : 0;
     if (correction > MAX_CORRECTION) correction = MAX_CORRECTION;
     if (correction < -MAX_CORRECTION) correction = -MAX_CORRECTION;
 
