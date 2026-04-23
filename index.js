@@ -3313,6 +3313,97 @@ function startStatusServer() {
     }
   });
 
+  // Bovada API discovery probe — tests Bovada's public coupon API.
+  // Bovada is offshore + minimal anti-bot, so this usually works with
+  // vanilla fetch. If it returns JSON, we have a scraper-free path to
+  // alt-line markets for NBA/NHL halves and team totals.
+  //
+  //   /debug-bovada-probe              — tries NBA default
+  //   /debug-bovada-probe?sport=nhl    — hockey
+  //   /debug-bovada-probe?sport=mlb    — baseball
+  app.get('/debug-bovada-probe', async (req, res) => {
+    const sport = (req.query.sport || 'nba').toLowerCase();
+    const SPORT_PATHS = {
+      nba: 'basketball/nba',
+      nhl: 'hockey/nhl',
+      mlb: 'baseball/mlb',
+      ncaab: 'basketball/ncaab-mens-basketball',
+    };
+    const path = SPORT_PATHS[sport] || SPORT_PATHS.nba;
+    const probes = [
+      // Coupon API — events + primary markets
+      `https://www.bovada.lv/services/sports/event/coupon/events/A/description/${path}?marketFilterId=def&preMatchOnly=true&eventsLimit=50&lang=en`,
+      // Sometimes the public v2 endpoint carries alt line markets too
+      `https://www.bovada.lv/services/sports/event/v2/events/A/description/${path}?marketFilterId=def&preMatchOnly=true&eventsLimit=50&lang=en`,
+      // Category listings for a league — tells us what props are available
+      `https://www.bovada.lv/services/sports/category/${path}?preMatchOnly=true&lang=en`,
+    ];
+    const results = [];
+    for (const url of probes) {
+      const t0 = Date.now();
+      try {
+        const r = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.bovada.lv/sports',
+          },
+        });
+        const elapsedMs = Date.now() - t0;
+        const ct = r.headers.get('content-type') || '';
+        const text = await r.text();
+        let body = null;
+        if (ct.includes('json')) {
+          try { body = JSON.parse(text); } catch { /* ignore */ }
+        }
+        // Bovada responses are typically [{ events: [...] }] arrays
+        let summary = null;
+        if (Array.isArray(body) && body[0]) {
+          const root = body[0];
+          const events = root.events || root.categories || [];
+          summary = {
+            rootKeys: Object.keys(root).slice(0, 10),
+            eventCount: Array.isArray(events) ? events.length : null,
+            sampleEvent: Array.isArray(events) && events[0] ? {
+              id: events[0].id,
+              description: events[0].description,
+              link: events[0].link,
+              competitionId: events[0].competitionId,
+              startTime: events[0].startTime,
+              displayGroupCount: Array.isArray(events[0].displayGroups) ? events[0].displayGroups.length : null,
+              displayGroups: Array.isArray(events[0].displayGroups)
+                ? events[0].displayGroups.slice(0, 3).map(dg => ({
+                    description: dg.description,
+                    marketCount: Array.isArray(dg.markets) ? dg.markets.length : null,
+                    sampleMarkets: Array.isArray(dg.markets)
+                      ? dg.markets.slice(0, 5).map(m => m.description || m.marketTypeId)
+                      : null,
+                  }))
+                : null,
+            } : null,
+          };
+        } else if (body && typeof body === 'object') {
+          summary = {
+            topLevelKeys: Object.keys(body).slice(0, 10),
+          };
+        }
+        results.push({
+          url,
+          status: r.status,
+          elapsedMs,
+          contentType: ct,
+          bodyLength: text.length,
+          bodyPreview: text.slice(0, 300),
+          summary,
+        });
+      } catch (err) {
+        results.push({ url, error: err.message });
+      }
+    }
+    res.json({ ok: true, sport, results });
+  });
+
   // BetMGM API discovery probe — tries to fetch JSON directly from MGM's
   // public cds-api endpoints. Unlike DK, BetMGM exposes market data via
   // a REST API that typically doesn't require full browser rendering.
