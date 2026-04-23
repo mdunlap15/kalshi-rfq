@@ -183,7 +183,7 @@ function getShadowStats() {
   const deltas = _shadowLog.map(r => r.delta.americanOddsDelta).filter(d => d != null);
   const v1Fair = _shadowLog.map(r => r.v1.fairParlayProb).filter(x => x != null);
   const v2Fair = _shadowLog.map(r => r.v2.parlayFairProb).filter(x => x != null);
-  const calibApplied = _shadowLog.filter(r => r.v2.calibrationApplied).length;
+  const calibrationApplied = _shadowLog.filter(r => r.v2 && r.v2.calibrationApplied).length;
   const corrLifts = _shadowLog.map(r => r.v2.correlationLift).filter(x => x != null && x !== 0);
 
   function median(arr) {
