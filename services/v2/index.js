@@ -85,6 +85,9 @@ function priceParlayV2(pricedLegs, opts = {}) {
       pxEventId: l.lineInfo?.pxEventId,
       marketType,
       sport,
+      // Passed through for cross-event correlation (same-sport same-night totals)
+      selection: l.lineInfo?.selection,
+      startTime: l.lineInfo?.startTime,
       calibrationBucket: est.bucket,
       calibrationCorrection: est.corrections.calibration,
     };

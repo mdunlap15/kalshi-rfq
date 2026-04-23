@@ -62,6 +62,61 @@ function lookupPairCorrelation(market1, market2, sameEvent) {
   return SAME_EVENT_CORR[key] || 0;
 }
 
+// Cross-event, SAME-SPORT, SAME-NIGHT correlation coefficient for total
+// markets. Motivated by the Delphi Apr-2026 case study: a maker lost
+// $170K in 95 minutes on 4 x "NHL under 9.5 goals" cross-event parlays.
+// Same-night totals in the same sport share weather (outdoor), referee
+// tendencies, league-wide pace, TV-production pace, etc. Independent
+// compounding underestimates fair parlay prob when all legs are
+// unders (or all overs) on the same night.
+//
+// Magnitude: small positive — NHL has ~0.10 correlation across
+// same-night games based on historical goal-total covariance.
+// Less for basketball (pace variance swamps slate effects).
+//
+// Intentionally conservative so we don't overreach on thin evidence.
+// Tune up if empirical correlation data shows larger effects.
+const CROSS_EVENT_SAME_SPORT_TOTAL_CORR = {
+  'icehockey_nhl': 0.10,
+  'baseball_mlb': 0.05,
+  'basketball_nba': 0.05,
+  'basketball_ncaab': 0.05,
+  'americanfootball_nfl': 0.08,
+  'americanfootball_ncaaf': 0.05,
+  'soccer_epl': 0.05,
+  'soccer_spain_la_liga': 0.05,
+  'soccer_italy_serie_a': 0.05,
+  'soccer_germany_bundesliga': 0.05,
+  'soccer_france_ligue_one': 0.05,
+  'soccer_usa_mls': 0.05,
+  // Applied only when BOTH legs are 'total' markets and agree in
+  // direction (both over or both under). Conservative default = 0 for
+  // mixed direction (one over + one under weakly anti-correlated).
+};
+
+/**
+ * Compute cross-event correlation for a pair of legs. Currently only
+ * applies to same-sport same-night totals with matching direction
+ * (both over or both under). Returns 0 otherwise.
+ */
+function crossEventCorrelation(legA, legB) {
+  if (!legA || !legB) return 0;
+  if (legA.pxEventId === legB.pxEventId) return 0; // not cross-event
+  if (legA.marketType !== 'total' || legB.marketType !== 'total') return 0;
+  if (legA.sport !== legB.sport) return 0;
+  // Only positive-correlate same-direction totals
+  const selA = (legA.selection || '').toLowerCase();
+  const selB = (legB.selection || '').toLowerCase();
+  if (selA && selB && selA !== selB) return 0;
+  // Require same-date start times
+  if (legA.startTime && legB.startTime) {
+    const dA = String(legA.startTime).slice(0, 10);
+    const dB = String(legB.startTime).slice(0, 10);
+    if (dA !== dB) return 0;
+  }
+  return CROSS_EVENT_SAME_SPORT_TOTAL_CORR[legA.sport] || 0;
+}
+
 /**
  * Gaussian-copula approximation for joint probability of two
  * independent-marginal events with correlation ρ.
@@ -109,28 +164,42 @@ function combineProbs(legs) {
   // Baseline: independent product
   const independent = legs.reduce((p, l) => p * l.fairProb, 1);
 
-  // For each same-event cluster, compute correlation-adjusted joint
-  // probability among its legs. Cross-cluster remains independent.
-  let adjusted = 1;
+  // Stage A: same-event clusters. Compute correlation-adjusted joint
+  // probability within each cluster.
+  const clusterProbs = []; // [{ eventId, prob, legs }]
   for (const [evt, idxs] of Object.entries(byEvent)) {
     if (idxs.length === 1) {
-      adjusted *= legs[idxs[0]].fairProb;
+      clusterProbs.push({ eventId: evt, prob: legs[idxs[0]].fairProb, legs: [legs[idxs[0]]] });
       continue;
     }
-    // Same-event cluster: pairwise accumulate starting from strongest prob
     const clusterLegs = idxs.map(i => legs[i]);
-    // Sort by probability (start with most-likely as anchor)
     clusterLegs.sort((a, b) => b.fairProb - a.fairProb);
     let clusterProb = clusterLegs[0].fairProb;
     for (let i = 1; i < clusterLegs.length; i++) {
       const rho = lookupPairCorrelation(clusterLegs[0].marketType, clusterLegs[i].marketType, true);
-      // Pair clusterProb (accumulated so far) with next leg using rho
-      // This approximation treats the accumulated cluster as having
-      // the anchor leg's correlation with subsequent legs. For 2-leg
-      // SGPs (our main case) this is exact.
       clusterProb = pairJoint(clusterProb, clusterLegs[i].fairProb, rho);
     }
-    adjusted *= clusterProb;
+    clusterProbs.push({ eventId: evt, prob: clusterProb, legs: clusterLegs });
+  }
+
+  // Stage B: cross-event correlation. For each pair of CLUSTERS, apply
+  // any cross-event correlation implied by their component legs
+  // (currently: same-sport same-night totals with matching direction).
+  // Heuristic: use the maximum cross-leg correlation between the two
+  // clusters as the cluster-pair correlation. Pairwise-accumulate across
+  // clusters starting from largest prob.
+  clusterProbs.sort((a, b) => b.prob - a.prob);
+  let adjusted = clusterProbs.length > 0 ? clusterProbs[0].prob : 1;
+  for (let i = 1; i < clusterProbs.length; i++) {
+    // Find max cross-event correlation between any leg in anchor vs next cluster
+    let rho = 0;
+    for (const la of clusterProbs[0].legs) {
+      for (const lb of clusterProbs[i].legs) {
+        const r = crossEventCorrelation(la, lb);
+        if (r > rho) rho = r;
+      }
+    }
+    adjusted = pairJoint(adjusted, clusterProbs[i].prob, rho);
   }
 
   const correlationAdj = adjusted - independent;
@@ -176,7 +245,9 @@ function propagateUncertainty(legs) {
 
 module.exports = {
   SAME_EVENT_CORR,
+  CROSS_EVENT_SAME_SPORT_TOTAL_CORR,
   lookupPairCorrelation,
+  crossEventCorrelation,
   pairJoint,
   combineProbs,
   propagateUncertainty,

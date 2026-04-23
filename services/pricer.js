@@ -1118,6 +1118,60 @@ async function priceParlay(legs, opts = {}) {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // CATASTROPHIC-MISPRICING CIRCUIT BREAKER
+  //
+  // After all pricing logic has run, cross-check the OFFERED implied prob
+  // against the naive book-consensus compound (no de-vig, just raw book
+  // implied products). If we're selling at a dramatically lower implied
+  // prob than the books collectively suggest, something is structurally
+  // broken — a compounding bug, a sign-flip, a misread line, etc.
+  //
+  // Motivation: Delphi Apr-2026 case study where a maker offered $0.10 on
+  // a 4-leg NHL parlay whose book-raw compound was ~$0.80+ and kept
+  // offering it for 95 minutes across 142 fills losing $170k. The fair
+  // sanity check (v1 "PRICING SAFETY NET" above) runs BEFORE vig is
+  // applied and would not catch a post-vig error that blows up the
+  // offered price.
+  //
+  // Threshold 0.60: under normal operation our offered ≈ 0.95-1.10× book
+  // raw (we add slightly more vig than books do on average, but same
+  // order of magnitude). Anything below 60% is a strong signal of
+  // structural bug. Declines with 'suspected mispricing' reason and
+  // logs loudly so the operator can investigate.
+  //
+  // Runs only when we have book data for every leg. Single-book legs
+  // still count — correlated bias in one book is rare enough that
+  // a dramatic undercut relative to even a single book is worth
+  // flagging.
+  // ---------------------------------------------------------------------
+  {
+    let bookCompound = 1;
+    let allLegsHaveBooks = true;
+    for (const l of pricedLegs) {
+      const probs = [l.pinnacleOdds, l.fanduelOdds, l.draftkingsOdds]
+        .filter(o => o != null)
+        .map(o => oddsFeed.americanToImpliedProb(o))
+        .filter(p => p != null && p > 0 && p < 1);
+      if (probs.length === 0) { allLegsHaveBooks = false; break; }
+      const legAvg = probs.reduce((s, p) => s + p, 0) / probs.length;
+      bookCompound *= legAvg;
+    }
+    if (allLegsHaveBooks && bookCompound > 0 && offeredImpliedProb > 0) {
+      const ratio = offeredImpliedProb / bookCompound;
+      const SANITY_FLOOR = 0.60;
+      if (ratio < SANITY_FLOOR) {
+        log.error('Pricing', `CATASTROPHIC MISPRICE BLOCK: offered ${(offeredImpliedProb*100).toFixed(2)}% vs book-raw compound ${(bookCompound*100).toFixed(2)}% (ratio ${ratio.toFixed(3)}) — declining. Legs: ${pricedLegs.map(l => `${l.lineInfo.teamName}/${l.lineInfo.marketType}${l.lineInfo.line!=null?' '+l.lineInfo.line:''}`).join(' + ')}`);
+        priceParlay._lastFailure = {
+          reason: 'suspected mispricing',
+          detail: `offered ${(offeredImpliedProb*100).toFixed(2)}% is ${((1-ratio)*100).toFixed(0)}% below book-raw compound ${(bookCompound*100).toFixed(2)}% — possible compounding/sign-flip bug`,
+          blockerLeg: null,
+        };
+        return null;
+      }
+    }
+  }
+
   // Cap at 0.99 (can't offer 100%+ implied)
   const cappedProb = Math.min(offeredImpliedProb, 0.99);
 
