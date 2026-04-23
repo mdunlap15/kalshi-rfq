@@ -154,12 +154,23 @@ const config = {
       if (v > 100) return 100;
       return v;
     })(),
-    // Defensive decline on team_total legs. Shipped 2026-04-23 after
-    // observing a ~10pp fair-prob mispricing on ATL Over 4.5 caused by
-    // buildConsensusTeamTotals pairing mismatched Over/Under lines.
-    // Set to false once the consensus-builder audit is complete.
+    // Defensive decline on team_total legs. Original bug (2026-04-23
+    // ATL Over 4.5 mispricing via buildConsensusTeamTotals pairing
+    // mismatched Over/Under lines) was fixed at the root in commit
+    // 5ad919f — getBookPairsForTeamTotals now keys on (book, side, line)
+    // so Over/Under can only pair at matching lines.
+    //
+    // External validation (2026-04-23, 4 sides across NYY/BOS and LAD/SF):
+    // our de-vigged fair now sits within ±2pp of FanDuel's fair on every
+    // tested market — normal book-consensus noise, down from the pre-fix
+    // ~10pp bias.
+    //
+    // Default flipped to FALSE here (re-enable serving) after verification.
+    // Leaving the env var as an opt-in circuit breaker — set
+    // DECLINE_TEAM_TOTALS=true to re-enable the defensive decline if we
+    // discover a new team_total bug class.
     declineTeamTotals:
-      process.env.DECLINE_TEAM_TOTALS !== 'false' && process.env.DECLINE_TEAM_TOTALS !== '0',
+      process.env.DECLINE_TEAM_TOTALS === 'true' || process.env.DECLINE_TEAM_TOTALS === '1',
     // A/B-testable pricing mode for parlays. When true, vig is applied
     // ONCE at the parlay level using the MAX per-leg effective rate, rather
     // than compounded per-leg. Per-leg compounding penalizes multi-leg
