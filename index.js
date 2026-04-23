@@ -262,6 +262,13 @@ async function startup() {
   // misprice. Refreshes every 2 min.
   oddsFeed.startBovadaAltLoop();
 
+  // Pre-warm Pinnacle line-verify cache every 20s (inside 30s TTL).
+  // Closes the cold-cache p95 tail on primary spread/total RFQs where
+  // verifyLineWithPinnacle would otherwise block the RFQ on a 20-30ms
+  // Odds API fetch. With the loop running, the hot path always hits
+  // a warm cache entry.
+  oddsFeed.startPinVerifyWarmLoop();
+
   // Start periodic timers
   const refreshMs = config.refreshIntervalMinutes * 60 * 1000;
   oddsRefreshTimer = setInterval(async () => {
@@ -758,6 +765,14 @@ function startStatusServer() {
   // sanity-gate rejections.
   app.get('/sync-alt-stats', (req, res) => {
     res.json(oddsFeed.getAltSyncStats());
+  });
+
+  // Pinnacle line-verify warm-loop stats — per-combo fetch counts, cache
+  // ages, last cycle duration. Use to confirm the loop is keeping the
+  // 30s-TTL verify cache fresh so RFQs with primary spread/total legs
+  // never pay the inline fetch cost.
+  app.get('/pin-verify-stats', (req, res) => {
+    res.json(oddsFeed.getPinVerifyWarmStats());
   });
   app.post('/warm-alt-lines', async (req, res) => {
     const sport = req.query.sport || req.body?.sport;

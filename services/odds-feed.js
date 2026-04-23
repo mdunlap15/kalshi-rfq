@@ -3472,6 +3472,116 @@ function startAltLineWarmLoop() {
   log.info('OddsFeed', `Alt-line warm loop started (every ${WARM_LOOP_INTERVAL_MS / 1000}s)`);
 }
 
+// ---------------------------------------------------------------------------
+// Pinnacle line-verify cache warmer
+// ---------------------------------------------------------------------------
+// Pre-warms _pinVerifyCache entries before their 30s TTL expires so RFQs
+// with primary spread/total legs never pay the 20-30ms cold-cache fetch
+// inline. Sequential across (sport, market) combos with inter-request
+// pacing to stay well under Odds API's token bucket.
+//
+// Without this, the first primary spread/total RFQ per (sport, market)
+// per 30s window paid the full verify fetch — manifesting as a p95 spike
+// while p50 stayed fast. The pricer's verifyLineWithPinnacle sits behind
+// Promise.all alongside getFairProbAsync, so its cost hits every RFQ
+// whose line matches the cached primary (which is most primary-line
+// RFQs — the common case).
+//
+// Scope: only the (sport, market) combos we actually serve. Derives from
+// PINNACLE_SPORT_MAP ∩ supportedSports × {spreads, totals}.
+let _pinVerifyWarmTimer = null;
+const PIN_VERIFY_WARM_INTERVAL_MS = 20 * 1000; // 20s inside 30s TTL
+const PIN_VERIFY_WARM_DELAY_MS = 120;          // inter-request pacing
+const _pinVerifyWarmStats = {
+  cyclesRun: 0,
+  cyclesCompletedAt: null,
+  lastCycleMs: null,
+  totalFetches: 0,
+  totalSkippedFresh: 0,
+  totalErrors: 0,
+  perCombo: {}, // `${sport}|${market}` -> { fetched, skippedFresh, errors, lastFetchedAt }
+};
+
+async function _runPinVerifyWarmCycle() {
+  const t0 = Date.now();
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return;
+
+  const supported = new Set(config.supportedSports || []);
+  const combos = [];
+  for (const [ourSport, apiSport] of Object.entries(PINNACLE_SPORT_MAP)) {
+    if (!supported.has(ourSport)) continue;
+    combos.push({ apiSport, market: 'spreads' });
+    combos.push({ apiSport, market: 'totals' });
+  }
+  // Sequential with inter-request pacing. Effective rate ~8 req/s per
+  // warm cycle, well under Odds API's ~100 req/s ceiling.
+  for (let i = 0; i < combos.length; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, PIN_VERIFY_WARM_DELAY_MS));
+    const { apiSport, market } = combos[i];
+    const comboKey = apiSport + '|' + market;
+    const stats = _pinVerifyWarmStats.perCombo[comboKey] || { fetched: 0, skippedFresh: 0, errors: 0, lastFetchedAt: null };
+    const cached = _pinVerifyCache[comboKey];
+    // Skip if entry has plenty of TTL remaining. With 20s cycle + 30s
+    // TTL, refresh when age >= 10s to keep cache always ≥ 10s from
+    // expiry when an RFQ hits.
+    if (cached && (Date.now() - cached.fetchedAt) < 10 * 1000) {
+      stats.skippedFresh++;
+      _pinVerifyWarmStats.totalSkippedFresh++;
+      _pinVerifyWarmStats.perCombo[comboKey] = stats;
+      continue;
+    }
+    try {
+      const events = await _fetchPinVerifyEvents(apiSport, market, theOddsApiKey);
+      if (events) {
+        stats.fetched++;
+        stats.lastFetchedAt = new Date().toISOString();
+        _pinVerifyWarmStats.totalFetches++;
+      } else {
+        stats.errors++;
+        _pinVerifyWarmStats.totalErrors++;
+      }
+    } catch (err) {
+      stats.errors++;
+      _pinVerifyWarmStats.totalErrors++;
+    }
+    _pinVerifyWarmStats.perCombo[comboKey] = stats;
+  }
+  _pinVerifyWarmStats.cyclesRun++;
+  _pinVerifyWarmStats.lastCycleMs = Date.now() - t0;
+  _pinVerifyWarmStats.cyclesCompletedAt = new Date().toISOString();
+}
+
+function startPinVerifyWarmLoop() {
+  if (_pinVerifyWarmTimer) return;
+  // Fire immediate cycle so cache is populated before any RFQ arrives.
+  _runPinVerifyWarmCycle().catch(err => {
+    log.warn('OddsFeed', `Pin verify initial warm failed: ${err.message}`);
+  });
+  _pinVerifyWarmTimer = setInterval(() => {
+    _runPinVerifyWarmCycle().catch(err => {
+      log.warn('OddsFeed', `Pin verify warm loop failed: ${err.message}`);
+    });
+  }, PIN_VERIFY_WARM_INTERVAL_MS);
+  log.info('OddsFeed', `Pin verify warm loop started (every ${PIN_VERIFY_WARM_INTERVAL_MS / 1000}s)`);
+}
+
+function getPinVerifyWarmStats() {
+  // Snapshot cache state for visibility
+  const now = Date.now();
+  const cacheEntries = Object.entries(_pinVerifyCache).map(([k, v]) => ({
+    comboKey: k,
+    ageSec: Math.round((now - v.fetchedAt) / 1000),
+    eventCount: (v.events || []).length,
+  }));
+  return {
+    ..._pinVerifyWarmStats,
+    intervalMs: PIN_VERIFY_WARM_INTERVAL_MS,
+    cacheSize: Object.keys(_pinVerifyCache).length,
+    cacheEntries,
+  };
+}
+
 // Bovada scraper loop. Runs every 2 min — matches the primary odds
 // cycle. Per-event cache TTL inside the scraper (10 min) means most
 // calls are cheap skip operations. First run at startup populates
@@ -5668,8 +5778,10 @@ module.exports = {
   warmEventAltLinesJIT,
   startAltLineWarmLoop,
   startBovadaAltLoop,
+  startPinVerifyWarmLoop,
   getAltLinesWarmStats,
   getJitWarmStats,
+  getPinVerifyWarmStats,
   getEventMarkets,
   getGolfMatchupEvent,
   getLiveEventMarkets,
