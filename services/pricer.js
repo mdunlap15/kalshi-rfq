@@ -334,6 +334,49 @@ async function priceParlay(legs, opts = {}) {
   let phase1EndMs = null;
   let phase2EndMs = null;
 
+  // ---------------------------------------------------------------------
+  // DEFENSIVE DECLINE: team_total legs
+  //
+  // Verified 2026-04-23: a confirmed 4-leg parlay (019dbae7-632b-7647)
+  // contained an "ATL team_total Over 4.5" leg priced at our fair 45.4%
+  // while FanDuel quoted -136 (~55% fair after de-vig). The primary
+  // cache for that event held team_total Over at -136 paired with
+  // Under at -225 — a 26.9% overround that indicates the consensus
+  // builder paired an Over 4.5 with a DIFFERENT-line Under (probably
+  // Under 5.5 or 6.5). Proportional de-vig then produced a 45/55
+  // split when the real fair was ~55/45, a ~10pp systematic bias on
+  // the losing side. Estimated ~7-8pp bettor EV on that parlay.
+  //
+  // The root cause lives in getBookPairsForTeamTotals /
+  // buildConsensusTeamTotals and requires an audit to ensure Over/Under
+  // pairs are always same-line same-book. Until that audit lands,
+  // decline all team_total legs defensively — no quotes on this market
+  // class instead of potentially mispriced ones.
+  //
+  // Gated behind config flag so we can flip it off once the audit
+  // completes without another deploy.
+  // ---------------------------------------------------------------------
+  if (config.pricing.declineTeamTotals !== false) {
+    for (const leg of legs) {
+      const lineId = leg.line_id || leg.lineId || leg;
+      const lineInfo = (opts.resolvedLineInfos && opts.resolvedLineInfos.get(lineId)) || lineManager.lookupLine(lineId);
+      if (lineInfo && (lineInfo.marketType === 'team_total' || lineInfo.oddsApiMarket === 'team_totals')) {
+        log.info('Pricing', `Declined: team_total leg on defensive block (${lineInfo.teamName} ${lineInfo.line} — audit pending on consensus pairing)`);
+        priceParlay._lastFailure = {
+          reason: 'team_total declined',
+          detail: `team_total legs declined pending consensus-builder audit (${lineInfo.teamName || '?'} ${lineInfo.line || '?'})`,
+          blockerLeg: {
+            team: lineInfo.teamName,
+            market: lineInfo.marketType,
+            line: lineInfo.line,
+            sport: lineInfo.sport,
+          },
+        };
+        return null;
+      }
+    }
+  }
+
   // ------------------------- PHASE 1: Sync validation -------------------------
   const legStates = [];
   const nowMs = Date.now();

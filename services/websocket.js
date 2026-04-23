@@ -13,7 +13,60 @@ let pusherClient = null;
 let broadcastChannel = null;
 let privateChannel = null;
 let channelNames = { broadcast: null, private: null };
-let paused = process.env.START_PAUSED === 'true' || process.env.START_PAUSED === '1';
+// Paused defaults to TRUE at boot so any unexpected restart (Railway
+// auto-restart, OOM, health-check flip, manual redeploy) comes up
+// safely paused rather than silently resuming unprotected quoting.
+// Observed 2026-04-23: service restarted multiple times in a single
+// afternoon and each restart dropped the in-memory pause state —
+// quoted ~49 RFQs unprotected before caught.
+//
+// Supabase-backed persistence (see loadPausedState/persistPausedState
+// below) overrides this default once the DB load completes, so the
+// LAST explicit /pause or /resume call wins across restarts. An
+// operator who explicitly resumed before a crash will see the service
+// come back up in the resumed state; the default-true only protects
+// the narrow window where (a) the DB read is in flight, or (b) no
+// persisted state exists yet (fresh deploy).
+//
+// Legacy env-var override still honored for manual control —
+// START_PAUSED=false will force initial paused=false, useful only
+// for dev / initial bring-up.
+let paused = true;
+if (process.env.START_PAUSED === 'false' || process.env.START_PAUSED === '0') {
+  paused = false;
+}
+
+// Persist pause state to Supabase so it survives restarts. Keyed KV
+// storage (see db.saveKV / loadKV). Fire-and-forget save with error
+// logged; next /pause or /resume call retries automatically.
+const PAUSED_STATE_KEY = 'websocket_paused_state';
+async function persistPausedState(newValue) {
+  try {
+    const db = require('./db');
+    await db.saveKV(PAUSED_STATE_KEY, { paused: newValue, updatedAt: new Date().toISOString() });
+  } catch (err) {
+    log.warn('WS', `persistPausedState failed: ${err.message}`);
+  }
+}
+// Load persisted state at boot. If present, override the default. Called
+// from loadFromDbOnBoot() below after the db client is ready.
+async function loadPausedStateFromDb() {
+  try {
+    const db = require('./db');
+    const row = await db.loadKV(PAUSED_STATE_KEY);
+    if (row && typeof row.paused === 'boolean') {
+      const wasPaused = paused;
+      paused = row.paused;
+      log.info('WS', `Loaded persisted pause state: paused=${paused} (was ${wasPaused}, updatedAt=${row.updatedAt || 'unknown'})`);
+      return { loaded: true, paused, updatedAt: row.updatedAt };
+    }
+    log.info('WS', 'No persisted pause state — keeping boot default (paused=true)');
+    return { loaded: false, paused };
+  } catch (err) {
+    log.warn('WS', `loadPausedStateFromDb failed: ${err.message} — keeping current paused=${paused}`);
+    return { loaded: false, paused, error: err.message };
+  }
+}
 let connectionState = 'disconnected';
 let lastHealthCheck = null;
 let healthCheckTimer = null;
@@ -1053,11 +1106,13 @@ async function handleReconnect() {
 function pause() {
   paused = true;
   log.info('WS', 'Paused — will not respond to RFQs');
+  persistPausedState(true); // fire-and-forget
 }
 
 function resume() {
   paused = false;
   log.info('WS', 'Resumed — will respond to RFQs');
+  persistPausedState(false); // fire-and-forget
 }
 
 function disconnect() {
@@ -1420,6 +1475,7 @@ module.exports = {
   disconnect,
   pause,
   resume,
+  loadPausedStateFromDb,
   getState,
   getResponseTimeStats,
   getLatencyBreakdown,

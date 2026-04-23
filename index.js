@@ -243,6 +243,17 @@ async function startup() {
 
   // Step 4: Connect WebSocket
   log.info('Startup', '4/5 Connecting to ProphetX WebSocket...');
+  // Load persisted pause state BEFORE connecting. Boot defaults to
+  // paused=true; this overrides with the last-saved state from Supabase
+  // so an operator who explicitly resumed before a restart sees the
+  // service come back up in the resumed state. Without this, every
+  // restart would come up paused until someone manually POST /resume.
+  try {
+    const pauseLoad = await websocket.loadPausedStateFromDb();
+    log.info('Startup', `    ✓ Pause state loaded: paused=${pauseLoad.paused}${pauseLoad.loaded ? '' : ' (fresh / no persisted state)'}`);
+  } catch (err) {
+    log.warn('Startup', `    ⚠ Pause-state load failed: ${err.message} — defaulting to paused=true`);
+  }
   try {
     await websocket.connect();
     log.info('Startup', '    ✓ WebSocket connected');
@@ -3374,6 +3385,64 @@ function startStatusServer() {
       defaultVigPct: (config.pricing.defaultVig * 100).toFixed(2) + '%',
       overrides: config.pricing.vigBySport,
       parlayLevelVig: !!config.pricing.parlayLevelVig,
+    });
+  });
+
+  // v2 pricing-engine config: view + tune knobs without a redeploy.
+  // Works because pricer.js reads config.pricing.pricingV2* on every call,
+  // so live writes here take effect on the very next RFQ.
+  app.get('/config/v2', (req, res) => {
+    res.json({
+      pricingV2Enabled: !!config.pricing.pricingV2Enabled,
+      pricingV2Live: !!config.pricing.pricingV2Live,
+      pricingV2TargetEdge: config.pricing.pricingV2TargetEdge,
+      pricingV2KSigma: config.pricing.pricingV2KSigma,
+    });
+  });
+
+  app.post('/config/v2', (req, res) => {
+    const body = req.body || {};
+    const changed = {};
+
+    if (body.pricingV2Enabled != null) {
+      config.pricing.pricingV2Enabled = !!body.pricingV2Enabled;
+      changed.pricingV2Enabled = config.pricing.pricingV2Enabled;
+    }
+    if (body.pricingV2Live != null) {
+      config.pricing.pricingV2Live = !!body.pricingV2Live;
+      changed.pricingV2Live = config.pricing.pricingV2Live;
+    }
+    if (body.pricingV2TargetEdge != null) {
+      const v = parseFloat(body.pricingV2TargetEdge);
+      if (!Number.isFinite(v) || v < 0 || v >= 0.20) {
+        return res.status(400).json({ ok: false, error: 'pricingV2TargetEdge must be 0 to 0.20 (0-20%)' });
+      }
+      config.pricing.pricingV2TargetEdge = v;
+      changed.pricingV2TargetEdge = v;
+    }
+    if (body.pricingV2KSigma != null) {
+      const v = parseFloat(body.pricingV2KSigma);
+      if (!Number.isFinite(v) || v < 0 || v > 2) {
+        return res.status(400).json({ ok: false, error: 'pricingV2KSigma must be 0 to 2' });
+      }
+      config.pricing.pricingV2KSigma = v;
+      changed.pricingV2KSigma = v;
+    }
+
+    if (Object.keys(changed).length === 0) {
+      return res.status(400).json({ ok: false, error: 'no recognized fields (pricingV2Enabled|pricingV2Live|pricingV2TargetEdge|pricingV2KSigma)' });
+    }
+
+    log.info('Config', `v2 updated: ${JSON.stringify(changed)}`);
+    res.json({
+      ok: true,
+      changed,
+      current: {
+        pricingV2Enabled: !!config.pricing.pricingV2Enabled,
+        pricingV2Live: !!config.pricing.pricingV2Live,
+        pricingV2TargetEdge: config.pricing.pricingV2TargetEdge,
+        pricingV2KSigma: config.pricing.pricingV2KSigma,
+      },
     });
   });
 

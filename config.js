@@ -142,6 +142,12 @@ const config = {
       process.env.PRICING_V2_LIVE === 'true' || process.env.PRICING_V2_LIVE === '1',
     pricingV2TargetEdge: parseFloat(process.env.PRICING_V2_TARGET_EDGE) || 0.02,
     pricingV2KSigma: parseFloat(process.env.PRICING_V2_K_SIGMA) || 0.5,
+    // Defensive decline on team_total legs. Shipped 2026-04-23 after
+    // observing a ~10pp fair-prob mispricing on ATL Over 4.5 caused by
+    // buildConsensusTeamTotals pairing mismatched Over/Under lines.
+    // Set to false once the consensus-builder audit is complete.
+    declineTeamTotals:
+      process.env.DECLINE_TEAM_TOTALS !== 'false' && process.env.DECLINE_TEAM_TOTALS !== '0',
     // A/B-testable pricing mode for parlays. When true, vig is applied
     // ONCE at the parlay level using the MAX per-leg effective rate, rather
     // than compounded per-leg. Per-leg compounding penalizes multi-leg
