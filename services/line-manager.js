@@ -554,6 +554,23 @@ async function seedAllLines() {
       // Note: we'll handle the swap in line indexing below
     }
 
+    // Just-in-time alt-line warm. Fire-and-forget so the per-event fetch
+    // overlaps with the markets fetch below instead of waiting up to 15s
+    // for the periodic warm loop to pick up this event. The JIT function
+    // dedupes via altLinesCache TTL + in-flight map, and throttles via
+    // its own concurrency queue, so firing unconditionally per event is
+    // safe — already-fresh entries return in O(1) with no API call.
+    if (matchedHome && matchedAway && sportKey) {
+      oddsFeed.warmEventAltLinesJIT({
+        sport: sportKey,
+        homeTeam: matchedHome,
+        awayTeam: matchedAway,
+        commenceTime: pxScheduled,
+      }).catch(err => {
+        log.debug('Lines', `JIT warm (seed) swallowed error: ${err.message}`);
+      });
+    }
+
     // Fetch PX markets
     let markets;
     try {
@@ -1599,6 +1616,20 @@ async function resolveUnknownLine(rfqLeg) {
       // has the line_id, so we don't need to wait for PX to acknowledge
       px.registerSupportedLines([lineId]).catch(err => {
         log.warn('Lines', `PX registration of ${lineId} failed: ${err.message}`);
+      });
+
+      // Fire-and-forget JIT alt-line warm. The current RFQ is already being
+      // priced (its leg resolved via the primary-cache path or will on-demand
+      // fetch inline), but the NEXT RFQ touching this same event will get a
+      // warm cache hit instead of paying an on-demand fetch. Deduped internally
+      // by the JIT function's in-flight map + TTL check.
+      oddsFeed.warmEventAltLinesJIT({
+        sport: foundInfo.sport,
+        homeTeam: foundInfo.homeTeam,
+        awayTeam: foundInfo.awayTeam,
+        commenceTime: foundInfo.startTime,
+      }).catch(err => {
+        log.debug('Lines', `JIT warm (resolveUnknown) swallowed error: ${err.message}`);
       });
 
       return foundInfo;

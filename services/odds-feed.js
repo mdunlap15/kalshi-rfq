@@ -3492,6 +3492,145 @@ function startBovadaAltLoop() {
   log.info('OddsFeed', `Bovada alt-line loop started (every ${BOVADA_LOOP_INTERVAL_MS / 1000}s)`);
 }
 
+// ---------------------------------------------------------------------------
+// Just-in-time (JIT) single-event warm
+// ---------------------------------------------------------------------------
+// Called by line-manager when a new PX event is registered (either during
+// seed or on-demand via resolveUnknownLine). Fires a single-event alt-line
+// fetch immediately rather than waiting up to WARM_LOOP_INTERVAL_MS (15s)
+// for the periodic sweep to discover it.
+//
+// Safety rails:
+//   - Dedupes against in-flight warms (per-event key) so repeated calls
+//     from seed + resolveUnknownLine + rapid reseeds coalesce.
+//   - Skips when altLinesCache has a fresh entry (< ALT_LINES_TTL_MS).
+//   - Skips events outside the warm window (already started / too far out).
+//   - Throttled by a global concurrency cap (JIT_WARM_CONCURRENCY) so a
+//     large seed doesn't burst-call resolveOddsApiEventId + fetchAltLines
+//     in parallel and 429 the Odds API.
+//
+// Fire-and-forget contract: callers don't await — they pass through the
+// promise (or ignore it) and let the queue drain in background.
+const JIT_WARM_CONCURRENCY = 2;
+const _jitInFlight = new Map(); // normalizedKey -> Promise
+let _jitRunning = 0;
+const _jitPending = []; // [{task, resolve, reject}]
+const _jitStats = {
+  fired: 0, skippedFresh: 0, skippedNoAltSport: 0,
+  skippedStarted: 0, skippedTooFar: 0, skippedMissingFields: 0,
+  deduped: 0, fetched: 0, noMatch: 0, errors: 0,
+  lastFiredAt: null,
+};
+
+function _drainJitQueue() {
+  while (_jitRunning < JIT_WARM_CONCURRENCY && _jitPending.length > 0) {
+    const { task, resolve, reject } = _jitPending.shift();
+    _jitRunning++;
+    task()
+      .then(resolve, reject)
+      .finally(() => {
+        _jitRunning--;
+        _drainJitQueue();
+      });
+  }
+}
+
+function _runQueuedJit(task) {
+  return new Promise((resolve, reject) => {
+    _jitPending.push({ task, resolve, reject });
+    _drainJitQueue();
+  });
+}
+
+/**
+ * Warm alt-line cache for a single event immediately. Idempotent and
+ * safely callable from any registration path. Returns a promise the
+ * caller may ignore (fire-and-forget).
+ *
+ * @param {object} args
+ * @param {string} args.sport        Odds API sport key (e.g. 'basketball_nba')
+ * @param {string} args.homeTeam     Odds API canonical home team
+ * @param {string} args.awayTeam     Odds API canonical away team
+ * @param {string|null} args.commenceTime ISO-8601 or null
+ */
+function warmEventAltLinesJIT({ sport, homeTeam, awayTeam, commenceTime }) {
+  if (!sport || !homeTeam || !awayTeam) {
+    _jitStats.skippedMissingFields++;
+    return Promise.resolve({ status: 'skipped_missing_fields' });
+  }
+  // Same gate as warmAltLines — only sports we actually pre-warm have
+  // meaningful alt-line coverage. On-demand sports (soccer niche leagues)
+  // also welcome the JIT since they aren't on the periodic sweep.
+  if (!sportSupportsAltLines(sport)) {
+    _jitStats.skippedNoAltSport++;
+    return Promise.resolve({ status: 'skipped_no_alt_sport', sport });
+  }
+  const now = Date.now();
+  const startMs = commenceTime ? new Date(commenceTime).getTime() : null;
+  if (startMs && !isNaN(startMs)) {
+    if (startMs < now) {
+      _jitStats.skippedStarted++;
+      return Promise.resolve({ status: 'skipped_started' });
+    }
+    if (startMs > now + WARM_EVENT_MAX_HOURS_AHEAD * 3600 * 1000) {
+      _jitStats.skippedTooFar++;
+      return Promise.resolve({ status: 'skipped_too_far' });
+    }
+  }
+  const key = normalizeEventKey(homeTeam, awayTeam);
+  const cached = altLinesCache[key];
+  if (cached && (now - cached.fetchedAt) < ALT_LINES_TTL_MS) {
+    _jitStats.skippedFresh++;
+    return Promise.resolve({ status: 'skipped_fresh', key });
+  }
+  const pending = _jitInFlight.get(key);
+  if (pending) {
+    _jitStats.deduped++;
+    return pending;
+  }
+
+  const promise = _runQueuedJit(async () => {
+    _jitStats.fired++;
+    _jitStats.lastFiredAt = new Date().toISOString();
+    try {
+      // Pre-check match so stats can distinguish "Odds API doesn't have
+      // this event" from "fetch errored."
+      const resolved = await resolveOddsApiEventId(sport, homeTeam, awayTeam, commenceTime);
+      if (!resolved) {
+        _jitStats.noMatch++;
+        return { status: 'no_match', key, sport };
+      }
+      const r = await fetchAltLines(sport, homeTeam, awayTeam, commenceTime);
+      if (r) {
+        _jitStats.fetched++;
+        log.debug('OddsFeed', `JIT warm: ${sport} ${awayTeam} @ ${homeTeam} fetched (${_jitStats.fetched} total)`);
+        return { status: 'fetched', key, sport };
+      }
+      _jitStats.errors++;
+      return { status: 'empty', key, sport };
+    } catch (err) {
+      _jitStats.errors++;
+      log.warn('OddsFeed', `JIT warm failed for ${homeTeam} vs ${awayTeam}: ${err.message}`);
+      return { status: 'error', key, sport, error: err.message };
+    }
+  }).finally(() => {
+    _jitInFlight.delete(key);
+  });
+
+  _jitInFlight.set(key, promise);
+  return promise;
+}
+
+function getJitWarmStats() {
+  return {
+    ..._jitStats,
+    concurrencyCap: JIT_WARM_CONCURRENCY,
+    inFlight: _jitRunning,
+    queued: _jitPending.length,
+    inFlightKeys: _jitInFlight.size,
+  };
+}
+
 function getAltLinesWarmStats() {
   const cacheSize = Object.keys(altLinesCache).length;
   // Compute staleness distribution
@@ -5367,9 +5506,11 @@ module.exports = {
   mergeOddsApiLive,
   warmAltLines,
   warmAllSports,
+  warmEventAltLinesJIT,
   startAltLineWarmLoop,
   startBovadaAltLoop,
   getAltLinesWarmStats,
+  getJitWarmStats,
   getEventMarkets,
   getGolfMatchupEvent,
   getLiveEventMarkets,

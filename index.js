@@ -743,6 +743,13 @@ function startStatusServer() {
   app.get('/alt-lines-stats', (req, res) => {
     res.json(oddsFeed.getAltLinesWarmStats());
   });
+
+  // Just-in-time warm stats — fire counts, skips, cache hits, queue depth.
+  // Use this to verify JIT is triggering on new-event registrations and
+  // shortening the new-event coverage gap that the 15s periodic loop misses.
+  app.get('/jit-warm-stats', (req, res) => {
+    res.json(oddsFeed.getJitWarmStats());
+  });
   app.post('/warm-alt-lines', async (req, res) => {
     const sport = req.query.sport || req.body?.sport;
     try {
