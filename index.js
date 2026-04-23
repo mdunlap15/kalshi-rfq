@@ -903,6 +903,77 @@ function startStatusServer() {
       res.status(500).json({ ok: false, error: err.message });
     }
   });
+
+  // A/B metrics — splits orders by meta.abArm (set by pricer) and
+  // reports per-arm quote/fill/pnl stats over a time window.
+  // Reads straight from the orders table so the numbers are derived
+  // from real confirmedAt/settledAt timestamps, not from the
+  // reconciliation-blind session counters.
+  //
+  // Query: ?from=ISO&to=ISO  (defaults: last 24h, using quoted_at)
+  //        ?sport=...        (optional filter on meta.sport per order)
+  //
+  // Returns { window, v1: stats, v2: stats, overall: stats } where
+  // stats = {quotes, fills, fillRate, avgStake, settledN, pnl,
+  //          evPerDollarWagered, avgOfferedOdds}.
+  app.get('/v2-ab-metrics', async (req, res) => {
+    try {
+      const now = Date.now();
+      const to = req.query.to || new Date(now).toISOString();
+      const from = req.query.from || new Date(now - 24 * 60 * 60 * 1000).toISOString();
+      const sportFilter = req.query.sport || null;
+
+      const rows = await db.loadOrdersInDateRange(from, to, { groupBy: 'quoted_at', maxRows: 50000 });
+
+      const buckets = { v1: [], v2: [], overall: [] };
+      for (const r of rows) {
+        const arm = (r.meta && r.meta.abArm) || 'v1';
+        if (sportFilter) {
+          const legs = r.legs || (r.meta && r.meta.legs) || [];
+          const sports = new Set(legs.map(l => l.sport).filter(Boolean));
+          if (!sports.has(sportFilter)) continue;
+        }
+        buckets.overall.push(r);
+        if (arm === 'v2') buckets.v2.push(r);
+        else buckets.v1.push(r);
+      }
+
+      function summarize(list) {
+        const quotes = list.length;
+        const fills = list.filter(r => r.status === 'confirmed' || (r.status || '').startsWith('settled_')).length;
+        const stakes = list.filter(r => r.confirmed_stake != null).map(r => Number(r.confirmed_stake));
+        const avgStake = stakes.length ? stakes.reduce((a, b) => a + b, 0) / stakes.length : null;
+        const settled = list.filter(r => (r.status || '').startsWith('settled_'));
+        const pnls = settled.map(r => r.pnl != null ? Number(r.pnl) : 0);
+        const pnl = pnls.reduce((a, b) => a + b, 0);
+        const totalStakeSettled = settled.reduce((s, r) => s + (r.confirmed_stake ? Number(r.confirmed_stake) : 0), 0);
+        const evPerDollar = totalStakeSettled > 0 ? pnl / totalStakeSettled : null;
+        const offeredOdds = list.filter(r => r.offered_odds != null).map(r => Number(r.offered_odds));
+        const avgOfferedOdds = offeredOdds.length ? offeredOdds.reduce((a, b) => a + b, 0) / offeredOdds.length : null;
+        return {
+          quotes,
+          fills,
+          fillRate: quotes > 0 ? Math.round((fills / quotes) * 10000) / 100 : null, // %
+          avgStake: avgStake != null ? Math.round(avgStake * 100) / 100 : null,
+          settledN: settled.length,
+          pnl: Math.round(pnl * 100) / 100,
+          evPerDollarWagered: evPerDollar != null ? Math.round(evPerDollar * 10000) / 10000 : null,
+          avgOfferedOdds: avgOfferedOdds != null ? Math.round(avgOfferedOdds) : null,
+        };
+      }
+
+      res.json({
+        window: { from, to },
+        sportFilter,
+        v1: summarize(buckets.v1),
+        v2: summarize(buckets.v2),
+        overall: summarize(buckets.overall),
+      });
+    } catch (err) {
+      log.error('API', `/v2-ab-metrics failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
   app.post('/warm-alt-lines', async (req, res) => {
     const sport = req.query.sport || req.body?.sport;
     try {
@@ -3395,6 +3466,7 @@ function startStatusServer() {
     res.json({
       pricingV2Enabled: !!config.pricing.pricingV2Enabled,
       pricingV2Live: !!config.pricing.pricingV2Live,
+      pricingV2LivePercent: config.pricing.pricingV2LivePercent || 0,
       pricingV2TargetEdge: config.pricing.pricingV2TargetEdge,
       pricingV2KSigma: config.pricing.pricingV2KSigma,
     });
@@ -3411,6 +3483,14 @@ function startStatusServer() {
     if (body.pricingV2Live != null) {
       config.pricing.pricingV2Live = !!body.pricingV2Live;
       changed.pricingV2Live = config.pricing.pricingV2Live;
+    }
+    if (body.pricingV2LivePercent != null) {
+      const v = parseInt(body.pricingV2LivePercent);
+      if (!Number.isFinite(v) || v < 0 || v > 100) {
+        return res.status(400).json({ ok: false, error: 'pricingV2LivePercent must be 0 to 100 (integer)' });
+      }
+      config.pricing.pricingV2LivePercent = v;
+      changed.pricingV2LivePercent = v;
     }
     if (body.pricingV2TargetEdge != null) {
       const v = parseFloat(body.pricingV2TargetEdge);
@@ -3430,7 +3510,7 @@ function startStatusServer() {
     }
 
     if (Object.keys(changed).length === 0) {
-      return res.status(400).json({ ok: false, error: 'no recognized fields (pricingV2Enabled|pricingV2Live|pricingV2TargetEdge|pricingV2KSigma)' });
+      return res.status(400).json({ ok: false, error: 'no recognized fields (pricingV2Enabled|pricingV2Live|pricingV2LivePercent|pricingV2TargetEdge|pricingV2KSigma)' });
     }
 
     log.info('Config', `v2 updated: ${JSON.stringify(changed)}`);
@@ -3440,6 +3520,7 @@ function startStatusServer() {
       current: {
         pricingV2Enabled: !!config.pricing.pricingV2Enabled,
         pricingV2Live: !!config.pricing.pricingV2Live,
+        pricingV2LivePercent: config.pricing.pricingV2LivePercent || 0,
         pricingV2TargetEdge: config.pricing.pricingV2TargetEdge,
         pricingV2KSigma: config.pricing.pricingV2KSigma,
       },

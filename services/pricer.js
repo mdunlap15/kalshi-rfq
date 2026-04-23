@@ -1338,13 +1338,40 @@ async function priceParlay(legs, opts = {}) {
     }
   }
 
-  // If v2 is LIVE, replace the offer's odds with v2's result.
+  // A/B arm assignment. Deterministic by parlayId-hash so the same
+  // parlay always lands in the same arm (important for retry semantics
+  // and settlement attribution). Recorded in meta.abArm REGARDLESS of
+  // whether v2 actually overrides — keeps shadow records attributable
+  // to arms even before we flip pricingV2Live on.
+  //   - pricingV2LivePercent 0  → every parlay is 'v1'
+  //   - pricingV2LivePercent 50 → 50/50 split
+  //   - pricingV2LivePercent 100 → every parlay is 'v2'
+  // Override only actually fires when pricingV2Live is ALSO true —
+  // that's the master kill-switch.
+  const _livePct = config.pricing.pricingV2LivePercent || 0;
+  let abArm = 'v1';
+  if (opts.parlayId && _livePct > 0) {
+    if (_livePct >= 100) {
+      abArm = 'v2';
+    } else {
+      const hex = String(opts.parlayId).replace(/-/g, '').slice(0, 8);
+      const n = parseInt(hex, 16);
+      if (Number.isFinite(n) && (n % 100) < _livePct) abArm = 'v2';
+    }
+  }
+
+  // If v2 is LIVE and this parlay is in the v2 arm, replace the offer's
+  // odds with v2's result. Records v2Used in meta so A/B metrics can
+  // distinguish "assigned to v2 arm" from "actually got v2 price"
+  // (they differ when pricingV2Live is false but assignment still runs).
   let finalAmericanOdds = americanOdds;
   let finalOfferedImpliedProb = offeredImpliedProb;
-  if (config.pricing.pricingV2Live && _v2Shadow && _v2Shadow.v2.offeredAmericanOdds != null) {
+  let v2Used = false;
+  if (config.pricing.pricingV2Live && abArm === 'v2' && _v2Shadow && _v2Shadow.v2.offeredAmericanOdds != null) {
     finalAmericanOdds = _v2Shadow.v2.offeredAmericanOdds;
     finalOfferedImpliedProb = _v2Shadow.v2.offeredImpliedProb;
-    log.info('V2Pricing', `live: v1=${americanOdds} → v2=${finalAmericanOdds} (Δ ${finalAmericanOdds - americanOdds})`);
+    v2Used = true;
+    log.info('V2Pricing', `live[${abArm}]: v1=${americanOdds} → v2=${finalAmericanOdds} (Δ ${finalAmericanOdds - americanOdds})`);
   }
 
   return {
@@ -1356,6 +1383,8 @@ async function priceParlay(legs, opts = {}) {
     },
     meta: {
       _timings,
+      abArm,
+      v2Used,
       _v2Shadow: _v2Shadow ? {
         v1American: _v2Shadow.v1.offeredAmericanOdds,
         v2American: _v2Shadow.v2.offeredAmericanOdds,

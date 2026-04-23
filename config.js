@@ -142,6 +142,18 @@ const config = {
       process.env.PRICING_V2_LIVE === 'true' || process.env.PRICING_V2_LIVE === '1',
     pricingV2TargetEdge: parseFloat(process.env.PRICING_V2_TARGET_EDGE) || 0.02,
     pricingV2KSigma: parseFloat(process.env.PRICING_V2_K_SIGMA) || 0.5,
+    // A/B split control. pricingV2Live is the master kill-switch (false =
+    // v2 never overrides v1, regardless of arm). pricingV2LivePercent is
+    // the fraction of parlays (0-100) whose parlayId-hash falls in the
+    // v2 arm. At 0, the master flag is a no-op; at 100, every parlay is
+    // v2-arm. Assignment is ALWAYS recorded in meta.abArm even when
+    // master is off, so analytics can attribute shadow records by arm.
+    pricingV2LivePercent: (() => {
+      const v = parseInt(process.env.PRICING_V2_LIVE_PERCENT);
+      if (!Number.isFinite(v) || v < 0) return 0;
+      if (v > 100) return 100;
+      return v;
+    })(),
     // Defensive decline on team_total legs. Shipped 2026-04-23 after
     // observing a ~10pp fair-prob mispricing on ATL Over 4.5 caused by
     // buildConsensusTeamTotals pairing mismatched Over/Under lines.
