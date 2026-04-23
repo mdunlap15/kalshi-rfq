@@ -8204,10 +8204,25 @@
       svg += svgText(x, pad.t + chartH + 16, (p * 100).toFixed(p < 0.1 ? 1 : 0) + '%', { size: 11, fill: 'var(--text3)' });
     }
 
-    // Tooltip builder
+    // Tooltip builder. Quoted time rendered in Eastern to match the
+    // single-leg chart hover format ("4/22 10:45:07 AM ET").
+    const fmtEtTs = (iso) => {
+      if (!iso) return '';
+      try {
+        const dt = new Date(iso);
+        if (isNaN(dt.getTime())) return '';
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/New_York',
+          month: 'numeric', day: 'numeric',
+          hour: 'numeric', minute: '2-digit', second: '2-digit',
+          hour12: true,
+        }).formatToParts(dt).reduce((a, p) => { a[p.type] = p.value; return a; }, {});
+        return parts.month + '/' + parts.day + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second + ' ' + parts.dayPeriod + ' ET';
+      } catch (e) { return ''; }
+    };
     const tipFor = (d, label) => {
       const fmtPp = (v) => v == null ? 'n/a' : (v >= 0 ? '+' : '') + v.toFixed(2) + 'pp';
-      const t = (d.quotedAt || '').replace('T', ' ').substring(0, 16);
+      const t = fmtEtTs(d.quotedAt);
       return '[' + label + ']\n'
         + d.legCount + '-leg ' + (d.myOddsAm >= 0 ? '+' : '') + d.myOddsAm
         + ' · stake $' + (d.stake || 0).toFixed(0)
@@ -8505,10 +8520,15 @@
 
     const tipFor = (d, label) => {
       const fmtPp = (v) => v == null ? 'n/a' : (v >= 0 ? '+' : '') + v.toFixed(2) + 'pp';
+      // fmtConfirmedAt is a generic ISO-to-ET formatter — reuse for quotedAt
+      // so every dot reports when the quote went out (in Eastern Time),
+      // matching the parlay chart's hover format.
+      const quotedTs = fmtConfirmedAt(d.quotedAt);
       const confirmedTs = d.isConfirmed ? fmtConfirmedAt(d.confirmedAt) : null;
       return '[' + label + ']\n'
         + d.legLabel + ' · ' + d.sport
         + (d.isConfirmed ? ' · CONFIRMED' : '')
+        + (quotedTs ? '\nQuoted: ' + quotedTs : '')
         + (confirmedTs ? '\nConfirmed: ' + confirmedTs : '')
         + '\nFair: ' + (d.fairProb * 100).toFixed(2) + '% · My: ' + (d.myProb * 100).toFixed(2) + '%'
         + '\nMy dist:  ' + fmtPp(d.distMine)
