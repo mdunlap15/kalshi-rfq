@@ -3322,6 +3322,7 @@ function startStatusServer() {
   //   /debug-bovada-probe?sport=nhl    — hockey
   //   /debug-bovada-probe?sport=mlb    — baseball
   app.get('/debug-bovada-probe', async (req, res) => {
+    const userUrl = req.query.url;
     const sport = (req.query.sport || 'nba').toLowerCase();
     const SPORT_PATHS = {
       nba: 'basketball/nba',
@@ -3330,7 +3331,7 @@ function startStatusServer() {
       ncaab: 'basketball/ncaab-mens-basketball',
     };
     const path = SPORT_PATHS[sport] || SPORT_PATHS.nba;
-    const probes = [
+    const defaultProbes = [
       // Coupon API — events + primary markets
       `https://www.bovada.lv/services/sports/event/coupon/events/A/description/${path}?marketFilterId=def&preMatchOnly=true&eventsLimit=50&lang=en`,
       // Sometimes the public v2 endpoint carries alt line markets too
@@ -3338,6 +3339,7 @@ function startStatusServer() {
       // Category listings for a league — tells us what props are available
       `https://www.bovada.lv/services/sports/category/${path}?preMatchOnly=true&lang=en`,
     ];
+    const probes = userUrl ? [userUrl] : defaultProbes;
     const results = [];
     for (const url of probes) {
       const t0 = Date.now();
@@ -3373,11 +3375,22 @@ function startStatusServer() {
               startTime: events[0].startTime,
               displayGroupCount: Array.isArray(events[0].displayGroups) ? events[0].displayGroups.length : null,
               displayGroups: Array.isArray(events[0].displayGroups)
-                ? events[0].displayGroups.slice(0, 3).map(dg => ({
+                ? events[0].displayGroups.slice(0, 20).map(dg => ({
                     description: dg.description,
                     marketCount: Array.isArray(dg.markets) ? dg.markets.length : null,
                     sampleMarkets: Array.isArray(dg.markets)
-                      ? dg.markets.slice(0, 5).map(m => m.description || m.marketTypeId)
+                      ? dg.markets.slice(0, 8).map(m => ({
+                          description: m.description,
+                          period: m.period?.description,
+                          outcomeCount: Array.isArray(m.outcomes) ? m.outcomes.length : null,
+                          sampleOutcomes: Array.isArray(m.outcomes)
+                            ? m.outcomes.slice(0, 3).map(o => ({
+                                description: o.description,
+                                american: o.price?.american,
+                                handicap: o.price?.handicap,
+                              }))
+                            : null,
+                        }))
                       : null,
                   }))
                 : null,
