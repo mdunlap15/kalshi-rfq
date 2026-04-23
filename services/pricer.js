@@ -6,6 +6,7 @@ const orderTracker = require('./order-tracker');
 const dkScraper = require('./dk-scraper');
 const templateExposure = require('./template-exposure');
 const { performance } = require('perf_hooks');
+const crypto = require('crypto');
 
 /**
  * Detect a series-winner leg and look up its fair probability from the
@@ -1348,15 +1349,23 @@ async function priceParlay(legs, opts = {}) {
   //   - pricingV2LivePercent 100 → every parlay is 'v2'
   // Override only actually fires when pricingV2Live is ALSO true —
   // that's the master kill-switch.
+  //
+  // Hash uses md5 over the full parlayId rather than parseInt on the
+  // first 8 hex chars. Why: parlayIds are UUIDv7, where the first 12
+  // hex chars encode the timestamp in ms. First-8-hex only advances
+  // ~1 per 65s, so at 5% target the hash spends ~104 min in the
+  // >=5 band before cycling back — yielding long "freeze" windows
+  // where no parlay gets assigned v2. md5 mixes all bits uniformly
+  // so assignment is per-parlay-random, not per-65s-bucket.
   const _livePct = config.pricing.pricingV2LivePercent || 0;
   let abArm = 'v1';
   if (opts.parlayId && _livePct > 0) {
     if (_livePct >= 100) {
       abArm = 'v2';
     } else {
-      const hex = String(opts.parlayId).replace(/-/g, '').slice(0, 8);
-      const n = parseInt(hex, 16);
-      if (Number.isFinite(n) && (n % 100) < _livePct) abArm = 'v2';
+      const h = crypto.createHash('md5').update(String(opts.parlayId)).digest();
+      const n = h.readUInt32BE(0);
+      if ((n % 100) < _livePct) abArm = 'v2';
     }
   }
 
