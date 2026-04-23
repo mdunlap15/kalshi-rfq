@@ -2711,24 +2711,46 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
 // are safe to aggressively pre-warm at every odds refresh cycle.
 // Tennis stays in (thin alt coverage but cheap to fetch; helps RFQs
 // on non-primary sets).
+//
+// 2026-04-22: major soccer leagues added to pre-warm. Soccer alt-line
+// on-demand fetches were the single biggest remaining contributor to
+// `decline → price` p95 latency (50-500ms on first RFQ per event
+// before the on-demand populated the cache). Pre-warming moves that
+// cost from the RFQ hot path to the 30s background refresh loop,
+// bringing soccer alt RFQs from ~200ms p50 to near-zero.
+//
+// Minor/niche soccer leagues (Liga MX, Brasileirão, Libertadores,
+// NWSL) stay on-demand only to cap API cost — flow there is thin
+// and the pre-warm quota would mostly be wasted. Strict-safety
+// gating still applies to ALL soccer (see isStrictAltSanitySport).
 const SPORTS_WITH_ALT_MARKETS = new Set([
   'basketball_nba', 'basketball_ncaab', 'basketball_wnba',
   'baseball_mlb',
   'icehockey_nhl',
   'americanfootball_nfl', 'americanfootball_ncaaf',
   'tennis',
+  // Major soccer leagues — pre-warmed as of 2026-04-22
+  'soccer_epl',
+  'soccer_spain_la_liga',
+  'soccer_italy_serie_a',
+  'soccer_germany_bundesliga',
+  'soccer_france_ligue_one',
+  'soccer_uefa_champs_league',
+  'soccer_uefa_europa_league',
+  'soccer_usa_mls',
 ]);
 
-// Sports where we want alt-line coverage but ONLY on-demand (no
-// pre-warming). Caps API cost to real RFQ volume. Soccer has lots of
-// events (10+ EPL per weekend, similar across major leagues), and
-// bettor parlays on non-primary lines are a moderate fraction — not
-// worth burning quota pre-warming every game.
+// Sports with strict-safety alt-line handling (tighter lineDiff
+// threshold, min-book requirement, reverse sanity). These are sports
+// with thin alt-line book coverage where an alt-as-primary mispricing
+// would be high-impact. Soccer in particular had a history of alt-
+// line confusion incidents that spawned the strict-mode safeguards.
 //
-// Alt-line fetches still happen from the getFairProbAsync path when
-// an RFQ hits a non-primary line; this set is additive to that
-// behavior, granting soccer the same dangerous-decline safeguards we
-// apply elsewhere (lineDiff sanity, min-book requirement).
+// Membership is NOT tied to pre-warm state — soccer is both strict
+// AND pre-warmed now. Keep this set explicit rather than deriving
+// from other sets so the safety intent stays readable.
+//
+// Generic 'soccer' key + niche leagues stay on-demand and strict.
 const SPORTS_WITH_ONDEMAND_ALT_MARKETS = new Set([
   'soccer',
   'soccer_usa_mls',
@@ -2739,6 +2761,11 @@ const SPORTS_WITH_ONDEMAND_ALT_MARKETS = new Set([
   'soccer_france_ligue_one',
   'soccer_uefa_champs_league',
   'soccer_uefa_europa_league',
+  // Niche leagues: stay on-demand only (not added to pre-warm above)
+  'soccer_mexico_ligamx',
+  'soccer_brazil_campeonato',
+  'soccer_conmebol_libertadores',
+  'soccer_usa_nwsl',
 ]);
 
 // True when either gate (pre-warm or on-demand) applies. Use in
