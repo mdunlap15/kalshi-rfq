@@ -3313,6 +3313,39 @@ function startStatusServer() {
     }
   });
 
+  // DK scraper discovery probe — navigates to a DK URL, optionally follows
+  // up with a per-event detail-page visit, and returns a summary of every
+  // marketType.name captured from XHRs plus sample selection shapes.
+  //
+  // Used during Phase 0 of the DK alt-line scraper build to identify:
+  //  - Which DK subcategory slugs carry NBA 1H, NHL 1st Period, team totals
+  //  - Exact marketType.name strings for parser filters
+  //  - Per-event detail-page timing (validates the 2-min cycle budget)
+  //
+  // Example calls:
+  //   /debug-dk-probe?url=https://sportsbook.draftkings.com/leagues/basketball/nba&sub=1st-half
+  //   /debug-dk-probe?url=https://sportsbook.draftkings.com/leagues/basketball/nba&sub=team-totals&eventDetail=1
+  //   /debug-dk-probe?url=https://sportsbook.draftkings.com/leagues/hockey/nhl&sub=1st-period
+  //
+  // Expect 15-90s for a primary-page-only probe, 30-120s with event detail.
+  app.get('/debug-dk-probe', async (req, res) => {
+    const url = req.query.url;
+    if (!url) return res.status(400).json({ error: 'need ?url=...' });
+    if (!url.startsWith('https://sportsbook.draftkings.com/')) {
+      return res.status(400).json({ error: 'url must start with https://sportsbook.draftkings.com/' });
+    }
+    const subcategory = req.query.sub || null;
+    const postWaitMs = parseInt(req.query.waitMs) || 10000;
+    const eventDetailNav = req.query.eventDetail === '1' || req.query.eventDetail === 'true';
+    const maxEventDetails = parseInt(req.query.maxDetails) || 3;
+    try {
+      const capture = await dkScraper.probeDkPage({ url, subcategory, postWaitMs, eventDetailNav, maxEventDetails });
+      res.json({ ok: true, ...capture });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Probe PX's raw market catalog for an event. Useful for diagnosing why
   // a market type we "think" we support doesn't end up in the line index —
   // usually because PX's actual `m.type` string doesn't match our allowlist.

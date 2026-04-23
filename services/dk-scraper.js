@@ -1299,6 +1299,164 @@ function lookupGolfMatchupFairProb(teamName, roundNum) {
   return null;
 }
 
+/**
+ * DISCOVERY PROBE — disposable scraper for unknown DK URLs.
+ *
+ * Navigates to a given DK URL, optionally follows up with a per-event
+ * detail-page visit, captures ALL JSON XHRs to sportsbook-nash.draftkings.com,
+ * and returns a summary of captured markets + sample selections.
+ *
+ * Used during Phase 0 of the alt-lines scraper build to discover:
+ *  - Which URL subcategories ("?category=...&subcategory=...") carry
+ *    NBA 1H, NHL 1st Period, and team_total markets
+ *  - The exact marketType.name strings we'll filter on in the real scraper
+ *  - The selection format (label, line, point, price fields)
+ *
+ * Not production code — after the real scraper is built, this endpoint
+ * stays for future reconnaissance of new market types.
+ *
+ * Example calls (via /debug-dk-probe endpoint):
+ *   ?url=https://sportsbook.draftkings.com/leagues/basketball/nba
+ *   ?url=https://sportsbook.draftkings.com/leagues/basketball/nba&sub=1st-half
+ *   ?url=https://sportsbook.draftkings.com/leagues/basketball/nba&sub=team-totals
+ *   ?url=https://sportsbook.draftkings.com/event/<slug>/<id>&sub=1st-half
+ */
+async function probeDkPage({ url, subcategory = null, postWaitMs = 10000, eventDetailNav = false, maxEventDetails = 3 }) {
+  const startedAt = Date.now();
+  const browser = await puppeteer().launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+  });
+  const capture = {
+    navigatedUrl: null,
+    elapsedMs: 0,
+    xhrCount: 0,
+    marketTypesSeen: {},   // marketType.name -> count
+    sampleEvents: [],       // first N events for matching reference
+    sampleSelections: {},   // marketType.name -> up to 3 sample selections
+    eventDetailCaptures: [], // if eventDetailNav: per-event summary
+    errors: [],
+  };
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1400, height: 900 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    const allPayloads = [];
+    page.on('response', async (resp) => {
+      const rurl = resp.url();
+      if (!rurl.includes('sportsbook-nash.draftkings.com')) return;
+      try {
+        const ct = resp.headers()['content-type'] || '';
+        if (!ct.includes('json')) return;
+        const data = await resp.json();
+        if (!data || typeof data !== 'object') return;
+        allPayloads.push({ url: rurl, data });
+        capture.xhrCount++;
+      } catch { /* ignore parse errors */ }
+    });
+
+    const navUrl = subcategory
+      ? (url.includes('?') ? `${url}&subcategory=${subcategory}` : `${url}?category=odds&subcategory=${subcategory}`)
+      : url;
+    capture.navigatedUrl = navUrl;
+
+    try {
+      await page.goto(navUrl, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+      await new Promise(r => setTimeout(r, postWaitMs));
+    } catch (err) {
+      capture.errors.push(`primary nav: ${err.message}`);
+    }
+
+    // Aggregate market types / events / selections from all captured payloads
+    const eventsSeen = new Set();
+    for (const { data } of allPayloads) {
+      // Events
+      for (const ev of (data.events || [])) {
+        if (eventsSeen.has(ev.id)) continue;
+        eventsSeen.add(ev.id);
+        if (capture.sampleEvents.length < 5) {
+          capture.sampleEvents.push({
+            id: ev.id,
+            name: ev.name,
+            startTime: ev.startEventDate || ev.startTime,
+            slug: slugifyDkEventName(ev.name),
+          });
+        }
+      }
+      // Markets
+      const selectionsByMarketId = {};
+      for (const sel of (data.selections || [])) {
+        if (!selectionsByMarketId[sel.marketId]) selectionsByMarketId[sel.marketId] = [];
+        selectionsByMarketId[sel.marketId].push(sel);
+      }
+      for (const m of (data.markets || [])) {
+        const mtName = m.marketType?.name;
+        if (!mtName) continue;
+        capture.marketTypesSeen[mtName] = (capture.marketTypesSeen[mtName] || 0) + 1;
+        if (!capture.sampleSelections[mtName] || capture.sampleSelections[mtName].length < 3) {
+          const sels = selectionsByMarketId[m.id] || [];
+          if (sels.length > 0) {
+            if (!capture.sampleSelections[mtName]) capture.sampleSelections[mtName] = [];
+            // Only keep the minimal per-selection shape we'd parse in prod
+            capture.sampleSelections[mtName].push({
+              eventId: m.eventId,
+              marketId: m.id,
+              samples: sels.slice(0, 4).map(s => ({
+                label: s.label,
+                displayOdds: s.displayOdds,
+                points: s.points,
+                participants: s.participants?.map(p => p.name),
+              })),
+            });
+          }
+        }
+      }
+    }
+
+    // Optional per-event detail-page follow-up (for team_totals / alt lines
+    // that don't appear at the league level).
+    if (eventDetailNav && capture.sampleEvents.length > 0) {
+      const before = allPayloads.length;
+      for (const ev of capture.sampleEvents.slice(0, maxEventDetails)) {
+        const slug = slugifyDkEventName(ev.name);
+        const detailUrl = `https://sportsbook.draftkings.com/event/${slug}/${ev.id}`
+          + (subcategory ? `?category=odds&subcategory=${subcategory}` : '');
+        try {
+          const t0 = Date.now();
+          await page.goto(detailUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          await new Promise(r => setTimeout(r, 3500));
+          // Capture new markets that appeared since this nav
+          const newMarkets = new Set();
+          for (let i = before; i < allPayloads.length; i++) {
+            for (const m of (allPayloads[i].data?.markets || [])) {
+              if (m.marketType?.name) newMarkets.add(m.marketType.name);
+            }
+          }
+          capture.eventDetailCaptures.push({
+            eventId: ev.id,
+            eventName: ev.name,
+            detailUrl,
+            navMs: Date.now() - t0,
+            newMarketsFound: [...newMarkets],
+          });
+        } catch (err) {
+          capture.errors.push(`detail nav ${ev.id}: ${err.message}`);
+        }
+      }
+    }
+
+    capture.elapsedMs = Date.now() - startedAt;
+    // Sort market types by count desc for easier scanning
+    capture.marketTypesSeen = Object.fromEntries(
+      Object.entries(capture.marketTypesSeen).sort((a, b) => b[1] - a[1])
+    );
+    return capture;
+  } finally {
+    await browser.close();
+  }
+}
+
 module.exports = {
   fetchSeriesMarkets,
   fetchSeriesWinners,
@@ -1311,6 +1469,7 @@ module.exports = {
   fetchMmaFightOdds,
   fetchGolfMatchups,
   fetchLiveMarkets,
+  probeDkPage,
   parseSeriesData,
   parseSeriesWinnerData,
   parseSeriesSpreadData,
