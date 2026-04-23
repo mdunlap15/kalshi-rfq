@@ -3,6 +3,7 @@
 // at process bootstrap. Migrated from node-fetch@2 for S3 of latency plan.
 const { config } = require('../config');
 const log = require('./logger');
+const bovadaAltScraper = require('./bovada-alt-scraper');
 
 // AbortController is a Node.js global — used by abortableFetch below to cancel
 // slow Odds API calls instead of just ignoring the promise. This actually
@@ -3471,6 +3472,26 @@ function startAltLineWarmLoop() {
   log.info('OddsFeed', `Alt-line warm loop started (every ${WARM_LOOP_INTERVAL_MS / 1000}s)`);
 }
 
+// Bovada scraper loop. Runs every 2 min — matches the primary odds
+// cycle. Per-event cache TTL inside the scraper (10 min) means most
+// calls are cheap skip operations. First run at startup populates
+// cache before any alt-line RFQs arrive.
+let _bovadaLoopTimer = null;
+const BOVADA_LOOP_INTERVAL_MS = 2 * 60 * 1000;
+function startBovadaAltLoop() {
+  if (_bovadaLoopTimer) return;
+  // Initial refresh fire-and-forget — errors logged by the scraper
+  bovadaAltScraper.refreshAll().catch(err => {
+    log.warn('OddsFeed', `Bovada initial refresh failed: ${err.message}`);
+  });
+  _bovadaLoopTimer = setInterval(() => {
+    bovadaAltScraper.refreshAll().catch(err => {
+      log.warn('OddsFeed', `Bovada refresh loop failed: ${err.message}`);
+    });
+  }, BOVADA_LOOP_INTERVAL_MS);
+  log.info('OddsFeed', `Bovada alt-line loop started (every ${BOVADA_LOOP_INTERVAL_MS / 1000}s)`);
+}
+
 function getAltLinesWarmStats() {
   const cacheSize = Object.keys(altLinesCache).length;
   // Compute staleness distribution
@@ -4153,6 +4174,80 @@ async function getFairProbAsync(sport, homeTeam, awayTeam, marketType, selection
     }
   }
 
+  // ---- BOVADA FALLBACK ----
+  // Last resort when The Odds API and SharpAPI caches don't cover the
+  // RFQ leg. Targets markets Odds API can't serve on its per-event
+  // endpoint (verified 422 INVALID_MARKET for alternate_spreads_h1,
+  // alternate_totals_h1, alternate_team_totals). Bovada exposes all
+  // of these via its public coupon API; scraper maintains a cache
+  // refreshed every 2 min.
+  //
+  // Only consulted after every other cache/fetch path has returned
+  // null. Fail-closed: cache miss / stale returns null, which cascades
+  // up to a decline at pricer — never a mispriced quote.
+  try {
+    const bovadaQuery = mapMarketTypeToBovada(marketType, selection, homeTeam, awayTeam);
+    if (bovadaQuery) {
+      const fair = bovadaAltScraper.lookupFairProb({
+        sport, homeTeam, awayTeam,
+        period: bovadaQuery.period,
+        marketType: bovadaQuery.marketType,
+        selection: bovadaQuery.selection,
+        line: bovadaQuery.line != null ? bovadaQuery.line : line,
+        teamName: bovadaQuery.teamName,
+      });
+      if (fair != null) {
+        log.info('OddsFeed', `Bovada fallback hit: ${sport} ${marketType}/${selection}/line=${line} -> ${(fair*100).toFixed(2)}%`);
+        return fair;
+      }
+    }
+  } catch (err) {
+    log.warn('OddsFeed', `Bovada fallback error: ${err.message}`);
+  }
+
+  return null;
+}
+
+/**
+ * Translate our internal marketType + selection to the shape
+ * bovadaAltScraper.lookupFairProb expects. Returns null for market
+ * types Bovada doesn't cover (anything not h1/p1/p2/p3/f5/i1 period
+ * and not team_total).
+ */
+function mapMarketTypeToBovada(marketType, selection, homeTeam, awayTeam) {
+  // Full-game (period='game')
+  if (marketType === 'h2h')     return { period: 'game', marketType: 'h2h',    selection };
+  if (marketType === 'spreads') return { period: 'game', marketType: 'spread', selection };
+  if (marketType === 'totals')  return { period: 'game', marketType: 'total',  selection };
+
+  // NBA First Half
+  if (marketType === 'h2h_h1')     return { period: 'h1', marketType: 'h2h',    selection };
+  if (marketType === 'spreads_h1') return { period: 'h1', marketType: 'spread', selection };
+  if (marketType === 'totals_h1')  return { period: 'h1', marketType: 'total',  selection };
+
+  // MLB First 5 Innings
+  if (marketType === 'h2h_f5')     return { period: 'f5', marketType: 'h2h',    selection };
+  if (marketType === 'spreads_f5') return { period: 'f5', marketType: 'spread', selection };
+  if (marketType === 'totals_f5')  return { period: 'f5', marketType: 'total',  selection };
+
+  // team_totals: selection is compound 'home_over' / 'away_under' etc.
+  // Decompose into (side, direction) and map side→teamName.
+  if (marketType === 'team_totals') {
+    const parts = (selection || '').split('_');
+    if (parts.length !== 2) return null;
+    const [side, direction] = parts;
+    if (direction !== 'over' && direction !== 'under') return null;
+    const teamName = side === 'home' ? homeTeam : side === 'away' ? awayTeam : null;
+    if (!teamName) return null;
+    return {
+      period: 'game',
+      marketType: 'team_total',
+      selection: direction,
+      teamName,
+    };
+  }
+
+  // Not a market type Bovada covers
   return null;
 }
 
@@ -5273,6 +5368,7 @@ module.exports = {
   warmAltLines,
   warmAllSports,
   startAltLineWarmLoop,
+  startBovadaAltLoop,
   getAltLinesWarmStats,
   getEventMarkets,
   getGolfMatchupEvent,

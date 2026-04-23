@@ -256,6 +256,12 @@ async function startup() {
   // return cache hits quickly — the loop only re-fetches aging entries.
   oddsFeed.startAltLineWarmLoop();
 
+  // Start Bovada scraper loop — serves alt-line markets The Odds API
+  // doesn't cover (NBA H1 alt spreads/totals, team_total alt ladders,
+  // NHL periods). Fail-closed: cache misses cascade to decline, never
+  // misprice. Refreshes every 2 min.
+  oddsFeed.startBovadaAltLoop();
+
   // Start periodic timers
   const refreshMs = config.refreshIntervalMinutes * 60 * 1000;
   oddsRefreshTimer = setInterval(async () => {
