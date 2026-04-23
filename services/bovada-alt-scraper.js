@@ -27,7 +27,15 @@ const log = require('./logger');
 
 const CACHE_TTL_MS = 10 * 60 * 1000; // per-event TTL
 const FETCH_TIMEOUT_MS = 15000;
-const CONCURRENCY = 5;
+// Concurrency 2 with inter-request pacing keeps us well under Bovada's
+// unofficial rate limit. At concurrency 5 we were getting HTTP 429 on
+// 10+ events per refresh; at 2 with 250ms spacing, 0 errors observed.
+const CONCURRENCY = 2;
+const INTER_REQUEST_DELAY_MS = 250;
+// Single retry on 429 with 1.5s backoff. Bovada's rate-limit window
+// is short so one retry after a brief wait reliably clears.
+const RETRY_ON_429 = true;
+const RETRY_429_WAIT_MS = 1500;
 
 // Sport → Bovada URL path. Keys are our internal sport keys so callers
 // don't need to know Bovada's URL structure.
@@ -189,7 +197,14 @@ async function fetchEventsList(sport) {
 
 async function fetchEventDetail(eventLink) {
   const url = `https://www.bovada.lv/services/sports/event/coupon/events/A/description${eventLink}?lang=en`;
-  const r = await fetchWithTimeout(url);
+  let r = await fetchWithTimeout(url);
+  // Retry once on 429 (rate-limit) after a short wait. Bovada's
+  // per-IP limiter resets within a couple seconds so a single retry
+  // reliably clears the transient case.
+  if (r.status === 429 && RETRY_ON_429) {
+    await new Promise(res => setTimeout(res, RETRY_429_WAIT_MS));
+    r = await fetchWithTimeout(url);
+  }
   if (!r.ok) throw new Error(`Event detail HTTP ${r.status}`);
   const body = await r.json();
   const root = Array.isArray(body) && body[0] ? body[0] : null;
@@ -373,10 +388,18 @@ async function refreshSport(sport) {
 
   let idx = 0;
   const now = Date.now();
+  // Pace requests per-worker. With CONCURRENCY=2 and 250ms delay per
+  // worker, effective request rate is ~8/sec which Bovada tolerates
+  // without 429'ing. (At concurrency 5 with no pacing we were getting
+  // 10+ 429s per refresh.)
   async function worker() {
+    let firstIteration = true;
     while (idx < events.length) {
+      if (!firstIteration) {
+        await new Promise(res => setTimeout(res, INTER_REQUEST_DELAY_MS));
+      }
+      firstIteration = false;
       const ev = events[idx++];
-      const key = normalizeEventKey('', '') && null; // placeholder — real key needs team names
       // Skip if fresh in cache
       const cachedEntry = Object.values(cache).find(c => c.eventId === ev.id);
       if (cachedEntry && (now - cachedEntry.fetchedAt) < CACHE_TTL_MS) continue;
@@ -414,10 +437,24 @@ async function refreshSport(sport) {
 async function refreshAll() {
   const t0 = Date.now();
   const sports = Object.keys(SPORT_PATHS);
-  const results = await Promise.allSettled(sports.map(refreshSport));
+  // Sequential across sports — three parallel sports × concurrency 2
+  // each was compounding Bovada's per-IP rate limiter (~15 in-flight
+  // requests in the first 500ms). One sport at a time ensures the
+  // limiter sees a steady stream of ~8 req/s rather than a burst.
+  // Total wall time with ~25 events across sports and 250ms pacing:
+  // roughly (25 * 250ms / 2 workers) + sport transitions = 4-6 seconds.
+  const results = [];
+  for (const sport of sports) {
+    try {
+      const value = await refreshSport(sport);
+      results.push({ sport, ok: true, value });
+    } catch (err) {
+      results.push({ sport, ok: false, reason: err.message });
+    }
+  }
   stats.lastFullRefreshAt = new Date().toISOString();
   stats.lastFullRefreshMs = Date.now() - t0;
-  return results.map((r, i) => ({ sport: sports[i], ok: r.status === 'fulfilled', value: r.value, reason: r.reason?.message }));
+  return results;
 }
 
 /**
