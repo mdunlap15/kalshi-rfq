@@ -27,15 +27,21 @@ const log = require('./logger');
 
 const CACHE_TTL_MS = 10 * 60 * 1000; // per-event TTL
 const FETCH_TIMEOUT_MS = 15000;
-// Concurrency 2 with inter-request pacing keeps us well under Bovada's
-// unofficial rate limit. At concurrency 5 we were getting HTTP 429 on
-// 10+ events per refresh; at 2 with 250ms spacing, 0 errors observed.
-const CONCURRENCY = 2;
-const INTER_REQUEST_DELAY_MS = 250;
-// Single retry on 429 with 1.5s backoff. Bovada's rate-limit window
-// is short so one retry after a brief wait reliably clears.
-const RETRY_ON_429 = true;
-const RETRY_429_WAIT_MS = 1500;
+// Bovada's rate limiter is more aggressive than expected. At concurrency
+// 2 + 250ms pacing + 1 retry we were still seeing 8-10 HTTP 429s per
+// refresh. Bovada's rejection window appears to be 15-60s not a few
+// hundred ms, so short retries don't clear. Going strict serial
+// (concurrency 1) with 500ms pacing and exponential-backoff retries.
+//
+// Tradeoff: ~20 events × 500ms = 10s minimum refresh wall time. Still
+// well within a 2-min cycle budget and more importantly reliable
+// enough to avoid scatter-gather failures that leave coverage gaps.
+const CONCURRENCY = 1;
+const INTER_REQUEST_DELAY_MS = 500;
+// Exponential backoff on 429. Three attempts total: 2s, 5s, 12s.
+// Total worst-case per-event: ~20s. Rare — most events succeed on
+// the first try under the new pacing.
+const RETRY_429_BACKOFFS_MS = [2000, 5000, 12000];
 
 // Sport → Bovada URL path. Keys are our internal sport keys so callers
 // don't need to know Bovada's URL structure.
@@ -197,15 +203,19 @@ async function fetchEventsList(sport) {
 
 async function fetchEventDetail(eventLink) {
   const url = `https://www.bovada.lv/services/sports/event/coupon/events/A/description${eventLink}?lang=en`;
-  let r = await fetchWithTimeout(url);
-  // Retry once on 429 (rate-limit) after a short wait. Bovada's
-  // per-IP limiter resets within a couple seconds so a single retry
-  // reliably clears the transient case.
-  if (r.status === 429 && RETRY_ON_429) {
-    await new Promise(res => setTimeout(res, RETRY_429_WAIT_MS));
+  let r;
+  let lastStatus = null;
+  // Initial attempt + up to N retries on 429 with exponential backoff.
+  const attempts = 1 + RETRY_429_BACKOFFS_MS.length;
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) {
+      await new Promise(res => setTimeout(res, RETRY_429_BACKOFFS_MS[i - 1]));
+    }
     r = await fetchWithTimeout(url);
+    lastStatus = r.status;
+    if (r.status !== 429) break;
   }
-  if (!r.ok) throw new Error(`Event detail HTTP ${r.status}`);
+  if (!r.ok) throw new Error(`Event detail HTTP ${lastStatus}`);
   const body = await r.json();
   const root = Array.isArray(body) && body[0] ? body[0] : null;
   const event = root && Array.isArray(root.events) && root.events[0] ? root.events[0] : null;
