@@ -705,33 +705,44 @@ async function priceParlay(legs, opts = {}) {
 
   // ---- SGP CORRELATION ADJUSTMENT ----
   // The naive product of fair leg probs understates the true joint prob
-  // for positively-correlated spread+total pairs, and overstates for
-  // negatively-correlated pairs. Apply a combo-specific multiplier to
-  // fairParlayProb BEFORE vig is computed.
+  // for positively-correlated spread+total pairs. We apply an UPWARD
+  // multiplier to fairParlayProb BEFORE vig is computed, which shortens
+  // offered odds — matching how real books price SGPs.
   //
-  // Spread+total correlation logic:
-  //   - Betting the MINUS-spread side (line<0, favorite cover) correlates
-  //     with OVER (blowouts are high-scoring).
-  //   - Betting the PLUS-spread side (line>0, dog cover) correlates with
-  //     UNDER (close games are lower-scoring).
-  //   - Matching directions (minus+over OR plus+under) → positive corr →
-  //     boost fairParlayProb via sgpCorrelationPositive (>1).
-  //   - Opposing directions (minus+under OR plus+over) → negative corr →
-  //     reduce fairParlayProb via sgpCorrelationNegative (<1).
+  // POLICY CHANGE 2026-04-22: previously we had a direction classifier
+  // that applied ×1.15 for "positive" combos (minus+over, plus+under)
+  // and ×0.90 for "negative" combos (minus+under, plus+over). Empirical
+  // check against a DK SGP reference (OKC -16.5 + Under 216.5) showed
+  // the direction classifier gets the sign WRONG for large-spread NBA
+  // blowouts: the "fav + under" case is actually POSITIVELY correlated
+  // there (starter rest in 4th quarter → pace slows → under hits), yet
+  // our code was shrinking fair by 0.90, pushing offered odds longer
+  // and leaking EV to bettors. DK's +228 vs our naive-compound-derived
+  // +263 on that parlay was a ~35-cent underpricing in the bettor's
+  // favor.
   //
-  // Unlike the old multiplicative OFFERED-price boost that PX rejected
-  // with "invalid estimated prices", this adjusts the INPUT fair prob —
-  // mathematically identical to FD/DK's internal SGP discount model and
-  // within PX's accepted estimated-price tolerance.
+  // New policy: treat ALL spread_total SGPs as positively correlated
+  // (always widen fair, always shorten offered). Empirically books
+  // almost always charge more on SGPs than naive product, regardless
+  // of theoretical sign. Safer default — worst case we're slightly
+  // tight on the small minority of truly negatively-correlated pairs
+  // and lose those fills, which is strictly better than settling
+  // EV-negative on the positively-correlated ones we've been mispricing.
+  //
+  // sgpCorrelationNegative is no longer consulted but kept in config
+  // for potential future use (e.g., restoring direction logic once
+  // per-sport/per-spread-magnitude rules are calibrated).
   //
   // Only applies to 2-leg spread_total SGPs — the only combo currently
-  // in SGP_ALLOWED_COMBOS. Future combos (ml_total, etc.) would need
-  // their own correlation-sign logic added here.
+  // in SGP_ALLOWED_COMBOS.
   let sgpCorrelationFactor = 1;
   const sgpCorrelationSign = (function() {
     if (!isSGPParlay) return null;
     if ((opts.sgpCombo || null) !== 'spread_total') return null;
     if (pricedLegs.length !== 2) return null;
+    // Verify structure — both a spread leg and a total leg — before
+    // applying. If the combo key said spread_total but we can't find
+    // one of each, bail safely rather than mis-apply.
     let spreadLeg = null, totalLeg = null;
     for (const l of pricedLegs) {
       const mt = l.lineInfo.marketType;
@@ -739,18 +750,11 @@ async function priceParlay(legs, opts = {}) {
       else if (mt === 'total') totalLeg = l;
     }
     if (!spreadLeg || !totalLeg) return null;
-    const spreadLine = spreadLeg.lineInfo.line;
-    const totalSelection = totalLeg.lineInfo.selection;
-    if (spreadLine == null || !totalSelection) return null;
-    const isMinusSide = spreadLine < 0;   // line -1.5 (fav cover) vs line +1.5 (dog cover)
-    const isOver = totalSelection === 'over';
-    // minus+over OR plus+under → same "direction" → positive correlation
-    return (isMinusSide === isOver) ? 'positive' : 'negative';
+    // Always positive — see comment block above.
+    return 'positive';
   })();
   if (sgpCorrelationSign === 'positive') {
     sgpCorrelationFactor = config.pricing.sgpCorrelationPositive || 1;
-  } else if (sgpCorrelationSign === 'negative') {
-    sgpCorrelationFactor = config.pricing.sgpCorrelationNegative || 1;
   }
   if (sgpCorrelationFactor !== 1) {
     const before = fairParlayProb;
