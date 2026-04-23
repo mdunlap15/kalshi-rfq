@@ -733,36 +733,27 @@ async function priceParlay(legs, opts = {}) {
   // for potential future use (e.g., restoring direction logic once
   // per-sport/per-spread-magnitude rules are calibrated).
   //
-  // Applies to 2-leg same-game parlays in named combos:
-  //   spread_total (full-game spread + full-game total)
-  //   ml_total    (full-game moneyline + full-game total) — added 2026-04-22
-  //
-  // Both combos carry meaningful positive correlation empirically
-  // (books charge noticeably more than naive product), so both get the
-  // same always-positive correlation factor. ml_total correlation is
-  // often STRONGER than spread_total (favorite wins + game goes over
-  // is very common), but the factor is shared for now; if settled ROI
-  // on ml_total diverges from spread_total we can add a per-combo
-  // factor later.
+  // Only applies to 2-leg spread_total SGPs — the only combo currently
+  // in SGP_ALLOWED_COMBOS. ml_total was briefly added + reverted on
+  // 2026-04-22 (operator concern that ml_total correlation is stronger
+  // than our flat 1.08 factor captures — would risk EV leak until we
+  // add per-combo tuning). If ml_total is re-enabled later, extend the
+  // combo check here and consider a dedicated correlation factor.
   let sgpCorrelationFactor = 1;
   const sgpCorrelationSign = (function() {
     if (!isSGPParlay) return null;
+    if ((opts.sgpCombo || null) !== 'spread_total') return null;
     if (pricedLegs.length !== 2) return null;
-    const combo = opts.sgpCombo || null;
-    if (combo !== 'spread_total' && combo !== 'ml_total') return null;
-    // Structural verification — ensure we actually have the pair the
-    // combo key claims. Bail safely if not (shouldn't happen but cheap
-    // to guard).
-    let aLeg = null, bLeg = null;
-    const [needA, needB] = combo === 'spread_total'
-      ? ['spread', 'total']
-      : ['moneyline', 'total'];
+    // Verify structure — both a spread leg and a total leg — before
+    // applying. If the combo key said spread_total but we can't find
+    // one of each, bail safely rather than mis-apply.
+    let spreadLeg = null, totalLeg = null;
     for (const l of pricedLegs) {
       const mt = l.lineInfo.marketType;
-      if (mt === needA) aLeg = l;
-      else if (mt === needB) bLeg = l;
+      if (mt === 'spread') spreadLeg = l;
+      else if (mt === 'total') totalLeg = l;
     }
-    if (!aLeg || !bLeg) return null;
+    if (!spreadLeg || !totalLeg) return null;
     // Always positive — see comment block above.
     return 'positive';
   })();
