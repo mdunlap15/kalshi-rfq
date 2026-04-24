@@ -1115,6 +1115,56 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     // we stay rejected. Log the mismatch so it's visible but do not
     // override.
     if (ourQuote.status === 'quoted') {
+      // Exposure check — handleConfirm has team/series/per-parlay gates,
+      // but order.matched arrives independently and historically bypassed
+      // all of them. Observed 2026-04-24: 5 SAS bets booked totaling
+      // $1,243 while SAS exposure already sat at $4,980 against a $3,000
+      // team cap.
+      //
+      // Policy (Option B — soft accept + alert): PROMOTE anyway so our
+      // local accounting matches what PX has on the books (hard-rejecting
+      // here creates the exact drift class we just spent all day cleaning
+      // up). But flag the override loudly via meta.exposureOverrideOnMatch
+      // so the operator sees the violation, and record an exposure
+      // rejection in the stats bucket so /alerts surfaces it.
+      let exposureOverride = null;
+      try {
+        const cfg = require('../config').config;
+        const legsForCheck = (ourQuote.legs || ourQuote.meta?.legs || []).map(l => ({
+          ...l, lineInfo: l, team: l.team || l.teamName, fairProb: l.fairProb,
+        }));
+        const spRisk = Number(matchedStake || ourQuote.maxRisk || 0);
+        if (spRisk > 0 && legsForCheck.length > 0) {
+          // Per-parlay cap
+          const parlayHasSeries = legsForCheck.some(l =>
+            typeof (l.market || l.marketType) === 'string' &&
+            (l.market || l.marketType).startsWith('series_')
+          );
+          const perParlayCap = parlayHasSeries
+            ? (cfg.pricing.maxSeriesRiskPerParlay || cfg.pricing.maxRiskPerParlay)
+            : cfg.pricing.maxRiskPerParlay;
+          if (perParlayCap > 0 && spRisk > perParlayCap) {
+            exposureOverride = { reason: 'per-parlay cap', detail: `risk $${spRisk} > cap $${perParlayCap}`, violations: [] };
+          }
+          // Team cap
+          if (!exposureOverride) {
+            const teamCheck = checkExposureLimits(legsForCheck, spRisk, cfg.pricing.maxExposurePerTeam);
+            if (!teamCheck.allowed) {
+              exposureOverride = { reason: teamCheck.reason || 'team exposure limit', detail: teamCheck.reason, violations: teamCheck.violations || [] };
+            }
+          }
+          // Series gross exposure
+          if (!exposureOverride && parlayHasSeries) {
+            const seriesCheck = checkSeriesExposure(legsForCheck, spRisk, cfg.pricing.maxSeriesGrossExposure);
+            if (!seriesCheck.allowed) {
+              exposureOverride = { reason: seriesCheck.reason || 'series exposure limit', detail: seriesCheck.reason, violations: [{ team: 'series-event', wouldBe: seriesCheck.wouldBe, limit: seriesCheck.limit }] };
+            }
+          }
+        }
+      } catch (err) {
+        log.warn('Orders', `order.matched exposure-check threw: ${err.message} — proceeding with promotion`);
+      }
+
       ourQuote.status = 'confirmed';
       if (matchedOdds != null) {
         // PX sends matched_odds in bettor-side convention; our format is
@@ -1135,6 +1185,21 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
       }
       if (matchedStake != null) ourQuote.confirmedStake = matchedStake;
       ourQuote.confirmedAt = ourQuote.confirmedAt || new Date().toISOString();
+
+      if (exposureOverride) {
+        ourQuote.meta = ourQuote.meta || {};
+        ourQuote.meta.exposureOverrideOnMatch = {
+          reason: exposureOverride.reason,
+          detail: exposureOverride.detail,
+          violations: exposureOverride.violations,
+          flaggedAt: new Date().toISOString(),
+        };
+        log.warn('Orders', `[EXPOSURE OVERRIDE] order.matched forced confirm past cap for ${parlayId} — ${exposureOverride.reason}: ${exposureOverride.detail}. PX has booked; local promotion proceeded to preserve state accuracy. Reduce caps or rebalance manually.`);
+        try {
+          recordExposureRejection(parlayId, Number(matchedStake || 0), exposureOverride.reason, exposureOverride.violations);
+        } catch (_) { /* best-effort stats bump */ }
+      }
+
       db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(won via matched) failed: ${err.message}`));
     } else if (ourQuote.status === 'rejected') {
       log.warn('Orders', `PX matched a parlay we rejected: ${parlayId} (reject reason=${ourQuote.rejectionReason || 'unknown'}, px stake=${matchedStake}, px odds=${matchedOdds}). Keeping status=rejected.`);
