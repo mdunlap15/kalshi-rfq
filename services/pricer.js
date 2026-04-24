@@ -7,6 +7,7 @@ const dkScraper = require('./dk-scraper');
 const templateExposure = require('./template-exposure');
 const { performance } = require('perf_hooks');
 const crypto = require('crypto');
+const v2 = require('./v2');
 
 /**
  * Detect a series-winner leg and look up its fair probability from the
@@ -1318,24 +1319,49 @@ async function priceParlay(legs, opts = {}) {
   //
   // When pricingV2Live is also true, OVERRIDE the v1 americanOdds with
   // v2's computed value. Ships code-dark until Mike flips the flag.
+  //
+  // Hot-path cost: the v2 pipeline (calibration + correlation +
+  // ev-vig) adds ~500-1000µs per quote. That cost is unavoidable when
+  // pricingV2Live is true (we need v2's price before returning), but
+  // when it's false (pure shadow) we can defer with setImmediate so
+  // the offer returns to the WS handler first and v2 computes on the
+  // next event loop tick. Observed regression 2026-04-24: p50 went
+  // from <1.0ms to ~1.6ms once v2 shadow went wide. This defer path
+  // recovers that — the shadow log still populates, just milliseconds
+  // later, and nothing downstream reads meta._v2Shadow today.
   // ---------------------------------------------------------------------
+  const _v2ShadowArgs = config.pricing.pricingV2Enabled ? {
+    parlayId: opts.parlayId || '(unknown)',
+    pricedLegs,
+    v1OfferedAmericanOdds: americanOdds,
+    v1FairParlayProb: fairParlayProb,
+    opts: {
+      targetEdge: config.pricing.pricingV2TargetEdge,
+      kSigma: config.pricing.pricingV2KSigma,
+      templateRampAdd: templateRampAdd || 0,
+    },
+  } : null;
   let _v2Shadow = null;
-  if (config.pricing.pricingV2Enabled) {
-    try {
-      const v2 = require('./v2');
-      _v2Shadow = v2.shadowCompare({
-        parlayId: opts.parlayId || '(unknown)',
-        pricedLegs,
-        v1OfferedAmericanOdds: americanOdds,
-        v1FairParlayProb: fairParlayProb,
-        opts: {
-          targetEdge: config.pricing.pricingV2TargetEdge,
-          kSigma: config.pricing.pricingV2KSigma,
-          templateRampAdd: templateRampAdd || 0,
-        },
+  if (_v2ShadowArgs) {
+    if (config.pricing.pricingV2Live) {
+      // Sync path: v2's offered odds may override v1's below. Must block.
+      try {
+        _v2Shadow = v2.shadowCompare(_v2ShadowArgs);
+      } catch (err) {
+        log.warn('V2Pricing', `shadow failed: ${err.message}`);
+      }
+    } else {
+      // Async path: pure-shadow, no override possible. Defer so the offer
+      // ships first. setImmediate runs on the next event loop tick —
+      // after this function returns and the offer is handed to the WS
+      // handler for HTTP submission to PX.
+      setImmediate(() => {
+        try {
+          v2.shadowCompare(_v2ShadowArgs);
+        } catch (err) {
+          log.warn('V2Pricing', `deferred shadow failed: ${err.message}`);
+        }
       });
-    } catch (err) {
-      log.warn('V2Pricing', `shadow failed: ${err.message}`);
     }
   }
 
