@@ -104,7 +104,11 @@ function notifyConfirmation(order) {
     body: `${stake} stake | ${teams}${more}`,
     tag: 'confirm-' + order.parlayId,
     parlayId: order.parlayId,
-    url: '/order/' + order.parlayId,
+    // Open the PWA, not the /order/:id JSON endpoint. Previously tapping
+    // a confirmation notification dumped raw JSON into the browser.
+    // The parlayId is still on the payload so the app can deep-link to
+    // it via hash fragment if that feature lands later.
+    url: '/app',
   });
 }
 
