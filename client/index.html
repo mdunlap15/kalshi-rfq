@@ -6265,8 +6265,10 @@
       }
     }
     const balanceStr = balanceNum != null && !isNaN(balanceNum) ? fmtDollar(balanceNum) : '-';
-    const balanceCls = balanceNum != null && balanceNum < 500 ? 'negative'
-                     : balanceNum != null && balanceNum < 2000 ? '' : 'positive';
+    // Cash Available stays green regardless of value. A low balance means
+    // capital is committed to open parlays (good — you're working), not
+    // overdrawn. Coloring low-balance red falsely signals distress.
+    const balanceCls = balanceNum != null ? 'positive' : '';
 
     // PX's balance field is cash-available, NOT total equity — PX has
     // already subtracted stakes locked in open parlays. Total equity
