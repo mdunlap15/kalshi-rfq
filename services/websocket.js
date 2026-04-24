@@ -901,8 +901,26 @@ async function handleConfirm(data) {
           priceProbability
         );
       } catch (acceptErr) {
-        log.warn('Confirm', `Accept POST failed for ${parlayId} — NOT recording confirmation. err=${acceptErr.message}`);
-        orderTracker.recordRejection(parlayId, `accept-POST-failed: ${acceptErr.message}`);
+        // An accept-POST exception is AMBIGUOUS. Previously we'd mark
+        // the order rejected here — but PX sometimes books the bet
+        // despite returning an error (5xx after server-side commit,
+        // timeout after PX's side processed, 400 with unclear body).
+        // That assumption leaked $13,904 of hidden risk over the week
+        // of 2026-04-17 to 04-24 (358 orders PX had TBD but we had
+        // rejected — the accept-POST-failed drift).
+        //
+        // New path: mark acceptUnknown (state preserved, no exposure
+        // flip), then schedule a PX REST verification. verifyAcceptUnknown
+        // pulls ground truth and either imports (via importPxBookedOrder)
+        // or marks rejected (via recordRejection). 3s delay gives PX time
+        // to finalize if the failure came after their commit.
+        log.warn('Confirm', `Accept POST errored for ${parlayId}: ${acceptErr.message} — will verify via PX REST in 3s`);
+        orderTracker.markAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmedStake, acceptErr.message);
+        setTimeout(() => {
+          verifyAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmedStake).catch(err =>
+            log.warn('AcceptVerify', `${parlayId} verify-task threw: ${err.message}`)
+          );
+        }, 3000);
         return;
       }
       log.info('Confirm', `Accepted: order=${orderUuid}`);
@@ -925,6 +943,63 @@ async function handleConfirm(data) {
     }
   } catch (err) {
     log.error('Confirm', `Error handling confirmation: ${err.message}`);
+  }
+}
+
+/**
+ * Verify an accept-POST that errored ambiguously. Fetches PX's
+ * current state for the order_uuid and decides based on ground truth:
+ *   - PX has it finalized / tbd  → import as confirmed (addExposure fires)
+ *   - PX already settled         → import + record settlement
+ *   - PX has no record           → mark rejected
+ *   - Verify itself fails        → mark rejected defensively + log loudly
+ *
+ * Called 3 seconds after the accept-POST exception (see handleConfirm),
+ * giving PX time to finalize if the failure came after their
+ * server-side commit. Safe to call multiple times on the same parlay
+ * (importPxBookedOrder and recordRejection are both idempotent on
+ * already-resolved orders).
+ */
+async function verifyAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmedStake) {
+  if (!orderUuid) {
+    log.warn('AcceptVerify', `${parlayId}: no orderUuid to verify against PX — marking rejected`);
+    orderTracker.recordRejection(parlayId, 'accept-POST-failed: no orderUuid');
+    return;
+  }
+  try {
+    const pxOrder = await px.fetchOrderByUuid(orderUuid);
+    if (!pxOrder) {
+      log.info('AcceptVerify', `${parlayId} (${orderUuid}): PX has no record → rejected`);
+      orderTracker.recordRejection(parlayId, 'accept-POST-failed: PX has no record');
+      return;
+    }
+    const pxSettleStatus = pxOrder.settlement_status;
+    const pxOrderStatus = pxOrder.status;
+    const pxStake = pxOrder.confirmed_stake != null ? Number(pxOrder.confirmed_stake) : confirmedStake;
+    const pxOdds = pxOrder.confirmed_odds != null ? Number(pxOrder.confirmed_odds) : confirmedOdds;
+
+    if (['won', 'lost', 'push'].includes(pxSettleStatus)) {
+      // Edge case: the 3s window was enough for PX to settle the leg too.
+      // Promote then settle so exposure lifecycle stays coherent.
+      log.info('AcceptVerify', `${parlayId}: PX already ${pxSettleStatus} → importing + settling`);
+      orderTracker.importPxBookedOrder(parlayId, orderUuid, pxStake, pxOdds);
+      orderTracker.recordSettlement(orderUuid, pxSettleStatus, Number(pxOrder.profit || 0));
+      return;
+    }
+
+    if (pxSettleStatus === 'tbd' || pxOrderStatus === 'finalized') {
+      log.info('AcceptVerify', `${parlayId}: PX has it TBD/finalized → importing as confirmed`);
+      orderTracker.importPxBookedOrder(parlayId, orderUuid, pxStake, pxOdds);
+      return;
+    }
+
+    // Any other PX state (e.g. 'requested', 'cancelled', unknown) — don't
+    // assume booked. Mark rejected defensively.
+    log.warn('AcceptVerify', `${parlayId}: unexpected PX state settle=${pxSettleStatus}, status=${pxOrderStatus} → rejected`);
+    orderTracker.recordRejection(parlayId, `accept-POST-failed: PX state ${pxSettleStatus}/${pxOrderStatus}`);
+  } catch (err) {
+    log.error('AcceptVerify', `${parlayId} verify failed: ${err.message} — rejecting defensively`);
+    orderTracker.recordRejection(parlayId, `accept-POST-failed + verify-failed: ${err.message}`);
   }
 }
 

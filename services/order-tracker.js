@@ -669,6 +669,32 @@ async function sweepGhostOrders(opts = {}) {
 }
 
 /**
+ * Mark an order as "accept-unknown" — the accept POST to PX errored
+ * ambiguously (timeout, 5xx, 400 with unclear body). Does NOT flip
+ * status to rejected and does NOT run addExposure. Caller is expected
+ * to follow up with a PX REST verification (see verifyAcceptUnknown
+ * in websocket.js) to determine ground truth.
+ *
+ * Stores enough context on the order that, even if the service
+ * restarts before verification runs, an operator can see the
+ * unresolved state via /orders and manually resolve via
+ * /px-status-repair.
+ */
+function markAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmedStake, errMsg) {
+  const order = orders[parlayId];
+  if (!order) return { ok: false, reason: 'not-found' };
+  if (!order.meta) order.meta = {};
+  order.meta.acceptUnknown = true;
+  order.meta.acceptUnknownAt = new Date().toISOString();
+  order.meta.acceptUnknownError = errMsg || 'unknown';
+  order.meta.acceptUnknownUuid = orderUuid || null;
+  order.meta.acceptUnknownOdds = confirmedOdds != null ? +confirmedOdds : null;
+  order.meta.acceptUnknownStake = confirmedStake != null ? +confirmedStake : null;
+  db.saveOrder(order).catch(err => log.warn('AcceptUnknown', `saveOrder failed for ${parlayId}: ${err.message}`));
+  return { ok: true };
+}
+
+/**
  * Import a PX-booked order that our local state has as rejected (or
  * has no status for). Used by the /px-status-repair endpoint to patch
  * the accept-POST-failed drift: PX booked the bet, we marked it
@@ -4446,6 +4472,7 @@ module.exports = {
   recordDecline,
   recordUnsupportedMarket,
   importPxBookedOrder,
+  markAcceptUnknown,
   sweepGhostOrders,
   getMarketIntel,
   getAlerts,
