@@ -8345,6 +8345,7 @@
     window._legVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true, kalshi: true };
     window._legVsBooksFilter = 'all';
     window._legVsBooksRange = '7d';
+    window._legVsBooksSport = 'all';  // filter by sport/league key (e.g. 'baseball_mlb')
   }
   function setLegVsBooksFilter(f) {
     window._legVsBooksFilter = f;
@@ -8359,6 +8360,10 @@
   }
   function toggleLegVsBooksSeries(which) {
     window._legVsBooksToggle[which] = !window._legVsBooksToggle[which];
+    if (window._legVsBooksData) renderChartLegVsBooks(null);
+  }
+  function setLegVsBooksSport(sp) {
+    window._legVsBooksSport = sp;
     if (window._legVsBooksData) renderChartLegVsBooks(null);
   }
 
@@ -8463,13 +8468,48 @@
     html += '</span>';
     html += '</div>';
     const F = window._legVsBooksFilter;
-    html += '<div style="display:flex; gap:4px; justify-content:flex-end; margin-bottom:8px;">';
+    const SPORT = window._legVsBooksSport || 'all';
+    // Build sport dropdown options dynamically from the legs actually present
+    // in the current data. Soccer sub-leagues collapse under one 'soccer'
+    // bucket for display; match against the stored leg.sport prefix so e.g.
+    // 'soccer_usa_mls' legs show when 'soccer' is picked. Same label map
+    // and ordering as the parlay chart for consistency.
+    const sportsInLegData = new Set();
+    for (const d of data) {
+      if (!d.sport || d.sport === '?') continue;
+      if (String(d.sport).startsWith('soccer')) sportsInLegData.add('soccer');
+      else sportsInLegData.add(d.sport);
+    }
+    const sportLabelMapLeg = {
+      baseball_mlb: 'MLB', basketball_nba: 'NBA', basketball_ncaab: 'NCAAB',
+      basketball_wnba: 'WNBA', icehockey_nhl: 'NHL', tennis: 'Tennis',
+      soccer: 'Soccer', mma_mixed_martial_arts: 'MMA', boxing_boxing: 'Boxing',
+      golf_matchups: 'Golf',
+    };
+    const sportOrderLeg = ['baseball_mlb', 'basketball_nba', 'basketball_ncaab', 'basketball_wnba', 'icehockey_nhl', 'tennis', 'soccer', 'mma_mixed_martial_arts', 'boxing_boxing', 'golf_matchups'];
+    const sportOptsLeg = sportOrderLeg.filter(k => sportsInLegData.has(k));
+    html += '<div style="display:flex; gap:8px; justify-content:flex-end; margin-bottom:8px; align-items:center;">';
+    html += '<label style="font-size:11px; color:var(--text3);">Sport:'
+      + ' <select onchange="setLegVsBooksSport(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; margin-left:2px;">'
+      + '<option value="all"' + (SPORT === 'all' ? ' selected' : '') + '>All sports</option>';
+    for (const k of sportOptsLeg) {
+      html += '<option value="' + k + '"' + (SPORT === k ? ' selected' : '') + '>' + (sportLabelMapLeg[k] || k) + '</option>';
+    }
+    html += '</select></label>';
     html += '<button onclick="setLegVsBooksFilter(\'all\')" style="' + btnStyle(F === 'all') + '">All</button>';
     html += '<button onclick="setLegVsBooksFilter(\'confirmed\')" style="' + btnStyle(F === 'confirmed') + '">Confirmed</button>';
     html += '<button onclick="setLegVsBooksFilter(\'notfilled\')" style="' + btnStyle(F === 'notfilled') + '">Not Filled</button>';
     html += '</div>';
 
-    const filtered = F === 'all' ? data : data.filter(d => F === 'confirmed' ? d.isConfirmed : !d.isConfirmed);
+    // Apply confirmed-status filter first, then sport/league filter.
+    let filtered = F === 'all' ? data : data.filter(d => F === 'confirmed' ? d.isConfirmed : !d.isConfirmed);
+    if (SPORT && SPORT !== 'all') {
+      filtered = filtered.filter(d => {
+        const s = d.sport || '';
+        if (SPORT === 'soccer') return String(s).startsWith('soccer');
+        return s === SPORT;
+      });
+    }
     const confirmedCount = data.filter(d => d.isConfirmed).length;
     // Guard against unrecognized keys (e.g. 'custom' reserved for the parlay
     // chart) so .label lookup can't throw when this chart is shown in the
