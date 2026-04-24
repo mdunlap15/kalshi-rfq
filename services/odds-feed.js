@@ -1736,14 +1736,33 @@ function getBookPairs(odds, marketType) {
 }
 
 function getBookPairsForTotals(odds) {
-  const byBook = {};
+  // Key by (sportsbook, LINE) so Over at line X only pairs with Under at
+  // line X from the same book. Port of the 5ad919f team_total fix — the
+  // commit message flagged this function as having the same latent bug.
+  //
+  // Root-cause fix for 2026-04-24 CLE @ TOR U 8.5 mispricing
+  // (parlay 019dc030, our fair 90.36% vs book consensus 55.5% — 35pp error).
+  // Prior version keyed by (sportsbook, selection_type) only, so when
+  // SharpAPI included alt total rows in the primary feed for one book
+  // (observed on MLB totals — a single feed response can include
+  // Over/Under at 7.5, 8, 8.5, 9), the last-written `under` row
+  // overwrote earlier ones — producing e.g. Over 8.5 paired with
+  // Under 6.5, de-vigging to a 90%/10% split when the true primary
+  // was ~55%/45%.
+  //
+  // Rows without a `line` field are dropped — can't pair safely.
+  // Books that post only one side at a given line are silently dropped
+  // rather than mispaired.
+  const byKey = {};
   for (const row of odds) {
-    if (!byBook[row.sportsbook]) byBook[row.sportsbook] = {};
-    byBook[row.sportsbook][row.selection_type] = row;
+    if (row.line == null) continue;
+    const dir = row.selection_type;
+    if (dir !== 'over' && dir !== 'under') continue;
+    const key = `${row.sportsbook}|${row.line}`;
+    if (!byKey[key]) byKey[key] = { book: row.sportsbook, line: row.line };
+    byKey[key][dir] = row;
   }
-  return Object.entries(byBook)
-    .filter(([_, sides]) => sides.over && sides.under)
-    .map(([book, sides]) => ({ book, over: sides.over, under: sides.under }));
+  return Object.values(byKey).filter(p => p.over && p.under);
 }
 
 /**

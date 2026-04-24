@@ -154,6 +154,18 @@ const config = {
       if (v > 100) return 100;
       return v;
     })(),
+    // Safety net: decline any total leg where our de-vigged fair diverges
+    // from the simple book consensus (mean of Pin/DK/FD implied probs) by
+    // more than the threshold. Backstop for the getBookPairsForTotals fix
+    // in case another feed-shape edge case slips through. Limited to
+    // 'total' and 'run_line' market types — the scope where the Apr-24
+    // CLE @ TOR U 8.5 bug was observed (our fair 90.36% vs books 55.5%).
+    // Enabled by default so fresh deploys are protected. Set
+    // DECLINE_ANOMALOUS_TOTALS=false to disable; tune threshold via
+    // DECLINE_ANOMALOUS_TOTALS_THRESHOLD (default 0.10 = 10pp).
+    declineAnomalousTotalsEnabled:
+      process.env.DECLINE_ANOMALOUS_TOTALS !== 'false' && process.env.DECLINE_ANOMALOUS_TOTALS !== '0',
+    declineAnomalousTotalsThreshold: parseFloat(process.env.DECLINE_ANOMALOUS_TOTALS_THRESHOLD) || 0.10,
     // Defensive decline on team_total legs. Original bug (2026-04-23
     // ATL Over 4.5 mispricing via buildConsensusTeamTotals pairing
     // mismatched Over/Under lines) was fixed at the root in commit

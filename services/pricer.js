@@ -738,6 +738,39 @@ async function priceParlay(legs, opts = {}) {
       lineInfo.startTime
     );
 
+    // Anomalous-fair guard. Safety net in case a feed-shape edge case
+    // sneaks past getBookPairsForTotals. If our de-vigged fair sits far
+    // from the simple book consensus (mean of Pin/DK/FD implied probs),
+    // decline rather than risk a mispriced offer. Scoped to total /
+    // run_line markets — where the Apr-24 CLE @ TOR bug lived — and
+    // skipped when fewer than 2 books are available (consensus isn't
+    // meaningful). Not applied to DNB legs: raw 3-way americanToProb
+    // isn't directly comparable to our DNB-adjusted fair.
+    if (
+      config.pricing.declineAnomalousTotalsEnabled &&
+      bookPriceOverride == null && // overrides are intentional and trusted
+      !lineInfo.isDNB &&
+      (lineInfo.marketType === 'total' || lineInfo.marketType === 'run_line')
+    ) {
+      const books = [pinnacleOdds, fanduelOdds, draftkingsOdds]
+        .map(o => (o != null ? oddsFeed.americanToImpliedProb(o) : null))
+        .filter(p => p != null && p > 0 && p < 1);
+      if (books.length >= 2) {
+        const consensus = books.reduce((s, p) => s + p, 0) / books.length;
+        const dev = Math.abs(fairProb - consensus);
+        const threshold = config.pricing.declineAnomalousTotalsThreshold || 0.10;
+        if (dev > threshold) {
+          log.warn('Pricing', `Declined: anomalous fair ${(fairProb * 100).toFixed(1)}% vs book consensus ${(consensus * 100).toFixed(1)}% (dev ${(dev * 100).toFixed(1)}pp > ${(threshold * 100).toFixed(1)}pp) — ${legLabel}`);
+          priceParlay._lastFailure = {
+            reason: 'anomalous fair vs book consensus',
+            detail: `${legLabel}: fair ${(fairProb * 100).toFixed(1)}% deviates ${(dev * 100).toFixed(1)}pp from book consensus ${(consensus * 100).toFixed(1)}% (${books.length} books)`,
+            blockerLeg: legDescriptor,
+          };
+          return null;
+        }
+      }
+    }
+
     pricedLegs.push({
       lineId,
       lineInfo,
