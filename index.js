@@ -2613,6 +2613,100 @@ function startStatusServer() {
     }
   });
 
+  // Targeted repair for the accept-POST-failed drift. PX has booked
+  // bets that our local DB records as rejected. Scans PX's open (TBD)
+  // order list and flips any local-rejected/missing-status rows back
+  // to confirmed, rebuilds team exposure, and persists.
+  //
+  // Dry-run by default — responds with a plan showing what would change.
+  // Pass ?commit=true to actually write. Safe to re-run; only flips
+  // rejected → confirmed, never the other direction.
+  //
+  // Observed 2026-04-24: 228 orders ($13,904 SP-risk) booked on PX
+  // but locally rejected, hidden from Team Exposure. Root cause fix
+  // still needed in websocket.handleConfirm accept-POST error path.
+  app.post('/px-status-repair', async (req, res) => {
+    const commit = req.query.commit === 'true' || req.query.commit === '1';
+    try {
+      const pxOrders = await px.fetchOrders(Number(req.query.limit) || 3000);
+      const tbd = pxOrders.filter(o => o.settlement_status === 'tbd');
+
+      const toPromote = [];
+      const alreadyConfirmed = [];
+      const missingLocal = [];
+
+      for (const pxOrder of tbd) {
+        const pid = pxOrder.p_id;
+        const localOrder = pid ? orderTracker.findByParlayId(pid) : null;
+        if (!localOrder) {
+          missingLocal.push({
+            parlayId: pid,
+            stake: parseFloat(pxOrder.confirmed_stake || 0),
+            orderUuid: pxOrder.order_uuid,
+          });
+          continue;
+        }
+        if (localOrder.status === 'confirmed') {
+          alreadyConfirmed.push(pid);
+          continue;
+        }
+        toPromote.push({
+          parlayId: pid,
+          localStatus: localOrder.status,
+          confirmedStake: parseFloat(pxOrder.confirmed_stake || 0),
+          confirmedOdds: parseInt(pxOrder.confirmed_odds || 0),
+          orderUuid: pxOrder.order_uuid,
+        });
+      }
+
+      const sumRisk = arr => arr.reduce((s, o) => s + (parseFloat(o.confirmedStake ?? o.stake ?? 0) || 0), 0);
+      const toPromoteRisk = sumRisk(toPromote);
+      const missingLocalRisk = sumRisk(missingLocal);
+
+      if (!commit) {
+        return res.json({
+          ok: true,
+          mode: 'dry-run',
+          pxTbdCount: tbd.length,
+          alreadyConfirmedCount: alreadyConfirmed.length,
+          toPromoteCount: toPromote.length,
+          toPromoteRisk: Math.round(toPromoteRisk * 100) / 100,
+          missingLocalCount: missingLocal.length,
+          missingLocalRisk: Math.round(missingLocalRisk * 100) / 100,
+          sample: toPromote.slice(0, 10),
+          note: 'Pass ?commit=true to actually flip statuses and add exposure.',
+        });
+      }
+
+      // Execute promotions.
+      let promoted = 0;
+      const failures = [];
+      for (const p of toPromote) {
+        const result = orderTracker.importPxBookedOrder(
+          p.parlayId, p.orderUuid, p.confirmedStake, p.confirmedOdds
+        );
+        if (result.ok) promoted++;
+        else failures.push({ parlayId: p.parlayId, reason: result.reason });
+      }
+
+      res.json({
+        ok: true,
+        mode: 'committed',
+        pxTbdCount: tbd.length,
+        promoted,
+        failures: failures.length,
+        failureSample: failures.slice(0, 5),
+        toPromoteRisk: Math.round(toPromoteRisk * 100) / 100,
+        missingLocalCount: missingLocal.length,
+        missingLocalRisk: Math.round(missingLocalRisk * 100) / 100,
+        note: 'Status flips persisted to DB and exposure rebuilt. Missing-local orders still need separate import via /full-px-reconcile.',
+      });
+    } catch (err) {
+      log.error('Repair', `/px-status-repair failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Full reconcile against PX REST: exhaust PX order history, import/update
   // all orders locally, then rebuild stats from scratch. Recovery path for
   // in-memory drift against PX ground truth.

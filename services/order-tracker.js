@@ -549,6 +549,57 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
   return order;
 }
 
+/**
+ * Import a PX-booked order that our local state has as rejected (or
+ * has no status for). Used by the /px-status-repair endpoint to patch
+ * the accept-POST-failed drift: PX booked the bet, we marked it
+ * rejected, our Team Exposure under-reports the true position.
+ *
+ * Non-destructive:
+ *   - Only flips rejected/missing → confirmed (never confirmed → anything)
+ *   - Idempotent (safe to re-run; no-ops on already-confirmed orders)
+ *   - Rebuilds exposure for the order so Team/Game tables catch up
+ *
+ * Caller: POST /px-status-repair (see index.js). Not on the hot path;
+ * safe to run during live traffic (reads + writes are per-parlay).
+ */
+function importPxBookedOrder(parlayId, orderUuid, confirmedStake, confirmedOdds) {
+  const order = orders[parlayId];
+  if (!order) return { ok: false, reason: 'not-found' };
+  if (order.status === 'confirmed') return { ok: false, reason: 'already-confirmed' };
+  if ((order.status || '').startsWith('settled_')) return { ok: false, reason: 'already-settled' };
+
+  const prevStatus = order.status;
+  order.status = 'confirmed';
+  order.confirmedAt = order.confirmedAt || new Date().toISOString();
+  if (orderUuid) order.orderUuid = orderUuid;
+  if (confirmedStake != null && Number.isFinite(+confirmedStake)) order.confirmedStake = +confirmedStake;
+  if (confirmedOdds != null && Number.isFinite(+confirmedOdds)) order.confirmedOdds = +confirmedOdds;
+
+  // Stats: count this as a confirmation, back off the prior rejection.
+  stats.totalConfirmations++;
+  if (prevStatus === 'rejected' && stats.totalRejections > 0) stats.totalRejections--;
+
+  // Uuid secondary index.
+  if (orderUuid) ordersByUuid[orderUuid] = parlayId;
+
+  // Release any pending reservation left over from when we'd quoted it.
+  try { releasePending(parlayId); } catch (_) { /* best-effort */ }
+
+  // Team/game exposure. Wrap in try so a single bad order doesn't
+  // break the repair loop — we'd rather have the status flipped and
+  // miss exposure on one row than fail the entire repair.
+  try { addExposure(order); } catch (err) {
+    log.warn('Repair', `addExposure failed for ${parlayId}: ${err.message}`);
+  }
+
+  // Persist. Fire-and-forget; failures are logged but don't block.
+  db.saveOrder(order).catch(err => log.warn('Repair', `saveOrder failed for ${parlayId}: ${err.message}`));
+
+  log.info('Repair', `Promoted ${parlayId} ${prevStatus || '(no status)'} → confirmed (uuid=${orderUuid}, stake=$${confirmedStake}, odds=${confirmedOdds})`);
+  return { ok: true, parlayId, previousStatus: prevStatus };
+}
+
 // Classify a raw rejection reason string into a short, human-readable
 // category so the dashboard banner doesn't dump URLs and JSON into the
 // UI. Falls back to the leading clause of the reason when no pattern
@@ -4275,6 +4326,7 @@ module.exports = {
   getMatchedParlays: () => matchedParlays,
   recordDecline,
   recordUnsupportedMarket,
+  importPxBookedOrder,
   getMarketIntel,
   getAlerts,
   getExposureLimitStats,
