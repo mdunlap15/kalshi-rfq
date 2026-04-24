@@ -8981,6 +8981,54 @@
   }
 
   // 2. P&L by Sport bar chart
+  // Sort state for the P&L breakdown tables. Persists across re-renders.
+  // sortCol: 'label' | 'pnl' | 'wins' | 'losses' | 'count'. dir: 1 asc, -1 desc.
+  if (window._pnlSportSort === undefined) window._pnlSportSort = { col: 'pnl', dir: -1 };
+  if (window._pnlLegsSort === undefined) window._pnlLegsSort = { col: 'label', dir: 1 };
+
+  function _togglePnlSort(which, col) {
+    const state = which === 'sport' ? window._pnlSportSort : window._pnlLegsSort;
+    if (state.col === col) state.dir = -state.dir;
+    else { state.col = col; state.dir = (col === 'label') ? 1 : -1; }
+    _rerenderBothPnlCharts();
+  }
+  window._togglePnlSort = _togglePnlSort; // expose for onclick handlers
+
+  function _renderPnlTable(rows, which, labelHeader, labelRender) {
+    const state = which === 'sport' ? window._pnlSportSort : window._pnlLegsSort;
+    const sorted = [...rows].sort((a, b) => {
+      const av = state.col === 'label' ? String(a.label) : a[state.col];
+      const bv = state.col === 'label' ? String(b.label) : b[state.col];
+      if (av < bv) return -1 * state.dir;
+      if (av > bv) return 1 * state.dir;
+      return 0;
+    });
+    const arrow = (col) => state.col === col ? (state.dir > 0 ? ' ▲' : ' ▼') : '';
+    const cls = 'style="cursor:pointer; user-select:none;"';
+    const th = (col, label, align) => `<th ${cls} onclick="_togglePnlSort('${which}','${col}')" style="text-align:${align}; cursor:pointer;">${label}${arrow(col)}</th>`;
+    let html = '<div style="overflow-x:auto;"><table style="width:100%; font-size:12px;">'
+      + '<thead><tr style="color:var(--text3); border-bottom:1px solid var(--border);">'
+      + th('label', labelHeader, 'left')
+      + th('pnl', 'P&L', 'right')
+      + th('wins', 'Wins', 'right')
+      + th('losses', 'Losses', 'right')
+      + th('count', 'Count', 'right')
+      + '</tr></thead><tbody>';
+    for (const r of sorted) {
+      const pnlCls = r.pnl > 0 ? 'positive' : r.pnl < 0 ? 'negative' : 'neutral';
+      const pnlStr = (r.pnl >= 0 ? '+$' : '-$') + Math.abs(r.pnl).toFixed(2);
+      html += '<tr style="border-bottom:1px solid var(--border);">'
+        + '<td style="padding:6px 8px;">' + labelRender(r.label) + '</td>'
+        + '<td style="padding:6px 8px; text-align:right;" class="' + pnlCls + '">' + pnlStr + '</td>'
+        + '<td style="padding:6px 8px; text-align:right; color:var(--green);">' + r.wins + '</td>'
+        + '<td style="padding:6px 8px; text-align:right; color:var(--red);">' + r.losses + '</td>'
+        + '<td style="padding:6px 8px; text-align:right; color:var(--text2);">' + r.count + '</td>'
+        + '</tr>';
+    }
+    html += '</tbody></table></div>';
+    return html;
+  }
+
   function renderChartPnlSport(settled) {
     // Stash the raw set so date-range handlers can re-render without
     // waiting for the next parent-level refresh.
@@ -8994,51 +9042,22 @@
       return;
     }
 
-    // Use canonicalSport to collapse variants (Baseball == MLB,
-    // basketball_nba == NBA, every soccer_* league == Soccer, etc.).
-    // Without this, historical PX-backfilled orders and odds-feed
-    // orders show up as separate bars for the same physical sport.
+    // Use canonicalSport to collapse variants (Baseball == MLB, etc.)
     const bySport = {};
     for (const o of filtered) {
       const raw = (o.legs || o.meta?.legs || [])[0]?.sport || 'unknown';
       const sport = canonicalSport(raw);
-      if (!bySport[sport]) bySport[sport] = { pnl: 0, wins: 0, losses: 0 };
+      if (!bySport[sport]) bySport[sport] = { pnl: 0, wins: 0, losses: 0, count: 0 };
       bySport[sport].pnl += (o.pnl || 0);
+      bySport[sport].count++;
       if (o.pnl > 0) bySport[sport].wins++; else if (o.pnl < 0) bySport[sport].losses++;
     }
-
-    const sports = Object.entries(bySport).sort((a, b) => b[1].pnl - a[1].pnl);
-    const W = 700, barH = 28, gap = 4, pad = { l: 80, r: 80, t: 10, b: 10 };
-    const H = pad.t + pad.b + sports.length * (barH + gap);
-    const maxAbs = Math.max(1, ...sports.map(([, d]) => Math.abs(d.pnl)));
-    const chartW = W - pad.l - pad.r;
-    const midX = pad.l + chartW / 2;
-
-    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:${Math.max(150, H)}px;">`;
-    svg += svgLine(midX, pad.t, midX, H - pad.b, 'var(--border)', 1);
-
-    for (let i = 0; i < sports.length; i++) {
-      const [sport, d] = sports[i];
-      const y = pad.t + i * (barH + gap);
-      const barW = (Math.abs(d.pnl) / maxAbs) * (chartW / 2 - 10);
-      const color = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-      const x = d.pnl >= 0 ? midX : midX - barW;
-
-      svg += svgRect(x, y, barW, barH, color, 3);
-      svg += svgText(pad.l - 4, y + barH / 2 + 4, sportLabel(sport), { anchor: 'end', size: 11, fill: 'var(--text2)' });
-      const valStr = (d.pnl >= 0 ? '+$' : '-$') + Math.abs(d.pnl).toFixed(2);
-      // Always place value to the right of the bar's rightmost edge so it never collides with team labels
-      const valX = d.pnl >= 0 ? midX + barW + 4 : midX + 4;
-      svg += svgText(valX, y + barH / 2 + 4, valStr + ' (' + d.wins + 'W-' + d.losses + 'L)', { anchor: 'start', size: 10, fill: color });
-    }
-    svg += '</svg>';
-    el.innerHTML = svg;
+    const rows = Object.entries(bySport).map(([sport, d]) => ({ label: sport, ...d }));
+    el.innerHTML = _renderPnlTable(rows, 'sport', 'Sport', (s) => sportPill ? sportPill(s) : sportLabel(s));
   }
 
-  // 3. P&L by Leg Count bar chart
+  // 3. P&L by Leg Count — sortable table
   function renderChartPnlLegs(settled) {
-    // Stash for handlers (same set the sport chart uses) + apply the shared
-    // date range filter so both charts honor the same window.
     window._pnlChartSettled = settled;
     const filtered = _filterSettledByPnlDateRange(settled);
     const el = document.getElementById('chart-pnl-legs');
@@ -9051,37 +9070,14 @@
     const byLegs = {};
     for (const o of filtered) {
       const n = (o.legs || o.meta?.legs || []).length || '?';
-      if (!byLegs[n]) byLegs[n] = { pnl: 0, wins: 0, losses: 0 };
+      if (!byLegs[n]) byLegs[n] = { pnl: 0, wins: 0, losses: 0, count: 0 };
       byLegs[n].pnl += (o.pnl || 0);
+      byLegs[n].count++;
       if (o.pnl > 0) byLegs[n].wins++; else if (o.pnl < 0) byLegs[n].losses++;
     }
-
-    const legs = Object.entries(byLegs).sort((a, b) => Number(a[0]) - Number(b[0]));
-    const W = 700, barH = 28, gap = 4, pad = { l: 80, r: 80, t: 10, b: 10 };
-    const H = pad.t + pad.b + legs.length * (barH + gap);
-    const maxAbs = Math.max(1, ...legs.map(([, d]) => Math.abs(d.pnl)));
-    const chartW = W - pad.l - pad.r;
-    const midX = pad.l + chartW / 2;
-
-    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:${Math.max(120, H)}px;">`;
-    svg += svgLine(midX, pad.t, midX, H - pad.b, 'var(--border)', 1);
-
-    for (let i = 0; i < legs.length; i++) {
-      const [n, d] = legs[i];
-      const y = pad.t + i * (barH + gap);
-      const barW = (Math.abs(d.pnl) / maxAbs) * (chartW / 2 - 10);
-      const color = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-      const x = d.pnl >= 0 ? midX : midX - barW;
-
-      svg += svgRect(x, y, barW, barH, color, 3);
-      svg += svgText(pad.l - 4, y + barH / 2 + 4, n + '-leg', { anchor: 'end', size: 11, fill: 'var(--text2)' });
-      const valStr = (d.pnl >= 0 ? '+$' : '-$') + Math.abs(d.pnl).toFixed(2);
-      // Always place value to the right of the bar's rightmost edge so it never collides with labels
-      const valX = d.pnl >= 0 ? midX + barW + 4 : midX + 4;
-      svg += svgText(valX, y + barH / 2 + 4, valStr + ' (' + d.wins + 'W-' + d.losses + 'L)', { anchor: 'start', size: 10, fill: color });
-    }
-    svg += '</svg>';
-    el.innerHTML = svg;
+    // Numeric coercion on leg label so sorts compare as numbers, not strings
+    const rows = Object.entries(byLegs).map(([n, d]) => ({ label: Number(n) || n, ...d }));
+    el.innerHTML = _renderPnlTable(rows, 'legs', 'Legs', (n) => n + '-leg');
   }
 
   // 4. Calibration chart — actual vs expected win rate by probability bucket
