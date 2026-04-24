@@ -550,6 +550,125 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
 }
 
 /**
+ * Ghost-sweep. Walks confirmed-locally orders whose games started
+ * long enough ago that settlement MUST have happened on PX by now,
+ * reconciles each against PX, and either:
+ *   - Settles it (if PX has a matching settlement)
+ *   - Marks it phantom (if PX has no record — we can't verify and
+ *     we're tired of these corrupting stats)
+ *
+ * Why this is separate from fullPxReconcile: reconcile only processes
+ * orders PX RETURNS in its feed. Our 953 ghost orders from 2026-04-17
+ * onward aren't all being reached — PX's order endpoint caps at ~3000
+ * records and the oldest ghosts fall off the tail. This sweep takes
+ * the LOCAL set as the ground truth for "candidates that should be
+ * closed," then tries to match into whatever PX returns. Anything
+ * unmatched after 24h+ past game time is flagged phantom and hidden.
+ *
+ * opts: { olderThanHours = 24, commit = false, pxOrders = [] }
+ * Returns: { candidates, settled, phantomed, stillOpen, ambiguous }
+ */
+async function sweepGhostOrders(opts = {}) {
+  const olderThanHours = opts.olderThanHours != null ? opts.olderThanHours : 24;
+  const commit = !!opts.commit;
+  const pxOrders = opts.pxOrders || [];
+  const cutoff = Date.now() - olderThanHours * 3600 * 1000;
+
+  // Build PX lookup maps
+  const pxByUuid = {};
+  const pxByParlayId = {};
+  for (const p of pxOrders) {
+    if (p.order_uuid) pxByUuid[p.order_uuid] = p;
+    const pid = p.p_id || p.parlay_id;
+    if (pid) pxByParlayId[pid] = p;
+  }
+
+  // Identify candidates: confirmed locally, earliest leg started before cutoff
+  const candidates = [];
+  for (const order of Object.values(orders)) {
+    if (order.status !== 'confirmed') continue;
+    // Skip already-phantom — they're not polluting stats anymore.
+    if (order.meta?.phantom) continue;
+    const legs = order.legs || (order.meta && order.meta.legs) || [];
+    let earliest = null;
+    for (const l of legs) {
+      const st = l.startTime || l.start_time;
+      if (!st) continue;
+      const t = new Date(st).getTime();
+      if (Number.isFinite(t) && (earliest == null || t < earliest)) earliest = t;
+    }
+    if (earliest == null || earliest > cutoff) continue;
+    candidates.push(order);
+  }
+
+  const result = {
+    candidates: candidates.length,
+    settled: 0,
+    phantomed: 0,
+    stillOpenOnPx: 0,
+    actions: [], // sample of what would/did happen
+  };
+
+  for (const order of candidates) {
+    const pid = order.parlayId;
+    const uuid = order.orderUuid;
+    const pxOrder = (uuid && pxByUuid[uuid]) || (pid && pxByParlayId[pid]) || null;
+    let action;
+
+    if (pxOrder) {
+      const pxStatus = pxOrder.settlement_status;
+      if (pxStatus === 'tbd' || pxStatus === 'requested' || !pxStatus) {
+        // PX still has it open. Unusual for something >24h past game time,
+        // but defer to PX — don't force-settle.
+        result.stillOpenOnPx++;
+        action = { parlayId: pid, action: 'left_open_per_px' };
+      } else {
+        // PX says won/lost/push. Settle locally.
+        if (commit) {
+          try {
+            recordSettlement(pxOrder.order_uuid || uuid, pxStatus, Number(pxOrder.profit || 0));
+            result.settled++;
+            action = { parlayId: pid, action: 'settled', pxStatus, profit: pxOrder.profit };
+          } catch (err) {
+            action = { parlayId: pid, action: 'settle_failed', error: err.message };
+            log.warn('GhostSweep', `Settle failed for ${pid}: ${err.message}`);
+          }
+        } else {
+          result.settled++;
+          action = { parlayId: pid, action: 'would_settle', pxStatus, profit: pxOrder.profit };
+        }
+      }
+    } else {
+      // PX has no record. Mark phantom so the order stops polluting stats/exposure.
+      if (commit) {
+        if (!order.meta) order.meta = {};
+        order.meta.phantom = true;
+        order.meta.phantomReason = `ghost-sweep: no PX match, game started ${olderThanHours}h+ ago`;
+        order.meta.phantomFlaggedAt = new Date().toISOString();
+        // Release any residual exposure
+        try { releasePending(pid); } catch (_) {}
+        db.saveOrder(order).catch(err => log.warn('GhostSweep', `saveOrder failed for ${pid}: ${err.message}`));
+        result.phantomed++;
+        action = { parlayId: pid, action: 'phantomed' };
+      } else {
+        result.phantomed++;
+        action = { parlayId: pid, action: 'would_phantom' };
+      }
+    }
+
+    if (result.actions.length < 20) result.actions.push(action);
+  }
+
+  // After settlements, rebuild exposure so team/game totals reflect
+  // the now-closed bets. Only if we actually did work.
+  if (commit && (result.settled > 0 || result.phantomed > 0)) {
+    try { rebuildAllExposure(); } catch (err) { log.warn('GhostSweep', `rebuildAllExposure failed: ${err.message}`); }
+  }
+
+  return result;
+}
+
+/**
  * Import a PX-booked order that our local state has as rejected (or
  * has no status for). Used by the /px-status-repair endpoint to patch
  * the accept-POST-failed drift: PX booked the bet, we marked it
@@ -4327,6 +4446,7 @@ module.exports = {
   recordDecline,
   recordUnsupportedMarket,
   importPxBookedOrder,
+  sweepGhostOrders,
   getMarketIntel,
   getAlerts,
   getExposureLimitStats,

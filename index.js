@@ -2707,6 +2707,50 @@ function startStatusServer() {
     }
   });
 
+  // Ghost-sweep. Settles or phantoms local orders still marked
+  // 'confirmed' whose games started long enough ago that settlement
+  // MUST have happened on PX. Separate from /full-px-reconcile:
+  // reconcile only processes orders PX still returns in its feed;
+  // this sweep works backwards from local ghosts and either closes
+  // them (via PX match) or hides them (phantom flag) so they stop
+  // polluting stats and exposure.
+  //
+  // Query params:
+  //   ?olderThanHours=24   (default) — how far past game start to treat as settled
+  //   ?commit=true         — actually write; default is dry-run plan
+  //
+  // Observed 2026-04-24: 953 ghost orders from 2026-04-17 onward,
+  // status=confirmed locally, games long over, PX settlement never
+  // applied. Sweep is safe to re-run.
+  app.post('/ghost-sweep', async (req, res) => {
+    const commit = req.query.commit === 'true' || req.query.commit === '1';
+    const olderThanHours = Math.max(1, Number(req.query.olderThanHours) || 24);
+    try {
+      // Pull PX's full order list so we can match ghosts to real settlements
+      // where possible. 10K covers multi-week history and still fits in
+      // memory comfortably.
+      const pxOrders = await px.fetchOrders(10000);
+      const result = await orderTracker.sweepGhostOrders({
+        olderThanHours,
+        commit,
+        pxOrders,
+      });
+      res.json({
+        ok: true,
+        mode: commit ? 'committed' : 'dry-run',
+        olderThanHours,
+        pxOrdersFetched: pxOrders.length,
+        ...result,
+        note: commit
+          ? 'Ghosts settled where PX match found; remainder phantomed. Stats rebuilt.'
+          : 'Pass ?commit=true to actually settle/phantom. Sample actions shown.',
+      });
+    } catch (err) {
+      log.error('GhostSweep', `/ghost-sweep failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Full reconcile against PX REST: exhaust PX order history, import/update
   // all orders locally, then rebuild stats from scratch. Recovery path for
   // in-memory drift against PX ground truth.
