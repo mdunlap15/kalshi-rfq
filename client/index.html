@@ -874,6 +874,16 @@
             </div>
           </div>
           <div class="card-body collapsed">
+            <!-- Shared date range filter for both P&L breakdown charts. Empty
+                 date = unbounded on that side. Re-renders both charts on change. -->
+            <div id="chart-pnl-filter" style="padding:0 4px 8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border); margin-bottom:10px;">
+              <span>Settled between:</span>
+              <input type="date" id="pnl-chart-date-from" onchange="setPnlChartDateFrom(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
+              <span>to</span>
+              <input type="date" id="pnl-chart-date-to" onchange="setPnlChartDateTo(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
+              <button onclick="clearPnlChartDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Clear</button>
+              <span id="pnl-chart-filter-summary" style="margin-left:4px; color:var(--text3);"></span>
+            </div>
             <div id="chart-pnl-sport">
               <div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>
             </div>
@@ -8860,17 +8870,91 @@
     el.innerHTML = svg;
   }
 
+  // Shared date range filter for P&L by Sport + P&L by Leg Count charts.
+  // Null boundaries = unbounded on that side. Filters by o.settledAt so
+  // only orders settled in the chosen window contribute to the bars.
+  if (window._pnlChartFromMs === undefined) window._pnlChartFromMs = null;
+  if (window._pnlChartToMs === undefined) window._pnlChartToMs = null;
+
+  function _filterSettledByPnlDateRange(settled) {
+    const from = window._pnlChartFromMs;
+    const to = window._pnlChartToMs;
+    if (from == null && to == null) return settled;
+    return settled.filter(o => {
+      if (!o.settledAt) return false;
+      const t = new Date(o.settledAt).getTime();
+      if (!Number.isFinite(t)) return false;
+      if (from != null && t < from) return false;
+      if (to != null && t > to) return false;
+      return true;
+    });
+  }
+
+  function _syncPnlChartFilterInputs() {
+    // Keep input values in sync with state so programmatic clears/sets
+    // reflect in the UI without a full re-render.
+    const fromEl = document.getElementById('pnl-chart-date-from');
+    const toEl = document.getElementById('pnl-chart-date-to');
+    if (fromEl) fromEl.value = window._pnlChartFromMs
+      ? new Date(window._pnlChartFromMs).toISOString().slice(0, 10) : '';
+    if (toEl) toEl.value = window._pnlChartToMs
+      ? new Date(window._pnlChartToMs).toISOString().slice(0, 10) : '';
+    const summary = document.getElementById('pnl-chart-filter-summary');
+    if (summary) {
+      if (window._pnlChartFromMs == null && window._pnlChartToMs == null) {
+        summary.textContent = 'All settled orders';
+      } else {
+        const fmt = (ms) => ms ? new Date(ms).toISOString().slice(0, 10) : '—';
+        summary.textContent = fmt(window._pnlChartFromMs) + ' → ' + fmt(window._pnlChartToMs);
+      }
+    }
+  }
+
+  function _rerenderBothPnlCharts() {
+    const settled = window._pnlChartSettled || [];
+    renderChartPnlSport(settled);
+    renderChartPnlLegs(settled);
+    _syncPnlChartFilterInputs();
+  }
+
+  function setPnlChartDateFrom(isoDate) {
+    // Date inputs emit 'YYYY-MM-DD'. Interpret as start of day (local TZ).
+    window._pnlChartFromMs = isoDate ? new Date(isoDate + 'T00:00:00').getTime() : null;
+    _rerenderBothPnlCharts();
+  }
+
+  function setPnlChartDateTo(isoDate) {
+    // End-of-day so the selected day is inclusive.
+    window._pnlChartToMs = isoDate ? new Date(isoDate + 'T23:59:59.999').getTime() : null;
+    _rerenderBothPnlCharts();
+  }
+
+  function clearPnlChartDateRange() {
+    window._pnlChartFromMs = null;
+    window._pnlChartToMs = null;
+    _rerenderBothPnlCharts();
+  }
+
   // 2. P&L by Sport bar chart
   function renderChartPnlSport(settled) {
+    // Stash the raw set so date-range handlers can re-render without
+    // waiting for the next parent-level refresh.
+    window._pnlChartSettled = settled;
+    _syncPnlChartFilterInputs();
+    const filtered = _filterSettledByPnlDateRange(settled);
     const el = document.getElementById('chart-pnl-sport');
-    if (settled.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>'; return; }
+    if (filtered.length === 0) {
+      const hasFilter = window._pnlChartFromMs != null || window._pnlChartToMs != null;
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>' + (hasFilter ? 'No settled orders in selected date range' : 'Need settled orders') + '</div></div>';
+      return;
+    }
 
     // Use canonicalSport to collapse variants (Baseball == MLB,
     // basketball_nba == NBA, every soccer_* league == Soccer, etc.).
     // Without this, historical PX-backfilled orders and odds-feed
     // orders show up as separate bars for the same physical sport.
     const bySport = {};
-    for (const o of settled) {
+    for (const o of filtered) {
       const raw = (o.legs || o.meta?.legs || [])[0]?.sport || 'unknown';
       const sport = canonicalSport(raw);
       if (!bySport[sport]) bySport[sport] = { pnl: 0, wins: 0, losses: 0 };
@@ -8908,11 +8992,19 @@
 
   // 3. P&L by Leg Count bar chart
   function renderChartPnlLegs(settled) {
+    // Stash for handlers (same set the sport chart uses) + apply the shared
+    // date range filter so both charts honor the same window.
+    window._pnlChartSettled = settled;
+    const filtered = _filterSettledByPnlDateRange(settled);
     const el = document.getElementById('chart-pnl-legs');
-    if (settled.length === 0) { el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need settled orders</div></div>'; return; }
+    if (filtered.length === 0) {
+      const hasFilter = window._pnlChartFromMs != null || window._pnlChartToMs != null;
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>' + (hasFilter ? 'No settled orders in selected date range' : 'Need settled orders') + '</div></div>';
+      return;
+    }
 
     const byLegs = {};
-    for (const o of settled) {
+    for (const o of filtered) {
       const n = (o.legs || o.meta?.legs || []).length || '?';
       if (!byLegs[n]) byLegs[n] = { pnl: 0, wins: 0, losses: 0 };
       byLegs[n].pnl += (o.pnl || 0);
