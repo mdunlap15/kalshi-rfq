@@ -1037,6 +1037,21 @@ function handleOrderMatched(data) {
     ? Math.abs(Math.abs(ourOddsAtEvent) - Math.abs(matchedOdds))
     : null;
 
+  // Pause gate. Outstanding quotes have a 60s valid_until, so PX can match
+  // a quote that went out right before the operator paused. recordMatchedParlay
+  // would promote quoted → confirmed regardless of pause state — adding risk
+  // to the book after the operator explicitly said "no new positions."
+  //
+  // When paused, skip the promotion. The order stays in 'quoted' status; if
+  // PX actually booked it server-side (they can and sometimes do, per the
+  // accept-POST drift pattern), /px-status-repair will catch + reconcile
+  // later. This gives the operator full control over what gets booked while
+  // paused, with a clear audit trail via the WARN log.
+  if (paused && hadQuote && hadQuote.status === 'quoted') {
+    log.warn('Market', `[PAUSED] order.matched for parlay=${(parlayId||'').substring(0,8)} — skipping promotion. odds=${matchedOdds}, stake=$${matchedStake}, ourOdds=${ourOddsAtEvent}, legs=${legs.length}. If PX booked server-side, /px-status-repair will reconcile.`);
+    return;
+  }
+
   const entry = orderTracker.recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineManager);
 
   log.info('Market', `Matched: parlay=${(parlayId||'').substring(0,8)}, `
