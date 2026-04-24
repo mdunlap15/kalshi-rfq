@@ -3948,6 +3948,37 @@
     const expDisplayed = teams.slice(0, expLimit);
     const expHasMore = teams.length > expLimit;
 
+    // Derive team outcome status by scanning legs in this team's parlays for
+    // a settlement that matches this team name. Green = team won their game
+    // (bad for us — bettor's pick hit). Red = team lost (good for us). Amber
+    // = game in progress. Gray = hasn't started yet. Mental map for Mike:
+    // red dots are already cashed wins for the house; green dots are open
+    // payout risk.
+    const getTeamStatus = (teamRow, parlays) => {
+      const teamName = (teamRow.name || '').toLowerCase();
+      let hasWon = false, hasLost = false;
+      for (const p of parlays || []) {
+        const legs = p.legs || (p.meta && p.meta.legs) || [];
+        for (const l of legs) {
+          const legTeam = String(l.teamName || l.team || l.selection || '').toLowerCase();
+          if (!legTeam || !teamName) continue;
+          const matches = legTeam === teamName
+            || legTeam.includes(teamName)
+            || teamName.includes(legTeam);
+          if (!matches) continue;
+          const s = l.settlementStatus || l.settlement_status;
+          if (s === 'won') hasWon = true;
+          else if (s === 'lost') hasLost = true;
+        }
+      }
+      const startMs = teamRow.startTime ? new Date(teamRow.startTime).getTime() : null;
+      const nowMs = Date.now();
+      if (hasWon)  return { color: 'var(--green)',  title: 'Won' };
+      if (hasLost) return { color: 'var(--red)',    title: 'Lost' };
+      if (startMs && startMs <= nowMs) return { color: 'var(--amber)', title: 'In play' };
+      return { color: 'var(--text3)', title: 'Upcoming' };
+    };
+
     for (const t of expDisplayed) {
       const netExp = t.netExposure || 0;
       const remaining = maxPerTeam > 0 ? maxPerTeam - netExp : Infinity;
@@ -3962,9 +3993,13 @@
       const gameStr = t.eventName ? ' <span style="color:var(--text3); font-size:11px;">· ' + escapeHtml(t.eventName) + '</span>' : '';
       const timeStr = startStr ? ' <span style="color:var(--text3); font-size:11px;">· ' + startStr + '</span>' : '';
 
+      const teamParlaysForStatus = teamParlayMap[t.key] || [];
+      const status = getTeamStatus(t, teamParlaysForStatus);
+      const statusDot = '<span title="' + status.title + '" style="display:inline-block; width:8px; height:8px; border-radius:50%; background:' + status.color + '; margin-right:8px; vertical-align:middle;"></span>';
+
       html += `
         <tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
-          <td>${t.name}${gameStr}${timeStr}</td>
+          <td>${statusDot}${t.name}${gameStr}${timeStr}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums;">${t.parlays}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums; font-weight:600; color:${netColor};">${fmtDollar(netExp)}</td>
           <td style="text-align:right; font-variant-numeric: tabular-nums; color:var(--text3);">${fmtDollar(t.risk)}</td>
