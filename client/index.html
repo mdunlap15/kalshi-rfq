@@ -4698,6 +4698,11 @@
     search: '',
     statusFilter: [],
     legsFilter: [],
+    // Default: hide rejected. Rejected orders were confusing operators —
+    // they'd appear in the All Quotes table mixed with live positions with
+    // no visual distinction, making it look like the SP took on bets that
+    // were actually declined. Opt-in via toggle in the filter bar.
+    hideRejected: true,
     expandedRows: new Set(),
     allOrders: {}, // keyed by parlayId to merge across refreshes
     pageSize: 20,
@@ -4744,6 +4749,13 @@
         const id = (o.parlayId || '').toLowerCase();
         const teams = getOrderTeams(o).join(' ').toLowerCase();
         if (!id.includes(q) && !teams.includes(q)) return false;
+      }
+      // Hide rejected by default (toggleable). Skip only when the user
+      // hasn't explicitly requested 'rejected' via the status filter —
+      // that way picking "rejected" from the dropdown still shows them.
+      if (orderState.hideRejected && o.status === 'rejected') {
+        const explicitlyAsked = orderState.statusFilter.includes('rejected');
+        if (!explicitlyAsked) return false;
       }
       // Status filter
       if (orderState.statusFilter.length > 0) {
@@ -4794,6 +4806,15 @@
         ${allStatuses.map(s => `<option value="${s}" ${orderState.statusFilter.includes(s)?'selected':''}>${s}</option>`).join('')}
       </select>
       ${orderState.legsFilter.length > 0 ? `<button class="btn" style="font-size:11px; padding:3px 8px;" onclick="orderState.legsFilter=[]; orderRerender()">Clear team filter</button>` : ''}
+      ${(() => {
+        const rejectedCount = allOrders.filter(o => o.status === 'rejected').length;
+        if (rejectedCount === 0) return '';
+        const label = orderState.hideRejected
+          ? `Show ${rejectedCount} rejected`
+          : `Hide ${rejectedCount} rejected`;
+        const color = orderState.hideRejected ? 'var(--text3)' : 'var(--amber)';
+        return `<button class="btn" style="font-size:11px; padding:3px 8px; color:${color};" onclick="orderState.hideRejected=!orderState.hideRejected; orderRerender()">${label}</button>`;
+      })()}
       <span style="font-size:11px; color:var(--text3); margin-left:auto;">${filtered.length} of ${allOrders.length}${(() => { const r = formatDateRange(filtered, 'quotedAt') || formatDateRange(filtered, 'confirmedAt'); return r ? ' · ' + r : ''; })()}</span>
     </div>`;
 
@@ -4863,8 +4884,13 @@
 
       const rowKey = order.parlayId || String(i);
       const expanded = orderState.expandedRows.has(rowKey);
+      // Dim rejected rows when they ARE shown (user toggled them on) —
+      // so they're visible but visually distinct from live positions.
+      const rowStyle = order.status === 'rejected'
+        ? 'cursor:pointer; opacity:0.5; text-decoration:line-through; text-decoration-color:var(--text3);'
+        : 'cursor:pointer;';
       html += `
-        <tr style="cursor:pointer;" onclick="toggleOrderRow('${rowKey}')">
+        <tr style="${rowStyle}" onclick="toggleOrderRow('${rowKey}')">
           <td>${time}</td>
           <td style="font-size:12px; max-width:260px; overflow:hidden; text-overflow:ellipsis;" title="${teamStr}">${teamStr}</td>
           <td>${legs.length}</td>
