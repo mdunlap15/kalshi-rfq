@@ -898,8 +898,25 @@
           <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
             <span><span class="toggle-icon collapsed">&#9660;</span>Model Calibration</span>
           </div>
-          <div class="card-body collapsed" id="chart-calibration">
-            <div class="empty-state"><div class="icon">-</div><div>Need settled orders to evaluate pricing accuracy</div></div>
+          <div class="card-body collapsed">
+            <!-- Filter bar: settled-date range + sport isolation. Empty date
+                 = unbounded on that side. Sport dropdown populates from
+                 whatever sports exist in the current settled set. -->
+            <div id="chart-calib-filter" style="padding:0 4px 8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border); margin-bottom:10px;">
+              <span>Settled between:</span>
+              <input type="date" id="calib-chart-date-from" onchange="setCalibChartDateFrom(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
+              <span>to</span>
+              <input type="date" id="calib-chart-date-to" onchange="setCalibChartDateTo(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
+              <button onclick="clearCalibChartDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Clear</button>
+              <span style="margin-left:12px;">Sport:</span>
+              <select id="calib-chart-sport" onchange="setCalibChartSport(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px;">
+                <option value="">All sports</option>
+              </select>
+              <span id="calib-chart-filter-summary" style="margin-left:4px; color:var(--text3);"></span>
+            </div>
+            <div id="chart-calibration">
+              <div class="empty-state"><div class="icon">-</div><div>Need settled orders to evaluate pricing accuracy</div></div>
+            </div>
           </div>
         </div>
 
@@ -9051,15 +9068,129 @@
     return { lo: Math.max(0, centre - half), hi: Math.min(1, centre + half) };
   }
 
+  // ───── Calibration chart filter state + helpers ─────
+  // Shared between date pickers and sport dropdown above the chart.
+  // Mirrors the P&L chart filter pattern (see _pnlChartFromMs etc. above).
+  if (window._calibChartFromMs === undefined) window._calibChartFromMs = null;
+  if (window._calibChartToMs === undefined) window._calibChartToMs = null;
+  if (window._calibChartSport === undefined) window._calibChartSport = ''; // '' = all
+
+  function _filterSettledByCalibState(settled) {
+    const from = window._calibChartFromMs;
+    const to = window._calibChartToMs;
+    const sport = window._calibChartSport;
+    if (from == null && to == null && !sport) return settled;
+    return settled.filter(o => {
+      if (from != null || to != null) {
+        if (!o.settledAt) return false;
+        const t = new Date(o.settledAt).getTime();
+        if (!Number.isFinite(t)) return false;
+        if (from != null && t < from) return false;
+        if (to != null && t > to) return false;
+      }
+      if (sport) {
+        const legs = o.meta?.legs || o.legs || [];
+        const sports = new Set(legs.map(l => canonicalSport(l.sport)).filter(Boolean));
+        if (!sports.has(sport)) return false;
+      }
+      return true;
+    });
+  }
+
+  function _syncCalibChartFilterInputs() {
+    const fromEl = document.getElementById('calib-chart-date-from');
+    const toEl = document.getElementById('calib-chart-date-to');
+    if (fromEl) fromEl.value = window._calibChartFromMs
+      ? new Date(window._calibChartFromMs).toISOString().slice(0, 10) : '';
+    if (toEl) toEl.value = window._calibChartToMs
+      ? new Date(window._calibChartToMs).toISOString().slice(0, 10) : '';
+    const summary = document.getElementById('calib-chart-filter-summary');
+    if (summary) {
+      const parts = [];
+      if (window._calibChartFromMs == null && window._calibChartToMs == null) {
+        parts.push('All settled orders');
+      } else {
+        const fmt = (ms) => ms ? new Date(ms).toISOString().slice(0, 10) : '—';
+        parts.push(fmt(window._calibChartFromMs) + ' → ' + fmt(window._calibChartToMs));
+      }
+      if (window._calibChartSport) parts.push('sport=' + sportLabel(window._calibChartSport));
+      summary.textContent = parts.join(' · ');
+    }
+  }
+
+  function _rerenderCalibChart() {
+    const settled = window._calibChartSettled || [];
+    renderChartCalibration(settled);
+  }
+
+  function setCalibChartDateFrom(isoDate) {
+    window._calibChartFromMs = isoDate ? new Date(isoDate + 'T00:00:00').getTime() : null;
+    _rerenderCalibChart();
+  }
+  function setCalibChartDateTo(isoDate) {
+    window._calibChartToMs = isoDate ? new Date(isoDate + 'T23:59:59.999').getTime() : null;
+    _rerenderCalibChart();
+  }
+  function clearCalibChartDateRange() {
+    window._calibChartFromMs = null;
+    window._calibChartToMs = null;
+    _rerenderCalibChart();
+  }
+  function setCalibChartSport(sport) {
+    window._calibChartSport = sport || '';
+    _rerenderCalibChart();
+  }
+
+  // Populate the sport dropdown from the canonical sports present in the
+  // current settled set. Preserves the user's selection if it still exists.
+  function _populateCalibSportDropdown(settled) {
+    const select = document.getElementById('calib-chart-sport');
+    if (!select) return;
+    const sports = new Set();
+    for (const o of settled) {
+      const legs = o.meta?.legs || o.legs || [];
+      for (const l of legs) {
+        const s = canonicalSport(l.sport);
+        if (s) sports.add(s);
+      }
+    }
+    const sortedSports = [...sports].sort();
+    const current = window._calibChartSport || '';
+    // Preserve dropdown options — only rebuild if the set changed.
+    const prev = [...select.options].slice(1).map(o => o.value).sort();
+    const same = sortedSports.length === prev.length && sortedSports.every((s, i) => s === prev[i]);
+    if (!same) {
+      select.innerHTML = '<option value="">All sports</option>' +
+        sortedSports.map(s => '<option value="' + s + '">' + sportLabel(s) + '</option>').join('');
+    }
+    // If the selected sport is no longer in the data, reset to all.
+    if (current && !sports.has(current)) {
+      window._calibChartSport = '';
+      select.value = '';
+    } else {
+      select.value = current;
+    }
+  }
+
   // Proper calibration chart: scatter of (expected, actual) with y=x
   // diagonal reference and Wilson 95% CI error bars. Below the plot:
   // summary stats (count, Brier score, mean bias) + per-sport breakdown.
   // Works at both parlay level and per-sport.
   function renderChartCalibration(settled) {
+    // Stash the raw set so filter handlers can re-render without
+    // waiting for the next parent-level refresh.
+    window._calibChartSettled = settled;
+    _populateCalibSportDropdown(settled);
+    _syncCalibChartFilterInputs();
+    const scoped = _filterSettledByCalibState(settled);
     const el = document.getElementById('chart-calibration');
-    const withProb = settled.filter(o => o.fairParlayProb && o.fairParlayProb > 0 && o.fairParlayProb < 1 && o.settlementResult && (o.settlementResult === 'won' || o.settlementResult === 'lost'));
+    const withProb = scoped.filter(o => o.fairParlayProb && o.fairParlayProb > 0 && o.fairParlayProb < 1 && o.settlementResult && (o.settlementResult === 'won' || o.settlementResult === 'lost'));
     if (withProb.length < 5) {
-      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>Need 5+ settled parlays with fair prob data (current: ' + withProb.length + ')</div></div>';
+      const hasFilter = window._calibChartFromMs != null || window._calibChartToMs != null || window._calibChartSport;
+      const msg = hasFilter
+        ? 'Need 5+ settled parlays with fair prob data in selected filter (current: ' + withProb.length + ')'
+        : 'Need 5+ settled parlays with fair prob data (current: ' + withProb.length + ')';
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>' + msg + '</div></div>';
       return;
     }
 
@@ -9119,22 +9250,54 @@
       svg += svgText(pad.l - 6, sy(pct / 100) + 3, pct + '%', { anchor: 'end', size: 9 });
       svg += svgText(sx(pct / 100), H - pad.b + 14, pct + '%', { size: 9 });
     }
+    // Bucket-boundary ticks on the x-axis. Small vertical marks just below
+    // the chart area at each bucket edge so the reader can see that circles
+    // represent ranges, not points. Skip 0 and 100 (chart edges already
+    // obvious). "70+" bucket extends to chart right edge so no tick at 100.
+    const bucketEdges = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.70];
+    for (const edge of bucketEdges) {
+      const tx = sx(edge);
+      svg += svgLine(tx, pad.t + chartH, tx, pad.t + chartH + 4, 'var(--text3)', 1.5);
+    }
     // y=x diagonal (perfect calibration)
     svg += svgLine(sx(0), sy(0), sx(1), sy(1), 'var(--text3)', 1);
 
-    // Points with CI error bars
+    // Points with CI error bars + horizontal bucket-range caps + tooltips
+    const fmtPctTip = x => (x * 100).toFixed(1) + '%';
     for (const p of points) {
       const cx = sx(p.expected);
       const cy = sy(p.actual);
       const yHi = sy(p.ciHi);
       const yLo = sy(p.ciLo);
-      // Error bar (vertical)
+      const lx = sx(p.lo);
+      // Clamp the high edge to chart-right so the "70+" bucket terminates cleanly.
+      const hx = sx(Math.min(p.hi, 1.0));
+      // Tooltip content: bucket range + size + predicted avg + actual + CI.
+      const bias = p.actual - p.expected;
+      const biasSign = bias >= 0 ? '+' : '';
+      const tip = 'Bucket: ' + p.label + '% (' + fmtPctTip(p.lo) + '-' + fmtPctTip(p.hi > 1 ? 1 : p.hi) + ')\n' +
+                  'n: ' + p.n + ' parlays\n' +
+                  'Predicted avg: ' + fmtPctTip(p.expected) + '\n' +
+                  'Actual: ' + fmtPctTip(p.actual) + '\n' +
+                  '95% CI: ' + fmtPctTip(p.ciLo) + ' - ' + fmtPctTip(p.ciHi) + '\n' +
+                  'Bias: ' + biasSign + ((p.actual - p.expected) * 100).toFixed(2) + 'pp';
+      // Wrap all per-point geometry in a group with a <title> so hovering
+      // anywhere on the error bar, bucket cap, or circle shows the tooltip.
+      svg += '<g><title>' + tip.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</title>';
+      // Horizontal bucket-range cap at the actual-y, spanning [lo, hi].
+      // Faint so it reads as "this dot summarizes predictions across this
+      // x-range" without competing visually with the error bar.
+      svg += svgLine(lx, cy, hx, cy, 'var(--text3)', 0.5);
+      // Small tick marks at each end of the horizontal cap.
+      svg += svgLine(lx, cy - 2, lx, cy + 2, 'var(--text3)', 0.8);
+      svg += svgLine(hx, cy - 2, hx, cy + 2, 'var(--text3)', 0.8);
+      // Vertical CI error bar + caps
       svg += svgLine(cx, yLo, cx, yHi, 'var(--text3)', 1);
       svg += svgLine(cx - 3, yHi, cx + 3, yHi, 'var(--text3)', 1);
       svg += svgLine(cx - 3, yLo, cx + 3, yLo, 'var(--text3)', 1);
       // Point, sized by sqrt(n)
       const r = Math.min(8, Math.max(3, Math.sqrt(p.n)));
-      // Colour by whether actual is within CI of expected
+      // Colour by whether expected is within actual's CI
       const color = (p.expected >= p.ciLo && p.expected <= p.ciHi) ? 'var(--green)'
                   : (p.actual > p.expected) ? 'var(--red)' // underestimated bettor
                   : 'var(--amber)'; // overestimated bettor
@@ -9143,11 +9306,30 @@
       if (r >= 6) {
         svg += svgText(cx, cy + 3, p.n, { size: 8, fill: 'white' });
       }
+      svg += '</g>';
     }
     // Axis titles
-    svg += svgText(pad.l + chartW / 2, H - 6, 'Predicted bettor win prob', { size: 10, fill: 'var(--text3)' });
+    svg += svgText(pad.l + chartW / 2, H - 6, 'Predicted bettor win prob (tick marks = bucket boundaries)', { size: 10, fill: 'var(--text3)' });
     svg += svgText(12, pad.t + chartH / 2, 'Actual bettor win rate', { size: 10, fill: 'var(--text3)', anchor: 'middle', transform: 'rotate(-90 12 ' + (pad.t + chartH / 2) + ')' });
     svg += '</svg>';
+
+    // Window caption — shows the time span actually being scored so
+    // readers never have to wonder what the sample represents.
+    const timestamps = withProb.map(o => o.settledAt).filter(Boolean).sort();
+    let windowCaption = '';
+    if (timestamps.length > 0) {
+      const earliest = new Date(timestamps[0]).toISOString().slice(0, 10);
+      const latest = new Date(timestamps[timestamps.length - 1]).toISOString().slice(0, 10);
+      const rangeStr = (earliest === latest) ? earliest : (earliest + ' → ' + latest);
+      const filtLabel = [];
+      if (window._calibChartFromMs != null || window._calibChartToMs != null) filtLabel.push('filtered');
+      if (window._calibChartSport) filtLabel.push(sportLabel(window._calibChartSport));
+      const suffix = filtLabel.length ? ' (' + filtLabel.join(', ') + ')' : '';
+      windowCaption = '<div style="font-size:10px; color:var(--text3); padding:2px 4px 6px;">'
+        + 'Showing ' + withProb.length + ' parlays from ' + rangeStr + suffix
+        + '</div>';
+    }
+    svg = windowCaption + svg;
 
     // ─── Summary stats ───
     const fmtPct = x => (x * 100).toFixed(2) + '%';
