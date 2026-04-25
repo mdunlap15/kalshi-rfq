@@ -919,9 +919,37 @@ function startStatusServer() {
   app.get('/v2-ab-metrics', async (req, res) => {
     try {
       const now = Date.now();
+      // Time window: explicit from/to wins. windowMinutes is a convenience
+      // alias (now − N min → now). Without either, defaults to last 24h.
+      // Apr 25 bug: the scheduled trigger and operator queries had been
+      // passing windowMinutes which the endpoint silently ignored,
+      // returning the default 24h aggregate every call. windowMinutes is
+      // now first-class so callers can't accidentally measure the wrong
+      // window after a setting change.
+      const windowMinutes = req.query.windowMinutes != null
+        ? Math.max(1, Number(req.query.windowMinutes))
+        : null;
       const to = req.query.to || new Date(now).toISOString();
-      const from = req.query.from || new Date(now - 24 * 60 * 60 * 1000).toISOString();
+      const from = req.query.from || (windowMinutes != null
+        ? new Date(now - windowMinutes * 60 * 1000).toISOString()
+        : new Date(now - 24 * 60 * 60 * 1000).toISOString());
       const sportFilter = req.query.sport || null;
+      // Optional time-bucketing for trend analysis. bucketMinutes=30
+      // returns a `series` array of {bucketStart, quotes, fills, fillRate,
+      // avgStake, ...} per arm so a setting change is visible as an
+      // inflection point, not just folded into one aggregate. Capped at
+      // 200 buckets to keep the response bounded; finer granularity
+      // requires a tighter window.
+      const bucketMinutes = req.query.bucketMinutes != null
+        ? Math.max(1, Number(req.query.bucketMinutes))
+        : null;
+      // Optional red-box subdivision. When includeRedBox=1, each summary
+      // also reports {redBox: {…}} for the fair_parlay_prob<redBoxThreshold
+      // subset (default 0.17 — matches the dashboard chart's red box).
+      const includeRedBox = req.query.includeRedBox === '1' || req.query.includeRedBox === 'true';
+      const redBoxThreshold = req.query.redBoxThreshold != null
+        ? Number(req.query.redBoxThreshold)
+        : 0.17;
 
       const rows = await db.loadOrdersInDateRange(from, to, { groupBy: 'quoted_at', maxRows: 50000 });
 
@@ -943,6 +971,45 @@ function startStatusServer() {
         const fills = list.filter(r => r.status === 'confirmed' || (r.status || '').startsWith('settled_')).length;
         const stakes = list.filter(r => r.confirmed_stake != null).map(r => Number(r.confirmed_stake));
         const avgStake = stakes.length ? stakes.reduce((a, b) => a + b, 0) / stakes.length : null;
+        const totalStake = stakes.reduce((a, b) => a + b, 0);
+        const settled = list.filter(r => (r.status || '').startsWith('settled_'));
+        const pnls = settled.map(r => r.pnl != null ? Number(r.pnl) : 0);
+        const pnl = pnls.reduce((a, b) => a + b, 0);
+        const totalStakeSettled = settled.reduce((s, r) => s + (r.confirmed_stake ? Number(r.confirmed_stake) : 0), 0);
+        const evPerDollar = totalStakeSettled > 0 ? pnl / totalStakeSettled : null;
+        const offeredOdds = list.filter(r => r.offered_odds != null).map(r => Number(r.offered_odds));
+        const avgOfferedOdds = offeredOdds.length ? offeredOdds.reduce((a, b) => a + b, 0) / offeredOdds.length : null;
+        const out = {
+          quotes,
+          fills,
+          fillRate: quotes > 0 ? Math.round((fills / quotes) * 10000) / 100 : null, // %
+          avgStake: avgStake != null ? Math.round(avgStake * 100) / 100 : null,
+          totalStake: Math.round(totalStake * 100) / 100,
+          settledN: settled.length,
+          pnl: Math.round(pnl * 100) / 100,
+          evPerDollarWagered: evPerDollar != null ? Math.round(evPerDollar * 10000) / 10000 : null,
+          avgOfferedOdds: avgOfferedOdds != null ? Math.round(avgOfferedOdds) : null,
+        };
+        if (includeRedBox) {
+          const rb = list.filter(r => {
+            const fp = r.fair_parlay_prob != null
+              ? Number(r.fair_parlay_prob)
+              : (r.meta && r.meta.fairParlayProb != null ? Number(r.meta.fairParlayProb) : null);
+            return fp != null && fp < redBoxThreshold;
+          });
+          out.redBox = summarizeNoRedBox(rb);
+          out.redBox.threshold = redBoxThreshold;
+        }
+        return out;
+      }
+      // Re-entrant summary without the redBox sub-recursion to avoid
+      // infinite nesting. Same metrics, one level deep.
+      function summarizeNoRedBox(list) {
+        const quotes = list.length;
+        const fills = list.filter(r => r.status === 'confirmed' || (r.status || '').startsWith('settled_')).length;
+        const stakes = list.filter(r => r.confirmed_stake != null).map(r => Number(r.confirmed_stake));
+        const avgStake = stakes.length ? stakes.reduce((a, b) => a + b, 0) / stakes.length : null;
+        const totalStake = stakes.reduce((a, b) => a + b, 0);
         const settled = list.filter(r => (r.status || '').startsWith('settled_'));
         const pnls = settled.map(r => r.pnl != null ? Number(r.pnl) : 0);
         const pnl = pnls.reduce((a, b) => a + b, 0);
@@ -953,8 +1020,9 @@ function startStatusServer() {
         return {
           quotes,
           fills,
-          fillRate: quotes > 0 ? Math.round((fills / quotes) * 10000) / 100 : null, // %
+          fillRate: quotes > 0 ? Math.round((fills / quotes) * 10000) / 100 : null,
           avgStake: avgStake != null ? Math.round(avgStake * 100) / 100 : null,
+          totalStake: Math.round(totalStake * 100) / 100,
           settledN: settled.length,
           pnl: Math.round(pnl * 100) / 100,
           evPerDollarWagered: evPerDollar != null ? Math.round(evPerDollar * 10000) / 10000 : null,
@@ -962,13 +1030,60 @@ function startStatusServer() {
         };
       }
 
-      res.json({
-        window: { from, to },
+      const response = {
+        window: { from, to, windowMinutes },
         sportFilter,
         v1: summarize(buckets.v1),
         v2: summarize(buckets.v2),
         overall: summarize(buckets.overall),
-      });
+      };
+
+      // Time-bucketed series for trend visualization. Walks each row into
+      // its bucket by quotedAt, then summarizes per bucket per arm. Useful
+      // for spotting "did fill rate drop after the env-var change at
+      // 13:00 UTC" without eyeballing aggregates from two separate calls.
+      if (bucketMinutes != null) {
+        const fromMs = new Date(from).getTime();
+        const toMs = new Date(to).getTime();
+        const bucketMs = bucketMinutes * 60 * 1000;
+        const totalBuckets = Math.ceil((toMs - fromMs) / bucketMs);
+        if (totalBuckets > 200) {
+          response.warning = `bucketMinutes=${bucketMinutes} would produce ${totalBuckets} buckets (cap=200) — series omitted; use a tighter window or larger bucketMinutes`;
+        } else {
+          const seriesByArm = { v1: [], v2: [], overall: [] };
+          // Pre-create empty buckets so gaps in traffic still show up.
+          for (let i = 0; i < totalBuckets; i++) {
+            const startMs = fromMs + i * bucketMs;
+            const endMs = Math.min(toMs, startMs + bucketMs);
+            for (const arm of ['v1', 'v2', 'overall']) {
+              seriesByArm[arm].push({
+                bucketStart: new Date(startMs).toISOString(),
+                bucketEnd: new Date(endMs).toISOString(),
+                rows: [],
+              });
+            }
+          }
+          for (const r of buckets.overall) {
+            const ts = r.quoted_at ? new Date(r.quoted_at).getTime() : null;
+            if (ts == null || isNaN(ts)) continue;
+            const idx = Math.floor((ts - fromMs) / bucketMs);
+            if (idx < 0 || idx >= totalBuckets) continue;
+            seriesByArm.overall[idx].rows.push(r);
+            const arm = (r.meta && r.meta.abArm) === 'v2' ? 'v2' : 'v1';
+            seriesByArm[arm][idx].rows.push(r);
+          }
+          for (const arm of ['v1', 'v2', 'overall']) {
+            response[arm].series = seriesByArm[arm].map(b => ({
+              bucketStart: b.bucketStart,
+              bucketEnd: b.bucketEnd,
+              ...summarizeNoRedBox(b.rows),
+            }));
+          }
+          response.bucketMinutes = bucketMinutes;
+        }
+      }
+
+      res.json(response);
     } catch (err) {
       log.error('API', `/v2-ab-metrics failed: ${err.message}`);
       res.status(500).json({ ok: false, error: err.message });
