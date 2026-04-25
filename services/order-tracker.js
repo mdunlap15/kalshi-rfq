@@ -349,46 +349,77 @@ function buildPendingReservation(legs, worstCaseRisk, offerValidSeconds) {
   };
 }
 
+// Reverse indices for O(1) lookup of pending risk by team or game key.
+// Maintained in sync with pendingExposure mutations (reservePending,
+// releasePending, opportunistic expiry cleanup). Keeps getPendingTeamRisk
+// and getPendingGameRisk constant-time instead of O(P × K) scans.
+//
+// Pre-fix (2026-04-25): per-RFQ exposure check called these helpers N×2
+// times (per leg, per cap), each scanning all pending reservations. With
+// 50 in-flight quotes × 4 keys each × 4 legs × 2 caps = 1,600 string
+// comparisons per quote — 1ms+ on the hot path. Indices flatten this to
+// O(N×2) hash lookups regardless of pending volume.
+const pendingTeamRiskByKey = new Map(); // key → running risk total
+const pendingGameRiskByKey = new Map(); // key → running risk total
+
+function _addToIndex(idx, key, risk) {
+  idx.set(key, (idx.get(key) || 0) + risk);
+}
+function _subFromIndex(idx, key, risk) {
+  const v = (idx.get(key) || 0) - risk;
+  if (v <= 1e-6) idx.delete(key);
+  else idx.set(key, v);
+}
+function _applyReservationToIndices(reservation, sign) {
+  if (!reservation) return;
+  for (const tk of reservation.teamKeys || []) {
+    if (sign > 0) _addToIndex(pendingTeamRiskByKey, tk.key, tk.risk);
+    else _subFromIndex(pendingTeamRiskByKey, tk.key, tk.risk);
+  }
+  for (const gk of reservation.gameKeys || []) {
+    if (sign > 0) _addToIndex(pendingGameRiskByKey, gk.key, gk.risk);
+    else _subFromIndex(pendingGameRiskByKey, gk.key, gk.risk);
+  }
+}
+
 function reservePending(parlayId, reservation) {
   if (!reservation) return;
+  // If parlayId already had a reservation, retire it first so indices
+  // don't double-count (defensive — caller shouldn't re-reserve).
+  if (pendingExposure[parlayId]) {
+    _applyReservationToIndices(pendingExposure[parlayId], -1);
+  }
   pendingExposure[parlayId] = reservation;
-  // Opportunistic cleanup of expired reservations
+  _applyReservationToIndices(reservation, +1);
+  // Opportunistic cleanup of expired reservations — also updates indices.
   const now = Date.now();
   for (const [pid, res] of Object.entries(pendingExposure)) {
-    if (res.expiresAt < now) delete pendingExposure[pid];
+    if (res.expiresAt < now) {
+      _applyReservationToIndices(res, -1);
+      delete pendingExposure[pid];
+    }
   }
 }
 
 function releasePending(parlayId) {
+  const res = pendingExposure[parlayId];
+  if (res) _applyReservationToIndices(res, -1);
   delete pendingExposure[parlayId];
 }
 
 /**
  * Sum of all in-flight (non-expired) pending risk for a given team+event key.
  * Called by checkExposureLimits to include pending reservations in the total.
+ * O(1) via reverse index. Expired entries are pruned lazily on the next
+ * reservePending call — small over-count window is acceptable (next quote
+ * triggers cleanup; expiry windows are typically 60-120s).
  */
 function getPendingTeamRisk(teamEventKey) {
-  const now = Date.now();
-  let total = 0;
-  for (const res of Object.values(pendingExposure)) {
-    if (res.expiresAt < now) continue;
-    for (const tk of res.teamKeys) {
-      if (tk.key === teamEventKey) total += tk.risk;
-    }
-  }
-  return total;
+  return pendingTeamRiskByKey.get(teamEventKey) || 0;
 }
 
 function getPendingGameRisk(gameKey) {
-  const now = Date.now();
-  let total = 0;
-  for (const res of Object.values(pendingExposure)) {
-    if (res.expiresAt < now) continue;
-    for (const gk of res.gameKeys) {
-      if (gk.key === gameKey) total += gk.risk;
-    }
-  }
-  return total;
+  return pendingGameRiskByKey.get(gameKey) || 0;
 }
 
 function recordQuote(parlayId, legs, offeredOdds, maxRisk, fairParlayProb, meta) {
