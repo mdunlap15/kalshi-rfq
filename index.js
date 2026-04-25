@@ -2650,12 +2650,33 @@ function startStatusServer() {
           alreadyConfirmed.push(pid);
           continue;
         }
+        // Stake/odds fallback chain. PX REST often returns
+        // confirmed_stake=0 / confirmed_odds=0 for orders still in 'tbd'
+        // status — even though the SP got a real order.matched event with
+        // the actual stake. Use that order.matched value (stored in
+        // meta.pxMatchedAfterReject) as the authoritative source when
+        // PX REST is empty. Falls back to PX REST if no matched marker
+        // exists. Apr 25 forensic showed all 167 PX-overrode-reject
+        // orders had pxMatchedAfterReject populated with correct stake
+        // while pxOrder.confirmed_stake was 0 — without this fallback
+        // every promote landed with $0 stake and broke exposure tracking.
+        const pxStakeRaw = parseFloat(pxOrder.confirmed_stake || 0);
+        const pxOddsRaw = parseInt(pxOrder.confirmed_odds || 0);
+        const matchedMeta = localOrder.meta?.pxMatchedAfterReject;
+        const stake = pxStakeRaw > 0
+          ? pxStakeRaw
+          : (matchedMeta?.matchedStake != null ? Number(matchedMeta.matchedStake) : pxStakeRaw);
+        // matchedOdds is PX-side; flip sign for SP-side storage.
+        const odds = pxOddsRaw !== 0
+          ? pxOddsRaw
+          : (matchedMeta?.matchedOdds != null ? -Number(matchedMeta.matchedOdds) : pxOddsRaw);
         toPromote.push({
           parlayId: pid,
           localStatus: localOrder.status,
-          confirmedStake: parseFloat(pxOrder.confirmed_stake || 0),
-          confirmedOdds: parseInt(pxOrder.confirmed_odds || 0),
+          confirmedStake: stake,
+          confirmedOdds: odds,
           orderUuid: pxOrder.order_uuid,
+          stakeSource: pxStakeRaw > 0 ? 'px-rest' : (matchedMeta?.matchedStake != null ? 'matched-event' : 'px-rest-zero'),
         });
       }
 
@@ -2703,6 +2724,78 @@ function startStatusServer() {
       });
     } catch (err) {
       log.error('Repair', `/px-status-repair failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
+  // Stake backfill for orders with confirmedStake=0 but a populated
+  // pxMatchedAfterReject.matchedStake. The Apr 25 forensic identified
+  // 167 orders that /px-status-repair (pre-fallback) promoted to
+  // 'confirmed' with stake $0 because PX REST returned confirmed_stake=0
+  // on TBD orders. The TRUE stake came in on the order.matched event and
+  // was preserved in meta.pxMatchedAfterReject.matchedStake but never
+  // backfilled to the top-level confirmedStake field. Result: Open
+  // Positions table showed the orders but with $0 risk, breaking
+  // exposure tracking. This endpoint walks all confirmed orders, finds
+  // those with stake=0 + a matched marker, and copies the matched value.
+  // Idempotent — orders already with non-zero stake are skipped.
+  //
+  // Query params:
+  //   ?commit=true   — actually write; default is dry-run plan
+  app.post('/stake-backfill', async (req, res) => {
+    const commit = req.query.commit === 'true' || req.query.commit === '1';
+    try {
+      const all = orderTracker.getRecentOrders(10000);
+      const candidates = all.filter(o => {
+        if (o.status !== 'confirmed') return false;
+        if (o.confirmedStake != null && o.confirmedStake > 0) return false;
+        return o.meta?.pxMatchedAfterReject?.matchedStake != null;
+      });
+
+      const plan = candidates.map(o => ({
+        parlayId: o.parlayId,
+        currentStake: o.confirmedStake,
+        currentOdds: o.confirmedOdds,
+        newStake: Number(o.meta.pxMatchedAfterReject.matchedStake),
+        // matchedOdds is PX-side; flip sign for SP-side storage
+        newOdds: o.meta.pxMatchedAfterReject.matchedOdds != null
+          ? -Number(o.meta.pxMatchedAfterReject.matchedOdds)
+          : o.confirmedOdds,
+      }));
+
+      const totalNewStake = plan.reduce((s, p) => s + (p.newStake || 0), 0);
+
+      if (!commit) {
+        return res.json({
+          ok: true,
+          mode: 'dry-run',
+          candidates: plan.length,
+          totalStakeToBackfill: Math.round(totalNewStake * 100) / 100,
+          sample: plan.slice(0, 10),
+          note: 'Pass ?commit=true to actually update confirmedStake/Odds.',
+        });
+      }
+
+      let updated = 0;
+      const failures = [];
+      for (const p of plan) {
+        const result = orderTracker.backfillStake(p.parlayId, p.newStake, p.newOdds);
+        if (result.ok) updated++;
+        else failures.push({ parlayId: p.parlayId, reason: result.reason });
+      }
+
+      res.json({
+        ok: true,
+        mode: 'committed',
+        candidates: plan.length,
+        updated,
+        failures: failures.length,
+        failureSample: failures.slice(0, 5),
+        totalStakeBackfilled: Math.round(totalNewStake * 100) / 100,
+        note: 'Stakes/odds restored from pxMatchedAfterReject markers. Exposure recomputed.',
+      });
+    } catch (err) {
+      log.error('Repair', `/stake-backfill failed: ${err.message}`);
       res.status(500).json({ ok: false, error: err.message, stack: err.stack });
     }
   });
