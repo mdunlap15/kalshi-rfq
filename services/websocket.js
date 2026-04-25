@@ -685,7 +685,14 @@ async function handleRFQ(data) {
     // Submit offer to PX FIRST — speed is critical in the RFQ auction.
     // Bookkeeping (pending exposure, signature) happens AFTER the HTTP call
     // so it doesn't add latency before our offer reaches PX.
-    if (isPausedNow) {
+    //
+    // Pause check uses BOTH the snapshot (isPausedNow at RFQ receipt) and
+    // the live `paused` flag. Either being true blocks the submit. The
+    // snapshot keeps log/metrics consistent for one RFQ ("Received [PAUSED]"
+    // and the submit decision agree); the live check closes the tiny race
+    // window where Mike clicks pause AFTER receipt but BEFORE submit (the
+    // few ms of pricing). When paused becomes true mid-RFQ, no offer ships.
+    if (isPausedNow || paused) {
       log.debug('RFQ', `[PAUSED] Would offer: parlay=${parlayId}, odds=${result.meta.americanOdds}, fair=${result.meta.fairParlayProb.toFixed(5)}`);
       updateRfqOutcome(parlayId, 'paused_skip', `would offer ${result.meta.americanOdds}`);
     } else if (callbackUrl) {

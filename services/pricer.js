@@ -25,6 +25,51 @@ const v2 = require('./v2');
 // simply "startTime is still in the past = DK has not moved on to the
 // next game yet = we should not quote".
 
+/**
+ * Detect whether a leg is an "alt spread" on a sport that's currently
+ * blocked. The block list comes from config.pricing.blockAltSpreadSports
+ * (env BLOCK_ALT_SPREAD_SPORTS, default "baseball_mlb,icehockey_nhl,
+ * basketball_nba"). Returns null if not blocked, or a human-readable
+ * reason string if it should be declined.
+ *
+ * Detection rules:
+ *   - MLB run line is always ±1.5; any other spread value = alt
+ *   - NHL puck line is always ±1.5; any other spread value = alt
+ *   - NBA primary spread varies per game; we use lineInfo.onDemand=true
+ *     as the proxy (PX RFQ asked for a line that wasn't pre-registered,
+ *     virtually registered by the line-manager — strong signal it's alt)
+ *
+ * Why blocked: Apr 25 forensic showed alt-spread legs concentrated in
+ * the low-fair-prob "red box" region where realized EV/$ was -6%; one
+ * recurring 2-leg MLB template (Rockies +1.5 + Under) drove ~$5.8k of
+ * loss alone. Block is sport-list driven so we can re-enable per sport
+ * without a code change.
+ */
+function isBlockedAltSpread(lineInfo) {
+  if (!lineInfo) return null;
+  if (lineInfo.marketType !== 'spread') return null;
+  const sport = lineInfo.sport || '';
+  const blocked = config.pricing.blockAltSpreadSports || [];
+  if (!blocked.includes(sport)) return null;
+  // Spread legs with no line value are anomalous (probably won't price either).
+  // Don't claim "alt" without an actual line to compare against — let the
+  // downstream pricing path reject them on its own terms.
+  if (lineInfo.line == null) return null;
+  const lineNum = Number(lineInfo.line);
+  if (!Number.isFinite(lineNum)) return null;
+  const absLine = Math.abs(lineNum);
+  // MLB / NHL: primary spread is always ±1.5
+  if (sport === 'baseball_mlb' || sport === 'icehockey_nhl') {
+    if (absLine === 1.5) return null;
+    return `${sport} alt spread (line ${lineNum}, primary is ±1.5)`;
+  }
+  // NBA (and any future additions): use onDemand flag as proxy
+  if (lineInfo.onDemand === true) {
+    return `${sport} alt spread (virtually-registered line ${lineNum})`;
+  }
+  return null;
+}
+
 function getSeriesFairProb(lineInfo) {
   // Detect which series market this leg belongs to. marketType carries
   // the line-manager tag for winner/spread/total; oddsApiMarket is a
@@ -1726,6 +1771,16 @@ function shouldDecline(legs) {
       // Null startTime is a risk — game could already be live. Decline rather than
       // silently skip the check. Golf matchups exempt (see comment above).
       return { declined: true, reason: 'unknown start time', detail: `${lineInfo.teamName || '?'} (${lineInfo.sport || '?'}) has no startTime — cannot verify game hasn't started` };
+    }
+
+    // Alt-spread block (NBA/MLB/NHL by default — see isBlockedAltSpread).
+    const altReason = isBlockedAltSpread(lineInfo);
+    if (altReason) {
+      return {
+        declined: true,
+        reason: 'alt-spread blocked',
+        detail: `${lineInfo.teamName || '?'} ${lineInfo.marketType} ${lineInfo.line}: ${altReason}`,
+      };
     }
 
     resolvedLegs.push({ lineId, lineInfo });

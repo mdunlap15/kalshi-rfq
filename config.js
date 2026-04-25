@@ -124,6 +124,23 @@ const config = {
     templateRampTier3Add: parseFloat(process.env.TEMPLATE_RAMP_TIER3_ADD) || 0.010,   // +1.00pp on 3rd
     templateRampTier4Add: parseFloat(process.env.TEMPLATE_RAMP_TIER4_ADD) || 0.030,   // +3.00pp on 4th
     templateRampDeclineAt: parseInt(process.env.TEMPLATE_RAMP_DECLINE_AT) || 4,       // decline 5th+ bet (priorCount >= 4)
+    // Block alt-spread quoting on listed sports. An "alt spread" is any
+    // spread leg whose line value differs from the primary line:
+    //   - MLB:  primary run line is always ±1.5 → anything else is alt
+    //   - NHL:  primary puck line is always ±1.5 → anything else is alt
+    //   - NBA:  primary spread varies per game → use lineInfo.onDemand=true
+    //           (PX RFQ asked for a line that wasn't pre-registered, virtually
+    //           registered by the line-manager — strong proxy for "alt")
+    //
+    // Comma-separated list of sport keys. Default blocks NBA/MLB/NHL based on
+    // Apr 25 forensic review showing red-box (low-fair-prob) parlays —
+    // disproportionately built from alt-spread legs — were the entire
+    // P&L drag (-$4.9k of the -$84% red-box bleed). Set to empty string
+    // ("") to disable the block, or change the list to widen / narrow it.
+    blockAltSpreadSports: (process.env.BLOCK_ALT_SPREAD_SPORTS == null
+      ? 'baseball_mlb,icehockey_nhl,basketball_nba'
+      : process.env.BLOCK_ALT_SPREAD_SPORTS
+    ).split(',').map(s => s.trim()).filter(Boolean),
     // v2 pricing engine: shadow-mode by default. When enabled, runs the
     // unified calibration-corrected + correlation-aware + EV-targeted
     // pipeline alongside v1 and logs the comparison. Does NOT affect

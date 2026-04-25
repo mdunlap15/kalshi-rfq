@@ -77,14 +77,35 @@ function normalizeTeam(s) {
  * (team, market, line) tuples — the same primitives the dashboard
  * uses to describe a parlay to humans.
  *
- * Line is normalized to a number (0.5 vs "0.5" vs 0.50 all collapse).
+ * For SPREAD and TOTAL markets the line value is intentionally
+ * COLLAPSED to a single bucket per (team, market). Apr 25 forensic
+ * review of the recurring "Rockies + Under (Rockies @ Mets)" probe
+ * showed bettors evading the ramp by submitting near-identical parlays
+ * across 2-3 alt-lines (Under 8 vs 8.5 vs 9 on the same total leg,
+ * Rockies +1.5 vs +2.5 on the same spread leg). Substantively the
+ * same thesis but each landed on a distinct signature, so the ramp
+ * never accumulated a count > 0. Dropping the line value at the
+ * canonicalization step closes that evasion in one line.
+ *
+ * Spread SIDE (Rockies +1.5 vs Mets -1.5) is still preserved because
+ * those are mathematically opposite bets (different theses, even
+ * when paired with the same total leg). Same for Over vs Under.
+ *
+ * Moneyline legs already carry no line value, so they're unaffected.
  */
 function canonicalSignature(legs) {
   if (!Array.isArray(legs) || legs.length === 0) return null;
   const tuples = legs.map(l => {
     const team = normalizeTeam(l.team || l.teamName || '?');
     const market = (l.market || l.marketType || '?').toLowerCase();
-    const line = (l.line != null && !isNaN(Number(l.line))) ? Number(l.line) : null;
+    // Collapse alt-line probing on spread/total markets. See header above.
+    const isLineMarket = market === 'spread' || market === 'total' ||
+                         market === 'team_total' || market === 'run_line' ||
+                         market === 'puck_line' || market === 'alt_spread' ||
+                         market === 'alt_total';
+    const line = isLineMarket
+      ? null
+      : ((l.line != null && !isNaN(Number(l.line))) ? Number(l.line) : null);
     return [team, market, line];
   });
   // Stable sort to make ordering irrelevant
