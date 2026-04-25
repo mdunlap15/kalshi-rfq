@@ -576,7 +576,17 @@ async function handleRFQ(data) {
             // James Made Threes", "1st Quarter Spread") when the resolver
             // captured one, so the dashboard can show *exactly* what
             // unregistered market this leg belongs to.
-            marketName: (resolveFailure && resolveFailure.marketName) || null,
+            //
+            // CRITICAL: gate on resolveFailure.lineId === lineId. The
+            // _lastFailure singleton on resolveUnknownLine persists
+            // across calls and is only set on failure (never cleared),
+            // so a leg whose own resolve succeeded would otherwise
+            // inherit a stale marketName from the most recent failure
+            // — possibly from a different parlay. Observed 2026-04-25:
+            // baseball_mlb alt_spread legs showing marketName like
+            // "Nikola Jokić Total Points" (an NBA prop), polluting the
+            // /decline-audit drill-down with cross-attributed labels.
+            marketName: (resolveFailure && resolveFailure.lineId === lineId && resolveFailure.marketName) || null,
           });
         }
       }

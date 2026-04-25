@@ -1030,6 +1030,17 @@ async function resolveUnknownLine(rfqLeg) {
   if (!lineId) return null;
   if (lineIndex[lineId]) return lineIndex[lineId]; // already resolved
 
+  // Clear stale failure state at the START of each call. _lastFailure is
+  // a function-level singleton: it's set on every failure path below but
+  // was never reset, so callers reading it after a SUCCESSFUL resolve
+  // would see the previous call's failure (potentially from a different
+  // parlay's leg). Caused 2026-04-25 cross-attribution where the
+  // /decline-audit drill-down showed marketName values from one leg
+  // attributed to another. Clearing here makes lineId-guarded reads
+  // reliable; readers that don't gate on lineId now also get null
+  // instead of stale state.
+  resolveUnknownLine._lastFailure = null;
+
   // Sample log: capture RFQ leg shape (first 20 unknown legs only)
   if (!resolveUnknownLine._sampleCount) resolveUnknownLine._sampleCount = 0;
   if (resolveUnknownLine._sampleCount < 20 && typeof rfqLeg === 'object') {
