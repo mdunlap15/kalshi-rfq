@@ -237,6 +237,15 @@ const config = {
     confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
     offerValidSeconds: parseInt(process.env.OFFER_VALID_SECONDS) || 60,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
+    // Per-event aggregate cap. Sums SP-risk across ALL legs touching one
+    // pxEventId (regardless of team or market), preventing two-sided
+    // event stacking that the per-team cap can't see — e.g. Lakers spread
+    // on parlay 1 + Hawks spread on parlay 2 + Over total on parlay 3,
+    // each below team cap but together overconcentrated on the LAL @ ATL
+    // game. Critical as alt-spread coverage expands: more breakpoints =
+    // more ways to load up on one event.
+    // Tunable via MAX_EXPOSURE_PER_GAME env var. Set 0 to disable.
+    maxExposurePerGame: parseFloat(process.env.MAX_EXPOSURE_PER_GAME) || 5000,
     // Tighter risk caps for parlays containing series_* markets. Series
     // bets tie up bankroll for weeks until the series settles, so we
     // limit both per-parlay SP risk and aggregate per-series-event

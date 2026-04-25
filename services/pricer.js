@@ -1841,14 +1841,31 @@ function shouldDecline(legs) {
   // shouldDecline lightweight here avoids over-restricting quotes — the
   // original 3x estPayout inflation was declining too many RFQs.
   const estPayout = config.pricing.maxRiskPerParlay || 500;
-  // Pass legs with fairProb info for weighted calculation
+  // Pass legs with fairProb info for weighted calculation. CRITICAL:
+  // include the full lineInfo so checkExposureLimits and checkGameExposure
+  // can build the right key (teamKey|pxEventId|date for team check,
+  // pxEventId|date for game check). Previously only {team, fairProb} was
+  // passed — the key builders fell back to '|noevent' which never matched
+  // the real exposure[] entries (which use eventId+date). The team-cap
+  // check was effectively a no-op at quote time; only confirm-time caught
+  // overflows. Now the quote-time check is a real gate, eliminating
+  // redundant quote→confirm→reject cycles and closing the PX-ignores-
+  // reject leak path entirely (we never quote in the first place).
   const legsWithProb = resolvedLegs.map(l => {
     const fp = oddsFeed.getFairProb(
       l.lineInfo.oddsApiSport, l.lineInfo.homeTeam, l.lineInfo.awayTeam,
       l.lineInfo.oddsApiMarket, l.lineInfo.oddsApiSelection,
       l.lineInfo.line != null ? Math.abs(l.lineInfo.line) : null, l.lineInfo.startTime
     );
-    return { team: l.lineInfo.teamName, fairProb: fp || 0.5 };
+    return {
+      team: l.lineInfo.teamName,
+      fairProb: fp || 0.5,
+      lineInfo: l.lineInfo,           // exposure-key builders read pxEventId, startTime, homeTeam, awayTeam from here
+      pxEventId: l.lineInfo.pxEventId, // explicit fallback fields if a checker reads them at top level
+      startTime: l.lineInfo.startTime,
+      homeTeam: l.lineInfo.homeTeam,
+      awayTeam: l.lineInfo.awayTeam,
+    };
   });
   const exposureCheck = orderTracker.checkExposureLimits(
     legsWithProb, estPayout, config.pricing.maxExposurePerTeam
@@ -1856,6 +1873,27 @@ function shouldDecline(legs) {
   if (!exposureCheck.allowed) {
     log.info('Pricing', `Exposure limit: ${exposureCheck.reason}`);
     return { declined: true, reason: 'team exposure limit', detail: exposureCheck.reason, violations: exposureCheck.violations, estPayout };
+  }
+
+  // Per-event aggregate cap (quote-time gate). Catches the same risk
+  // as the team check but at the EVENT level — a parlay with Lakers
+  // spread on one leg and Hawks total on another (same LAL@ATL game)
+  // ends up adding to BOTH team buckets but ALSO to the single
+  // pxEventId bucket. Without this, repeated parlays touching opposite
+  // sides of the same game can build event-level concentration that
+  // no team-level cap sees.
+  const gameCheck = orderTracker.checkGameExposure(
+    legsWithProb, estPayout, config.pricing.maxExposurePerGame
+  );
+  if (!gameCheck.allowed) {
+    log.info('Pricing', `Game exposure limit: ${gameCheck.reason}`);
+    return {
+      declined: true,
+      reason: 'game exposure limit',
+      detail: gameCheck.reason,
+      violations: [{ team: 'game-event', wouldBe: gameCheck.wouldBe || 0, limit: gameCheck.limit || 0 }],
+      estPayout,
+    };
   }
 
   // Series-specific gross exposure cap. Uses the tighter per-parlay

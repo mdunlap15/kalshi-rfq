@@ -852,6 +852,25 @@ async function handleConfirm(data) {
       return;
     }
 
+    // Per-event aggregate cap. Sums SP-risk across ALL legs on one
+    // pxEventId, regardless of team or market — catches two-sided
+    // event stacking the per-team cap can't see. Particularly relevant
+    // as alt-spread coverage expands (more breakpoints per game).
+    const gameCheck = orderTracker.checkGameExposure(
+      legsForCheck, ourRisk, config.pricing.maxExposurePerGame
+    );
+    if (!gameCheck.allowed) {
+      log.warn('Confirm', `Rejecting: ${gameCheck.reason}`);
+      orderTracker.recordRejection(parlayId, gameCheck.reason);
+      orderTracker.recordExposureRejection(parlayId, ourRisk, 'game exposure limit', [{
+        team: 'game-event', wouldBe: gameCheck.wouldBe, limit: gameCheck.limit,
+      }]);
+      if (callbackUrl) {
+        await px.confirmOrder(callbackUrl, orderUuid, 'reject');
+      }
+      return;
+    }
+
     // Series gross-exposure re-check. Same rationale as the team check:
     // a race between quote and confirm could push a series event over
     // the $1K cap. Uses actual ourRisk now that the stake is known.
