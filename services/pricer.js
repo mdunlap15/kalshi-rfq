@@ -85,11 +85,7 @@ function isBlockedAltSpread(lineInfo) {
   }
   // NBA: within-±N alts with book coverage allowed.
   if (sport === 'basketball_nba') {
-    // Primary lines (line manager pre-registered, onDemand=false):
-    // always allow regardless of distance. These are the SharpAPI
-    // primary spread for the event.
-    if (lineInfo.onDemand !== true) return null;
-    // Alt: find primary spread for this event in home-team perspective.
+    // Find primary spread for this event in home-team perspective.
     const primaryHomePoint = lineManager.getPrimarySpreadHomePoint(lineInfo.pxEventId);
     if (primaryHomePoint == null) {
       return `NBA alt: no primary spread registered for event ${lineInfo.pxEventId}`;
@@ -97,6 +93,13 @@ function isBlockedAltSpread(lineInfo) {
     // Convert this leg's line to home-team-signed perspective.
     const sel = lineInfo.oddsApiSelection || lineInfo.selection;
     const legHomePoint = sel === 'home' ? lineNum : -lineNum;
+    // If THIS leg IS the primary line, allow without further checks.
+    // Same fix class as isBlockedAltTotal (operator-caught Apr 26):
+    // `onDemand !== true` was being used as a proxy for "is primary",
+    // but PX seeds many alt-spreads as non-on-demand entries during
+    // regular seeding — they bypassed the distance check. Use the
+    // line-value match against primary as the actual truth signal.
+    if (Math.abs(legHomePoint - primaryHomePoint) < 0.001) return null;
     const dist = Math.abs(legHomePoint - primaryHomePoint);
     const maxDist = config.pricing.nbaAltSpreadMaxDistance || 2.0;
     // Tiny floating-point tolerance (NBA spreads come in 0.5 increments
@@ -144,8 +147,6 @@ function isBlockedAltTotal(lineInfo) {
   if (lineInfo.marketType !== 'total') return null;
   const sport = lineInfo.sport || '';
   if (sport !== 'basketball_nba') return null;
-  // Primary lines (line manager pre-registered): always allow
-  if (lineInfo.onDemand !== true) return null;
   // Need a line value to compare
   if (lineInfo.line == null) return null;
   const lineNum = Number(lineInfo.line);
@@ -156,6 +157,16 @@ function isBlockedAltTotal(lineInfo) {
   if (primaryTotal == null) {
     return `NBA alt-total: no primary total registered for event ${lineInfo.pxEventId}`;
   }
+  // If THIS leg IS the primary line, allow without further checks.
+  //
+  // Pre-Apr-26 used `onDemand !== true` as a proxy for "is primary",
+  // but PX seeds many ALT totals as non-on-demand entries during
+  // regular line-manager seeding — they bypassed the distance check
+  // entirely. Operator caught a parlay 2026-04-26 with NBA total
+  // alts 10+ points off the actual primary (CLE @ TOR U 235.5 when
+  // primary was ~225). Use line-value match as the real truth signal.
+  if (Math.abs(absLine - primaryTotal) < 0.001) return null;
+  // Alt: must be within ±N of primary
   const dist = Math.abs(absLine - primaryTotal);
   const maxDist = config.pricing.nbaAltTotalMaxDistance || 2.0;
   if (dist > maxDist + 0.001) {
