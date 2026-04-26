@@ -267,6 +267,34 @@ function resolveTeamTotalSide(hint, homeTeam, awayTeam) {
 }
 
 /**
+ * Resolve the display-friendly team name for a parsed selection.
+ *
+ * Most market types (moneyline, spread, F5/H1 variants) carry the full
+ * team name in `sel.teamName` because parseMarketSelections lifts it
+ * from the selection text. team_total is the exception: PX names those
+ * markets like "CLE: Team Total Points" or "TOR Team Total Runs", so
+ * the parsed teamName is just the abbreviated prefix ("CLE", "TOR").
+ *
+ * Storing the abbreviation as `lineIndex[lineId].teamName` propagated
+ * to the dashboard's parlay-detail "Team / Selection" column, where
+ * mid-parlay legs read like "CLE" alongside fully-named legs like
+ * "Atlanta Braves -1.5". For team_total legs, swap the abbreviation
+ * for the matched event's full home/away team name (we already
+ * resolved the side via resolveTeamTotalSide for selection routing).
+ *
+ * Falls through to sel.teamName for every other market type — those
+ * already carry the canonical name.
+ */
+function resolveDisplayTeamName(sel, matchedHome, matchedAway) {
+  if (sel && sel.marketType === 'team_total') {
+    const side = resolveTeamTotalSide(sel.teamName, matchedHome, matchedAway);
+    if (side === 'home') return matchedHome;
+    if (side === 'away') return matchedAway;
+  }
+  return sel ? sel.teamName : null;
+}
+
+/**
  * Try to match a PX team name to an Odds API team name.
  * Strategies: exact, contains, override map.
  */
@@ -939,7 +967,7 @@ async function seedAllLines() {
           marketName: market.name,
           isDNB,
           selection: oddsApiSelection,
-          teamName: sel.teamName,
+          teamName: resolveDisplayTeamName(sel, matchedHome, matchedAway),
           line: sel.line,
           homeTeam: matchedHome,
           awayTeam: matchedAway,
@@ -1459,7 +1487,7 @@ async function resolveUnknownLine(rfqLeg) {
             marketName: market.name,
             isDNB: onDemandDNB,
             selection: oddsApiSelection,
-            teamName: sel.teamName,
+            teamName: resolveDisplayTeamName(sel, matchedHome, matchedAway),
             line: sel.line,
             homeTeam: matchedHome,
             awayTeam: matchedAway,
