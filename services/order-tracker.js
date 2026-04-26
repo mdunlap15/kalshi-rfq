@@ -3294,32 +3294,6 @@ async function sweepStuckConfirmed(px, opts = {}) {
           continue;
         }
       }
-      // Symmetric SP-LOSS short-circuit: all legs won → bettor's parlay
-      // hit → SP loses. Same 4-hour startTime safety as the SP-WON branch.
-      const allLegsWon = pxLegs.length > 0 && pxLegs.every(l => l.settlement_status === 'won');
-      if (allLegsWon) {
-        const now = Date.now();
-        const allOldEnough = pxLegs.every(pl => {
-          const ourLeg = orderLegs.find(ol =>
-            (ol.pxEventId && pl.sport_event_id && Number(ol.pxEventId) === Number(pl.sport_event_id)) ||
-            (ol.lineId && pl.line_id && ol.lineId === pl.line_id)
-          );
-          const st = ourLeg?.startTime || ourLeg?.start_time;
-          if (!st) return false;
-          const startMs = new Date(st).getTime();
-          if (isNaN(startMs)) return false;
-          return (now - startMs) >= 4 * 3600 * 1000;
-        });
-        if (allOldEnough) {
-          log.warn('Sweep', `Short-circuit settle for ${order.parlayId} (uuid ${order.orderUuid}): PX status=${pxStatus} but all ${pxLegs.length} legs won — SP loses`);
-          recordSettlement(order.orderUuid, 'lost', null, { trusted: true });
-          for (const pxLeg of pxLegs) {
-            if (pxLeg.line_id && pxLeg.settlement_status) recordLegSettlement(order.orderUuid, pxLeg);
-          }
-          settled++;
-          continue;
-        }
-      }
       stillPending++;
     } catch (err) {
       failures.push({ parlayId: order.parlayId, uuid: order.orderUuid, error: err.message });
@@ -3555,50 +3529,6 @@ async function pollOrderSettlements(px) {
             settled++;
             // Backfill leg-level settlement statuses too so the dashboard
             // can display "Lost" / "Won" / "Pending" per leg correctly.
-            for (const pxLeg of pxLegs) {
-              if (pxLeg.line_id && pxLeg.settlement_status) {
-                recordLegSettlement(uuid, pxLeg);
-              }
-            }
-            continue;
-          }
-        }
-        // SYMMETRIC SP-LOSS SHORT-CIRCUIT.
-        //
-        // The any-leg-lost short-circuit above only catches the "bettor's
-        // parlay died" case. The opposite case — every leg won, bettor's
-        // parlay HIT, SP LOST — also gets stuck waiting for PX to update
-        // parlay-level status. Without this branch, every PX-overrode-reject
-        // that the bettor actually wins on stays as 'confirmed' indefinitely,
-        // so PnL is one-sided (we record only the wins, never the losses).
-        // Apr 26 forensic showed 113/113 PX-overrode-rejects had been
-        // settled as SP-WON, ZERO losses — statistically impossible.
-        // Estimated ~25-30 missing SP-LOSSES of avg $1300 stake each =
-        // ~$30k+ of unrecorded losses inflating the cumulative chart.
-        //
-        // Settle as SP-LOST when:
-        //   - every PX leg has settlement_status='won' (all legs hit)
-        //   - the LATEST leg's startTime is ≥ 4 hours ago (avoid premature)
-        const allLegsWon = pxLegs.length > 0 &&
-          pxLegs.every(l => l.settlement_status === 'won');
-        if (allLegsWon) {
-          const orderLegs = order.legs || order.meta?.legs || [];
-          const now = Date.now();
-          const allLegsOldEnough = pxLegs.every(pl => {
-            const ourLeg = orderLegs.find(ol =>
-              (ol.pxEventId && pl.sport_event_id && Number(ol.pxEventId) === Number(pl.sport_event_id)) ||
-              (ol.lineId && pl.line_id && ol.lineId === pl.line_id)
-            );
-            const st = ourLeg?.startTime || ourLeg?.start_time;
-            if (!st) return false;
-            const startMs = new Date(st).getTime();
-            if (isNaN(startMs)) return false;
-            return (now - startMs) >= 4 * 3600 * 1000;
-          });
-          if (allLegsOldEnough) {
-            log.warn('Poll', `Short-circuit settlement for ${order.parlayId}: PX parlay status=${settlementStatus} but all ${pxLegs.length} legs won — settling as SP-LOST locally`);
-            recordSettlement(uuid, 'lost', null, { trusted: true });
-            settled++;
             for (const pxLeg of pxLegs) {
               if (pxLeg.line_id && pxLeg.settlement_status) {
                 recordLegSettlement(uuid, pxLeg);
