@@ -5809,6 +5809,29 @@ async function fetchScores(sport) {
     return cached.games;
   }
 
+  // Generic 'soccer' has no Odds API scores endpoint — only league-
+  // specific keys do (soccer_epl, soccer_uefa_champs_league, etc.).
+  // Line-manager tags many soccer legs with 'soccer' (generic) because
+  // SharpAPI returns all soccer events under that bucket and it's
+  // tried first in sportNameMap order. Without this expansion,
+  // fetchScores('soccer') 404s silently and no soccer leg ever resolves
+  // a score. Operator-visible: April 26 EPL Leeds @ Chelsea finished &
+  // lost but the parlay-detail status circle stayed grey/pending.
+  // Aggregate scores across every known soccer league via PINNACLE_SPORT_MAP.
+  if (sport === 'soccer') {
+    const soccerLeagues = Object.keys(PINNACLE_SPORT_MAP).filter(k => k.startsWith('soccer_'));
+    let allGames = [];
+    for (const league of soccerLeagues) {
+      try {
+        const games = await fetchScores(league);
+        if (games && games.length > 0) allGames = allGames.concat(games);
+      } catch (_) { /* per-league failure shouldn't block others */ }
+    }
+    scoresCache[sport] = { fetchedAt: Date.now(), games: allGames };
+    log.debug('Scores', `Cached ${allGames.length} aggregated soccer scores from ${soccerLeagues.length} leagues`);
+    return allGames;
+  }
+
   const parseGames = (data) => (data || []).map(g => ({
     homeTeam: g.home_team,
     awayTeam: g.away_team,
