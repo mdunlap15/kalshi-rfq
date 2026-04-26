@@ -1538,6 +1538,17 @@ function startStatusServer() {
       const trackerAdds = [];
       for (const o of orderTracker.getRecentOrders(500)) {
         if (o.status !== 'confirmed') continue;
+        // Require orderUuid — same gate as the client-side trackerConfirmed
+        // filter (client/index.html line 3192) and the truth model
+        // established Apr 25 (orderUuid only set on order.finalized, i.e.
+        // after the bettor accepts on PX). Without this check, the
+        // 'Offered' transient state (status='confirmed', no UUID, awaiting
+        // accept) would surface in Open Positions for ~10 min then vanish
+        // when isOrderStalePhantom started catching them — operator-visible
+        // flicker reported on Apr 26. The isOrderStalePhantom check below
+        // only kicks in AFTER 10 min, so it can't catch fresh no-UUID
+        // entries on its own.
+        if (!o.orderUuid) continue;
         // Apply the same stale/phantom filter getTotalPortfolioRisk uses.
         // isOrderStalePhantom catches three failure modes that plain
         // meta.phantom misses:

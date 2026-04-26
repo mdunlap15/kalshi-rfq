@@ -3198,6 +3198,12 @@
       else noIdEntries.push(p);
     }
     for (const p of (window._pxPositions?.positions || [])) {
+      // Defense-in-depth UUID check. The server (/px-positions endpoint)
+      // already requires orderUuid on tracker-only adds, but enforcing
+      // here too means any future server-side regression can't reintroduce
+      // the no-UUID flicker into Open Positions. Same truth model: only
+      // accepted parlays (orderUuid present) belong in the table.
+      if (!p.orderUuid) continue;
       if (p.parlayId) byParlayId[p.parlayId] = p;
       else noIdEntries.push(p);
     }
