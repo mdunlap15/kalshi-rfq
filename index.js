@@ -2781,12 +2781,10 @@ function startStatusServer() {
         const stake = pxStakeRaw > 0
           ? pxStakeRaw
           : (matchedMeta?.matchedStake != null ? Number(matchedMeta.matchedStake) : pxStakeRaw);
-        // matchedOdds from broadcast is ALREADY SP-side (verified Apr 26).
-        // Earlier comment claimed otherwise + flipped — that's the inflation
-        // bug. Use as-is, matching the SP-side storage convention.
+        // matchedOdds is PX-side; flip sign for SP-side storage.
         const odds = pxOddsRaw !== 0
           ? pxOddsRaw
-          : (matchedMeta?.matchedOdds != null ? Number(matchedMeta.matchedOdds) : pxOddsRaw);
+          : (matchedMeta?.matchedOdds != null ? -Number(matchedMeta.matchedOdds) : pxOddsRaw);
         toPromote.push({
           parlayId: pid,
           localStatus: localOrder.status,
@@ -2842,31 +2840,6 @@ function startStatusServer() {
     } catch (err) {
       log.error('Repair', `/px-status-repair failed: ${err.message}`);
       res.status(500).json({ ok: false, error: err.message, stack: err.stack });
-    }
-  });
-
-  // ONE-SHOT REPAIR for the Apr 26 matchedOdds sign-flip bug. The auto-
-  // promote source code (049cd3f) and the /px-status-repair stake-fallback
-  // (049cd3f) both stored confirmedOdds = -matchedOdds under the (incorrect)
-  // assumption that broadcast matchedOdds was bettor-side. It's actually
-  // SP-side, so the negation produced positive confirmedOdds where it
-  // should have been negative. On settle (SP-WON), americanOddsToProfit
-  // computed the WRONG bettor wager (wagered ≈ stake × posOdds/100 instead
-  // of stake × 100/|negOdds|), inflating pnl 10-100× per affected order.
-  //
-  // /backfill-sign-flip walks every order with meta.pxMatchedAfterReject
-  // AND positive confirmedOdds, flips the sign, and (for settled_won)
-  // recomputes pnl + reverses the inflated value from runningPnL.
-  //
-  // Default is dry-run; ?commit=true to apply.
-  app.post('/backfill-sign-flip', (req, res) => {
-    const commit = req.query.commit === 'true' || req.query.commit === '1';
-    try {
-      const result = orderTracker.backfillSignFlip({ commit });
-      res.json({ ok: true, mode: commit ? 'committed' : 'dry-run', ...result });
-    } catch (err) {
-      log.error('Backfill', `/backfill-sign-flip failed: ${err.message}`);
-      res.status(500).json({ ok: false, error: err.message });
     }
   });
 

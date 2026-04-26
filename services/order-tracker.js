@@ -753,94 +753,6 @@ function markAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmedStake, e
  *   - Recomputes team/game exposure (release prior $0 exposure → add new)
  *   - Persists to DB
  */
-/**
- * One-shot repair for the Apr 26 matchedOdds sign-flip bug. Walks all
- * orders that were promoted via the PX-overrode-reject path (marker:
- * meta.pxMatchedAfterReject) and currently have positive confirmedOdds
- * — these are the ones where -matchedOdds got stored instead of
- * matchedOdds. Flips the sign back to negative, and on settled orders
- * REVERSES the inflated pnl + applies the correct one (so runningPnL
- * and the dashboard's daily volume chart return to truth).
- *
- * Idempotent: skips orders without the marker, orders with already-
- * negative confirmedOdds, orders with confirmedOdds=null/0, and orders
- * outside settled/confirmed status.
- */
-function backfillSignFlip(opts = {}) {
-  const dryRun = !opts.commit;
-  const candidates = [];
-  for (const order of Object.values(orders)) {
-    if (!order.meta?.pxMatchedAfterReject) continue;
-    if (order.confirmedOdds == null) continue;
-    if (Number(order.confirmedOdds) <= 0) continue; // already correct
-    if (!['confirmed', 'settled_won', 'settled_lost', 'settled_push', 'settled_void'].includes(order.status)) continue;
-    candidates.push(order);
-  }
-
-  let updated = 0;
-  let pnlReversed = 0;
-  let pnlCorrected = 0;
-  const sample = [];
-  for (const order of candidates) {
-    const oldOdds = Number(order.confirmedOdds);
-    const newOdds = -oldOdds;
-    const oldPnl = order.pnl != null ? Number(order.pnl) : null;
-    let newPnl = oldPnl;
-
-    if (order.status === 'settled_won') {
-      // pnl was bettorWager computed with wrong-sign odds. Recompute with
-      // corrected sign. We DON'T trust pxProfit because if the order
-      // settled via our short-circuit / sweep / poll using bettorWager,
-      // pxProfit was either null or contained the inflated value too.
-      // For consistency, recompute from scratch.
-      const correctedBettorWager = americanOddsToProfit(newOdds, order.confirmedStake || 0);
-      newPnl = correctedBettorWager;
-    } else if (order.status === 'settled_lost') {
-      // pnl was -confirmedStake. Stake is unchanged so pnl is unchanged.
-      // No correction needed but we still flip the sign for future correctness.
-      newPnl = oldPnl;
-    } else if (order.status === 'settled_push' || order.status === 'settled_void') {
-      newPnl = 0;
-    }
-
-    if (sample.length < 10) {
-      sample.push({
-        parlayId: order.parlayId,
-        status: order.status,
-        confirmedStake: order.confirmedStake,
-        oldOdds, newOdds,
-        oldPnl, newPnl,
-        delta: newPnl != null && oldPnl != null ? Math.round((newPnl - oldPnl) * 100) / 100 : null,
-      });
-    }
-
-    if (!dryRun) {
-      // Apply
-      order.confirmedOdds = newOdds;
-      if (newPnl !== oldPnl && oldPnl != null) {
-        // Reverse old pnl from runningPnL, add correct one
-        stats.runningPnL = (stats.runningPnL || 0) - oldPnl + (newPnl || 0);
-        if (oldPnl > 0 && newPnl <= 0) { stats.totalWins--; }
-        if (oldPnl <= 0 && newPnl > 0) { stats.totalWins++; }
-        order.pnl = newPnl;
-        pnlReversed += oldPnl;
-        pnlCorrected += newPnl || 0;
-      }
-      db.saveOrder(order).catch(err => log.warn('SignFlip', `saveOrder failed for ${order.parlayId}: ${err.message}`));
-      updated++;
-    }
-  }
-
-  return {
-    candidates: candidates.length,
-    updated,
-    pnlReversed: Math.round(pnlReversed * 100) / 100,
-    pnlCorrected: Math.round(pnlCorrected * 100) / 100,
-    netDelta: Math.round((pnlCorrected - pnlReversed) * 100) / 100,
-    sample,
-  };
-}
-
 function backfillStake(parlayId, newStake, newOdds) {
   const order = orders[parlayId];
   if (!order) return { ok: false, reason: 'not-found' };
@@ -1384,20 +1296,14 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
         matchedOdds, matchedStake,
         originalRejectReason: originalReject,
       };
-      // matchedOdds from PX broadcast is ALREADY SP-side (negative for
-      // SP-favored, which is the typical SP position). Empirically verified
-      // Apr 26: matchedOdds=-378 on a parlay PX REST also reports as
-      // SP-side; broadcast and REST agree. Earlier code flipped the sign
-      // here under the (incorrect) assumption that broadcast was bettor-
-      // side, which made americanOddsToProfit compute the wrong bettor
-      // wager and inflated SP-WON pnl 10-100× on every PX-overrode-reject
-      // promotion. Apr 26 forensic: $84k of cumulative-PnL inflation
-      // across the day from this single sign-flip. Pass matchedOdds as-is.
+      // matchedOdds is PX's side of the wager (sign-flipped vs ours);
+      // store SP-side odds as -matchedOdds to match the convention used
+      // in the recordConfirmation path above.
       const importResult = importPxBookedOrder(
         parlayId,
         ourQuote.orderUuid || null,
         matchedStake,
-        matchedOdds != null ? matchedOdds : null
+        matchedOdds != null ? -matchedOdds : null
       );
       if (!importResult.ok) {
         log.warn('Orders', `[PX-OVERRODE-REJECT] importPxBookedOrder failed for ${parlayId}: ${importResult.reason} — keeping rejected status, manual repair needed`);
@@ -4922,7 +4828,6 @@ module.exports = {
   recordUnsupportedMarket,
   importPxBookedOrder,
   backfillStake,
-  backfillSignFlip,
   markAcceptUnknown,
   sweepGhostOrders,
   getMarketIntel,
