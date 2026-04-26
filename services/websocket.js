@@ -615,12 +615,20 @@ async function handleRFQ(data) {
     // Capture call-side timestamps so we can compute the await microtask
     // overhead: difference between (priceReturnMs - priceCallMs) and
     // the pricer's internal totalInternalMs is V8's awaitOverhead.
+    // priceParlay is intentionally NOT async — it returns the result
+    // synchronously when no async work is needed (cache-warm path), and
+    // returns a Promise only when alt-line fetch or Pinnacle verify
+    // requires it. Branching on `.then` avoids the V8 microtask cost of
+    // awaiting on the sync path (~0.32ms p50 saved measured Apr 26).
     const priceCallMs = performance.now();
-    const result = await pricer.priceParlay(legs, {
+    const resultMaybe = pricer.priceParlay(legs, {
       resolvedLineInfos: declineCheck.resolvedLineInfos,
       sgpCombo: declineCheck.sgpCombo || null,
       parlayId,
     });
+    const result = (resultMaybe && typeof resultMaybe.then === 'function')
+      ? await resultMaybe
+      : resultMaybe;
     const priceReturnMs = performance.now();
     stageTimings.price = elapsedMs();
     // Carry forward pricer's internal phase markers so /latency-breakdown

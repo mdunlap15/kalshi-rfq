@@ -438,7 +438,17 @@ function computeSingleLegQuote(fairProb, sport, marketType) {
  * Returns null if the parlay should be declined.
  * Returns an offer object if we can price it.
  */
-async function priceParlay(legs, opts = {}) {
+// NOTE: priceParlay is intentionally NOT declared `async`. An `async`
+// function always returns a Promise, which forces the websocket caller
+// to `await` it — and `await` always pays one V8 microtask hop (~0.32ms
+// p50 measured Apr 26). On the cache-warm fast path (most RFQs), no
+// async work is needed inside priceParlay, so returning the result
+// SYNCHRONOUSLY skips that microtask cost entirely. The caller does:
+//   const r = pricer.priceParlay(...);
+//   const result = (r && typeof r.then === 'function') ? await r : r;
+// On RFQs that DO need async work (alt-line cache miss or Pinnacle
+// verify), priceParlay returns a Promise that resolves to the result.
+function priceParlay(legs, opts = {}) {
   priceParlay._lastFailure = null; // clear any prior failure
   // Latency diagnostic — captures function entry to surface in _timings.
   // Lets the websocket layer compute "entry-to-phase1" gap (work before
@@ -755,7 +765,9 @@ async function priceParlay(legs, opts = {}) {
     }
   }
 
-  // Only enter the await path when something actually needs async work.
+  // ASYNC PATH: only enter when something actually needs async work.
+  // Wraps the post-await wire-up + phase-3 call in a .then() so the
+  // function still returns the same shape (Promise resolves to result).
   if (pendingAsyncFair || pendingVerifyIdx) {
     const proms = [];
     if (pendingAsyncFair) {
@@ -770,16 +782,29 @@ async function priceParlay(legs, opts = {}) {
         ));
       }
     }
-    const settled = await Promise.all(proms);
-    let k = 0;
-    if (pendingAsyncFair) {
-      for (const [idx] of pendingAsyncFair) fairProbs[idx] = settled[k++];
-    }
-    if (pendingVerifyIdx) {
-      for (const idx of pendingVerifyIdx) verifyResults[idx] = settled[k++];
-    }
+    return Promise.all(proms).then(settled => {
+      let k = 0;
+      if (pendingAsyncFair) {
+        for (const [idx] of pendingAsyncFair) fairProbs[idx] = settled[k++];
+      }
+      if (pendingVerifyIdx) {
+        for (const idx of pendingVerifyIdx) verifyResults[idx] = settled[k++];
+      }
+      return _doPhase3();
+    });
   }
+  // SYNC FAST PATH: all leg fair-probs already populated. Call _doPhase3
+  // directly and return the result object — NOT a Promise. Caller's
+  // sync-or-await branch returns it without microtask overhead.
+  return _doPhase3();
 
+  // _doPhase3 is a hoisted function declaration so it can be CALLED above
+  // even though it's DECLARED below. JS hoists `function` declarations
+  // (not arrow expressions) to the top of the containing scope. Captures
+  // every priceParlay local via closure scope (legStates, fairProbs,
+  // verifyResults, opts, timing markers, etc.). Body kept at indent
+  // level 2 to minimize the diff vs the original phase-3 layout.
+  function _doPhase3() {
   // Phase 2 complete — await(s) have resolved; everything below is sync.
   phase2EndMs = performance.now();
 
@@ -1776,6 +1801,7 @@ async function priceParlay(legs, opts = {}) {
       maxRisk,
     },
   };
+  } // end of _doPhase3
 }
 
 /**
