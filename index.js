@@ -732,18 +732,24 @@ function startStatusServer() {
       const stats = orderTracker.getAlerts ? null : null; // placeholder; real read below
 
       // ---- In-memory snapshot ----
-      // Exposed via getStats().unknownLegCategories isn't a thing — read
-      // directly from the order-tracker's internal counter via a getter.
       const memBucket = (orderTracker.getDeclineStatsSnapshot
         ? orderTracker.getDeclineStatsSnapshot()
         : { unknownLegCategories: {} });
-      const playerPropBucket = (memBucket.unknownLegCategories || {}).player_prop || { count: 0, byPropType: {}, sampleLegs: [] };
+      const playerPropBucket = (memBucket.unknownLegCategories || {}).player_prop || { count: 0, byPropType: {}, bySport: {}, sampleLegs: [] };
       const memPropTypes = { ...(playerPropBucket.byPropType || {}) };
       delete memPropTypes._lastSeen;
-      const memTotal = Object.values(memPropTypes).reduce((a, b) => a + b, 0);
-      const memPctPitcherK = memTotal > 0
-        ? Math.round((memPropTypes.pitcher_strikeouts || 0) / memTotal * 10000) / 100
+      // Sum of byPropType = MLB-classified legs only (classifier runs
+      // for baseball context only). The bucket's .count includes all
+      // player_prop legs across NBA/NHL/MLB/etc.
+      const memMlbClassified = Object.values(memPropTypes).reduce((a, b) => a + b, 0);
+      const memAllSports = playerPropBucket.count || 0;
+      const memPctPitcherKOfMlb = memMlbClassified > 0
+        ? Math.round((memPropTypes.pitcher_strikeouts || 0) / memMlbClassified * 10000) / 100
         : null;
+      // bySport breakdown so the operator can see how MLB prop volume
+      // compares to NBA/NHL/etc. — useful for prioritizing future
+      // expansion beyond just pitcher strikeouts.
+      const memBySport = { ...(playerPropBucket.bySport || {}) };
 
       // ---- DB-backed: substring-count [propType:X] in unknown_details ----
       // Paginate via .range() so we get past Supabase's server-side
@@ -810,17 +816,74 @@ function startStatusServer() {
 
       res.json({
         ok: true,
-        gatingThreshold: '≥10% pitcher_strikeouts of player_prop volume → proceed to Phase 1',
+        gatingThreshold: '≥10% pitcher_strikeouts of MLB-classified player_prop volume → proceed to Phase 1',
         inMemorySinceBoot: {
-          totalPlayerPropLegs: memTotal,
+          // True total across all sports (NBA + NHL + MLB + ...)
+          totalPlayerPropLegsAllSports: memAllSports,
+          // Breakdown of where the player_prop volume lives by sport.
+          // Useful for sizing future non-MLB expansions.
+          bySport: memBySport,
+          // MLB-only subset (the only one currently classified by
+          // propType — Phase 0 is MLB-pitcher-K-focused).
+          mlbPropLegsClassified: memMlbClassified,
           byPropType: memPropTypes,
-          pctPitcherStrikeouts: memPctPitcherK,
+          // Denominator is mlbPropLegsClassified (NOT the all-sports
+          // total) since the classifier only runs for baseball legs.
+          pctPitcherStrikeoutsOfMlb: memPctPitcherKOfMlb,
           sampleLegs: (playerPropBucket.sampleLegs || []).slice(0, 10),
         },
         persistedWindow: dbBreakdown || { error: 'DB unavailable or no data' },
       });
     } catch (err) {
       log.error('API', `/prop-opportunity failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Live feed of recently-declined player-prop legs. Each entry is ONE
+  // leg (a single parlay can produce multiple entries). Used by the
+  // Player Prop Flow dashboard card so the operator can eyeball what
+  // prop RFQs PX is sending us — even though we're not quoting them
+  // yet — to spot patterns, naming surprises, and validate the
+  // classifier on real flow.
+  //
+  // Query params:
+  //   sport=baseball_mlb | basketball_nba | ...    (default: all)
+  //   propType=pitcher_strikeouts | hitter_hits | ... (default: all)
+  //   limit=N (default 200, max 2000)
+  //   sinceMinutes=N (default unset = full in-memory window, ~5000 events)
+  app.get('/prop-flow', (req, res) => {
+    try {
+      const opts = {
+        sport: req.query.sport || null,
+        propType: req.query.propType || null,
+        limit: req.query.limit ? parseInt(req.query.limit) : 200,
+      };
+      if (req.query.sinceMinutes) {
+        opts.sinceMs = Date.now() - parseInt(req.query.sinceMinutes) * 60 * 1000;
+      }
+      const flow = orderTracker.getRecentPropFlow
+        ? orderTracker.getRecentPropFlow(opts)
+        : [];
+      // Counts by sport / propType for quick header-line context
+      const bySport = {};
+      const byPropType = {};
+      for (const e of flow) {
+        if (e.sport) bySport[e.sport] = (bySport[e.sport] || 0) + 1;
+        const pt = e.propType || '(unclassified)';
+        byPropType[pt] = (byPropType[pt] || 0) + 1;
+      }
+      res.json({
+        ok: true,
+        count: flow.length,
+        filter: opts,
+        bySport,
+        byPropType,
+        flow,
+        note: 'In-memory rolling log capped at ~5000 decline events; restart-volatile. Use /prop-opportunity for restart-resilient aggregates.',
+      });
+    } catch (err) {
+      log.error('API', `/prop-flow failed: ${err.message}`);
       res.status(500).json({ ok: false, error: err.message });
     }
   });

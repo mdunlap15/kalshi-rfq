@@ -4723,6 +4723,44 @@ module.exports = {
     reasons: { ...declineStats.reasons },
     unknownLegCategories: declineStats.unknownLegCategories,
   }),
+  // Pull a flat, time-ordered list of player_prop legs from the rolling
+  // recentDeclineEvents log for the dashboard's Player Prop Flow card.
+  // Each entry is one prop leg (a single declined parlay can produce
+  // multiple entries when several of its legs are props). Filterable by
+  // sport and propType so the operator can drill into MLB-only or
+  // pitcher-K-only flow without scanning the whole stream client-side.
+  //
+  // opts: { sport?: string, propType?: string, limit?: number, sinceMs?: number }
+  // Returns newest first (matches recentDeclineEvents push order in reverse).
+  getRecentPropFlow: (opts = {}) => {
+    const limit = Math.min(opts.limit || 200, 2000);
+    const events = declineStats.recentDeclineEvents || [];
+    const out = [];
+    // Walk newest-first by iterating in reverse
+    for (let i = events.length - 1; i >= 0; i--) {
+      const ev = events[i];
+      if (opts.sinceMs && new Date(ev.time).getTime() < opts.sinceMs) break;
+      const cats = ev.unknownCategories || [];
+      for (const c of cats) {
+        if (c.category !== 'player_prop') continue;
+        if (opts.sport && c.sport !== opts.sport) continue;
+        if (opts.propType && c.propType !== opts.propType) continue;
+        out.push({
+          time: ev.time,
+          parlayId: ev.parlayId,
+          sport: c.sport,
+          eventName: c.eventName,
+          marketName: c.marketName,
+          propType: c.propType, // null for non-MLB sports
+          line: c.line,
+          isKnownEvent: c.isKnownEvent,
+          resolveReason: c.resolveReason,
+        });
+        if (out.length >= limit) return out;
+      }
+    }
+    return out;
+  },
   backfillUnknownSports,
   backfillFromExport,
   deleteUnknownSettledOrders,

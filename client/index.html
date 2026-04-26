@@ -954,6 +954,54 @@
           </div>
           <div class="card-body" id="market-intel"><div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div></div>
         </div>
+
+        <!-- Player Prop Flow — Phase 0 of player-prop expansion experiment.
+             Shows recently-declined player_prop legs (we don't quote these
+             yet) so the operator can eyeball the incoming flow, validate
+             the MLB classifier on real data, and spot patterns in what
+             bettors are asking for. Read from /prop-flow (in-memory). -->
+        <div class="card">
+          <div class="card-header" onclick="toggleCard(this)">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Player Prop Flow <span style="font-size:11px; color:var(--text3); font-weight:400;">(Phase 0 — observation only, not quoting)</span></span>
+            <span id="prop-flow-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body collapsed" id="prop-flow-card">
+            <div style="padding:8px 12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; border-bottom:1px solid var(--border);">
+              <span style="font-size:11px; color:var(--text3);">Sport:</span>
+              <select id="prop-flow-sport" onchange="renderPropFlow()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:12px;">
+                <option value="">All</option>
+                <option value="baseball_mlb">MLB only</option>
+                <option value="basketball_nba">NBA only</option>
+                <option value="basketball_wnba">WNBA only</option>
+                <option value="icehockey_nhl">NHL only</option>
+              </select>
+              <span style="font-size:11px; color:var(--text3); margin-left:8px;">PropType:</span>
+              <select id="prop-flow-type" onchange="renderPropFlow()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:12px;">
+                <option value="">All</option>
+                <option value="pitcher_strikeouts">pitcher_strikeouts</option>
+                <option value="pitcher_other">pitcher_other</option>
+                <option value="hitter_strikeouts">hitter_strikeouts</option>
+                <option value="hitter_total_bases">hitter_total_bases</option>
+                <option value="hitter_hits">hitter_hits</option>
+                <option value="hitter_hr">hitter_hr</option>
+                <option value="hitter_rbi_runs">hitter_rbi_runs</option>
+                <option value="hitter_other">hitter_other</option>
+                <option value="mlb_prop_ambiguous">mlb_prop_ambiguous</option>
+                <option value="other_mlb_prop">other_mlb_prop</option>
+              </select>
+              <span style="font-size:11px; color:var(--text3); margin-left:8px;">Limit:</span>
+              <select id="prop-flow-limit" onchange="renderPropFlow()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:12px;">
+                <option value="100">100</option>
+                <option value="200" selected>200</option>
+                <option value="500">500</option>
+                <option value="1000">1000</option>
+              </select>
+              <button onclick="renderPropFlow()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 10px; border-radius:4px; font-size:12px; cursor:pointer; margin-left:8px;">Refresh</button>
+              <span id="prop-flow-counts" style="font-size:11px; color:var(--text3); margin-left:auto;"></span>
+            </div>
+            <div id="prop-flow-table"><div class="empty-state" style="padding:20px;"><div>Click Refresh to load recent prop flow.</div></div></div>
+          </div>
+        </div>
       </div>
 
       <!-- ===================== SECTION: LINES ===================== -->
@@ -2050,6 +2098,84 @@
       if (d.ok) refreshDashboard();
     });
   };
+
+  // ---- Player Prop Flow (Phase 0 observation) ----
+  // Hits /prop-flow with the current sport/propType/limit filter
+  // selections, renders a table of recently-declined player_prop legs.
+  // We don't quote these — this card is for eyeballing the incoming
+  // RFQ shape and validating the MLB classifier on real flow.
+  function renderPropFlow() {
+    const tableEl = document.getElementById('prop-flow-table');
+    const countsEl = document.getElementById('prop-flow-counts');
+    const sumEl = document.getElementById('prop-flow-summary');
+    if (!tableEl) return;
+    const sport = document.getElementById('prop-flow-sport')?.value || '';
+    const propType = document.getElementById('prop-flow-type')?.value || '';
+    const limit = document.getElementById('prop-flow-limit')?.value || '200';
+    const params = new URLSearchParams();
+    if (sport) params.set('sport', sport);
+    if (propType) params.set('propType', propType);
+    params.set('limit', limit);
+    tableEl.innerHTML = '<div class="empty-state" style="padding:20px;"><div>Loading...</div></div>';
+    fetch('/prop-flow?' + params.toString())
+      .then(r => r.json())
+      .then(d => {
+        if (!d || !d.ok) {
+          tableEl.innerHTML = '<div class="empty-state" style="padding:20px;"><div>Error loading prop flow</div></div>';
+          return;
+        }
+        const flow = d.flow || [];
+        if (sumEl) sumEl.textContent = `${d.count} legs`;
+        // Top-line counts by sport + propType for quick scan
+        const sportSummary = Object.entries(d.bySport || {})
+          .sort((a, b) => b[1] - a[1])
+          .map(([s, n]) => `${s.replace('basketball_','').replace('baseball_','').replace('icehockey_','').toUpperCase()}: ${n}`)
+          .join(' · ');
+        if (countsEl) countsEl.textContent = sportSummary || '';
+        if (flow.length === 0) {
+          tableEl.innerHTML = '<div class="empty-state" style="padding:20px;"><div>No prop legs in current filter window.</div></div>';
+          return;
+        }
+        let html = '<div style="overflow-x:auto; max-height:600px; overflow-y:auto;"><table style="width:100%; font-size:12px;">';
+        html += '<tr style="position:sticky; top:0; background:var(--surface2); color:var(--text3); z-index:1;">'
+          + '<th style="text-align:left; padding:6px 10px;">Time (ET)</th>'
+          + '<th style="text-align:left; padding:6px 10px;">Sport</th>'
+          + '<th style="text-align:left; padding:6px 10px;">Event</th>'
+          + '<th style="text-align:left; padding:6px 10px;">Market</th>'
+          + '<th style="text-align:left; padding:6px 10px;">PropType</th>'
+          + '<th style="text-align:right; padding:6px 10px;">Line</th>'
+          + '</tr>';
+        const fmtEt = (iso) => {
+          if (!iso) return '-';
+          try {
+            return new Date(iso).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true });
+          } catch (_) { return iso; }
+        };
+        for (const e of flow) {
+          // Color propType: pitcher_strikeouts (green = our target market),
+          // mlb_prop_ambiguous (amber = needs classifier refinement),
+          // null/empty (grey = non-MLB), other (default).
+          let ptColor = 'var(--text2)';
+          if (e.propType === 'pitcher_strikeouts') ptColor = 'var(--green)';
+          else if (e.propType === 'mlb_prop_ambiguous') ptColor = 'var(--amber)';
+          else if (!e.propType) ptColor = 'var(--text3)';
+          const sportShort = (e.sport || '').replace('basketball_','').replace('baseball_','').replace('icehockey_','').toUpperCase() || '?';
+          html += '<tr style="border-top:1px solid var(--border);">'
+            + '<td style="padding:4px 10px; white-space:nowrap; color:var(--text3);">' + fmtEt(e.time) + '</td>'
+            + '<td style="padding:4px 10px;">' + escapeHtml(sportShort) + '</td>'
+            + '<td style="padding:4px 10px; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escapeHtml(e.eventName || '') + '">' + escapeHtml(e.eventName || '-') + '</td>'
+            + '<td style="padding:4px 10px; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + escapeHtml(e.marketName || '') + '">' + escapeHtml(e.marketName || '<no marketName>') + '</td>'
+            + '<td style="padding:4px 10px; color:' + ptColor + ';">' + escapeHtml(e.propType || '(unclassified)') + '</td>'
+            + '<td style="padding:4px 10px; text-align:right;">' + (e.line != null ? e.line : '-') + '</td>'
+            + '</tr>';
+        }
+        html += '</table></div>';
+        tableEl.innerHTML = html;
+      })
+      .catch(err => {
+        tableEl.innerHTML = '<div class="empty-state" style="padding:20px;"><div>Fetch error: ' + escapeHtml(err.message || String(err)) + '</div></div>';
+      });
+  }
 
   function renderMarketIntel(intel) {
     window._lastIntelData = intel;
