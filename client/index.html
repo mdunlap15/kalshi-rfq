@@ -144,6 +144,10 @@
     .positive { color: var(--green); }
     .negative { color: var(--red); }
     .neutral { color: var(--text2); }
+    /* "Offered" — PX matched our quote but the bettor hasn't accepted yet
+       (no orderUuid). Amber signals in-progress / awaiting, distinct from
+       Accepted (green) and Pending Match (grey). */
+    .pending-accept { color: var(--amber); }
 
     /* Collapsible cards */
     .card-header { cursor: pointer; user-select: none; }
@@ -603,7 +607,7 @@
       <div class="stat-bar">
         <span class="stat-item"><span class="stat-label">Lines:</span> <span class="stat-val" id="stat-lines">-</span> <span class="stat-label" id="stat-lines-sub" style="font-size:11px;"></span></span>
         <span class="stat-item"><span class="stat-label">Quotes:</span> <span class="stat-val" id="stat-quotes">0</span></span>
-        <span class="stat-item"><span class="stat-label">Confirmed:</span> <span class="stat-val" id="stat-confirmed">0</span></span>
+        <span class="stat-item" title="Parlays the bettor accepted (orderUuid present). Excludes 'Offered' state where PX matched our quote but the bettor walked away during final review."><span class="stat-label">Accepted:</span> <span class="stat-val" id="stat-confirmed">0</span></span>
         <span class="stat-item"><span class="stat-label">Settled:</span> <span class="stat-val" id="stat-settled">0</span></span>
         <span class="stat-item"><span class="stat-label">P&L:</span> <span class="stat-val" id="stat-pnl">$0.00</span></span>
         <span class="stat-item">
@@ -1066,8 +1070,9 @@
             <table>
               <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Lines Registered</td><td>Individual betting lines registered with ProphetX.</td></tr>
               <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Quotes Sent</td><td>Parlay price quotes submitted in response to RFQs.</td></tr>
-              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Confirmed</td><td>Quotes accepted by the bettor and confirmed by us.</td></tr>
-              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Settled</td><td>Confirmed parlays that have fully settled.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--amber); padding-right:16px;">Offered</td><td>PX matched our quote and presented it to the bettor — but the bettor hasn't accepted the final terms yet (no orderUuid). May time out (~10 min) and become a phantom if accept never arrives.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--green); padding-right:16px;">Accepted</td><td>Bettor confirmed the parlay; PX issued an orderUuid (via order.finalized). This is the source of truth for "on the book" — only Accepted parlays appear in Open Positions and contribute to risk/exposure.</td></tr>
+              <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Settled</td><td>Accepted parlays that have fully settled (won/lost/push).</td></tr>
               <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Running P&L</td><td>Cumulative profit/loss from all settled parlays.</td></tr>
               <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Fair Prob</td><td>De-vigged probability of the parlay winning.</td></tr>
               <tr><td style="white-space:nowrap; font-weight:600; color:var(--blue); padding-right:16px;">Offered Odds</td><td>American odds we quoted with vig margin applied.</td></tr>
@@ -4965,7 +4970,25 @@
     let text = order.status || 'unknown';
     let cls = 'neutral';
     if (text === 'quoted') { cls = 'neutral'; text = 'Pending Match'; return { cls, text }; }
-    else if (text === 'confirmed') cls = 'positive';
+    else if (text === 'confirmed') {
+      // Distinguish "PX selected our quote" (matched, awaiting bettor accept)
+      // from "bettor accepted, parlay booked on PX". orderUuid is populated
+      // only on order.finalized — i.e., after the bettor confirms the final
+      // terms — so it's the source of truth for "this parlay is on the
+      // book". Pre-Apr-25 the table labeled both states "Confirmed", which
+      // made it look like every quote PX matched was a real fill.
+      if (order.orderUuid) {
+        cls = 'positive';
+        text = 'Accepted';
+      } else {
+        // PX matched our offer (we won the bid) but the bettor hasn't
+        // accepted the final terms yet. May time out (~10 min) and
+        // become a phantom if accept never arrives.
+        cls = 'pending-accept';
+        text = 'Offered';
+      }
+      return { cls, text };
+    }
     else if (text === 'lost') { cls = 'neutral'; text = 'Outbid'; return { cls, text }; }
     else if (text === 'rejected') cls = 'negative';
     else if (text.startsWith('settled_')) {
@@ -10825,7 +10848,11 @@
       <select onchange="historyState.statusFilter=Array.from(this.selectedOptions).map(o=>o.value).filter(v=>v); historyRerender()" style="${fSel}">
         <option value="">All statuses</option>
         ${allStatuses.map(s => {
-          const label = s==='quoted' ? 'pending match' : s==='lost' ? 'outbid' : s==='won' ? 'won (parlay lost)' : s==='lost' ? 'lost (parlay won)' : s;
+          // 'confirmed' covers both 'Offered' (no orderUuid) and 'Accepted'
+          // (orderUuid present) row labels; the underlying DB status is the
+          // same so the filter bucket matches both. Make that explicit so
+          // users don't think they're filtering only Accepted.
+          const label = s==='quoted' ? 'pending match' : s==='lost' ? 'outbid' : s==='won' ? 'won (parlay lost)' : s==='confirmed' ? 'accepted + offered' : s;
           return `<option value="${s}" ${historyState.statusFilter.includes(s)?'selected':''}>${label}</option>`;
         }).join('')}
       </select>
