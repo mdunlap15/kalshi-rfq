@@ -612,11 +612,16 @@ async function handleRFQ(data) {
 
     // Price the parlay — pass already-resolved lineInfos from shouldDecline
     // so Phase 1 can skip redundant lookupLine() calls per leg.
+    // Capture call-side timestamps so we can compute the await microtask
+    // overhead: difference between (priceReturnMs - priceCallMs) and
+    // the pricer's internal totalInternalMs is V8's awaitOverhead.
+    const priceCallMs = performance.now();
     const result = await pricer.priceParlay(legs, {
       resolvedLineInfos: declineCheck.resolvedLineInfos,
       sgpCombo: declineCheck.sgpCombo || null,
       parlayId,
     });
+    const priceReturnMs = performance.now();
     stageTimings.price = elapsedMs();
     // Carry forward pricer's internal phase markers so /latency-breakdown
     // can decompose the "price" stage into phase1 (sync validation),
@@ -627,6 +632,17 @@ async function handleRFQ(data) {
       stageTimings.price_phase1Ms = t.phase1Ms;
       stageTimings.price_phase2Ms = t.phase2Ms;
       stageTimings.price_phase3Ms = t.phase3Ms;
+      // Diagnostic markers added Apr 26 to find the ~0.31ms gap between
+      // sum-of-phases and total price duration. entryToPhase1 = pre-phase
+      // setup (team_total check + opts unpacking). awaitOverhead = V8
+      // microtask cost of `await pricer.priceParlay(...)` (the difference
+      // between websocket-measured outside duration and pricer-measured
+      // internal duration).
+      stageTimings.price_entryToPhase1Ms = t.entryToPhase1Ms;
+      const outsideDur = priceReturnMs - priceCallMs;
+      const insideDur = t.totalInternalMs;
+      stageTimings.price_awaitOverheadMs = Math.round(Math.max(0, outsideDur - insideDur) * 100) / 100;
+      stageTimings.price_outsideDurationMs = Math.round(outsideDur * 100) / 100;
     }
     if (!result) {
       // Near miss — all legs known but couldn't price. Get the specific blocker.
@@ -1404,8 +1420,17 @@ function getLatencyBreakdown() {
   // Price-phase durations (non-cumulative — each value is the length of
   // that specific phase in ms). Populated by pricer's phase markers and
   // only present on successfully-offered RFQs.
+  //
+  // Apr 26 added: entryToPhase1 (pre-phase setup), awaitOverhead (V8
+  // microtask cost), outsideDuration (full priceParlay duration measured
+  // from websocket side). These help find where the price-stage time goes
+  // beyond the original phase1+2+3 markers.
   const priceSubStats = {};
-  for (const k of ['price_phase1Ms', 'price_phase2Ms', 'price_phase3Ms']) {
+  const priceSubKeys = [
+    'price_phase1Ms', 'price_phase2Ms', 'price_phase3Ms',
+    'price_entryToPhase1Ms', 'price_awaitOverheadMs', 'price_outsideDurationMs',
+  ];
+  for (const k of priceSubKeys) {
     const vals = withStages
       .map(r => (r.stages && r.stages[k] != null) ? r.stages[k] : null)
       .filter(v => v != null)

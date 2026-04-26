@@ -440,6 +440,13 @@ function computeSingleLegQuote(fairProb, sport, marketType) {
  */
 async function priceParlay(legs, opts = {}) {
   priceParlay._lastFailure = null; // clear any prior failure
+  // Latency diagnostic — captures function entry to surface in _timings.
+  // Lets the websocket layer compute "entry-to-phase1" gap (work before
+  // sync validation begins: opts unpacking, top-level config reads,
+  // team_total decline loop). Apr 26: 1.27ms p50 total had ~0.31ms of
+  // unaccounted time inside priceParlay despite phase1+2+3 only summing
+  // to 0.37ms — these markers find where it lives.
+  const entryMs = performance.now();
   // Validate leg count
   if (!legs || legs.length === 0) {
     log.debug('Pricing', 'Declined: no legs');
@@ -1486,9 +1493,18 @@ async function priceParlay(legs, opts = {}) {
   // to 0.01ms — sub-microsecond noise isn't useful here.
   const phase3EndMs = performance.now();
   const _timings = {
+    // entryToPhase1Ms: time from priceParlay entry to start of sync
+    // validation (phaseStartMs). Captures team_total decline loop +
+    // any pre-phase1 setup. Should be <0.05ms in steady state.
+    entryToPhase1Ms: Math.round((phaseStartMs - entryMs) * 100) / 100,
     phase1Ms: phase1EndMs != null ? Math.round((phase1EndMs - phaseStartMs) * 100) / 100 : null,
     phase2Ms: (phase1EndMs != null && phase2EndMs != null) ? Math.round((phase2EndMs - phase1EndMs) * 100) / 100 : null,
     phase3Ms: phase2EndMs != null ? Math.round((phase3EndMs - phase2EndMs) * 100) / 100 : null,
+    // totalInternalMs: total time from entry to end of phase3 marker.
+    // Difference vs the websocket-measured priceParlay duration (which
+    // includes the await microtask hop on entry + the result-construction/
+    // return path + post-return microtask hop) tells us the V8 overhead.
+    totalInternalMs: Math.round((phase3EndMs - entryMs) * 100) / 100,
   };
 
   // ---------------------------------------------------------------------
