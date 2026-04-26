@@ -746,26 +746,35 @@ function startStatusServer() {
         : null;
 
       // ---- DB-backed: substring-count [propType:X] in unknown_details ----
-      // The unknown_details column is a text array; we use Postgres
-      // array-string LIKE matching via Supabase's .or() / .ilike().
+      // Paginate via .range() so we get past Supabase's server-side
+      // 1000-row default cap. Without pagination the .limit(50000)
+      // request was silently truncated to 1000, sampling only ~1% of
+      // a typical 2-day window (~93k declines) — the response showed
+      // declineRowsScanned: 1000 even when far more existed.
+      // Mirrors the loadOrdersInDateRange paging pattern in db.js.
       let dbBreakdown = null;
       try {
         const client = db.getClient();
         if (client) {
           const since = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
-          // Pull the unknown_details arrays in the window — bounded
-          // to 'unknown legs' reason so we don't scan the whole table.
-          // 5000 rows cap protects against pathological days.
-          const { data, error } = await client
-            .from('declines')
-            .select('unknown_details, declined_at')
-            .eq('reason', 'unknown legs')
-            .gte('declined_at', since)
-            .limit(50000);
-          if (!error && Array.isArray(data)) {
-            const re = /\[propType:([a-z_]+)\]/g;
-            const counts = {};
-            let totalDeclines = data.length;
+          const PAGE_SIZE = 1000;
+          const MAX_ROWS = 250000; // hard ceiling for runaway windows
+          const re = /\[propType:([a-z_]+)\]/g;
+          const counts = {};
+          let totalScanned = 0;
+          let offset = 0;
+          let pages = 0;
+          let lastError = null;
+          while (totalScanned < MAX_ROWS) {
+            const { data, error } = await client
+              .from('declines')
+              .select('unknown_details')
+              .eq('reason', 'unknown legs')
+              .gte('declined_at', since)
+              .order('declined_at', { ascending: false })
+              .range(offset, offset + PAGE_SIZE - 1);
+            if (error) { lastError = error; break; }
+            if (!Array.isArray(data) || data.length === 0) break;
             for (const row of data) {
               const arr = row.unknown_details || [];
               for (const s of arr) {
@@ -776,17 +785,24 @@ function startStatusServer() {
                 }
               }
             }
-            const total = Object.values(counts).reduce((a, b) => a + b, 0);
-            dbBreakdown = {
-              windowDays: days,
-              declineRowsScanned: totalDeclines,
-              propLegsTagged: total,
-              byPropType: counts,
-              pctPitcherStrikeouts: total > 0
-                ? Math.round((counts.pitcher_strikeouts || 0) / total * 10000) / 100
-                : null,
-            };
+            totalScanned += data.length;
+            pages++;
+            if (data.length < PAGE_SIZE) break; // last page
+            offset += PAGE_SIZE;
           }
+          const total = Object.values(counts).reduce((a, b) => a + b, 0);
+          dbBreakdown = {
+            windowDays: days,
+            declineRowsScanned: totalScanned,
+            pagesFetched: pages,
+            hitMaxRowsCap: totalScanned >= MAX_ROWS,
+            propLegsTagged: total,
+            byPropType: counts,
+            pctPitcherStrikeouts: total > 0
+              ? Math.round((counts.pitcher_strikeouts || 0) / total * 10000) / 100
+              : null,
+            ...(lastError ? { warning: `pagination aborted at offset ${offset}: ${lastError.message}` } : {}),
+          };
         }
       } catch (err) {
         log.warn('PropOpportunity', `DB scan failed: ${err.message}`);
