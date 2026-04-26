@@ -18,6 +18,33 @@ function getOrderTracker() {
 //               oddsApiSport, oddsApiMarket, oddsApiSelection } }
 const lineIndex = {};
 
+// O(1) reverse index for getPrimarySpreadHomePoint / getPrimaryTotalLine.
+// Without this, those helpers do Object.values(lineIndex) which is O(N=~1200)
+// per call. Called per leg in shouldDecline → significant hot-path cost on
+// NBA-heavy parlays (Apr 26 latency regression: p50 1.0ms → 1.9ms after
+// the NBA alt-spread carve-out shipped). Indexed by pxEventId, stores the
+// SHORTEST lineId we saw for each (event, market) primary so lookups are
+// constant-time.
+//   { [pxEventId]: { spread: lineInfo|null, total: lineInfo|null } }
+// Maintained alongside lineIndex via _trackPrimaryForIndex() — every
+// insertion into lineIndex flows through this hook.
+const primaryByEvent = {};
+
+function _trackPrimaryForIndex(lineInfo) {
+  if (!lineInfo) return;
+  if (lineInfo.onDemand === true) return;
+  const eid = lineInfo.pxEventId;
+  if (eid == null) return;
+  const mt = lineInfo.marketType;
+  if (mt !== 'spread' && mt !== 'total') return;
+  if (!primaryByEvent[eid]) primaryByEvent[eid] = { spread: null, total: null };
+  // Only set the first primary we see per (event, market). Subsequent
+  // primaries (e.g. both home/away sides of the same spread market) carry
+  // the same line value, so first-wins is fine.
+  if (mt === 'spread' && !primaryByEvent[eid].spread) primaryByEvent[eid].spread = lineInfo;
+  if (mt === 'total'  && !primaryByEvent[eid].total)  primaryByEvent[eid].total  = lineInfo;
+}
+
 // Reverse lookup: PX event_id → event metadata
 const eventIndex = {};
 
@@ -927,6 +954,7 @@ async function seedAllLines() {
           roundNum: golfRoundNum ?? oddsEvt?.roundNum ?? null,
           matchupType: golfMatchupType ?? oddsEvt?.matchupType ?? null,
         };
+        _trackPrimaryForIndex(lineIndex[sel.lineId]);
       }
     }
 
@@ -1006,6 +1034,7 @@ async function lookupLineAsync(lineId) {
   if (cached) {
     // Populate in-memory index so subsequent sync lookups hit
     lineIndex[lineId] = cached;
+    _trackPrimaryForIndex(cached);
     log.debug('Lines', `lookupLineAsync: resolved ${lineId} from Supabase cache → ${cached.teamName}`);
   }
   return cached;
@@ -1621,6 +1650,7 @@ async function resolveUnknownLine(rfqLeg) {
 
       // Add to index locally
       lineIndex[lineId] = foundInfo;
+      _trackPrimaryForIndex(foundInfo);
       log.info('Lines', `On-demand registered ${sportKey}/${foundInfo.marketType} line for ${foundInfo.teamName} ${foundInfo.line != null ? foundInfo.line : ''} (${event.name})`);
 
       // Fire-and-forget PX registration — the RFQ we're responding to already
@@ -1776,6 +1806,9 @@ async function refreshLines() {
   for (const key of Object.keys(lineIndex)) {
     delete lineIndex[key];
   }
+  for (const key of Object.keys(primaryByEvent)) {
+    delete primaryByEvent[key];
+  }
   return seedAllLines();
 }
 
@@ -1819,14 +1852,11 @@ function getEventInfo(eventId) {
  */
 function getPrimaryTotalLine(pxEventId) {
   if (pxEventId == null) return null;
-  for (const li of Object.values(lineIndex)) {
-    if (li.pxEventId !== pxEventId) continue;
-    if (li.marketType !== 'total') continue;
-    if (li.onDemand === true) continue;
-    if (li.line == null || !Number.isFinite(Number(li.line))) continue;
-    return Math.abs(Number(li.line));
-  }
-  return null;
+  const slot = primaryByEvent[pxEventId];
+  if (!slot || !slot.total) return null;
+  const li = slot.total;
+  if (li.line == null || !Number.isFinite(Number(li.line))) return null;
+  return Math.abs(Number(li.line));
 }
 
 /**
@@ -1849,23 +1879,15 @@ function getPrimaryTotalLine(pxEventId) {
  */
 function getPrimarySpreadHomePoint(pxEventId) {
   if (pxEventId == null) return null;
-  for (const li of Object.values(lineIndex)) {
-    if (li.pxEventId !== pxEventId) continue;
-    if (li.marketType !== 'spread') continue;
-    if (li.onDemand === true) continue;
-    if (li.line == null || !Number.isFinite(Number(li.line))) continue;
-    // Convert leg's perspective into home-team-signed point.
-    //   selection 'home' → li.line is already from home perspective
-    //   selection 'away' → flip sign
-    const lineNum = Number(li.line);
-    if (li.oddsApiSelection === 'home' || li.selection === 'home') return lineNum;
-    if (li.oddsApiSelection === 'away' || li.selection === 'away') return -lineNum;
-    // Unknown selection — assume the line is already home-perspective
-    // (rare; logged so we can spot it if it ever happens in production).
-    log.debug('Lines', `getPrimarySpreadHomePoint: unknown selection on primary spread for event ${pxEventId} — assuming home-perspective. line=${lineNum}`);
-    return lineNum;
-  }
-  return null;
+  const slot = primaryByEvent[pxEventId];
+  if (!slot || !slot.spread) return null;
+  const li = slot.spread;
+  if (li.line == null || !Number.isFinite(Number(li.line))) return null;
+  const lineNum = Number(li.line);
+  if (li.oddsApiSelection === 'home' || li.selection === 'home') return lineNum;
+  if (li.oddsApiSelection === 'away' || li.selection === 'away') return -lineNum;
+  log.debug('Lines', `getPrimarySpreadHomePoint: unknown selection on primary spread for event ${pxEventId} — assuming home-perspective. line=${lineNum}`);
+  return lineNum;
 }
 
 module.exports = {
