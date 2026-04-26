@@ -2443,13 +2443,36 @@ function getGameExposureSnapshot() {
       totalStakes += p.stake || 0;
     }
     const distinctParlayCount = seen.size;
-    // Check if ANY leg in ANY parlay contributing to this game uses live odds
+    // hasLiveOdds drives the green LIVE badge in the dashboard's Game
+    // Exposure table. Pre-Apr-26 it fired whenever ANY leg in ANY parlay
+    // touching this game had liveFairProb — which made multi-game parlays
+    // bleed the LIVE flag onto unrelated games. Operator-visible:
+    // Lakers @ Rockets at 9:30 PM ET was tagged LIVE at ~1 PM ET (8.5h
+    // before tip-off) because a parlay touching the Lakers game also
+    // contained a Rockies @ Mets leg that was actually in-progress.
+    //
+    // Two-layer gate:
+    //   1) THIS game's own startTime must be in the past — a not-yet-
+    //      started game can never legitimately have live odds, no matter
+    //      what other legs exist.
+    //   2) The leg carrying liveFairProb must belong to THIS game (match
+    //      on home/away pair — pxEventId isn't always populated on
+    //      reconstructed legs, so don't rely on it as the only key).
     let hasLiveOdds = false;
-    for (const p of game.parlays) {
-      const order = orders[p.parlayId];
-      if (!order) continue;
-      const legs = order.legs || order.meta?.legs || [];
-      if (legs.some(l => l.liveFairProb != null)) { hasLiveOdds = true; break; }
+    const gameStartMs = game.startTime ? new Date(game.startTime).getTime() : null;
+    if (gameStartMs && gameStartMs <= Date.now()) {
+      for (const p of game.parlays) {
+        const order = orders[p.parlayId];
+        if (!order) continue;
+        const legs = order.legs || order.meta?.legs || [];
+        if (legs.some(l => l.liveFairProb != null && (
+          (l.homeTeam === p.homeTeam && l.awayTeam === p.awayTeam) ||
+          (l.homeTeam === p.awayTeam && l.awayTeam === p.homeTeam)
+        ))) {
+          hasLiveOdds = true;
+          break;
+        }
+      }
     }
     return {
       eventId,
