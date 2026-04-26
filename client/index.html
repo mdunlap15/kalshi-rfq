@@ -7854,12 +7854,20 @@
   // ===================== PARLAY PRICING vs. BOOKS =====================
   // Cross-book scatter: each parlay produces one dot per series (mine + 4 books).
   // X = Fair implied probability (linear). Y = distance from FAIR in pp.
-  // Dot size ∝ stake. Confirmed = solid filled, not-filled = hollow outline.
+  // Dot size ∝ stake. Three outcome states (post Apr 25 false-fill split):
+  //   accepted (solid fill)         — bettor accepted on PX (orderUuid).
+  //   offered  (ring + center dot)  — PX selected our quote but bettor
+  //                                    walked away (no orderUuid).
+  //   lost     (hollow outline)     — we weren't the best odds, or no
+  //                                    SP won the RFQ.
   if (!window._parlayVsBooksToggle) {
     window._parlayVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true, kalshi: true };
   }
   if (!window._parlayVsBooksFilter) {
-    window._parlayVsBooksFilter = 'all'; // 'all' | 'confirmed' | 'notfilled'
+    // Outcome filter. New values 'accepted'/'offered'/'lost' are
+    // canonical; 'confirmed' (= accepted+offered) and 'notfilled'
+    // (= lost) still routed for back-compat with old bookmarks.
+    window._parlayVsBooksFilter = 'all'; // 'all' | 'accepted' | 'offered' | 'lost' | (legacy: 'confirmed' | 'notfilled')
   }
   if (!window._parlayVsBooksRange) {
     window._parlayVsBooksRange = '7d'; // '24h' | '3d' | '7d' | '14d' | '30d' | 'all'
@@ -8063,10 +8071,33 @@
         // Distance from fair in pp: (series prob − fair prob) × 100
         const distFromFair = (sp) => sp != null ? ((sp - fairProb) * 100) : null;
 
+        // Three-state outcome (post Apr 25 false-fill discovery):
+        //   'accepted' — bettor accepted on PX. orderUuid is the truth
+        //                signal (only set on order.finalized). settled_*
+        //                statuses also imply accepted (must have been to
+        //                settle). These were the "real fills".
+        //   'offered'  — PX selected our quote (we won the bid) but the
+        //                bettor walked away during final review. status
+        //                stays 'confirmed' but no orderUuid. Pre-fix
+        //                these were lumped in with 'accepted' as solid
+        //                dots, inflating fill counts ~30x.
+        //   'lost'     — we weren't the best odds OR no SP won the RFQ.
+        //                Covers status='quoted' (no match event) and
+        //                'rejected'.
+        const isSettled = o.status && o.status.startsWith('settled_');
+        const isAccepted = isSettled || (o.status === 'confirmed' && !!o.orderUuid);
+        const isOffered = (o.status === 'confirmed' && !o.orderUuid);
+        const outcome = isAccepted ? 'accepted' : isOffered ? 'offered' : 'lost';
         data.push({
           parlayId: o.parlayId,
           legCount: legs.length,
-          isConfirmed: o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')),
+          // Keep isConfirmed for back-compat (other code paths still
+          // read it for grouping into "any-event vs lost-bid"), but
+          // treat outcome as the source of truth in this chart.
+          isConfirmed: isAccepted || isOffered,
+          isAccepted,
+          isOffered,
+          outcome,
           stake: o.confirmedStake || o.maxStake || o.stake || 0,
           rawSports,
           bucketSports,
@@ -8212,12 +8243,23 @@
     }
     html += '</select></label>';
     html += '<button onclick="setParlayVsBooksFilter(\'all\')" style="' + btnStyle(F === 'all') + '">All</button>';
-    html += '<button onclick="setParlayVsBooksFilter(\'confirmed\')" style="' + btnStyle(F === 'confirmed') + '">Confirmed</button>';
-    html += '<button onclick="setParlayVsBooksFilter(\'notfilled\')" style="' + btnStyle(F === 'notfilled') + '">Not Filled</button>';
+    html += '<button onclick="setParlayVsBooksFilter(\'accepted\')" style="' + btnStyle(F === 'accepted') + '" title="Bettor accepted on PX (orderUuid present) — real fills">Accepted</button>';
+    html += '<button onclick="setParlayVsBooksFilter(\'offered\')" style="' + btnStyle(F === 'offered') + '" title="PX selected our quote but bettor walked away (no orderUuid)">Offered</button>';
+    html += '<button onclick="setParlayVsBooksFilter(\'lost\')" style="' + btnStyle(F === 'lost') + '" title="We weren\'t the best odds, or no SP won the RFQ">Lost</button>';
+    // Legacy filter values ('confirmed' = accepted+offered combined,
+    // 'notfilled' = lost) still routed for back-compat with any
+    // existing bookmarks / shared links.
     html += '</div>';
 
-    // Apply confirmed-status filter, then sport filter
-    let filtered = F === 'all' ? data : data.filter(d => F === 'confirmed' ? d.isConfirmed : !d.isConfirmed);
+    // Apply outcome filter, then sport filter
+    let filtered;
+    if (F === 'all') filtered = data;
+    else if (F === 'accepted') filtered = data.filter(d => d.outcome === 'accepted');
+    else if (F === 'offered') filtered = data.filter(d => d.outcome === 'offered');
+    else if (F === 'lost') filtered = data.filter(d => d.outcome === 'lost');
+    else if (F === 'confirmed') filtered = data.filter(d => d.isConfirmed); // legacy: accepted+offered
+    else if (F === 'notfilled') filtered = data.filter(d => d.outcome === 'lost'); // legacy
+    else filtered = data;
     if (SPORT && SPORT !== 'all') {
       if (SPORT === '__multi__') {
         filtered = filtered.filter(d => d.isMultiSport);
@@ -8225,7 +8267,9 @@
         filtered = filtered.filter(d => (d.bucketSports || []).includes(SPORT));
       }
     }
-    const confirmedCount = filtered.filter(d => d.isConfirmed).length;
+    const acceptedCount = filtered.filter(d => d.outcome === 'accepted').length;
+    const offeredCount = filtered.filter(d => d.outcome === 'offered').length;
+    const lostCount = filtered.filter(d => d.outcome === 'lost').length;
     const sportSuffix = (SPORT && SPORT !== 'all') ? ' · ' + (sportLabelMap[SPORT] || SPORT) + ' only' : '';
     // Range label. 'custom' describes the user-picked datetime span; presets
     // use their preset label. Guard against R not being in RANGE_OPTIONS so
@@ -8242,9 +8286,13 @@
       rangeLabel = preset ? 'last ' + preset.label : 'last 7d';
     }
     html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">'
-      + filtered.length + ' parlays · ' + confirmedCount + ' confirmed · ' + rangeLabel
+      + filtered.length + ' parlays · '
+      + acceptedCount + ' accepted · '
+      + offeredCount + ' offered · '
+      + lostCount + ' lost · '
+      + rangeLabel
       + sportSuffix
-      + ' · &#9679; solid = confirmed · &#9675; hollow = not filled · size ∝ stake</div>';
+      + ' · &#9679; solid = accepted · &#9678; ring + dot = offered (won bid, walked away) · &#9675; hollow = lost · size ∝ stake</div>';
 
     // No-data guard: short-circuit here — AFTER the toolbar HTML is built —
     // so the user still sees the range slider / filter controls and can widen
@@ -8342,10 +8390,13 @@
     const tipFor = (d, label) => {
       const fmtPp = (v) => v == null ? 'n/a' : (v >= 0 ? '+' : '') + v.toFixed(2) + 'pp';
       const t = fmtEtTs(d.quotedAt);
+      const outcomeTag = d.outcome === 'accepted' ? ' · ACCEPTED'
+                       : d.outcome === 'offered' ? ' · OFFERED (bettor walked)'
+                       : ' · LOST';
       return '[' + label + ']\n'
         + d.legCount + '-leg ' + (d.myOddsAm >= 0 ? '+' : '') + d.myOddsAm
         + ' · stake $' + (d.stake || 0).toFixed(0)
-        + (d.isConfirmed ? ' · CONFIRMED' : '')
+        + outcomeTag
         + '\nQuoted: ' + t
         + '\n\nSelections:\n' + d.selections
         + '\n\nFair: ' + (d.fairProb * 100).toFixed(2) + '%'
@@ -8357,10 +8408,18 @@
         + '\nKAL dist: ' + fmtPp(d.distK);
     };
 
-    // Render — non-confirmed first (confirmed sit on top)
-    // Confirmed = solid fill. Not filled = hollow outline only.
-    // Outliers beyond axis are clamped and drawn as diamonds.
-    const sortedF = [...filtered].sort((a, b) => (a.isConfirmed ? 1 : 0) - (b.isConfirmed ? 1 : 0));
+    // Render — paint order: lost → offered → accepted, so accepted dots
+    // sit on top. Three visual states (post Apr 25 false-fill split):
+    //   accepted: solid fill, opacity 0.85 (real fills, on the book)
+    //   offered:  hollow ring + small center dot, opacity 0.7 — clearly
+    //             distinct shape, signals "we won the bid but bettor
+    //             walked away"
+    //   lost:     hollow thin outline, opacity 0.5 (we weren't the best
+    //             odds, or no SP won the RFQ)
+    const outcomeRank = { lost: 0, offered: 1, accepted: 2 };
+    const sortedF = [...filtered].sort((a, b) =>
+      (outcomeRank[a.outcome] || 0) - (outcomeRank[b.outcome] || 0)
+    );
     // Draw book series first, then "mine" last so my dots are always on top
     const drawOrder = series.filter(s => s.key !== 'mine').concat(series.filter(s => s.key === 'mine'));
     for (const s of drawOrder) {
@@ -8377,14 +8436,24 @@
         if (isOutlier) {
           const h = r * 1.2;
           const pts = x + ',' + (y - h) + ' ' + (x + h) + ',' + y + ' ' + x + ',' + (y + h) + ' ' + (x - h) + ',' + y;
-          if (d.isConfirmed) {
+          if (d.outcome === 'accepted') {
             svg += '<polygon points="' + pts + '" fill="' + s.color + '" opacity="0.85"><title>' + tip + '</title></polygon>';
+          } else if (d.outcome === 'offered') {
+            // Diamond outline + small center dot — same hollow-with-dot
+            // motif used for circles below.
+            svg += '<polygon points="' + pts + '" fill="none" stroke="' + s.color + '" stroke-width="1.5" opacity="0.7"><title>' + tip + '</title></polygon>';
+            svg += '<circle cx="' + x + '" cy="' + y + '" r="' + Math.max(1, r * 0.35) + '" fill="' + s.color + '" opacity="0.85"><title>' + tip + '</title></circle>';
           } else {
-            svg += '<polygon points="' + pts + '" fill="none" stroke="' + s.color + '" stroke-width="1.5" opacity="0.55"><title>' + tip + '</title></polygon>';
+            svg += '<polygon points="' + pts + '" fill="none" stroke="' + s.color + '" stroke-width="1.5" opacity="0.5"><title>' + tip + '</title></polygon>';
           }
         } else {
-          if (d.isConfirmed) {
+          if (d.outcome === 'accepted') {
             svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="' + s.color + '" opacity="0.85"><title>' + tip + '</title></circle>';
+          } else if (d.outcome === 'offered') {
+            // Hollow ring + small filled center dot. Distinct shape from
+            // both 'lost' (hollow only) and 'accepted' (fully solid).
+            svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="none" stroke="' + s.color + '" stroke-width="1.5" opacity="0.7"><title>' + tip + '</title></circle>';
+            svg += '<circle cx="' + x + '" cy="' + y + '" r="' + Math.max(1, r * 0.35) + '" fill="' + s.color + '" opacity="0.85"><title>' + tip + '</title></circle>';
           } else {
             svg += '<circle cx="' + x + '" cy="' + y + '" r="' + r + '" fill="none" stroke="' + s.color + '" stroke-width="1.5" opacity="0.5"><title>' + tip + '</title></circle>';
           }
