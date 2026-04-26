@@ -712,6 +712,103 @@ function startStatusServer() {
     }
   });
 
+  // Phase 0 instrumentation for the player-prop opportunity sizing.
+  // Returns a breakdown of what % of player_prop unknown legs are
+  // pitcher_strikeouts vs other MLB prop types — the gating metric for
+  // whether to subscribe to a paid prop feed.
+  //
+  // Two data sources, each with caveats:
+  //   - in-memory (declineStats.unknownLegCategories): exact propType
+  //     bucket counts but resets on service restart
+  //   - Supabase declines table: persists across restarts; we substring-
+  //     count the [propType:X] tags we now embed in unknown_details
+  //     strings. Coarser but durable.
+  //
+  // Operator polls this every few hours over a 24-48h window. Phase 1
+  // proceeds only if pitcher_strikeouts ≥10% of total player_prop volume.
+  app.get('/prop-opportunity', async (req, res) => {
+    try {
+      const days = Math.min(7, Math.max(1, parseInt(req.query.days) || 2));
+      const stats = orderTracker.getAlerts ? null : null; // placeholder; real read below
+
+      // ---- In-memory snapshot ----
+      // Exposed via getStats().unknownLegCategories isn't a thing — read
+      // directly from the order-tracker's internal counter via a getter.
+      const memBucket = (orderTracker.getDeclineStatsSnapshot
+        ? orderTracker.getDeclineStatsSnapshot()
+        : { unknownLegCategories: {} });
+      const playerPropBucket = (memBucket.unknownLegCategories || {}).player_prop || { count: 0, byPropType: {}, sampleLegs: [] };
+      const memPropTypes = { ...(playerPropBucket.byPropType || {}) };
+      delete memPropTypes._lastSeen;
+      const memTotal = Object.values(memPropTypes).reduce((a, b) => a + b, 0);
+      const memPctPitcherK = memTotal > 0
+        ? Math.round((memPropTypes.pitcher_strikeouts || 0) / memTotal * 10000) / 100
+        : null;
+
+      // ---- DB-backed: substring-count [propType:X] in unknown_details ----
+      // The unknown_details column is a text array; we use Postgres
+      // array-string LIKE matching via Supabase's .or() / .ilike().
+      let dbBreakdown = null;
+      try {
+        const client = db.getClient();
+        if (client) {
+          const since = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
+          // Pull the unknown_details arrays in the window — bounded
+          // to 'unknown legs' reason so we don't scan the whole table.
+          // 5000 rows cap protects against pathological days.
+          const { data, error } = await client
+            .from('declines')
+            .select('unknown_details, declined_at')
+            .eq('reason', 'unknown legs')
+            .gte('declined_at', since)
+            .limit(50000);
+          if (!error && Array.isArray(data)) {
+            const re = /\[propType:([a-z_]+)\]/g;
+            const counts = {};
+            let totalDeclines = data.length;
+            for (const row of data) {
+              const arr = row.unknown_details || [];
+              for (const s of arr) {
+                if (typeof s !== 'string') continue;
+                let m;
+                while ((m = re.exec(s)) !== null) {
+                  counts[m[1]] = (counts[m[1]] || 0) + 1;
+                }
+              }
+            }
+            const total = Object.values(counts).reduce((a, b) => a + b, 0);
+            dbBreakdown = {
+              windowDays: days,
+              declineRowsScanned: totalDeclines,
+              propLegsTagged: total,
+              byPropType: counts,
+              pctPitcherStrikeouts: total > 0
+                ? Math.round((counts.pitcher_strikeouts || 0) / total * 10000) / 100
+                : null,
+            };
+          }
+        }
+      } catch (err) {
+        log.warn('PropOpportunity', `DB scan failed: ${err.message}`);
+      }
+
+      res.json({
+        ok: true,
+        gatingThreshold: '≥10% pitcher_strikeouts of player_prop volume → proceed to Phase 1',
+        inMemorySinceBoot: {
+          totalPlayerPropLegs: memTotal,
+          byPropType: memPropTypes,
+          pctPitcherStrikeouts: memPctPitcherK,
+          sampleLegs: (playerPropBucket.sampleLegs || []).slice(0, 10),
+        },
+        persistedWindow: dbBreakdown || { error: 'DB unavailable or no data' },
+      });
+    } catch (err) {
+      log.error('API', `/prop-opportunity failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/orders', (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     // Stamp each order with isStalePhantom computed server-side so the

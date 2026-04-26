@@ -5,6 +5,56 @@ const px = require('./prophetx');
 const pricer = require('./pricer');
 const orderTracker = require('./order-tracker');
 
+// MLB player-prop sub-classifier (Phase 0 of pitcher-strikeouts experiment).
+// We currently bucket all MLB props as `category='player_prop'`. To decide
+// whether to subscribe to a paid prop feed, we need to know what % of that
+// volume is specifically pitcher strikeouts (Phase 2's first market) vs
+// hitter props vs pitcher non-K props.
+//
+// Returns one of:
+//   'pitcher_strikeouts' — the experiment target market
+//   'pitcher_other'      — outs/innings/walks/earned-runs/win/loss
+//   'hitter_total_bases' — top hitter market
+//   'hitter_hits'        — hits incl. 2+ hits, etc.
+//   'hitter_hr'          — home runs / power props
+//   'hitter_rbi_runs'    — RBIs, runs scored
+//   'hitter_other'       — singles/doubles/triples/sb/etc.
+//   'other_mlb_prop'     — couldn't classify (catch-all)
+//   null                 — input wasn't an MLB market name
+//
+// Patterns are intentionally permissive — book conventions vary
+// ("Strikeouts" / "Total Strikeouts" / "Pitcher Strikeouts" / "K's").
+// Better to over-include than miss; downstream analysis treats this as
+// a coarse signal, not a precise label.
+function classifyMlbProp(marketName) {
+  if (!marketName) return null;
+  const n = String(marketName).toLowerCase();
+  // Pitcher strikeouts — the target market. Caller has already
+  // confirmed baseball sport, so any "strikeout" mention is
+  // overwhelmingly a pitcher prop (hitter K props exist but are
+  // negligible volume). Bias: include player-name-prefixed K markets
+  // ("Tarik Skubal Strikeouts") which the prior tighter regex missed.
+  if (/strike\s*out|\bk'?s\b|\bk\s+(thrown|recorded)\b/.test(n)) {
+    return 'pitcher_strikeouts';
+  }
+  // Pitcher non-K props. Match standalone tokens (Earned Runs Allowed,
+  // Innings Pitched, Outs Recorded) since baseball-context disambiguates.
+  if (/innings\s+pitch|outs\s+recorded|earned\s+run|hits\s+allow|walks\s+(allow|issued)|pitcher.*(win|loss|decision|to\s+(get|record))|\bera\b|\bwhip\b/.test(n)) {
+    return 'pitcher_other';
+  }
+  // Hitter buckets — order matters; check most specific first
+  if (/total\s+bases|tb\b/.test(n)) return 'hitter_total_bases';
+  if (/home\s+run|\bhr\b/.test(n)) return 'hitter_hr';
+  if (/\brbi/.test(n) || /runs\s+batted\s+in/.test(n) || /runs\s+scored/.test(n)) return 'hitter_rbi_runs';
+  if (/\bhits\b|to\s+record\s+a\s+hit/.test(n)) return 'hitter_hits';
+  if (/single|double|triple|stolen\s+base|\bsb\b|walk\b|to\s+score/.test(n)) return 'hitter_other';
+  // No specific match — flag as generic MLB prop so the bucket is
+  // visible (helps future iterations of this classifier catch new
+  // book naming conventions).
+  return 'other_mlb_prop';
+}
+// (exported via module.exports block at end of file as _classifyMlbProp)
+
 // ---------------------------------------------------------------------------
 // STATE
 // ---------------------------------------------------------------------------
@@ -560,11 +610,28 @@ async function handleRFQ(data) {
             }
           }
 
+          // Phase 0 player-prop sub-classifier (MLB only for now).
+          // When we tagged this leg as category='player_prop' AND the
+          // event sport is baseball, run the marketName through the
+          // MLB prop classifier so we can quantify the pitcher-K
+          // opportunity vs other prop types. Result fed into both the
+          // in-memory bucket counter (recordDecline) and the human-
+          // readable unknown_details string (which IS persisted to
+          // Supabase, so we have an SQL-queryable trail across
+          // restarts).
+          let propType = null;
+          const propMarketName = (resolveFailure && resolveFailure.lineId === lineId && resolveFailure.marketName) || null;
+          if (category === 'player_prop' && eventSport && eventSport.includes('baseball')) {
+            propType = classifyMlbProp(propMarketName);
+          }
+          const propTag = propType ? ` [propType:${propType}]` : '';
+
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
-          unknownSports.push(`${baseName} ${tag} ${detail}`);
+          unknownSports.push(`${baseName} ${tag}${propTag} ${detail}`);
           unknownCategories.push({
             lineId,
             category,
+            propType, // null for non-MLB-prop legs
             sport: eventSport,
             eventName: baseName,
             line: lineNum,
@@ -586,7 +653,7 @@ async function handleRFQ(data) {
             // baseball_mlb alt_spread legs showing marketName like
             // "Nikola Jokić Total Points" (an NBA prop), polluting the
             // /decline-audit drill-down with cross-attributed labels.
-            marketName: (resolveFailure && resolveFailure.lineId === lineId && resolveFailure.marketName) || null,
+            marketName: propMarketName,
           });
         }
       }
@@ -1644,4 +1711,5 @@ module.exports = {
   wasRfqReceived,
   getReceivedRfqStats,
   getQuoteCoverageStats,
+  _classifyMlbProp: classifyMlbProp, // exposed for /prop-opportunity sanity testing
 };

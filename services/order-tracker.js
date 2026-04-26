@@ -1440,7 +1440,7 @@ function recordDecline(reason, detail) {
     for (const cat of detail.unknownCategories) {
       const c = cat.category || 'unknown';
       if (!declineStats.unknownLegCategories[c]) {
-        declineStats.unknownLegCategories[c] = { count: 0, bySport: {}, byResolveReason: {}, sampleLegs: [] };
+        declineStats.unknownLegCategories[c] = { count: 0, bySport: {}, byResolveReason: {}, byPropType: {}, sampleLegs: [] };
       }
       const bucket2 = declineStats.unknownLegCategories[c];
       bucket2.count++;
@@ -1448,6 +1448,18 @@ function recordDecline(reason, detail) {
       bucket2.bySport[sp] = (bucket2.bySport[sp] || 0) + 1;
       if (cat.resolveReason) {
         bucket2.byResolveReason[cat.resolveReason] = (bucket2.byResolveReason[cat.resolveReason] || 0) + 1;
+      }
+      // Phase 0 prop-opportunity instrumentation (Apr 26): when an
+      // unknown leg was classified as MLB player_prop in websocket.js,
+      // it carries a propType sub-bucket ('pitcher_strikeouts',
+      // 'hitter_total_bases', etc.). Roll those up here so
+      // /prop-opportunity can report what % of player_prop volume is
+      // pitcher Ks — the gating metric for whether to subscribe to a
+      // paid feed and ship Phase 2.
+      if (cat.propType) {
+        bucket2.byPropType[cat.propType] = (bucket2.byPropType[cat.propType] || 0) + 1;
+        if (!bucket2.byPropType._lastSeen) bucket2.byPropType._lastSeen = {};
+        bucket2.byPropType._lastSeen[cat.propType] = new Date().toISOString();
       }
       if (bucket2.sampleLegs.length < 10) {
         bucket2.sampleLegs.push({
@@ -1458,6 +1470,8 @@ function recordDecline(reason, detail) {
           isKnownEvent: cat.isKnownEvent,
           resolveReason: cat.resolveReason,
           resolveDetail: cat.resolveDetail,
+          propType: cat.propType || null,
+          marketName: cat.marketName || null,
         });
       }
     }
@@ -4701,6 +4715,14 @@ module.exports = {
   fullPxReconcile,
   reconcileGhostConfirmed,
   cleanFalseConfirms,
+  // Read-only snapshot of the in-memory declineStats counters. Used by
+  // /prop-opportunity to surface the unknownLegCategories.player_prop
+  // byPropType breakdown without exporting the mutable object directly.
+  getDeclineStatsSnapshot: () => ({
+    total: declineStats.total,
+    reasons: { ...declineStats.reasons },
+    unknownLegCategories: declineStats.unknownLegCategories,
+  }),
   backfillUnknownSports,
   backfillFromExport,
   deleteUnknownSettledOrders,
