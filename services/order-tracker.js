@@ -3086,6 +3086,112 @@ function getDriftState() {
   };
 }
 
+/**
+ * Sweep stuck-confirmed orders (status='confirmed' but stale — game/round
+ * over, no settlement applied). For each, look up PX state per-uuid and
+ * apply the same short-circuit logic as pollOrderSettlements: if PX has
+ * any leg already lost, settle locally as SP-WON.
+ *
+ * pollOrderSettlements only fetches the 500 most-recent PX orders, so
+ * stuck parlays older than that window never get re-checked. This endpoint
+ * walks our LOCAL stale-confirmed list and pulls PX status per-uuid via
+ * fetchOrderByUuid (a single REST call each), bypassing the recency window.
+ *
+ * Apr 25 example: golf round 1 parlay 019db8c7 was confirmed 4/23 (2 days
+ * old). By 4/25 there were 200+ tbd orders in PX so 019db8c7 was off the
+ * back of fetchOrders(500). Sweep catches it.
+ *
+ * Caller: /sweep-stuck-confirmed endpoint. Not on the hot path.
+ */
+async function sweepStuckConfirmed(px, opts = {}) {
+  const olderThanHours = Math.max(1, Number(opts.olderThanHours) || 4);
+  const cutoffMs = Date.now() - olderThanHours * 3600 * 1000;
+  const candidates = [];
+  for (const order of Object.values(orders)) {
+    if (order.status !== 'confirmed') continue;
+    if (!order.orderUuid) continue;
+    // Skip orders whose latest leg started AFTER the cutoff (still live)
+    const legs = order.legs || order.meta?.legs || [];
+    if (legs.length === 0) continue;
+    let latestStartMs = null;
+    for (const l of legs) {
+      const st = l.startTime || l.start_time;
+      if (!st) continue;
+      const ms = new Date(st).getTime();
+      if (isNaN(ms)) continue;
+      if (latestStartMs == null || ms > latestStartMs) latestStartMs = ms;
+    }
+    if (latestStartMs == null) continue;
+    if (latestStartMs > cutoffMs) continue; // still within freshness window
+    candidates.push(order);
+  }
+
+  let settled = 0;
+  let stillPending = 0;
+  let pxNotFound = 0;
+  const failures = [];
+
+  for (const order of candidates) {
+    try {
+      const pxOrder = await px.fetchOrderByUuid(order.orderUuid);
+      if (!pxOrder) { pxNotFound++; continue; }
+      const pxLegs = Array.isArray(pxOrder.legs) ? pxOrder.legs : [];
+      const pxStatus = pxOrder.settlement_status;
+
+      // If PX has a terminal status, defer to pollOrderSettlements semantics
+      // — call recordSettlement with PX's resolved value.
+      if (['won', 'lost', 'push', 'void'].includes(pxStatus)) {
+        recordSettlement(order.orderUuid, pxStatus, pxOrder.profit || 0, { trusted: true });
+        for (const pxLeg of pxLegs) {
+          if (pxLeg.line_id && pxLeg.settlement_status) recordLegSettlement(order.orderUuid, pxLeg);
+        }
+        settled++;
+        continue;
+      }
+
+      // Stuck (tbd/requested) — same short-circuit as pollOrderSettlements:
+      // if any leg is already 'lost' AND that leg started ≥4h ago, parlay
+      // is dead from bettor's POV → settle as SP-WON.
+      const lostLegs = pxLegs.filter(l => l.settlement_status === 'lost');
+      if (lostLegs.length > 0) {
+        const now = Date.now();
+        const lostLegOldEnough = lostLegs.some(pl => {
+          const ourLeg = legs.find(ol =>
+            (ol.pxEventId && pl.sport_event_id && Number(ol.pxEventId) === Number(pl.sport_event_id)) ||
+            (ol.lineId && pl.line_id && ol.lineId === pl.line_id)
+          );
+          const st = ourLeg?.startTime || ourLeg?.start_time;
+          if (!st) return false;
+          const startMs = new Date(st).getTime();
+          if (isNaN(startMs)) return false;
+          return (now - startMs) >= 4 * 3600 * 1000;
+        });
+        if (lostLegOldEnough) {
+          log.warn('Sweep', `Short-circuit settle for ${order.parlayId} (uuid ${order.orderUuid}): PX status=${pxStatus} but ${lostLegs.length} leg(s) lost — SP wins`);
+          recordSettlement(order.orderUuid, 'won', null, { trusted: true });
+          for (const pxLeg of pxLegs) {
+            if (pxLeg.line_id && pxLeg.settlement_status) recordLegSettlement(order.orderUuid, pxLeg);
+          }
+          settled++;
+          continue;
+        }
+      }
+      stillPending++;
+    } catch (err) {
+      failures.push({ parlayId: order.parlayId, uuid: order.orderUuid, error: err.message });
+    }
+  }
+
+  return {
+    candidatesScanned: candidates.length,
+    settled,
+    stillPending,
+    pxNotFound,
+    failures: failures.length,
+    failureSample: failures.slice(0, 5),
+  };
+}
+
 async function pollOrderSettlements(px) {
   const confirmed = Object.values(orders).filter(o => o.status === 'confirmed' && o.orderUuid);
   if (confirmed.length === 0) {
@@ -3097,7 +3203,14 @@ async function pollOrderSettlements(px) {
 
   try {
     // Fetch all our orders from PX (high limit to catch older settlements)
-    const pxOrders = await px.fetchOrders(500);
+    // Bumped from 500 → 2000 (Apr 25): tbd backlog has been running ~200
+    // orders deep on busy days. With short-circuit settle on any-leg-lost
+    // shipped same day, we want a wider window so 2-day-old stuck parlays
+    // (like the 4/23 golf cluster) still land in the periodic poll instead
+    // of needing manual /sweep-stuck-confirmed runs. 2000 = 20 page fetches
+    // at PAGE_SIZE=100; ~3-4s wall-clock per poll cycle, well within the
+    // 2-minute interval.
+    const pxOrders = await px.fetchOrders(2000);
     let settled = 0;
 
     // Pre-fetch orders from Supabase so reconstructed orders preserve pricing data
@@ -4648,6 +4761,7 @@ module.exports = {
   recordSettlement,
   recordLegSettlement,
   pollOrderSettlements,
+  sweepStuckConfirmed,
   checkSettlementDrift,
   getDriftState,
   checkLegResults,

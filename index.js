@@ -2843,6 +2843,35 @@ function startStatusServer() {
     }
   });
 
+  // Sweep stuck-confirmed orders. For each local order with status='confirmed'
+  // whose latest leg started ≥olderThanHours ago, look up PX state per-uuid
+  // and apply the short-circuit settlement (any leg lost ⇒ SP-WON) or
+  // accept PX's terminal status if one exists.
+  //
+  // Why this exists separately from /pollOrderSettlements: the periodic poll
+  // fetches the 500 (now 2000) most-recent PX orders. Stuck parlays older
+  // than that window never get re-checked. This endpoint walks the LOCAL
+  // stale-confirmed list and pulls per-uuid via fetchOrderByUuid, bypassing
+  // the recency window.
+  //
+  // Query params:
+  //   ?olderThanHours=4   (default) — minimum age of latest leg startTime
+  //
+  // Apr 25 use case: 4/23 golf round 1 parlay 019db8c7 stuck because PX
+  // had leg 2 in 'requested' status indefinitely while leg 1 was 'lost'.
+  // Periodic poll missed it (off the back of fetchOrders(500)). Sweep
+  // catches it via per-uuid lookup.
+  app.post('/sweep-stuck-confirmed', async (req, res) => {
+    const olderThanHours = Math.max(1, Number(req.query.olderThanHours) || 4);
+    try {
+      const result = await orderTracker.sweepStuckConfirmed(px, { olderThanHours });
+      res.json({ ok: true, olderThanHours, ...result });
+    } catch (err) {
+      log.error('Sweep', `/sweep-stuck-confirmed failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Stake backfill for orders with confirmedStake=0 but a populated
   // pxMatchedAfterReject.matchedStake. The Apr 25 forensic identified
   // 167 orders that /px-status-repair (pre-fallback) promoted to
