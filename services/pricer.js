@@ -1696,6 +1696,19 @@ async function priceParlay(legs, opts = {}) {
         if (dkProb <= 0 || dkProb >= 1) return null;
         return decimalToAmerican(1 / dkProb);
       })(),
+      fanduelParlay: (() => {
+        const fdLegs = pricedLegs.filter(l => l.fanduelOdds != null);
+        if (fdLegs.length !== pricedLegs.length) return null;
+        let fdProb = 1;
+        for (const l of fdLegs) {
+          const legImpl = l.lineInfo.isDNB && l.fanduelDNBProb != null
+            ? l.fanduelDNBProb
+            : oddsFeed.americanToImpliedProb(l.fanduelOdds);
+          fdProb *= legImpl;
+        }
+        if (fdProb <= 0 || fdProb >= 1) return null;
+        return decimalToAmerican(1 / fdProb);
+      })(),
       maxRisk,
     },
   };

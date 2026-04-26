@@ -10793,6 +10793,7 @@
         case 'legs': va = (a.legs||a.meta?.legs||[]).length; vb = (b.legs||b.meta?.legs||[]).length; break;
         case 'fair': va = a.fairParlayProb || 0; vb = b.fairParlayProb || 0; break;
         case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
+        case 'fanduel': va = a.meta?.fanduelParlay || 0; vb = b.meta?.fanduelParlay || 0; break;
         case 'kalshi': va = a.meta?.kalshiParlay || 0; vb = b.meta?.kalshiParlay || 0; break;
         case 'draftkings': va = a.meta?.draftkingsParlay || 0; vb = b.meta?.draftkingsParlay || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
@@ -10872,15 +10873,14 @@
         <th ${hSortClick('teams')}>Selections${hSortArrow('teams')}</th>
         <th ${hSortClick('legs')}>Legs${hSortArrow('legs')}</th>
         <th ${hSortClick('fair')}>Fair${hSortArrow('fair')}</th>
-        <th ${hSortClick('pinnacle')}>Pinnacle${hSortArrow('pinnacle')}</th>
-        <th ${hSortClick('kalshi')}>Kalshi${hSortArrow('kalshi')}</th>
-        <th ${hSortClick('draftkings')} style="color:var(--green);">DK${hSortArrow('draftkings')}</th>
         <th ${hSortClick('odds')}>Offered${hSortArrow('odds')}</th>
-        <th>Winner</th>
+        <th ${hSortClick('pinnacle')}>Pinnacle${hSortArrow('pinnacle')}</th>
+        <th ${hSortClick('fanduel')} style="color:var(--blue);">FD${hSortArrow('fanduel')}</th>
+        <th ${hSortClick('draftkings')} style="color:var(--green);">DK${hSortArrow('draftkings')}</th>
+        <th ${hSortClick('kalshi')}>Kalshi${hSortArrow('kalshi')}</th>
         <th ${hSortClick('risk', 'right')}>My Risk${hSortArrow('risk')}</th>
         <th ${hSortClick('towin', 'right')}>To Win${hSortArrow('towin')}</th>
         <th ${hSortClick('status')}>Status${hSortArrow('status')}</th>
-        <th ${hSortClick('pnl', 'right')}>P&L${hSortArrow('pnl')}</th>
       </tr>`;
 
     for (const order of displayed) {
@@ -10898,24 +10898,18 @@
       const fairAm = (hDisplayFairProb || order.fairParlayProb) ? decimalToAmerican(1 / (hDisplayFairProb || order.fairParlayProb)) : '-';
       const pinParlay = order.meta?.pinnacleParlay;
       const pinAm = pinParlay != null ? pinParlay : '-';
+      const fdParlay = order.meta?.fanduelParlay;
+      const fdAm = fdParlay != null ? fdParlay : '-';
       const klParlay = order.meta?.kalshiParlay;
       const klAm = klParlay != null ? klParlay : '-';
       const dkParlay = order.meta?.draftkingsParlay;
       const dkAm = dkParlay != null ? dkParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
-      const winnerOdds = order.winningOdds ? (order.winningOdds >= 0 ? '+' : '') + order.winningOdds : '-';
       const myRisk = order.confirmedStake ? fmtDollar(order.confirmedStake) : '-';
       const profitVal = order.confirmedStake && order.offeredOdds ? calcSpProfit(order.confirmedStake, order.offeredOdds) : null;
       const toWin = profitVal != null ? fmtDollar(profitVal) : '-';
-      const riskVal = order.confirmedStake || null;
 
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
-
-      let pnlHtml = '-';
-      if (order.pnl != null) {
-        const cls = order.pnl > 0 ? 'positive' : order.pnl < 0 ? 'negative' : 'neutral';
-        pnlHtml = `<span class="${cls}">${fmtPnl(order.pnl)}</span>`;
-      }
 
       const rowKey = 'hist-' + (order.parlayId || '');
       const expanded = expandedRows.has(rowKey);
@@ -10924,18 +10918,17 @@
         <td style="max-width:290px; white-space:nowrap;" title="${teams}"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">${teamsShort}</span>${sgpBadge(legs)}</td>
         <td>${legs.length}</td>
         <td>${fairAm}</td>
-        <td style="color:var(--purple);">${pinAm}</td>
-        <td style="color:var(--amber);">${klAm}</td>
-        <td style="color:var(--green);">${dkAm}</td>
         <td style="font-weight:600;">${offeredAm}</td>
-        <td style="color:${order.status === 'lost' ? 'var(--amber)' : 'var(--text3)'};">${winnerOdds}</td>
+        <td style="color:var(--purple);">${pinAm}</td>
+        <td style="color:var(--blue);">${fdAm}</td>
+        <td style="color:var(--green);">${dkAm}</td>
+        <td style="color:var(--amber);">${klAm}</td>
         <td style="text-align:right">${myRisk}</td>
         <td style="text-align:right; color:var(--green);">${toWin}</td>
         <td><span class="${statusClass}">${statusText}</span></td>
-        <td style="text-align:right">${pnlHtml}</td>
       </tr>
       <tr id="${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-        <td colspan="13" style="padding: 12px 16px;">
+        <td colspan="12" style="padding: 12px 16px;">
           ${buildLegTable(legs, { showStatus: true, pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 })}
           <div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ${order.parlayId || '-'}</div>
         </td>
