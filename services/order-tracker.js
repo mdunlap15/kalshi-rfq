@@ -3256,58 +3256,7 @@ async function pollOrderSettlements(px) {
       }
 
       const settlementStatus = pxOrder.settlement_status;
-      if (!settlementStatus || settlementStatus === 'tbd' || settlementStatus === 'requested') {
-        // PARLAY-LEVEL STUCK BUT LEG ALREADY DETERMINES OUTCOME.
-        //
-        // PX's parlay-level settlement engine sometimes stalls indefinitely
-        // when one of the legs gets stuck in 'requested' status. Apr 25
-        // example: a 3-leg golf parlay (round 1, ended 4/23) had legs
-        // {lost, requested, won} and stayed at parlay status='tbd' for
-        // 2+ days. Bettor's parlay was mathematically dead the moment any
-        // leg lost, so SP wins regardless of the stuck leg — but the
-        // exposure stayed on our books, the row sat in Open Positions
-        // forever, and we couldn't apply the credit.
-        //
-        // Short-circuit: if any leg has settlement_status='lost' (bettor
-        // leg lost → bettor parlay cannot win), settle immediately as
-        // SP-WON. Idempotent — recordSettlement guards against re-settle.
-        // Add a startTime safety: only short-circuit if the lost leg
-        // started ≥ 4 hours ago, to avoid acting on premature/erroneous
-        // leg results PX could later correct.
-        const pxLegs = Array.isArray(pxOrder.legs) ? pxOrder.legs : [];
-        const lostLegs = pxLegs.filter(l => l.settlement_status === 'lost');
-        if (lostLegs.length > 0) {
-          // Match PX leg's sport_event_id back to our local leg to find
-          // a startTime. We only need ONE confirmed-old leg to proceed.
-          const orderLegs = order.legs || order.meta?.legs || [];
-          const now = Date.now();
-          const lostLegOldEnough = lostLegs.some(pl => {
-            const ourLeg = orderLegs.find(ol =>
-              (ol.pxEventId && pl.sport_event_id && Number(ol.pxEventId) === Number(pl.sport_event_id)) ||
-              (ol.lineId && pl.line_id && ol.lineId === pl.line_id)
-            );
-            const st = ourLeg?.startTime || ourLeg?.start_time;
-            if (!st) return false;
-            const startMs = new Date(st).getTime();
-            if (isNaN(startMs)) return false;
-            return (now - startMs) >= 4 * 3600 * 1000;
-          });
-          if (lostLegOldEnough) {
-            log.warn('Poll', `Short-circuit settlement for ${order.parlayId}: PX parlay status=${settlementStatus} but ${lostLegs.length} leg(s) already lost — settling as SP-WON locally to release exposure`);
-            recordSettlement(uuid, 'won', null, { trusted: true });
-            settled++;
-            // Backfill leg-level settlement statuses too so the dashboard
-            // can display "Lost" / "Won" / "Pending" per leg correctly.
-            for (const pxLeg of pxLegs) {
-              if (pxLeg.line_id && pxLeg.settlement_status) {
-                recordLegSettlement(uuid, pxLeg);
-              }
-            }
-            continue;
-          }
-        }
-        continue;
-      }
+      if (!settlementStatus || settlementStatus === 'tbd' || settlementStatus === 'requested') continue;
 
       // If order was somehow reverted to non-settled status, fix it
       // by temporarily clearing the settled status so recordSettlement will run.
