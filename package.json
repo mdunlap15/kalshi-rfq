@@ -7,6 +7,9 @@
     "start": "node index.js",
     "dev": "node --watch index.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",
     "dotenv": "^16.3.1",
