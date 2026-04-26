@@ -739,49 +739,6 @@ function markAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmedStake, e
  * Caller: POST /px-status-repair (see index.js). Not on the hot path;
  * safe to run during live traffic (reads + writes are per-parlay).
  */
-/**
- * Backfill confirmedStake/Odds on an already-confirmed order. Used by
- * /stake-backfill to repair the 167 PX-overrode-reject orders that
- * /px-status-repair (pre-fallback) promoted with stake=0 because PX REST
- * returned confirmed_stake=0 for TBD orders. The TRUE stake lives in
- * meta.pxMatchedAfterReject.matchedStake, set by the order.matched event.
- *
- * Behavior:
- *   - Only updates orders currently in 'confirmed' status (no stale
- *     resurrection of rejected/settled rows)
- *   - Skips if existing confirmedStake is already non-zero (idempotent)
- *   - Recomputes team/game exposure (release prior $0 exposure → add new)
- *   - Persists to DB
- */
-function backfillStake(parlayId, newStake, newOdds) {
-  const order = orders[parlayId];
-  if (!order) return { ok: false, reason: 'not-found' };
-  if (order.status !== 'confirmed') return { ok: false, reason: 'not-confirmed' };
-  if (order.confirmedStake != null && order.confirmedStake > 0) {
-    return { ok: false, reason: 'already-has-stake' };
-  }
-  if (!Number.isFinite(+newStake) || +newStake <= 0) {
-    return { ok: false, reason: 'invalid-stake' };
-  }
-
-  // Strip any existing exposure (was added with $0, harmless but stale)
-  // then re-add with the corrected stake. Wrapped to avoid breaking the
-  // backfill loop on a single bad row.
-  try { removeExposure(order); } catch (_) { /* best effort */ }
-
-  order.confirmedStake = +newStake;
-  if (newOdds != null && Number.isFinite(+newOdds)) order.confirmedOdds = +newOdds;
-
-  try { addExposure(order); } catch (err) {
-    log.warn('Backfill', `addExposure failed for ${parlayId}: ${err.message}`);
-  }
-
-  db.saveOrder(order).catch(err => log.warn('Backfill', `saveOrder failed for ${parlayId}: ${err.message}`));
-
-  log.info('Backfill', `Stake restored for ${parlayId}: $${newStake} (odds=${newOdds})`);
-  return { ok: true, parlayId, newStake: +newStake };
-}
-
 function importPxBookedOrder(parlayId, orderUuid, confirmedStake, confirmedOdds) {
   const order = orders[parlayId];
   if (!order) return { ok: false, reason: 'not-found' };
@@ -1276,41 +1233,14 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
 
       db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(won via matched) failed: ${err.message}`));
     } else if (ourQuote.status === 'rejected') {
-      // PX overrode our reject — booked the parlay anyway. This is the
-      // accept-POST-drift sandbox quirk noted in CLAUDE.md (PX may not
-      // honor reject responses or max_risk caps). The order is REAL on
-      // PX; the only honest local state is to PROMOTE it to confirmed
-      // so the operator's Open Positions table reflects actual exposure.
-      // Apr 25 forensic: 167 such orders were silently hidden as "rejected"
-      // while PX held them as TBD. importPxBookedOrder() flips status,
-      // sets confirmedStake/Odds/UUID, releases pending reservation, and
-      // calls addExposure to rebuild Team/Game tables. matchedStake is
-      // authoritative — PX REST often returns confirmed_stake=0 on TBD
-      // orders, so trusting matchedOdds/matchedStake from this event is
-      // safer than waiting for PX REST verification.
-      const originalReject = ourQuote.rejectionReason || null;
-      log.warn('Orders', `[PX-OVERRODE-REJECT] PX matched parlay we rejected: ${parlayId} (reject=${originalReject}, stake=$${matchedStake}, odds=${matchedOdds}). Promoting to confirmed.`);
+      log.warn('Orders', `PX matched a parlay we rejected: ${parlayId} (reject reason=${ourQuote.rejectionReason || 'unknown'}, px stake=${matchedStake}, px odds=${matchedOdds}). Keeping status=rejected.`);
       ourQuote.meta = ourQuote.meta || {};
       ourQuote.meta.pxMatchedAfterReject = {
         matchedAt: new Date().toISOString(),
         matchedOdds, matchedStake,
-        originalRejectReason: originalReject,
+        originalRejectReason: ourQuote.rejectionReason || null,
       };
-      // matchedOdds is PX's side of the wager (sign-flipped vs ours);
-      // store SP-side odds as -matchedOdds to match the convention used
-      // in the recordConfirmation path above.
-      const importResult = importPxBookedOrder(
-        parlayId,
-        ourQuote.orderUuid || null,
-        matchedStake,
-        matchedOdds != null ? -matchedOdds : null
-      );
-      if (!importResult.ok) {
-        log.warn('Orders', `[PX-OVERRODE-REJECT] importPxBookedOrder failed for ${parlayId}: ${importResult.reason} — keeping rejected status, manual repair needed`);
-        // Persist the marker even if the import failed so the operator
-        // can find it via the marker rather than digging through logs.
-        db.saveOrder(ourQuote).catch(() => {});
-      }
+      db.saveOrder(ourQuote).catch(() => {});
     }
   } else {
     // order.matched without a corresponding quote on our side — should not
@@ -4638,7 +4568,6 @@ module.exports = {
   recordDecline,
   recordUnsupportedMarket,
   importPxBookedOrder,
-  backfillStake,
   markAcceptUnknown,
   sweepGhostOrders,
   getMarketIntel,
