@@ -3158,6 +3158,9 @@ async function sweepStuckConfirmed(px, opts = {}) {
       if (!pxOrder) { pxNotFound++; continue; }
       const pxLegs = Array.isArray(pxOrder.legs) ? pxOrder.legs : [];
       const pxStatus = pxOrder.settlement_status;
+      // `legs` was scoped to the candidate-collection loop; re-resolve
+      // here for the short-circuit's leg-matching pass.
+      const orderLegs = order.legs || order.meta?.legs || [];
 
       // If PX has a terminal status, defer to pollOrderSettlements semantics
       // — call recordSettlement with PX's resolved value.
@@ -3177,7 +3180,7 @@ async function sweepStuckConfirmed(px, opts = {}) {
       if (lostLegs.length > 0) {
         const now = Date.now();
         const lostLegOldEnough = lostLegs.some(pl => {
-          const ourLeg = legs.find(ol =>
+          const ourLeg = orderLegs.find(ol =>
             (ol.pxEventId && pl.sport_event_id && Number(ol.pxEventId) === Number(pl.sport_event_id)) ||
             (ol.lineId && pl.line_id && ol.lineId === pl.line_id)
           );
