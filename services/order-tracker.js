@@ -3126,6 +3126,27 @@ async function sweepStuckConfirmed(px, opts = {}) {
     candidates.push(order);
   }
 
+  // ONE bulk PX fetch, indexed by order_uuid. fetchOrderByUuid only sees
+  // the 50 most-recent PX orders so it whiffs on anything older — sweep's
+  // entire reason-to-exist is OLD stuck parlays, so per-uuid lookups
+  // 100% missed (Apr 25: 30/30 candidates returned pxNotFound). Use the
+  // cached pxLedger which keeps up to 5000 orders fresh on a 1-min TTL.
+  const pxLedger = require('./px-ledger');
+  let pxByUuid = {};
+  try {
+    const ledger = await pxLedger.fetchLedger({ force: !!opts.forceRefresh });
+    for (const po of (ledger.ledger || [])) {
+      if (po.order_uuid) pxByUuid[po.order_uuid] = po;
+    }
+  } catch (err) {
+    return {
+      candidatesScanned: candidates.length,
+      settled: 0, stillPending: 0, pxNotFound: 0,
+      failures: 1,
+      failureSample: [{ error: `pxLedger.fetchLedger failed: ${err.message}` }],
+    };
+  }
+
   let settled = 0;
   let stillPending = 0;
   let pxNotFound = 0;
@@ -3133,7 +3154,7 @@ async function sweepStuckConfirmed(px, opts = {}) {
 
   for (const order of candidates) {
     try {
-      const pxOrder = await px.fetchOrderByUuid(order.orderUuid);
+      const pxOrder = pxByUuid[order.orderUuid];
       if (!pxOrder) { pxNotFound++; continue; }
       const pxLegs = Array.isArray(pxOrder.legs) ? pxOrder.legs : [];
       const pxStatus = pxOrder.settlement_status;
