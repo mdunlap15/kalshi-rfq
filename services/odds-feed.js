@@ -5795,6 +5795,42 @@ function getLineupCache() {
 const scoresCache = {}; // { sport: { fetchedAt, games: [{ homeTeam, awayTeam, commenceTime, completed, homeScore, awayScore }] } }
 const SCORES_TTL_MS = 2 * 60 * 1000; // 2 minute cache
 
+// Cache of active sport keys discovered from The Odds API's /v4/sports/.
+// Used to expand 'soccer' (generic) into per-league fetches. The list
+// rarely changes; 6h TTL is plenty.
+let _activeSportsCache = { fetchedAt: 0, keys: [] };
+const ACTIVE_SPORTS_TTL_MS = 6 * 60 * 60 * 1000;
+
+// Internal-key → Odds-API-key overrides. Most of our sport keys match
+// The Odds API 1:1, but a few are wrong / use different naming:
+//   - soccer_conmebol_libertadores → soccer_conmebol_copa_libertadores
+//     (audited Apr 26: Odds API uses the longer 'copa' form)
+// Add new entries here when /audit-scores reveals more drift; missing
+// keys silently 404 and cause stuck-pending status circles in the UI.
+const SCORES_API_KEY_OVERRIDES = {
+  'soccer_conmebol_libertadores': 'soccer_conmebol_copa_libertadores',
+};
+
+async function _getActiveSportsList() {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return [];
+  if (Date.now() - _activeSportsCache.fetchedAt < ACTIVE_SPORTS_TTL_MS && _activeSportsCache.keys.length > 0) {
+    return _activeSportsCache.keys;
+  }
+  try {
+    const resp = await fetch(`https://api.the-odds-api.com/v4/sports/?apiKey=${theOddsApiKey}`);
+    if (!resp.ok) return _activeSportsCache.keys;
+    const all = await safeJsonFetch(resp);
+    const keys = (all || []).filter(s => s.active).map(s => s.key);
+    _activeSportsCache = { fetchedAt: Date.now(), keys };
+    log.debug('Scores', `Discovered ${keys.length} active sport keys on The Odds API`);
+    return keys;
+  } catch (err) {
+    log.warn('Scores', `Failed to fetch active sports list: ${err.message}`);
+    return _activeSportsCache.keys;
+  }
+}
+
 /**
  * Fetch scores for a sport from The Odds API.
  * Returns array of completed/in-progress games with scores.
@@ -5810,16 +5846,24 @@ async function fetchScores(sport) {
   }
 
   // Generic 'soccer' has no Odds API scores endpoint — only league-
-  // specific keys do (soccer_epl, soccer_uefa_champs_league, etc.).
+  // specific keys do (soccer_epl, soccer_fa_cup, soccer_uefa_*, etc.).
   // Line-manager tags many soccer legs with 'soccer' (generic) because
   // SharpAPI returns all soccer events under that bucket and it's
   // tried first in sportNameMap order. Without this expansion,
   // fetchScores('soccer') 404s silently and no soccer leg ever resolves
-  // a score. Operator-visible: April 26 EPL Leeds @ Chelsea finished &
-  // lost but the parlay-detail status circle stayed grey/pending.
-  // Aggregate scores across every known soccer league via PINNACLE_SPORT_MAP.
+  // a score. Operator-visible (Apr 26):
+  //   - EPL Leeds @ Chelsea finished but parlay status stayed grey
+  //   - FA Cup match also missed (initially missed by my hardcoded list
+  //     because PINNACLE_SPORT_MAP only had 12 of 53 active soccer keys)
+  //
+  // Use dynamic discovery (active soccer_* keys from /v4/sports/) so
+  // the aggregation auto-covers any soccer league The Odds API supports
+  // — FA Cup, Coppa Italia, DFB-Pokal, J-League, K-League, etc. — without
+  // hardcoding. Same pattern available for any other generic key (e.g.
+  // tennis is already handled separately via ODDS_API_FALLBACK.dynamic).
   if (sport === 'soccer') {
-    const soccerLeagues = Object.keys(PINNACLE_SPORT_MAP).filter(k => k.startsWith('soccer_'));
+    const allActive = await _getActiveSportsList();
+    const soccerLeagues = allActive.filter(k => k.startsWith('soccer_'));
     let allGames = [];
     for (const league of soccerLeagues) {
       try {
@@ -5828,7 +5872,7 @@ async function fetchScores(sport) {
       } catch (_) { /* per-league failure shouldn't block others */ }
     }
     scoresCache[sport] = { fetchedAt: Date.now(), games: allGames };
-    log.debug('Scores', `Cached ${allGames.length} aggregated soccer scores from ${soccerLeagues.length} leagues`);
+    log.debug('Scores', `Cached ${allGames.length} aggregated soccer scores from ${soccerLeagues.length} active leagues (dynamic)`);
     return allGames;
   }
 
@@ -5866,8 +5910,11 @@ async function fetchScores(sport) {
       return allGames;
     }
 
-    // Standard sports — direct fetch
-    const url = `https://api.the-odds-api.com/v4/sports/${sport}/scores/?apiKey=${theOddsApiKey}&daysFrom=1`;
+    // Standard sports — direct fetch. Translate via SCORES_API_KEY_OVERRIDES
+    // for any sport key whose Odds API name doesn't match our internal one
+    // (e.g. soccer_conmebol_libertadores → soccer_conmebol_copa_libertadores).
+    const apiSport = SCORES_API_KEY_OVERRIDES[sport] || sport;
+    const url = `https://api.the-odds-api.com/v4/sports/${apiSport}/scores/?apiKey=${theOddsApiKey}&daysFrom=1`;
     const resp = await fetch(url);
     if (!resp.ok) {
       log.debug('Scores', `Failed to fetch scores for ${sport}: ${resp.status}`);
