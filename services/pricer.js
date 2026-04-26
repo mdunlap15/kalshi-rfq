@@ -32,18 +32,37 @@ const v2 = require('./v2');
  * basketball_nba"). Returns null if not blocked, or a human-readable
  * reason string if it should be declined.
  *
- * Detection rules:
- *   - MLB run line is always ±1.5; any other spread value = alt
- *   - NHL puck line is always ±1.5; any other spread value = alt
- *   - NBA primary spread varies per game; we use lineInfo.onDemand=true
- *     as the proxy (PX RFQ asked for a line that wasn't pre-registered,
- *     virtually registered by the line-manager — strong signal it's alt)
+ * Detection rules per sport:
  *
- * Why blocked: Apr 25 forensic showed alt-spread legs concentrated in
- * the low-fair-prob "red box" region where realized EV/$ was -6%; one
- * recurring 2-leg MLB template (Rockies +1.5 + Under) drove ~$5.8k of
- * loss alone. Block is sport-list driven so we can re-enable per sport
- * without a code change.
+ *   MLB / NHL — primary run/puck line is always ±1.5. Allow any leg
+ *   with |line| === 1.5 (intentionally includes the OPPOSITE-symbol
+ *   alt: if primary is Team A −1.5, also allow Team A +1.5 — the
+ *   heavy-favorite alt where the same fav gets a head-start instead).
+ *   Block any other magnitude (±0.5, ±2.5, etc.).
+ *
+ *   The opposite-symbol alts route through odds-feed's signed-key
+ *   altSpreads cache (keyed by signed home-perspective home_point), so
+ *   "Team A +1.5 (away)" lands in bucket "−1.5" and "Team A −1.5
+ *   (away)" lands in bucket "+1.5" — strictly different buckets, no
+ *   collision risk. See odds-feed.js getAltLineFairProb() and
+ *   spreadHomePoint() for the routing.
+ *
+ *   NBA — primary spread varies per game. Allow legs whose line is
+ *   within ±config.pricing.nbaAltSpreadMaxDistance points of the
+ *   primary (in home-team perspective), AND which have coverage in
+ *   our alt-lines cache (i.e., at least one book reported odds for
+ *   this exact line). Block legs farther than the threshold OR with
+ *   no book coverage (we'd have to derive odds ourselves — operator
+ *   doesn't want that). Primary lines (onDemand=false) always pass.
+ *
+ *   Other blocked sports — fall back to the onDemand=true proxy
+ *   (RFQ asked for a line we hadn't pre-registered → block).
+ *
+ * Why this exists: Apr 25 forensic showed alt-spread legs concentrated
+ * in the low-fair-prob "red box" region where realized EV/$ was -6%;
+ * one recurring 2-leg MLB template (Rockies +1.5 + Under) drove ~$5.8k
+ * of loss alone. Block is sport-list driven so we can re-enable per
+ * sport without a code change.
  */
 function isBlockedAltSpread(lineInfo) {
   if (!lineInfo) return null;
@@ -58,12 +77,49 @@ function isBlockedAltSpread(lineInfo) {
   const lineNum = Number(lineInfo.line);
   if (!Number.isFinite(lineNum)) return null;
   const absLine = Math.abs(lineNum);
-  // MLB / NHL: primary spread is always ±1.5
+  // MLB / NHL: primary spread is always ±1.5; opposite-symbol alt
+  // (same magnitude, flipped sign) is also allowed by intent.
   if (sport === 'baseball_mlb' || sport === 'icehockey_nhl') {
     if (absLine === 1.5) return null;
     return `${sport} alt spread (line ${lineNum}, primary is ±1.5)`;
   }
-  // NBA (and any future additions): use onDemand flag as proxy
+  // NBA: within-±N alts with book coverage allowed.
+  if (sport === 'basketball_nba') {
+    // Primary lines (line manager pre-registered, onDemand=false):
+    // always allow regardless of distance. These are the SharpAPI
+    // primary spread for the event.
+    if (lineInfo.onDemand !== true) return null;
+    // Alt: find primary spread for this event in home-team perspective.
+    const primaryHomePoint = lineManager.getPrimarySpreadHomePoint(lineInfo.pxEventId);
+    if (primaryHomePoint == null) {
+      return `NBA alt: no primary spread registered for event ${lineInfo.pxEventId}`;
+    }
+    // Convert this leg's line to home-team-signed perspective.
+    const sel = lineInfo.oddsApiSelection || lineInfo.selection;
+    const legHomePoint = sel === 'home' ? lineNum : -lineNum;
+    const dist = Math.abs(legHomePoint - primaryHomePoint);
+    const maxDist = config.pricing.nbaAltSpreadMaxDistance || 2.0;
+    // Tiny floating-point tolerance (NBA spreads come in 0.5 increments
+    // so values are exact, but be defensive).
+    if (dist > maxDist + 0.001) {
+      return `NBA alt outside ±${maxDist} of primary (alt=${legHomePoint}, primary=${primaryHomePoint}, dist=${dist})`;
+    }
+    // Verify book coverage: only allow alts that came from real books.
+    // No derived/inferred lines. Cache miss OR books=0 → block.
+    if (lineInfo.homeTeam && lineInfo.awayTeam) {
+      const eventKey = oddsFeed.normalizeEventKey(lineInfo.homeTeam, lineInfo.awayTeam);
+      const cacheEntry = oddsFeed.getAltLineCacheEntry(eventKey, 'spreads', sel, lineNum);
+      if (!cacheEntry || !cacheEntry.books || cacheEntry.books === 0) {
+        return `NBA alt: no book coverage for line ${legHomePoint} (cache miss or 0 books)`;
+      }
+    } else {
+      // Without home/away team names we can't look up the cache —
+      // conservatively block so we never derive an alt line ourselves.
+      return `NBA alt: missing team names, can't verify book coverage`;
+    }
+    return null; // within range + has book coverage
+  }
+  // Other blocked sports: fall back to onDemand proxy.
   if (lineInfo.onDemand === true) {
     return `${sport} alt spread (virtually-registered line ${lineNum})`;
   }

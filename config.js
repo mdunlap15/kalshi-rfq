@@ -141,6 +141,14 @@ const config = {
       ? 'baseball_mlb,icehockey_nhl,basketball_nba'
       : process.env.BLOCK_ALT_SPREAD_SPORTS
     ).split(',').map(s => s.trim()).filter(Boolean),
+    // NBA-specific carve-out within the alt-spread block: even when NBA is in
+    // blockAltSpreadSports, allow alt-spread legs whose line is within
+    // ±N points of the primary spread (in home-team perspective) AND has
+    // book coverage in our alt-lines cache. Default 2.0 — operator wants
+    // "if main is Team A −5, allow Team A −3..−7 (and equivalent dog
+    // sides)" but block anything farther OR anything we'd have to derive
+    // ourselves (no books reported it).
+    nbaAltSpreadMaxDistance: parseFloat(process.env.NBA_ALT_SPREAD_MAX_DISTANCE) || 2.0,
     // v2 pricing engine: shadow-mode by default. When enabled, runs the
     // unified calibration-corrected + correlation-aware + EV-targeted
     // pipeline alongside v1 and logs the comparison. Does NOT affect

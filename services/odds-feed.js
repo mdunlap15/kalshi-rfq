@@ -5947,4 +5947,6 @@ module.exports = {
   checkLineupFreshness,
   getLineupCache,
   __debugGetAltLinesCache: () => altLinesCache,
+  normalizeEventKey,
+  getAltLineCacheEntry,
 };

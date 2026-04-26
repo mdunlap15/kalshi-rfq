@@ -1802,6 +1802,45 @@ function getEventInfo(eventId) {
   return eventIndex[eventId] || null;
 }
 
+/**
+ * Find the primary spread line for a given pxEventId, expressed in
+ * home-team perspective (signed). Used by the alt-spread block for
+ * NBA: a leg's distance from this value determines whether it's an
+ * allowed near-primary alt or a banned far-out alt.
+ *
+ * "Primary" = the spread leg the line manager pre-registered from the
+ * SharpAPI feed (onDemand=false). Excludes virtually-registered
+ * (onDemand=true) entries that came from RFQ-driven on-demand fetches.
+ *
+ * Returns null when:
+ *   - No spread line registered for this event yet
+ *   - All registered spreads are onDemand=true (no primary anchor)
+ *   - eventId is null/undefined
+ *
+ * For NBA games we expect exactly one primary spread per event; if
+ * multiple are found (unusual), returns the first non-onDemand match.
+ */
+function getPrimarySpreadHomePoint(pxEventId) {
+  if (pxEventId == null) return null;
+  for (const li of Object.values(lineIndex)) {
+    if (li.pxEventId !== pxEventId) continue;
+    if (li.marketType !== 'spread') continue;
+    if (li.onDemand === true) continue;
+    if (li.line == null || !Number.isFinite(Number(li.line))) continue;
+    // Convert leg's perspective into home-team-signed point.
+    //   selection 'home' → li.line is already from home perspective
+    //   selection 'away' → flip sign
+    const lineNum = Number(li.line);
+    if (li.oddsApiSelection === 'home' || li.selection === 'home') return lineNum;
+    if (li.oddsApiSelection === 'away' || li.selection === 'away') return -lineNum;
+    // Unknown selection — assume the line is already home-perspective
+    // (rare; logged so we can spot it if it ever happens in production).
+    log.debug('Lines', `getPrimarySpreadHomePoint: unknown selection on primary spread for event ${pxEventId} — assuming home-perspective. line=${lineNum}`);
+    return lineNum;
+  }
+  return null;
+}
+
 module.exports = {
   seedAllLines,
   refreshLines,
@@ -1818,5 +1857,6 @@ module.exports = {
   getTournamentName,
   getEventName,
   getEventInfo,
+  getPrimarySpreadHomePoint,
   debugGolfMatching,
 };
