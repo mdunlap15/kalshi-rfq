@@ -12,33 +12,48 @@ const orderTracker = require('./order-tracker');
 // hitter props vs pitcher non-K props.
 //
 // Returns one of:
-//   'pitcher_strikeouts' — the experiment target market
+//   'pitcher_strikeouts' — the experiment target market (Pitching Ks)
 //   'pitcher_other'      — outs/innings/walks/earned-runs/win/loss
+//   'hitter_strikeouts'  — Batting Strikeouts (real market on PX)
 //   'hitter_total_bases' — top hitter market
 //   'hitter_hits'        — hits incl. 2+ hits, etc.
 //   'hitter_hr'          — home runs / power props
 //   'hitter_rbi_runs'    — RBIs, runs scored
 //   'hitter_other'       — singles/doubles/triples/sb/etc.
+//   'mlb_prop_ambiguous' — strikeout prop without Pitching/Batting prefix
+//                          (rare in PX feed but possible from other books)
 //   'other_mlb_prop'     — couldn't classify (catch-all)
 //   null                 — input wasn't an MLB market name
 //
-// Patterns are intentionally permissive — book conventions vary
-// ("Strikeouts" / "Total Strikeouts" / "Pitcher Strikeouts" / "K's").
-// Better to over-include than miss; downstream analysis treats this as
-// a coarse signal, not a precise label.
+// PX's naming convention disambiguates pitcher vs hitter K markets
+// explicitly: "Pitching Strikeouts" vs "Batting Strikeouts". The
+// classifier matches those forms strictly; bare "Strikeouts" with no
+// pitching/batting qualifier (e.g. "Tarik Skubal Strikeouts" if it
+// ever appears) routes to mlb_prop_ambiguous so it doesn't pollute
+// the pitcher_strikeouts bucket the Step 1 decision relies on.
 function classifyMlbProp(marketName) {
   if (!marketName) return null;
   const n = String(marketName).toLowerCase();
-  // Pitcher strikeouts — the target market. Caller has already
-  // confirmed baseball sport, so any "strikeout" mention is
-  // overwhelmingly a pitcher prop (hitter K props exist but are
-  // negligible volume). Bias: include player-name-prefixed K markets
-  // ("Tarik Skubal Strikeouts") which the prior tighter regex missed.
-  if (/strike\s*out|\bk'?s\b|\bk\s+(thrown|recorded)\b/.test(n)) {
+  // Pitcher strikeouts — PX's "Pitching Strikeouts" + variants where
+  // 'thrown'/'recorded' makes pitcher-side unambiguous on its own.
+  // Allow optional 's / s suffix on K to catch "K's Thrown".
+  if (/pitching\s+strike\s*out|\bk'?s?\s+(thrown|recorded)\b|strike\s*outs?\s+(thrown|recorded)/.test(n)) {
     return 'pitcher_strikeouts';
   }
-  // Pitcher non-K props. Match standalone tokens (Earned Runs Allowed,
-  // Innings Pitched, Outs Recorded) since baseball-context disambiguates.
+  // Hitter strikeouts — PX's "Batting Strikeouts" form.
+  if (/batting\s+strike\s*out/.test(n)) {
+    return 'hitter_strikeouts';
+  }
+  // Bare "strikeouts" / "K's" without pitching/batting qualifier.
+  // Could be either side; flag separately so Phase 0 numbers stay
+  // honest. Operator can sample these in /prop-opportunity to confirm
+  // PX always uses the qualified form (in which case this bucket
+  // should be ~0).
+  if (/strike\s*out|\bk'?s\b/.test(n)) {
+    return 'mlb_prop_ambiguous';
+  }
+  // Pitcher non-K props. Earned runs, innings pitched, outs recorded
+  // are pitcher-only by definition.
   if (/innings\s+pitch|outs\s+recorded|earned\s+run|hits\s+allow|walks\s+(allow|issued)|pitcher.*(win|loss|decision|to\s+(get|record))|\bera\b|\bwhip\b/.test(n)) {
     return 'pitcher_other';
   }
