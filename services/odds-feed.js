@@ -34,6 +34,31 @@ async function abortableFetch(url, options, timeoutMs) {
 }
 
 // ---------------------------------------------------------------------------
+// UTF-8-SAFE JSON HELPER
+// ---------------------------------------------------------------------------
+// `await resp.json()` on the global fetch (undici) has been observed to
+// silently mis-decode UTF-8 bodies as Latin-1 in some Node + undici
+// version combos when the upstream Content-Type omits an explicit
+// charset and the body is gzipped. Empirical case (April 2026, Railway):
+// The Odds API returned "Atlético Madrid" as bytes 41 74 6c c3 a9 ...
+// (correct UTF-8 for é), but the in-memory cache held two characters
+// 'Ã' (U+00C3) + '©' (U+00A9) — the classic UTF-8-as-Latin-1 mojibake.
+// Locally on Node 24 the same code path produced clean é (U+00E9),
+// so the fault is implementation-version-specific rather than logical.
+//
+// safeJsonFetch sidesteps the issue by reading raw bytes and explicitly
+// decoding as UTF-8 via TextDecoder before JSON.parse. Use this in any
+// fetch path that handles upstream-provided strings (team names,
+// fighter names, tournament names) where a 1-byte mis-decode silently
+// breaks downstream string matching.
+async function safeJsonFetch(resp) {
+  const buf = await resp.arrayBuffer();
+  if (buf.byteLength === 0) return null;
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+  return JSON.parse(text);
+}
+
+// ---------------------------------------------------------------------------
 // IN-MEMORY CACHE
 // ---------------------------------------------------------------------------
 // Structure: { [league]: { fetchedAt, events: { [eventKey]: { ... } } } }
@@ -301,7 +326,7 @@ async function fetchOddsForSport(sport, opts) {
           errorState = resp.status;
           break;
         }
-        const body = await resp.json();
+        const body = await safeJsonFetch(resp);
         const mtRows = body.data || [];
         rows.push(...mtRows);
         mtRowCount += mtRows.length;
@@ -1196,7 +1221,7 @@ async function fetchPinnacleRows(sport) {
       log.info('OddsFeed', `The Odds API usage (supplement): ${used} used, ${remaining} remaining`);
     }
 
-    const events = await resp.json();
+    const events = await safeJsonFetch(resp);
     const rows = [];
 
     for (const event of events) {
@@ -1262,7 +1287,7 @@ async function fetchDynamicSports(sport, fallback, apiKey) {
   // Step 1: discover active tournaments matching the prefix
   const sportsResp = await fetch(`https://api.the-odds-api.com/v4/sports/?apiKey=${apiKey}`);
   if (!sportsResp.ok) throw new Error(`The Odds API sports list: ${sportsResp.status}`);
-  const allSports = await sportsResp.json();
+  const allSports = await safeJsonFetch(sportsResp);
   const activeTournaments = allSports.filter(s => s.key.startsWith(fallback.sportPrefix) && s.active);
 
   if (activeTournaments.length === 0) {
@@ -1289,7 +1314,7 @@ async function fetchDynamicSports(sport, fallback, apiKey) {
       }
       const remaining = resp.headers.get('x-requests-remaining');
       if (remaining != null) log.debug('OddsFeed', `The Odds API: ${remaining} requests remaining`);
-      const events = await resp.json();
+      const events = await safeJsonFetch(resp);
       allEvents.push(...events);
       log.info('OddsFeed', `Got ${events.length} events from ${tournament.key}`);
     } catch (err) {
@@ -1463,7 +1488,7 @@ async function fetchFromTheOddsApi(sport) {
     log.info('OddsFeed', `The Odds API usage: ${used} used, ${remaining} remaining`);
   }
 
-  const events = await resp.json();
+  const events = await safeJsonFetch(resp);
   log.info('OddsFeed', `Got ${events.length} events for ${sport} from The Odds API`);
 
   // Parse into same cache format as SharpAPI
@@ -5295,7 +5320,7 @@ async function fetchOddsDelta(sport) {
           anyFailed = true;
           break;
         }
-        const body = await resp.json();
+        const body = await safeJsonFetch(resp);
         const mtRows = body.data || [];
         rows.push(...mtRows);
         pages++;
@@ -5359,7 +5384,7 @@ async function refreshEventsIndex() {
         headers: { 'X-API-Key': config.oddsApi.apiKey },
       });
       if (!resp.ok) continue;
-      const body = await resp.json();
+      const body = await safeJsonFetch(resp);
       const events = body.data || [];
       sharpEventsIndex[sport] = {
         fetchedAt: Date.now(),
