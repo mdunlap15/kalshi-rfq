@@ -966,9 +966,20 @@ function startStatusServer() {
         else buckets.v1.push(r);
       }
 
+      // Real-fill filter (post-Apr-25 false-fill discovery): a row is
+      // a true fill ONLY if it has an order_uuid (recorded on the
+      // order.finalized event) OR is already settled. Pre-fix code
+      // counted every status='confirmed' row, which inflated v1+v2 fill
+      // counts ~30× because the order.matched broadcast was promoting
+      // 97% of quotes that some other SP actually won. Use the same
+      // gate everywhere fillRate is computed.
+      const isRealFill = (r) =>
+        (r.status === 'confirmed' && r.order_uuid != null) ||
+        (typeof r.status === 'string' && r.status.startsWith('settled_'));
+
       function summarize(list) {
         const quotes = list.length;
-        const fills = list.filter(r => r.status === 'confirmed' || (r.status || '').startsWith('settled_')).length;
+        const fills = list.filter(isRealFill).length;
         const stakes = list.filter(r => r.confirmed_stake != null).map(r => Number(r.confirmed_stake));
         const avgStake = stakes.length ? stakes.reduce((a, b) => a + b, 0) / stakes.length : null;
         const totalStake = stakes.reduce((a, b) => a + b, 0);
@@ -1006,7 +1017,7 @@ function startStatusServer() {
       // infinite nesting. Same metrics, one level deep.
       function summarizeNoRedBox(list) {
         const quotes = list.length;
-        const fills = list.filter(r => r.status === 'confirmed' || (r.status || '').startsWith('settled_')).length;
+        const fills = list.filter(isRealFill).length;
         const stakes = list.filter(r => r.confirmed_stake != null).map(r => Number(r.confirmed_stake));
         const avgStake = stakes.length ? stakes.reduce((a, b) => a + b, 0) / stakes.length : null;
         const totalStake = stakes.reduce((a, b) => a + b, 0);
@@ -1255,6 +1266,24 @@ function startStatusServer() {
       const result = await orderTracker.deleteUnknownSettledOrders();
       res.json({ ok: true, ...result });
     } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // One-time cleanup of false-fill 'confirmed' rows produced by the
+  // pre-Apr-25 recordMatchedParlay bug (promoted on every order.matched
+  // broadcast, including other-SP wins). Defaults to dry-run; pass
+  // ?apply=1 to actually rewrite the rows. Use ?days=N to widen window
+  // (default 30).
+  app.post('/clean-false-confirms', async (req, res) => {
+    try {
+      const dryRun = !(req.query.apply === '1' || req.query.apply === 'true');
+      const days = req.query.days != null ? Math.max(1, Number(req.query.days)) : 30;
+      const fromIso = new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
+      const result = await orderTracker.cleanFalseConfirms({ dryRun, fromIso });
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      log.error('API', `/clean-false-confirms failed: ${err.message}`);
       res.status(500).json({ ok: false, error: err.message });
     }
   });

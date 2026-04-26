@@ -1106,30 +1106,59 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     };
   });
 
-  // Classification under PX's confirmed event model (Alec, Apr 2026):
-  //   "You will receive the information privately and matched odds will be
-  //    the odds that are accepted and confirmed. [...] No you wouldn't be
-  //    seeing when another SP wins only your own."
+  // Classification under PX's order.matched broadcast model (corrected
+  // Apr 25, 2026):
+  //   PX broadcasts order.matched to ALL SPs that quoted on the RFQ, not
+  //   just the winner. Alec's earlier "private only" claim was wrong (or
+  //   PX changed behavior). Smoking gun: operator screenshotted a parlay
+  //   marked "Confirmed" on the dashboard that he had not accepted on PX.
+  //   Audit on 1,302 confirmed-no-orderUuid orders: 1,259 (97%) had
+  //   |confirmedOdds + offeredOdds| ≠ 0 — i.e. matched_odds was the
+  //   WINNING SP's price, not ours.
   //
-  // So every order.matched event we receive = our own win. There is no
-  // 'lost' outcome observable via this path — losses are inferrable only
-  // from quotes that never matched (handled via the orphaned-quote
-  // cleanup in loadFromDb).
-  //
-  // matched_odds is the FINAL confirmed odds (post-drift re-confirmation).
-  // Our original offeredOdds may differ slightly if drift moved the price.
-  // Either way the event means we won.
+  // Detection: real wins have matched ≈ offered (both in PX's bettor-side
+  // American-odds convention). Other-SP wins have matched ≠ offered.
+  // Real wins ALSO flow through handleConfirm → recordConfirmation
+  // independently — that's the canonical "we won" signal. This branch is
+  // now an opportunistic backup for the rare case where order.matched
+  // races ahead of price.confirm.new for our own win.
   let outcome;
   if (weQuoted) {
+    const offered = ourQuote.offeredOdds;
+    const ODDS_TOL = 5; // American odds — generous to absorb minor PX drift
+    const isOurWin = (matchedOdds != null && offered != null &&
+      Math.abs(matchedOdds - offered) <= ODDS_TOL);
+
+    if (!isOurWin) {
+      // Another SP won this RFQ at a different price. Don't promote our
+      // quote, don't bump win counters, don't record as a fill. Just
+      // store diagnostic metadata so the dashboard can show we were
+      // beaten on this one.
+      outcome = 'other_sp';
+      marketStats.otherSpMatched = (marketStats.otherSpMatched || 0) + 1;
+      if (ourQuote.status === 'quoted') {
+        ourQuote.meta = ourQuote.meta || {};
+        ourQuote.meta.matchedByOtherSp = {
+          observedAt: new Date().toISOString(),
+          matchedOdds, matchedStake,
+          ourOfferedOdds: offered,
+          oddsDelta: (matchedOdds != null && offered != null) ? (matchedOdds - offered) : null,
+        };
+        db.saveOrder(ourQuote).catch(err => log.error('DB', `saveOrder(matched-other-sp) failed: ${err.message}`));
+      }
+      // Skip the rest of the won-branch side effects (matched_parlays
+      // entry is also skipped further down via the outcome === 'other_sp'
+      // early-return).
+    } else {
     outcome = 'won';
     matchedWonIds.add(parlayId);
     // Session-accurate fill count for fill-rate tracking. Uses the legs
     // from our original quote so sport/leg-count match the submission entry.
     recordFillBucketFill(ourQuote.legs || []);
     // weQuoted here is a misnamed legacy counter — it's really "matched
-    // events we received". True quote-submission count lives in
-    // rfqStages.submitted on the websocket side. Keep incrementing for
-    // back-compat but do so in the won branch only.
+    // events we received that we won". True quote-submission count lives
+    // in rfqStages.submitted on the websocket side. Keep incrementing for
+    // back-compat but only on real wins (post Apr 25 false-fill fix).
     marketStats.weWon++;
     marketStats.weQuoted++;
     // Promote quoted → confirmed only. Never promote from 'rejected' —
@@ -1242,6 +1271,7 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
       };
       db.saveOrder(ourQuote).catch(() => {});
     }
+    } // end isOurWin
   } else {
     // order.matched without a corresponding quote on our side — should not
     // happen under Alec's model but handle gracefully as "missed" so we
@@ -4517,6 +4547,119 @@ async function reconcileGhostConfirmed(px) {
   return { checked, ghostsFound, autoCleared, orderUuidFilledIn, settledFound, phantomIds, elapsedMs };
 }
 
+/**
+ * One-time historical cleanup for the Apr 25, 2026 false-fill bug
+ * (recordMatchedParlay was promoting status='confirmed' on every
+ * order.matched broadcast, including ones where another SP won at a
+ * different price). Walks all DB rows with status='confirmed' and no
+ * order_uuid, and reverts to status='rejected' the ones whose
+ * confirmed_odds prove the broadcast was for someone else's price.
+ *
+ * Test: real wins have confirmed_odds = -offered_odds (sign-flipped,
+ * same magnitude — handleConfirm path or self-matched). False fills
+ * have confirmed_odds = -matched_odds where matched_odds was the
+ * WINNING SP's price, so |confirmed + offered| > tolerance.
+ *
+ * Conservative: skips rows missing either offered_odds or
+ * confirmed_odds, and rows where the sign-flip test passes (real
+ * wins). Marks reverted rows with meta.matchedByOtherSp and
+ * meta.falseConfirmCleanedAt for audit.
+ *
+ * @param {object} opts
+ * @param {boolean} opts.dryRun - default true; if false, writes to DB
+ * @param {string} opts.fromIso - default 30 days ago
+ * @param {string} opts.toIso - default now
+ * @returns {Promise<object>} { dryRun, scanned, candidates, reverted, skipped, samples }
+ */
+async function cleanFalseConfirms(opts = {}) {
+  const dryRun = opts.dryRun !== false; // default true — must explicitly pass false to write
+  const toIso = opts.toIso || new Date().toISOString();
+  const fromIso = opts.fromIso || new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+  const ODDS_TOL = 5;
+
+  const dbClient = db.getClient ? db.getClient() : null;
+  if (!dbClient) {
+    return { error: 'no DB client', dryRun, scanned: 0, candidates: 0, reverted: 0 };
+  }
+
+  // Pull confirmed-no-uuid rows in window. Use loadOrdersInDateRange
+  // (paginated, retried) and filter in memory — keeps SQL simple.
+  const rows = await db.loadOrdersInDateRange(fromIso, toIso, { groupBy: 'confirmed_at', maxRows: 50000 });
+  let scanned = 0, candidates = 0, reverted = 0, skipped = 0;
+  const samples = [];
+  const skipReasons = { missingOdds: 0, hasOrderUuid: 0, notConfirmed: 0, isRealWin: 0 };
+
+  for (const row of rows) {
+    scanned++;
+    if (row.status !== 'confirmed') { skipReasons.notConfirmed++; skipped++; continue; }
+    if (row.order_uuid) { skipReasons.hasOrderUuid++; skipped++; continue; }
+    if (row.offered_odds == null || row.confirmed_odds == null) {
+      skipReasons.missingOdds++; skipped++; continue;
+    }
+    const sumAbs = Math.abs(Number(row.offered_odds) + Number(row.confirmed_odds));
+    if (sumAbs <= ODDS_TOL) {
+      // Sign-flipped within tolerance — real win, leave alone.
+      skipReasons.isRealWin++; skipped++; continue;
+    }
+
+    // False fill: confirmed_odds is some other SP's (negated) price.
+    candidates++;
+    if (samples.length < 10) {
+      samples.push({
+        parlayId: row.parlay_id,
+        offered: Number(row.offered_odds),
+        confirmed: Number(row.confirmed_odds),
+        sumAbs,
+        confirmedAt: row.confirmed_at,
+      });
+    }
+
+    if (!dryRun) {
+      const newMeta = {
+        ...(row.meta || {}),
+        matchedByOtherSp: {
+          observedAt: row.confirmed_at || new Date().toISOString(),
+          matchedOdds: -Number(row.confirmed_odds), // back-derive bettor-side
+          ourOfferedOdds: Number(row.offered_odds),
+          oddsDelta: (-Number(row.confirmed_odds)) - Number(row.offered_odds),
+        },
+        falseConfirmCleanedAt: new Date().toISOString(),
+        falseConfirmCleanupReason: `confirmed_odds (${row.confirmed_odds}) + offered_odds (${row.offered_odds}) = ${(Number(row.confirmed_odds) + Number(row.offered_odds))} — not sign-flipped, was another SP's price`,
+      };
+      const { error } = await dbClient
+        .from('parlay_orders')
+        .update({
+          status: 'rejected',
+          confirmed_odds: null,
+          confirmed_stake: null,
+          confirmed_at: null,
+          meta: newMeta,
+        })
+        .eq('parlay_id', row.parlay_id);
+      if (error) {
+        log.warn('CleanFalseConfirms', `update ${row.parlay_id} failed: ${error.message}`);
+      } else {
+        reverted++;
+        // Sync in-memory tracker if present
+        const memOrder = orders[row.parlay_id];
+        if (memOrder) {
+          memOrder.status = 'rejected';
+          memOrder.confirmedOdds = null;
+          memOrder.confirmedStake = null;
+          memOrder.confirmedAt = null;
+          memOrder.meta = newMeta;
+        }
+      }
+    }
+  }
+
+  log.info('CleanFalseConfirms', `${dryRun ? '[DRY-RUN] ' : ''}scanned=${scanned} candidates=${candidates} reverted=${reverted} skipped=${skipped} (realWins=${skipReasons.isRealWin}, missingOdds=${skipReasons.missingOdds}, hasUuid=${skipReasons.hasOrderUuid}, notConfirmed=${skipReasons.notConfirmed})`);
+
+  return {
+    dryRun, fromIso, toIso, scanned, candidates, reverted, skipped, skipReasons, samples,
+  };
+}
+
 module.exports = {
   recordQuote,
   updateOrderLatency,
@@ -4534,6 +4677,7 @@ module.exports = {
   reconcileSettlements,
   fullPxReconcile,
   reconcileGhostConfirmed,
+  cleanFalseConfirms,
   backfillUnknownSports,
   backfillFromExport,
   deleteUnknownSettledOrders,
