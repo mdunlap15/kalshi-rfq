@@ -70,6 +70,90 @@ function classifyMlbProp(marketName) {
 }
 // (exported via module.exports block at end of file as _classifyMlbProp)
 
+// NBA player-prop sub-classifier (Phase 0 instrumentation only — we do
+// NOT quote NBA props yet). Mirrors classifyMlbProp so the same in-
+// memory rollup (recordDecline.byPropType) and the [propType:X] tag in
+// unknown_details capture NBA prop volume by market type. Phase 4+ will
+// use this data to size which NBA props (if any) are worth quoting.
+//
+// Returns one of:
+//   'points'             — "Player Points" / "Total Points" (single stat)
+//   'rebounds'           — "Player Rebounds" / "Total Rebounds"
+//   'assists'            — "Player Assists" / "Total Assists"
+//   'threes_made'        — 3-pointers / threes made
+//   'blocks'             — "Player Blocks"
+//   'steals'             — "Player Steals"
+//   'steals_blocks'      — combined steals + blocks
+//   'pra_combo'          — any combo of points/rebounds/assists (PRA, PR, PA, RA)
+//   'double_double'      — "Double Double"
+//   'triple_double'      — "Triple Double"
+//   'turnovers'          — "Player Turnovers"
+//   'first_basket'       — "First Basket Scorer" — high-variance, illiquid
+//   'nba_prop_ambiguous' — combo containing other stats we can't bucket cleanly
+//   'other_nba_prop'     — couldn't classify (catch-all)
+//   null                 — input wasn't a market name
+//
+// Ordering matters: combos are checked BEFORE single-stat buckets so
+// "Points + Rebounds + Assists" doesn't match the points regex first.
+function classifyNbaProp(marketName) {
+  if (!marketName) return null;
+  const n = String(marketName).toLowerCase();
+
+  // Triple/double double — check before single-stat patterns
+  if (/triple\s*[-]?\s*double/.test(n)) return 'triple_double';
+  if (/double\s*[-]?\s*double/.test(n)) return 'double_double';
+
+  // First basket / first field goal — illiquid, high-variance
+  if (/first\s+(basket|field\s+goal|fg)/.test(n)) return 'first_basket';
+
+  // Combos — detect by counting how many of the core stats appear in
+  // the same market name. Use word boundaries to avoid matching
+  // "rebounds" inside other words.
+  const hasPoints   = /\bpoints?\b|\bpts\b/.test(n);
+  const hasRebounds = /\brebounds?\b|\brebs?\b|\breb\b/.test(n);
+  const hasAssists  = /\bassists?\b|\basts?\b|\bast\b/.test(n);
+  const hasThrees   = /\bthrees?\b|3[-\s]*point|3[-\s]*pt|three\s*pointer/.test(n);
+  const hasBlocks   = /\bblocks?\b|\bblks?\b/.test(n);
+  const hasSteals   = /\bsteals?\b|\bstls?\b/.test(n);
+  const praCount = (hasPoints ? 1 : 0) + (hasRebounds ? 1 : 0) + (hasAssists ? 1 : 0);
+
+  if (praCount >= 2) {
+    // Pure PRA-family combo (points/rebounds/assists in any pairing).
+    // If it ALSO mixes in threes/blocks/steals, route to ambiguous so
+    // the bucket stays clean for sizing.
+    if (hasThrees || hasBlocks || hasSteals) return 'nba_prop_ambiguous';
+    return 'pra_combo';
+  }
+
+  // Steals + blocks combo (no points/reb/ast involved)
+  if (hasSteals && hasBlocks) return 'steals_blocks';
+
+  // Any other 2+ core-stat combo (e.g. "Points + Threes", "Rebounds +
+  // Steals") that didn't match the named buckets above. Route to
+  // ambiguous so single-stat sizing doesn't get inflated by combos.
+  const statCount = praCount + (hasThrees ? 1 : 0) + (hasBlocks ? 1 : 0) + (hasSteals ? 1 : 0);
+  if (statCount >= 2) return 'nba_prop_ambiguous';
+
+  // Single-stat buckets — order from most-specific to least.
+  // Threes first since "Made Threes" can read as a points-like phrase
+  // in some books.
+  if (hasThrees) return 'threes_made';
+  if (hasBlocks) return 'blocks';
+  if (hasSteals) return 'steals';
+  if (hasRebounds) return 'rebounds';
+  if (hasAssists) return 'assists';
+  if (/\bturnovers?\b|\btos?\b/.test(n)) return 'turnovers';
+  if (hasPoints) return 'points';
+
+  // Other recognized NBA prop families we don't yet bucket
+  if (/free\s+throw|\bft\b/.test(n)) return 'other_nba_prop';
+  if (/field\s+goal|\bfg\b/.test(n)) return 'other_nba_prop';
+  if (/minutes\s+played|\bmins?\b/.test(n)) return 'other_nba_prop';
+
+  return 'other_nba_prop';
+}
+// (exported via module.exports block at end of file as _classifyNbaProp)
+
 // ---------------------------------------------------------------------------
 // STATE
 // ---------------------------------------------------------------------------
@@ -636,8 +720,12 @@ async function handleRFQ(data) {
           // restarts).
           let propType = null;
           const propMarketName = (resolveFailure && resolveFailure.lineId === lineId && resolveFailure.marketName) || null;
-          if (category === 'player_prop' && eventSport && eventSport.includes('baseball')) {
-            propType = classifyMlbProp(propMarketName);
+          if (category === 'player_prop' && eventSport) {
+            if (eventSport.includes('baseball')) {
+              propType = classifyMlbProp(propMarketName);
+            } else if (eventSport.includes('basketball')) {
+              propType = classifyNbaProp(propMarketName);
+            }
           }
           const propTag = propType ? ` [propType:${propType}]` : '';
 
@@ -1727,4 +1815,5 @@ module.exports = {
   getReceivedRfqStats,
   getQuoteCoverageStats,
   _classifyMlbProp: classifyMlbProp, // exposed for /prop-opportunity sanity testing
+  _classifyNbaProp: classifyNbaProp, // exposed for /prop-opportunity sanity testing
 };
