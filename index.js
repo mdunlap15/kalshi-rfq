@@ -977,9 +977,29 @@ function startStatusServer() {
         (r.status === 'confirmed' && r.order_uuid != null) ||
         (typeof r.status === 'string' && r.status.startsWith('settled_'));
 
+      // "Best bidder" = PX selected our quote as the winning offer.
+      // status='confirmed' fires from recordMatchedParlay (gated post
+      // Apr 25 to require sign-flip on matched_odds = our offered_odds,
+      // so the broadcast is genuinely OUR win). Includes both the
+      // 'Offered' state (no orderUuid yet, awaiting bettor accept) AND
+      // the 'Accepted' state (bettor confirmed). Settled_* rows imply
+      // accepted, which implies bid won.
+      //
+      // bestBidderRate = bidsWon / quotes — how often we win the bid.
+      // fillRate       = fills   / quotes — how often that converts to
+      //                                      a booked parlay on PX.
+      // conversion     = fills / bidsWon  — bettor follow-through rate
+      //                                      after we win their bid.
+      // The gap between bestBidderRate and fillRate is the
+      // "bettor walked during final review" cohort.
+      const isBestBidder = (r) =>
+        r.status === 'confirmed' ||
+        (typeof r.status === 'string' && r.status.startsWith('settled_'));
+
       function summarize(list) {
         const quotes = list.length;
         const fills = list.filter(isRealFill).length;
+        const bidsWon = list.filter(isBestBidder).length;
         const stakes = list.filter(r => r.confirmed_stake != null).map(r => Number(r.confirmed_stake));
         const avgStake = stakes.length ? stakes.reduce((a, b) => a + b, 0) / stakes.length : null;
         const totalStake = stakes.reduce((a, b) => a + b, 0);
@@ -992,8 +1012,11 @@ function startStatusServer() {
         const avgOfferedOdds = offeredOdds.length ? offeredOdds.reduce((a, b) => a + b, 0) / offeredOdds.length : null;
         const out = {
           quotes,
+          bidsWon,
           fills,
+          bestBidderRate: quotes > 0 ? Math.round((bidsWon / quotes) * 10000) / 100 : null, // %
           fillRate: quotes > 0 ? Math.round((fills / quotes) * 10000) / 100 : null, // %
+          conversion: bidsWon > 0 ? Math.round((fills / bidsWon) * 10000) / 100 : null, // % of best-bidder wins that the bettor accepted
           avgStake: avgStake != null ? Math.round(avgStake * 100) / 100 : null,
           totalStake: Math.round(totalStake * 100) / 100,
           settledN: settled.length,
@@ -1018,6 +1041,7 @@ function startStatusServer() {
       function summarizeNoRedBox(list) {
         const quotes = list.length;
         const fills = list.filter(isRealFill).length;
+        const bidsWon = list.filter(isBestBidder).length;
         const stakes = list.filter(r => r.confirmed_stake != null).map(r => Number(r.confirmed_stake));
         const avgStake = stakes.length ? stakes.reduce((a, b) => a + b, 0) / stakes.length : null;
         const totalStake = stakes.reduce((a, b) => a + b, 0);
@@ -1030,8 +1054,11 @@ function startStatusServer() {
         const avgOfferedOdds = offeredOdds.length ? offeredOdds.reduce((a, b) => a + b, 0) / offeredOdds.length : null;
         return {
           quotes,
+          bidsWon,
           fills,
+          bestBidderRate: quotes > 0 ? Math.round((bidsWon / quotes) * 10000) / 100 : null,
           fillRate: quotes > 0 ? Math.round((fills / quotes) * 10000) / 100 : null,
+          conversion: bidsWon > 0 ? Math.round((fills / bidsWon) * 10000) / 100 : null,
           avgStake: avgStake != null ? Math.round(avgStake * 100) / 100 : null,
           totalStake: Math.round(totalStake * 100) / 100,
           settledN: settled.length,
