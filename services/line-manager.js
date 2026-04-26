@@ -1803,6 +1803,33 @@ function getEventInfo(eventId) {
 }
 
 /**
+ * Find the primary total line for a given pxEventId. Returns the
+ * absolute over/under value (e.g., 215.5 for an NBA game with O/U
+ * 215.5). Used by the alt-total block for NBA: a leg's distance from
+ * this value determines whether it's an allowed near-primary alt or
+ * a banned far-out alt.
+ *
+ * "Primary" = the total line the line manager pre-registered from the
+ * SharpAPI feed (onDemand=false). Excludes virtually-registered
+ * (onDemand=true) entries. Returns null when no primary total is
+ * registered for the event.
+ *
+ * Both over and under selections share the same line value, so we
+ * just take the first non-onDemand total leg we find.
+ */
+function getPrimaryTotalLine(pxEventId) {
+  if (pxEventId == null) return null;
+  for (const li of Object.values(lineIndex)) {
+    if (li.pxEventId !== pxEventId) continue;
+    if (li.marketType !== 'total') continue;
+    if (li.onDemand === true) continue;
+    if (li.line == null || !Number.isFinite(Number(li.line))) continue;
+    return Math.abs(Number(li.line));
+  }
+  return null;
+}
+
+/**
  * Find the primary spread line for a given pxEventId, expressed in
  * home-team perspective (signed). Used by the alt-spread block for
  * NBA: a leg's distance from this value determines whether it's an
@@ -1858,5 +1885,6 @@ module.exports = {
   getEventName,
   getEventInfo,
   getPrimarySpreadHomePoint,
+  getPrimaryTotalLine,
   debugGolfMatching,
 };

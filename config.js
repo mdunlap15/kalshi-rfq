@@ -149,6 +149,12 @@ const config = {
     // sides)" but block anything farther OR anything we'd have to derive
     // ourselves (no books reported it).
     nbaAltSpreadMaxDistance: parseFloat(process.env.NBA_ALT_SPREAD_MAX_DISTANCE) || 2.0,
+    // Same idea as nbaAltSpreadMaxDistance but for the totals market.
+    // If primary NBA total is O/U 215.5, allow alt totals 213.5 / 214 /
+    // 214.5 / 215 / 216 / 216.5 / 217 / 217.5 (within ±2). Block farther
+    // alts. Like the spread carve-out, also requires book coverage in
+    // our altLines cache — no derived/inferred lines.
+    nbaAltTotalMaxDistance: parseFloat(process.env.NBA_ALT_TOTAL_MAX_DISTANCE) || 2.0,
     // v2 pricing engine: shadow-mode by default. When enabled, runs the
     // unified calibration-corrected + correlation-aware + EV-targeted
     // pipeline alongside v1 and logs the comparison. Does NOT affect

@@ -126,6 +126,54 @@ function isBlockedAltSpread(lineInfo) {
   return null;
 }
 
+/**
+ * NBA alt-totals analog of isBlockedAltSpread. Allows alt totals
+ * within ±config.pricing.nbaAltTotalMaxDistance points of the primary
+ * O/U line, AND only if the line has real book coverage in our alt-
+ * lines cache. Block farther alts or any without book coverage.
+ *
+ * Currently NBA-only (Mike's request 2026-04-26). Other sports'
+ * totals are not affected by this function — they pass through
+ * unrestricted (subject to other decline rules elsewhere).
+ *
+ * Returns null when the leg is allowed, or a human-readable reason
+ * string when it should be declined.
+ */
+function isBlockedAltTotal(lineInfo) {
+  if (!lineInfo) return null;
+  if (lineInfo.marketType !== 'total') return null;
+  const sport = lineInfo.sport || '';
+  if (sport !== 'basketball_nba') return null;
+  // Primary lines (line manager pre-registered): always allow
+  if (lineInfo.onDemand !== true) return null;
+  // Need a line value to compare
+  if (lineInfo.line == null) return null;
+  const lineNum = Number(lineInfo.line);
+  if (!Number.isFinite(lineNum)) return null;
+  const absLine = Math.abs(lineNum);
+  // Find primary total for this event
+  const primaryTotal = lineManager.getPrimaryTotalLine(lineInfo.pxEventId);
+  if (primaryTotal == null) {
+    return `NBA alt-total: no primary total registered for event ${lineInfo.pxEventId}`;
+  }
+  const dist = Math.abs(absLine - primaryTotal);
+  const maxDist = config.pricing.nbaAltTotalMaxDistance || 2.0;
+  if (dist > maxDist + 0.001) {
+    return `NBA alt-total outside ±${maxDist} of primary (alt=${absLine}, primary=${primaryTotal}, dist=${dist})`;
+  }
+  // Verify book coverage exists in alt-totals cache (no derived lines)
+  if (lineInfo.homeTeam && lineInfo.awayTeam) {
+    const eventKey = oddsFeed.normalizeEventKey(lineInfo.homeTeam, lineInfo.awayTeam);
+    const cacheEntry = oddsFeed.getAltLineCacheEntry(eventKey, 'totals', lineInfo.oddsApiSelection || lineInfo.selection, lineNum);
+    if (!cacheEntry || !cacheEntry.books || cacheEntry.books === 0) {
+      return `NBA alt-total: no book coverage for line ${absLine} (cache miss or 0 books)`;
+    }
+  } else {
+    return `NBA alt-total: missing team names, can't verify book coverage`;
+  }
+  return null;
+}
+
 function getSeriesFairProb(lineInfo) {
   // Detect which series market this leg belongs to. marketType carries
   // the line-manager tag for winner/spread/total; oddsApiMarket is a
@@ -1849,6 +1897,15 @@ function shouldDecline(legs) {
         declined: true,
         reason: 'alt-spread blocked',
         detail: `${lineInfo.teamName || '?'} ${lineInfo.marketType} ${lineInfo.line}: ${altReason}`,
+      };
+    }
+    // Alt-total block (NBA only — see isBlockedAltTotal).
+    const altTotalReason = isBlockedAltTotal(lineInfo);
+    if (altTotalReason) {
+      return {
+        declined: true,
+        reason: 'alt-total blocked',
+        detail: `${lineInfo.teamName || '?'} ${lineInfo.marketType} ${lineInfo.line}: ${altTotalReason}`,
       };
     }
 
