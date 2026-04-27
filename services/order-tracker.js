@@ -1391,11 +1391,54 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     }).catch(() => {});
   }
 
+  // Async backfill: when in-memory orders[] missed (very common after a
+  // Railway restart wiped the map between our quote and order.matched
+  // arriving), look up parlay_orders by parlay_id and populate ourOdds.
+  // Without this, the dashboard's OUR PRICE column shows '-' on
+  // every matched parlay we did quote on but the in-memory record had
+  // already been evicted / never reloaded. Mutates the entry object in
+  // place — matchedParlays array holds the same reference.
+  if (!weQuoted && parlayId) {
+    backfillOurOddsFromDb(entry).catch(err =>
+      log.debug('Market', `backfill ourOdds failed for ${parlayId}: ${err.message}`)
+    );
+  }
+
   if (weQuoted && outcome === 'lost') {
     log.info('Market', `Lost quote: parlay=${parlayId.substring(0,8)}, our=${entry.ourAmericanOdds}, winning=${matchedOdds}, stake=$${matchedStake}`);
   }
 
   return entry;
+}
+
+/**
+ * Look up our offeredOdds from parlay_orders for a matched parlay whose
+ * in-memory orders[] entry was missing at recordMatchedParlay time. On
+ * success: populates entry.ourOdds / ourAmericanOdds, flips weQuoted to
+ * true, and demotes outcome from 'missed' → 'lost' (we DID quote, we
+ * just lost the bid). Re-saves the updated record so future restarts
+ * preserve the backfilled state. Idempotent — safe to call multiple
+ * times on the same entry; only mutates if a new value is found.
+ */
+async function backfillOurOddsFromDb(entry) {
+  if (!entry || !entry.parlayId) return;
+  if (entry.ourAmericanOdds != null) return; // already populated
+  if (entry._backfillAttempted) return; // don't repeat lookup
+  entry._backfillAttempted = true;
+  const map = await db.loadOrdersByParlayIds([entry.parlayId]);
+  const row = map && map[entry.parlayId];
+  if (!row || row.offeredOdds == null) return;
+  entry.ourOdds = row.offeredOdds;
+  entry.ourAmericanOdds = row.offeredOdds;
+  entry.weQuoted = true;
+  // 'missed' meant "we never quoted." Now we know we did quote — flip to
+  // 'lost' so the dashboard renders the row as "Outbid" not "No Quote".
+  if (entry.outcome === 'missed') entry.outcome = 'lost';
+  // Persist the updated record so the next /market-intel fetch (or the
+  // next restart's reload) carries the backfilled values.
+  db.saveMatchedParlay(entry).catch(err =>
+    log.debug('Market', `saveMatchedParlay (backfill) failed for ${entry.parlayId}: ${err.message}`)
+  );
 }
 
 function decToAm(dec) {
@@ -1803,6 +1846,19 @@ function buildRiskLimitMissedVolume() {
 }
 
 function getMarketIntel(limit = 50) {
+  // Lazy backfill: scan recent matched parlays for entries missing
+  // ourAmericanOdds and trigger async DB lookup for them. Each entry
+  // sets _backfillAttempted on first call so we don't re-query on every
+  // /market-intel poll. Mutations land on the entries before the next
+  // dashboard render. Bounded to the rendered window (limit) plus a
+  // small lookahead so we don't scan the entire 5000-entry buffer.
+  const backfillScan = matchedParlays.slice(0, Math.min(limit + 50, matchedParlays.length));
+  for (const m of backfillScan) {
+    if (m && m.ourAmericanOdds == null && m.parlayId && !m._backfillAttempted) {
+      backfillOurOddsFromDb(m).catch(() => {});
+    }
+  }
+
   return {
     stats: { ...marketStats },
     // Session-scoped fill-rate counters keyed by rawSport|legCount.
