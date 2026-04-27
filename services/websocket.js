@@ -813,22 +813,28 @@ async function handleRFQ(data) {
 
               // Async shadow-price + persist. Two-tier source strategy:
               //   1. SharpAPI cache (sync, fast)
-              //   2. The Odds API fallback (async HTTP, only on no_event_match)
-              // SharpAPI Hobby tier covers ~4 of ~15 MLB games per slate;
-              // TOA fills the rest. Both run fire-and-forget so the decline
-              // path is never blocked.
+              //   2. The Odds API fallback (async HTTP) when SharpAPI didn't
+              //      produce a usable fair prob — covers BOTH:
+              //        - no_event_match (game not in Hobby tier prop slate, ~38% of legs)
+              //        - matched_no_devig (book only priced one side, ~62% of SharpAPI matches)
+              // n=13 measured 61.5% combined fair-prob coverage with TOA only on
+              // the first case; adding the second case projects to ~92%. Both run
+              // fire-and-forget so the decline path is never blocked.
+              const usableFairProb = (l) => l && l.fairProbOver != null && l.fairProbUnder != null;
               (async () => {
                 let lookup = oddsFeed.lookupPlayerStrikeoutProp('baseball_mlb', eventCtx, captured.playerName, captured.lineNum);
                 let source = 'sharpapi';
-                if (lookup && lookup.error === 'no_event_match') {
-                  // SharpAPI Hobby doesn't have this game's props. Try TOA.
+                if (!usableFairProb(lookup)) {
+                  // SharpAPI didn't give us a usable fair prob — could be:
+                  //   - error: no_event_match | no_player_match | no_line_match
+                  //   - matched OK but books_with_both_sides=0 (DK Over-only)
+                  // Try TOA, which queries 4-5 books and caches per-event.
                   const toaLookup = await oddsFeed.lookupPlayerStrikeoutPropFromTheOddsApi(
                     'baseball_mlb', eventCtx, captured.playerName, captured.lineNum,
                   );
                   if (toaLookup) {
-                    // Use TOA result (success OR a different error than SharpAPI's).
-                    // If TOA also failed with no_event_match, keep that — at least
-                    // the shadow row will show both sources tried and failed.
+                    // Use TOA result. If TOA also failed, the row still records
+                    // its stages — useful to see that BOTH sources were tried.
                     lookup = toaLookup;
                     source = 'theoddsapi';
                   }
