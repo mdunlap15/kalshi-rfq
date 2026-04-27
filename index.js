@@ -1156,6 +1156,149 @@ function startStatusServer() {
     }
   });
 
+  // Detailed bid-comparison report. For every matched parlay in the
+  // window (bettor's parlay got filled by SOME SP), surface our price
+  // alongside the winning price so the operator can calibrate vig.
+  // Cross-references matched_parlays.matched_odds against parlay_orders.
+  // offered_odds (matched_parlays.our_odds is often null because the
+  // in-memory orders[] map gets reset on restart before order.matched
+  // arrives — so we look it up by parlay_id from the persisted table).
+  //
+  // Query params:
+  //   days  (default 1)  — window for matched-parlay scan
+  //   sport (default '') — empty for all, 'baseball_mlb' / etc. to filter
+  //   propsOnly (default 0) — '1' to restrict to K-prop containing parlays
+  app.get('/bid-comparison', async (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(7, parseInt(req.query.days) || 1));
+      const propsOnly = req.query.propsOnly === '1' || req.query.propsOnly === 'true';
+      const sportFilter = (req.query.sport || '').trim();
+      const fromIso = new Date(Date.now() - days * 86400000).toISOString();
+
+      const sb = db.getClient();
+      if (!sb) return res.status(500).json({ ok: false, error: 'no DB' });
+
+      // 1. Pull matched parlays in window. Apply K-prop server-side filter
+      //    when propsOnly so we don't drag down every match for nothing.
+      let query = sb.from('matched_parlays')
+        .select('parlay_id, matched_at, matched_odds, matched_stake, our_odds, outcome, legs, leg_count')
+        .gte('matched_at', fromIso)
+        .order('matched_at', { ascending: false });
+      if (propsOnly) {
+        query = query.or('legs.cs.[{"market":"player_strikeouts"}],legs.cs.[{"marketType":"player_strikeouts"}]');
+      }
+      const { data: matches, error: mErr } = await query.limit(2000);
+      if (mErr) return res.status(500).json({ ok: false, error: mErr.message });
+
+      // 2. Batch-lookup our parlay_orders for these parlay IDs to backfill
+      //    our_odds when matched_parlays.our_odds is null (in-memory state
+      //    lost on restart).
+      const ids = (matches || []).map(m => m.parlay_id).filter(Boolean);
+      const orderById = {};
+      for (let i = 0; i < ids.length; i += 100) {
+        const chunk = ids.slice(i, i + 100);
+        const { data } = await sb.from('parlay_orders')
+          .select('parlay_id, status, offered_odds, fair_parlay_prob, confirmed_odds, confirmed_stake')
+          .in('parlay_id', chunk);
+        for (const r of (data || [])) orderById[r.parlay_id] = r;
+      }
+
+      // 3. Helper: American → bettor implied probability.
+      const amToImplied = (a) => {
+        if (a == null) return null;
+        const n = Number(a);
+        if (!Number.isFinite(n) || n === 0) return null;
+        return n > 0 ? 100 / (n + 100) : Math.abs(n) / (Math.abs(n) + 100);
+      };
+
+      // 4. Build comparison rows + aggregate.
+      const rows = [];
+      const summary = {
+        totalMatches: 0,
+        weQuoted: 0,
+        weMissed: 0,
+        weWon: 0,
+        weLost: 0,
+        avgGapPpWhenQuoted: null,
+        avgGapPpWhenLost: null,
+        ourWinRateWhenQuoted: null,
+      };
+      const gapsWhenQuoted = [];
+      const gapsWhenLost = [];
+
+      for (const m of (matches || [])) {
+        // Sport filter: any leg matches the sport string
+        if (sportFilter) {
+          const legs = m.legs || [];
+          const hasMatch = legs.some(l => (l.sport || l.oddsApiSport) === sportFilter);
+          if (!hasMatch) continue;
+        }
+        summary.totalMatches++;
+        const order = orderById[m.parlay_id] || null;
+        const ourOdds = (m.our_odds != null ? m.our_odds
+          : order && order.offered_odds != null ? Number(order.offered_odds)
+          : null);
+        const matched = m.matched_odds != null ? Number(m.matched_odds) : null;
+        const ourImpl = amToImplied(ourOdds);
+        const matchedImpl = amToImplied(matched);
+        const gapPp = (ourImpl != null && matchedImpl != null)
+          ? Math.round((matchedImpl - ourImpl) * 1000) / 10  // pp, 1 decimal
+          : null;
+
+        const weQuoted = (ourOdds != null);
+        if (weQuoted) summary.weQuoted++;
+        else summary.weMissed++;
+        if (m.outcome === 'won') summary.weWon++;
+        else if (weQuoted) summary.weLost++;
+
+        if (gapPp != null && weQuoted) gapsWhenQuoted.push(gapPp);
+        if (gapPp != null && weQuoted && m.outcome !== 'won') gapsWhenLost.push(gapPp);
+
+        rows.push({
+          matchedAt: m.matched_at,
+          parlayId: m.parlay_id,
+          legCount: m.leg_count || (m.legs || []).length,
+          legs: (m.legs || []).map(l => {
+            const team = l.team || l.teamName || l.selection || l.playerName || '?';
+            const sel = l.selection && /^(over|under)$/i.test(l.selection)
+              ? ' ' + l.selection.charAt(0).toUpperCase() + l.selection.slice(1).toLowerCase()
+              : '';
+            const lineStr = l.line != null ? ' ' + l.line : '';
+            return team + sel + lineStr;
+          }),
+          stake: m.matched_stake,
+          matchedOdds: matched,
+          ourOdds,
+          ourStatus: order ? order.status : null,
+          gapPp,
+          outcome: m.outcome,
+          ourQuoted: weQuoted,
+        });
+      }
+
+      const avg = (a) => a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length * 10) / 10 : null;
+      summary.avgGapPpWhenQuoted = avg(gapsWhenQuoted);
+      summary.avgGapPpWhenLost = avg(gapsWhenLost);
+      summary.ourWinRateWhenQuoted = summary.weQuoted > 0
+        ? Math.round((summary.weWon / summary.weQuoted) * 10000) / 100
+        : null;
+
+      res.json({
+        ok: true,
+        generatedAt: new Date().toISOString(),
+        windowDays: days,
+        filters: { sport: sportFilter || null, propsOnly },
+        summary,
+        // Most recent first; cap at 200 in response to keep payload sane
+        rows: rows.slice(0, 200),
+        rowsTruncated: rows.length > 200,
+      });
+    } catch (err) {
+      log.error('API', `/bid-comparison failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/orders', (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     // Stamp each order with isStalePhantom computed server-side so the
