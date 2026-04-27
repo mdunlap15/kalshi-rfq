@@ -1027,7 +1027,19 @@ function priceParlay(legs, opts = {}) {
     _eventCounts[eid] = (_eventCounts[eid] || 0) + 1;
   }
   const isSGPParlay = Object.values(_eventCounts).some(c => c >= 2);
-  const sgpVigMult = isSGPParlay ? Math.max(1, config.pricing.sgpVigMultiplier || 1) : 1;
+  // Opposing-pitcher K-prop SGPs (kprop_kprop) are functionally
+  // independent — two pitchers in the same game throw to different
+  // batters and their K-counts barely correlate. Books (DK in
+  // particular) treat them as independent and apply only normal vig,
+  // not SGP-widened vig. Without this carve-out we offer ~80 American
+  // odds points tighter than DK on the same combo (operator-flagged
+  // 2026-04-27, Boyd + Vasquez K-prop SGP example: DK +395 vs ours
+  // +314). Suppress sgpVigMult for kprop_kprop so per-leg vig stays at
+  // the normal prop floor (3%) instead of widening to 4.2%.
+  const skipSgpVig = (opts.sgpCombo === 'kprop_kprop');
+  const sgpVigMult = (isSGPParlay && !skipSgpVig)
+    ? Math.max(1, config.pricing.sgpVigMultiplier || 1)
+    : 1;
 
   // ---- SGP CORRELATION ADJUSTMENT ----
   // The naive product of fair leg probs understates the true joint prob
