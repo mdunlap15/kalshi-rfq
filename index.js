@@ -726,10 +726,31 @@ function startStatusServer() {
   //
   // Operator polls this every few hours over a 24-48h window. Phase 1
   // proceeds only if pitcher_strikeouts ≥10% of total player_prop volume.
+  // TTL cache for /prop-opportunity. The Supabase scan is the slow
+  // part — 250k rows × 1000-row pagination = ~250 sequential round-
+  // trips to Supabase, ~30s for a 1d window. Dashboard refreshes hit
+  // this endpoint repeatedly; without a cache every refresh pays the
+  // full scan cost. 60s TTL is fine — the data is a rolling window of
+  // declines, sub-minute freshness isn't material.
+  //
+  // Cache key includes `days` so different windows don't share entries.
+  // `nocache=1` query param bypasses (for the rare case operator wants
+  // a forced fresh read).
+  const propOppCache = new Map(); // days -> { ts, payload }
+  const PROP_OPP_TTL_MS = 60_000;
   app.get('/prop-opportunity', async (req, res) => {
     try {
       const days = Math.min(7, Math.max(1, parseInt(req.query.days) || 2));
-      const stats = orderTracker.getAlerts ? null : null; // placeholder; real read below
+      const noCache = req.query.nocache === '1';
+      if (!noCache) {
+        const hit = propOppCache.get(days);
+        if (hit && (Date.now() - hit.ts) < PROP_OPP_TTL_MS) {
+          return res.json({
+            ...hit.payload,
+            cache: { hit: true, ageMs: Date.now() - hit.ts, ttlMs: PROP_OPP_TTL_MS },
+          });
+        }
+      }
 
       // ---- In-memory snapshot ----
       const memBucket = (orderTracker.getDeclineStatsSnapshot
@@ -854,8 +875,9 @@ function startStatusServer() {
         log.warn('PropOpportunity', `DB scan failed: ${err.message}`);
       }
 
-      res.json({
+      const payload = {
         ok: true,
+        generatedAt: new Date().toISOString(),
         gatingThreshold: '≥10% pitcher_strikeouts of MLB-classified player_prop volume → proceed to Phase 1',
         inMemorySinceBoot: {
           // True total across all sports (NBA + NHL + MLB + ...)
@@ -881,7 +903,9 @@ function startStatusServer() {
           sampleLegs: (playerPropBucket.sampleLegs || []).slice(0, 10),
         },
         persistedWindow: dbBreakdown || { error: 'DB unavailable or no data' },
-      });
+      };
+      propOppCache.set(days, { ts: Date.now(), payload });
+      res.json({ ...payload, cache: { hit: false, ttlMs: PROP_OPP_TTL_MS } });
     } catch (err) {
       log.error('API', `/prop-opportunity failed: ${err.message}`);
       res.status(500).json({ ok: false, error: err.message });
