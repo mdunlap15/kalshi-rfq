@@ -1181,7 +1181,7 @@ function startStatusServer() {
       // 1. Pull matched parlays in window. Apply K-prop server-side filter
       //    when propsOnly so we don't drag down every match for nothing.
       let query = sb.from('matched_parlays')
-        .select('parlay_id, matched_at, matched_odds, matched_stake, our_odds, outcome, legs, leg_count')
+        .select('parlay_id, matched_at, matched_odds, matched_stake, our_odds, outcome, legs')
         .gte('matched_at', fromIso)
         .order('matched_at', { ascending: false });
       if (propsOnly) {
@@ -1257,7 +1257,7 @@ function startStatusServer() {
         rows.push({
           matchedAt: m.matched_at,
           parlayId: m.parlay_id,
-          legCount: m.leg_count || (m.legs || []).length,
+          legCount: (m.legs || []).length,
           legs: (m.legs || []).map(l => {
             const team = l.team || l.teamName || l.selection || l.playerName || '?';
             const sel = l.selection && /^(over|under)$/i.test(l.selection)
