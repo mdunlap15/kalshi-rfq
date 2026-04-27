@@ -1988,6 +1988,36 @@ function shouldDecline(legs) {
     };
   }
 
+  // Pre-pass for STRUCTURAL prop-correlation rules that should outrank
+  // per-leg quality reasons (no_fair_value, low_confidence, stale). A
+  // parlay containing two K-prop legs on the same pitcher is correlated
+  // by construction — declining for "BetRivers-alone" instead of
+  // "two legs on the same pitcher" misnames the actual problem and would
+  // also approve the parlay if BetRivers happened to be FD/DK.
+  //
+  // Only handles the same-pitcher case here; same-game correlation rule
+  // (d) requires the full carve-out logic and stays in its post-loop
+  // position so we don't double-implement the K+ML SGP allowance.
+  {
+    const seen = {};
+    for (const leg of legs) {
+      const lineId = leg.line_id || leg.lineId || leg;
+      const lineInfo = lineManager.lookupLine(lineId);
+      if (!lineInfo) continue; // 'unknown legs' will fire in the main loop
+      if (lineInfo.marketType !== 'player_strikeouts') continue;
+      const player = (lineInfo.playerName || '').toLowerCase().trim();
+      if (!player) continue;
+      if (seen[player]) {
+        return {
+          declined: true,
+          reason: 'prop_correlation_same_pitcher',
+          detail: `Two legs on pitcher "${lineInfo.playerName}" in same parlay (lines ${seen[player]} + ${lineInfo.line})`,
+        };
+      }
+      seen[player] = lineInfo.line;
+    }
+  }
+
   // Check all legs are known and events haven't started.
   // Uses pre-computed lineInfo.startTimeMs (parsed lazily on first lookupLine
   // and cached on the object) to avoid re-parsing the ISO string per RFQ.
