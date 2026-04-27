@@ -5863,7 +5863,20 @@ const TEAM_ABBREV_TO_CANONICAL = {
  * with the Odds API / PX full-name versions in the cache.
  */
 function cleanTeamName(name) {
-  const stripped = (name || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const stripped = (name || '')
+    // Trailing parenthetical (MLB starter, e.g. "Yankees (Cole)"). Existing.
+    .replace(/\s*\([^)]*\)\s*$/, '')
+    // Leading "Game N:" / "Game N -" prefix that SharpAPI prepends to
+    // team names during NBA/NHL playoff series. Without this strip the
+    // cached awayTeam ends up as "Game 5: Minnesota Timberwolves",
+    // which breaks resolveOddsApiEventId() in the H1 / F5 / team-totals
+    // supplements (TOA has the canonical name "Minnesota Timberwolves",
+    // not the prefixed form). Result: supplement silently skips the
+    // event, markets.h2h_h1 never populated, RFQs for that event's
+    // playoff H1/F5/team-total markets decline as "no fair value".
+    // Operator-flagged 2026-04-27 (Nuggets H1 ML decline screenshot).
+    .replace(/^Game\s+\d+\s*[:\-]\s*/i, '')
+    .trim();
   return TEAM_ABBREV_TO_CANONICAL[stripped] || stripped;
 }
 
