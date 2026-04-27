@@ -354,21 +354,28 @@ async function saveDecline(entry) {
   }
 }
 
-async function loadDeclines(limit = 2000) {
+async function loadDeclines(limit = 2000, opts = {}) {
   const db = getClient();
   if (!db) return [];
   const PAGE_SIZE = 1000;
   const all = [];
+  // Optional date range filter — without this the query scans the full
+  // declines table from newest first, which hits Supabase's statement
+  // timeout once the table grows past ~10k rows. Callers that only need
+  // recent declines (e.g. /prop-performance windowing on last N days)
+  // should pass `fromIso` to bound the scan.
+  const fromIso = opts.fromIso || null;
   try {
     let offset = 0;
     while (offset < limit) {
       const pageSize = Math.min(PAGE_SIZE, limit - offset);
-      const { data, error } = await db
+      let query = db
         .from('declines')
         .select('*')
         .order('declined_at', { ascending: false, nullsFirst: false })
-        .order('id', { ascending: true })
-        .range(offset, offset + pageSize - 1);
+        .order('id', { ascending: true });
+      if (fromIso) query = query.gte('declined_at', fromIso);
+      const { data, error } = await query.range(offset, offset + pageSize - 1);
       if (error) {
         log.warn('DB', `loadDeclines failed (table may not exist yet): ${error.message}`);
         return [];

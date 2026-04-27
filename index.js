@@ -1011,8 +1011,9 @@ function startStatusServer() {
       // ---- Pull data ----
       const allOrders = await db.loadOrdersInDateRange(fromIso, toIso);
       const kOrders = allOrders.filter(isKPropOrder);
-      const allDeclines = await db.loadDeclines(20000);
-      const recentDeclines = allDeclines.filter(d => d.declinedAt && d.declinedAt >= fromIso);
+      // Pass fromIso to bound the declines scan — without it, loadDeclines
+      // hits Supabase's statement timeout on large windowed datasets.
+      const recentDeclines = await db.loadDeclines(20000, { fromIso });
       const kDeclines = recentDeclines.filter(isKPropDecline);
 
       // ---- Funnel ----
