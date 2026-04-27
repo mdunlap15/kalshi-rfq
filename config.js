@@ -51,6 +51,12 @@ const config = {
     // baseVig + favorite ramp, so extreme favorites still pay more.
     // Default 0.05 (5%); tunable via VIG_SERIES_MIN env var.
     vigSeriesMin: parseFloat(process.env.VIG_SERIES_MIN) || 0.05,
+    // Pitcher strikeouts prop floor — minimum per-leg vig applied to
+    // marketType='player_strikeouts' legs. Skips the favorite-slope
+    // ramp that game-line legs use because props don't have favorites
+    // in the team-line sense. Conservative floor for MVP; can lower
+    // once Phase 2 proves +EV at scale.
+    vigPropFloor: parseFloat(process.env.VIG_PROP_FLOOR) || 0.03,
     // Threshold on NBA series_winner favorite pricing. If our fair prob
     // for an NBA series_winner favorite exceeds this cutoff (default
     // -250 = 250/350 = 0.7143 fair prob), we quote at DK's posted book
@@ -268,6 +274,13 @@ const config = {
     confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
     offerValidSeconds: parseInt(process.env.OFFER_VALID_SECONDS) || 60,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
+    // Phase 2 prop quoting caps — conservative initial limits for
+    // pitcher_strikeouts MVP. Tightens MAX_RISK_PER_PARLAY to a smaller
+    // amount when the parlay contains any prop leg, and adds a per-
+    // pitcher exposure cap that aggregates across all parlays containing
+    // the same (pxEventId, playerName) prop. Tunable via env vars.
+    maxRiskPerParlayWithProp: parseFloat(process.env.MAX_RISK_PER_PARLAY_WITH_PROP) || 200,
+    maxExposurePerPitcher: parseFloat(process.env.MAX_EXPOSURE_PER_PITCHER) || 500,
     // Per-event aggregate cap. Sums SP-risk across ALL legs touching one
     // pxEventId (regardless of team or market), preventing two-sided
     // event stacking that the per-team cap can't see — e.g. Lakers spread

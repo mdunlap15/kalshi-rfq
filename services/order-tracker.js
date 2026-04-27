@@ -232,6 +232,14 @@ const declineIdOrder = []; // FIFO to cap memory
 const gameExposure = {};  // keyed by pxEventId
 // Legacy team exposure kept for backward compat with dashboard
 const exposure = {};
+// Phase 2 prop exposure — per-pitcher aggregate risk across all confirmed
+// parlays containing a player_strikeouts leg for that pitcher's game.
+// Key: `${pxEventId}|${normalizedPlayerName}`. Risk = sum of full
+// confirmedStake from each containing parlay (overly cautious; refined
+// later if needed). Used by checkPitcherExposure to gate new RFQs against
+// the per-pitcher cap. Parallel to gameExposure / exposure — does NOT
+// participate in the netExposure offsetting model.
+const pitcherExposure = {};
 
 // ---------------------------------------------------------------------------
 // PENDING EXPOSURE — reservations for quotes not yet confirmed.
@@ -2298,8 +2306,40 @@ function addExposure(order) {
     }
   }
 
+  // Phase 2: per-pitcher exposure for player_strikeouts legs. Add full
+  // confirmedStake against each pitcher in the parlay (overly cautious
+  // — could refine to leg-conditional risk, but flat full-stake math is
+  // easier to reason about and bounds risk safely for MVP).
+  for (const leg of legs) {
+    if (leg.marketType !== 'player_strikeouts') continue;
+    const key = pitcherKeyForLeg(leg);
+    if (!key) continue;
+    if (!pitcherExposure[key]) {
+      pitcherExposure[key] = {
+        risk: 0,
+        parlays: new Set(),
+        playerName: leg.playerName || leg.teamName || null,
+        pxEventId: leg.pxEventId || null,
+      };
+    }
+    pitcherExposure[key].risk += payout;
+    pitcherExposure[key].parlays.add(order.parlayId);
+  }
+
   // Recalculate net exposure for all affected games
   recalcNetExposure();
+}
+
+/**
+ * Compute the pitcherExposure key for a leg. Returns null if the leg
+ * isn't a player_strikeouts leg or is missing required fields.
+ */
+function pitcherKeyForLeg(leg) {
+  if (!leg || leg.marketType !== 'player_strikeouts') return null;
+  const player = leg.playerName || leg.teamName;
+  if (!player) return null;
+  const eid = leg.pxEventId || 'unknown';
+  return `${eid}|${normalizeExposureKey(player)}`;
 }
 
 /**
@@ -2347,7 +2387,52 @@ function removeExposure(order) {
     }
   }
 
+  // Phase 2: mirror the per-pitcher exposure removal.
+  for (const leg of legs) {
+    if (leg.marketType !== 'player_strikeouts') continue;
+    const pkey = pitcherKeyForLeg(leg);
+    if (!pkey || !pitcherExposure[pkey]) continue;
+    pitcherExposure[pkey].risk -= payout;
+    pitcherExposure[pkey].parlays.delete(order.parlayId);
+    if (pitcherExposure[pkey].parlays.size === 0 || pitcherExposure[pkey].risk <= 0) {
+      delete pitcherExposure[pkey];
+    }
+  }
+
   recalcNetExposure();
+}
+
+/**
+ * Check if accepting a new parlay containing one or more player_strikeouts
+ * legs would push the per-pitcher exposure over the cap. Called from
+ * pricer.shouldDecline. Returns null if all clear, otherwise an object
+ * with details for the decline reason.
+ */
+function checkPitcherExposure(legs, additionalRisk, maxPerPitcher) {
+  if (!Array.isArray(legs) || legs.length === 0) return null;
+  if (!(additionalRisk > 0)) return null;
+  for (const leg of legs) {
+    // pricer.js shouldDecline iterates legs as { lineInfo, ... } objects;
+    // accept either shape so this works whether called with raw legs or
+    // resolved-leg wrappers.
+    const li = leg.lineInfo || leg;
+    if (li.marketType !== 'player_strikeouts') continue;
+    const key = pitcherKeyForLeg(li);
+    if (!key) continue;
+    const current = pitcherExposure[key]?.risk || 0;
+    const wouldBe = current + additionalRisk;
+    if (wouldBe > maxPerPitcher) {
+      return {
+        exceeded: true,
+        pitcher: li.playerName || li.teamName,
+        pxEventId: li.pxEventId,
+        current: Math.round(current * 100) / 100,
+        wouldBe: Math.round(wouldBe * 100) / 100,
+        max: maxPerPitcher,
+      };
+    }
+  }
+  return null;
 }
 
 /**
@@ -4777,6 +4862,7 @@ module.exports = {
   checkGameExposure,
   getSeriesEventRisk,
   checkSeriesExposure,
+  checkPitcherExposure,
   getRecentOrders,
   getStats,
   getPnLBySport,

@@ -6308,6 +6308,7 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
     fairProbUnder: avg(fairProbsUnder),
     booksWithBothSides: fairProbsOver.length, // count of books that had both Over+Under
     resolvedEventId,
+    fetchedAt: sportCache.fetchedAt || null, // for downstream stale checks
     stages,
   };
 }
@@ -6497,6 +6498,7 @@ async function lookupPlayerStrikeoutPropFromTheOddsApi(sport, pxEventInfo, playe
     fairProbUnder: avg(fairProbsUnder),
     booksWithBothSides: fairProbsOver.length,
     resolvedEventId: event.id,
+    fetchedAt: odds.fetchedAt || null, // for downstream stale checks
     stages,
   };
 }

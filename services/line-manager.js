@@ -1392,6 +1392,7 @@ async function resolveUnknownLine(rfqLeg) {
               booksWithBothSides: lookup && lookup.booksWithBothSides != null ? lookup.booksWithBothSides : null,
               propBooks: lookup && lookup.books ? lookup.books : null,
               propSource,
+              propFetchedAt: lookup && lookup.fetchedAt ? lookup.fetchedAt : Date.now(),
               propMatchError: lookup && lookup.error ? lookup.error : null,
               propMatchStages: lookup && lookup.stages ? lookup.stages : null,
             };
