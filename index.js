@@ -960,6 +960,160 @@ function startStatusServer() {
     }
   });
 
+  // Phase 2 K-prop performance dashboard data. One-stop view of:
+  //   - Funnel (RFQs → declines by reason → quotes → fills → settled)
+  //   - Competitiveness (avg pp distance from fair, won/lost bid breakdown)
+  //   - Modeled EV per dollar wagered on settled K-prop fills
+  //   - Live per-pitcher exposure
+  //
+  // Query params:
+  //   days (default 7) — window for orders + declines lookback
+  app.get('/prop-performance', async (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(30, parseInt(req.query.days) || 7));
+      const fromIso = new Date(Date.now() - days * 86400000).toISOString();
+      const toIso = new Date().toISOString();
+
+      // K-prop heuristic on a parlay row: any leg has marketType / market
+      // === 'player_strikeouts'. Uses raw-DB-shape (snake_case) since
+      // loadOrdersInDateRange returns Supabase rows directly.
+      const isKPropOrder = (o) => {
+        const legs = o.legs || (o.meta && o.meta.legs) || [];
+        return Array.isArray(legs) && legs.some(l =>
+          l && (l.marketType === 'player_strikeouts' || l.market === 'player_strikeouts')
+        );
+      };
+
+      // K-prop heuristic on a decline row: either the reason is a
+      // prop-specific reason we now emit, OR the unknown_details array
+      // contains a [propType:pitcher_strikeouts] tag (Phase 0 marker).
+      const PROP_REASONS = new Set([
+        'prop_pricing_not_ready', 'prop_no_fair_value', 'prop_low_confidence',
+        'prop_stale', 'prop_correlation_same_game', 'prop_correlation_same_pitcher',
+        'pitcher_exposure_cap',
+      ]);
+      const isKPropDecline = (d) => {
+        if (PROP_REASONS.has(d.reason)) return true;
+        const details = d.unknown_details || [];
+        return Array.isArray(details) && details.some(s =>
+          typeof s === 'string' && /\[propType:pitcher_strikeouts\]/.test(s)
+        );
+      };
+
+      // ---- Pull data ----
+      const allOrders = await db.loadOrdersInDateRange(fromIso, toIso);
+      const kOrders = allOrders.filter(isKPropOrder);
+      const allDeclines = await db.loadDeclines(20000);
+      const recentDeclines = allDeclines.filter(d => d.declinedAt && d.declinedAt >= fromIso);
+      const kDeclines = recentDeclines.filter(isKPropDecline);
+
+      // ---- Funnel ----
+      const declinesByReason = {};
+      for (const d of kDeclines) {
+        declinesByReason[d.reason] = (declinesByReason[d.reason] || 0) + 1;
+      }
+
+      const byStatus = {};
+      for (const o of kOrders) {
+        const s = o.status || 'unknown';
+        byStatus[s] = (byStatus[s] || 0) + 1;
+      }
+      const isBidWon = (o) => o.status === 'confirmed'
+        || (typeof o.status === 'string' && o.status.startsWith('settled_'));
+      const isFill = (o) => o.confirmed_stake != null && Number(o.confirmed_stake) > 0
+        && (o.status === 'confirmed' || (typeof o.status === 'string' && o.status.startsWith('settled_')));
+      const settledOrders = kOrders.filter(o => (o.status || '').startsWith('settled_'));
+
+      const funnel = {
+        windowDays: days,
+        rfqsWithKProp: kOrders.length + kDeclines.length, // rough — orders we quoted + declines that mentioned K props
+        declined: kDeclines.length,
+        declinedByReason: declinesByReason,
+        quoted: kOrders.length,
+        bidsWon: kOrders.filter(isBidWon).length,
+        filled: kOrders.filter(isFill).length,
+        settled: settledOrders.length,
+      };
+
+      // ---- Competitiveness (vs Pinnacle/DK/FD on fair-prob distance) ----
+      // For each K-prop quote, compare offered_implied_prob to fair_parlay_prob
+      // to compute distance in pp. Aggregate by status (won bid vs lost).
+      const americanToImplied = (a) => {
+        if (a == null) return null;
+        const n = Number(a);
+        if (!Number.isFinite(n) || n === 0) return null;
+        return n > 0 ? 100 / (n + 100) : Math.abs(n) / (Math.abs(n) + 100);
+      };
+      const distances = [];
+      for (const o of kOrders) {
+        const fair = o.fair_parlay_prob != null ? Number(o.fair_parlay_prob) : null;
+        const offered = americanToImplied(o.offered_odds);
+        if (fair == null || offered == null) continue;
+        distances.push({
+          parlayId: o.parlay_id,
+          status: o.status,
+          fairProb: fair,
+          offeredProb: offered,
+          distancePp: (offered - fair) * 100,
+          wonBid: isBidWon(o),
+        });
+      }
+      const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+      const competitiveness = {
+        sample: distances.length,
+        avgDistancePp: avg(distances.map(d => d.distancePp)),
+        wonBidAvgDistancePp: avg(distances.filter(d => d.wonBid).map(d => d.distancePp)),
+        lostBidAvgDistancePp: avg(distances.filter(d => !d.wonBid).map(d => d.distancePp)),
+      };
+
+      // ---- Modeled EV on settled K-prop fills ----
+      // SP perspective: positive = we expected to profit
+      const americanToDecimal = (a) => {
+        if (a == null) return null;
+        const n = Number(a);
+        if (!Number.isFinite(n) || n === 0) return null;
+        return n > 0 ? 1 + n / 100 : 1 + 100 / Math.abs(n);
+      };
+      let totalStake = 0, totalModeledEV = 0, totalRealizedPnL = 0, evN = 0;
+      for (const o of settledOrders) {
+        const fp = o.fair_parlay_prob != null ? Number(o.fair_parlay_prob) : null;
+        const stake = o.confirmed_stake != null ? Number(o.confirmed_stake) : 0;
+        const dec = americanToDecimal(o.offered_odds);
+        if (fp == null || dec == null || stake <= 0) continue;
+        const profitIfWin = stake * (dec - 1);
+        const modeledEV = (1 - fp) * stake - fp * profitIfWin;
+        totalStake += stake;
+        totalModeledEV += modeledEV;
+        totalRealizedPnL += o.pnl != null ? Number(o.pnl) : 0;
+        evN++;
+      }
+      const evSection = {
+        settledN: evN,
+        totalStake: Math.round(totalStake * 100) / 100,
+        modeledEvPerDollar: totalStake > 0 ? Math.round((totalModeledEV / totalStake) * 10000) / 10000 : null,
+        realizedPnLPerDollar: totalStake > 0 ? Math.round((totalRealizedPnL / totalStake) * 10000) / 10000 : null,
+        modeledEvDollars: Math.round(totalModeledEV * 100) / 100,
+        realizedPnLDollars: Math.round(totalRealizedPnL * 100) / 100,
+        note: evN < 30 ? `Sample too small for confident EV estimation (n=${evN}). Wait for n≥30 settled K-prop fills.` : null,
+      };
+
+      // ---- Live per-pitcher exposure ----
+      const pitcherExposure = orderTracker.getPitcherExposureSnapshot();
+
+      res.json({
+        ok: true,
+        generatedAt: new Date().toISOString(),
+        funnel,
+        competitiveness,
+        ev: evSection,
+        pitcherExposure,
+      });
+    } catch (err) {
+      log.error('API', `/prop-performance failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/orders', (req, res) => {
     const limit = parseInt(req.query.limit) || 100;
     // Stamp each order with isStalePhantom computed server-side so the

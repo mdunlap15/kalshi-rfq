@@ -2408,6 +2408,25 @@ function removeExposure(order) {
  * pricer.shouldDecline. Returns null if all clear, otherwise an object
  * with details for the decline reason.
  */
+/**
+ * Snapshot of all live per-pitcher exposure entries. Used by the
+ * /prop-performance endpoint to surface concentration risk.
+ */
+function getPitcherExposureSnapshot() {
+  const out = [];
+  for (const [key, v] of Object.entries(pitcherExposure)) {
+    out.push({
+      key,
+      pxEventId: v.pxEventId,
+      playerName: v.playerName,
+      risk: Math.round((v.risk || 0) * 100) / 100,
+      parlayCount: v.parlays ? v.parlays.size : 0,
+      parlayIds: v.parlays ? [...v.parlays] : [],
+    });
+  }
+  return out.sort((a, b) => b.risk - a.risk);
+}
+
 function checkPitcherExposure(legs, additionalRisk, maxPerPitcher) {
   if (!Array.isArray(legs) || legs.length === 0) return null;
   if (!(additionalRisk > 0)) return null;
@@ -4863,6 +4882,7 @@ module.exports = {
   getSeriesEventRisk,
   checkSeriesExposure,
   checkPitcherExposure,
+  getPitcherExposureSnapshot,
   getRecentOrders,
   getStats,
   getPnLBySport,
