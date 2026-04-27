@@ -10962,8 +10962,10 @@
     towinMin: '', towinMax: '',
     pnlMin: '', pnlMax: '',
     showAdvanced: false,
-    pageSize: 20,
-    showAll: false,
+    pageSize: 20,         // initial visible count
+    chunkSize: 100,       // "Load N More" increment
+    visibleCount: 20,     // current visible count; grows in chunkSize steps
+    showAll: false,       // legacy flag, retained for compatibility — true = show all rows
     dateFrom: '', dateTo: '', _name: 'historyState',
   };
 
@@ -11143,9 +11145,23 @@
 
     // Pagination
     const isFiltering = historyState.search || historyState.statusFilter.length > 0 || historyState.sportFilter || historyState.legsFilter || historyState.oddsMinFilter || historyState.oddsMaxFilter || historyState.dateFrom || historyState.dateTo || historyState.legsMin || historyState.legsMax || historyState.fairMin || historyState.fairMax || historyState.riskMin || historyState.riskMax || historyState.towinMin || historyState.towinMax || historyState.pnlMin || historyState.pnlMax;
-    const displayLimit = (historyState.showAll || isFiltering) ? filtered.length : historyState.pageSize;
+    // Visible-count handling. When the user is actively filtering, show
+    // every match (filters are usually narrow enough that all results
+    // fit). Otherwise honor showAll, then visibleCount (which the user
+    // grows in chunkSize steps via "Load N More"), with pageSize as the
+    // floor.
+    let displayLimit;
+    if (isFiltering) {
+      displayLimit = filtered.length;
+    } else if (historyState.showAll) {
+      displayLimit = filtered.length;
+    } else {
+      displayLimit = Math.max(historyState.pageSize, historyState.visibleCount || historyState.pageSize);
+    }
     const displayed = filtered.slice(0, displayLimit);
     const hasMore = filtered.length > displayLimit;
+    const remaining = filtered.length - displayLimit;
+    const nextChunk = Math.min(historyState.chunkSize || 100, remaining);
 
     html += `<div style="overflow-x: auto;"><table>
       <tr>
@@ -11217,17 +11233,36 @@
 
     html += '</table></div>';
 
-    // Show More / Show Less button
+    // Pagination footer — chunked expansion. Shows "Load N More" as the
+    // primary action (incremental, avoids a single 3000-row reflow) plus
+    // a secondary "Show All N" if the user really does want everything.
+    // Once expanded, a "Collapse" button restores the initial pageSize.
     if (hasMore) {
-      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
-        <button class="btn" onclick="historyState.showAll=true; historyRerender()" style="font-size:12px; padding:4px 16px;">
-          Show All ${filtered.length} Quotes
+      const showingTxt = `Showing ${displayed.length} of ${filtered.length}`;
+      const loadMoreLabel = nextChunk >= remaining
+        ? `Load ${remaining} More`
+        : `Load ${nextChunk} More`;
+      const showAllBtn = remaining > nextChunk
+        ? `<button class="btn" onclick="historyState.showAll=true; historyRerender()" style="font-size:12px; padding:4px 16px; margin-left:8px;">Show All ${filtered.length}</button>`
+        : '';
+      const collapseBtn = displayLimit > historyState.pageSize
+        ? `<button class="btn" onclick="historyState.visibleCount=historyState.pageSize; historyState.showAll=false; historyRerender()" style="font-size:12px; padding:4px 16px; margin-left:8px;">Collapse</button>`
+        : '';
+      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border); font-size:11px; color:var(--text3);">
+        <span style="margin-right:12px;">${showingTxt}</span>
+        <button class="btn" onclick="historyState.visibleCount=(historyState.visibleCount||historyState.pageSize)+(historyState.chunkSize||100); historyState.showAll=false; historyRerender()" style="font-size:12px; padding:4px 16px;">
+          ${loadMoreLabel}
         </button>
+        ${showAllBtn}
+        ${collapseBtn}
       </div>`;
-    } else if (historyState.showAll && filtered.length > historyState.pageSize && !isFiltering) {
-      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border);">
-        <button class="btn" onclick="historyState.showAll=false; historyRerender()" style="font-size:12px; padding:4px 16px;">
-          Show Recent ${historyState.pageSize}
+    } else if (displayLimit > historyState.pageSize && !isFiltering) {
+      // No more rows to load, but the user is past the initial pageSize —
+      // give them a way back.
+      html += `<div style="padding:8px 12px; text-align:center; border-top:1px solid var(--border); font-size:11px; color:var(--text3);">
+        <span style="margin-right:12px;">Showing all ${filtered.length}</span>
+        <button class="btn" onclick="historyState.visibleCount=historyState.pageSize; historyState.showAll=false; historyRerender()" style="font-size:12px; padding:4px 16px;">
+          Collapse to ${historyState.pageSize}
         </button>
       </div>`;
     }
