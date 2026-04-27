@@ -23,6 +23,11 @@ function extractPlayerNameFromPropMarket(marketName) {
   // cleanup in case any future market uses "<Player> Total" without the
   // stat phrase being matched.
   const strips = [
+    // NBA double-double / triple-double — must run BEFORE the MLB
+    // singles/doubles/triples strips below or " Double"/" Triple" at the
+    // end of "<Player> Triple Double" gets eaten by the MLB patterns.
+    /\s+(double|triple)\s*[-]?\s*double$/i,
+    // ---- MLB ----
     /\s+(total\s+)?pitching\s+strike\s*outs?$/i,
     /\s+(total\s+)?batting\s+strike\s*outs?$/i,
     /\s+(total\s+)?strike\s*outs?\s+(thrown|recorded)$/i,
@@ -40,6 +45,32 @@ function extractPlayerNameFromPropMarket(marketName) {
     /\s+(total\s+)?earned\s+runs?$/i,
     /\s+outs\s+recorded$/i,
     /\s+innings\s+pitched$/i,
+    // ---- NBA ----
+    // Combos first so single-stat patterns don't shave off only the trailing
+    // word and leave "<player> Total Points + Rebounds" with "Rebounds"
+    // matched but the rest left in place.
+    /\s+(total\s+)?points?\s*(\+|&|and|plus|\/)\s*rebounds?\s*(\+|&|and|plus|\/)\s*assists?$/i,
+    /\s+(total\s+)?points?\s*(\+|&|and|plus|\/)\s*rebounds?$/i,
+    /\s+(total\s+)?points?\s*(\+|&|and|plus|\/)\s*assists?$/i,
+    /\s+(total\s+)?rebounds?\s*(\+|&|and|plus|\/)\s*assists?$/i,
+    /\s+(total\s+)?steals?\s*(\+|&|and|plus|\/)\s*blocks?$/i,
+    /\s+pra$/i, /\s+pr$/i, /\s+pa$/i, /\s+ra$/i, /\s+sb$/i,
+    // Three-pointers — many variants
+    /\s+(total\s+)?made\s+(three[\s-]*pointers?|threes?|3[\s-]*pointers?|3[\s-]*pt[s]?)$/i,
+    /\s+(three[\s-]*pointers?|threes?|3[\s-]*pointers?)\s+made$/i,
+    /\s+(total\s+)?(three[\s-]*pointers?|threes?|3[\s-]*pointers?|3[\s-]*pt[s]?)$/i,
+    // Single stats
+    /\s+(total\s+)?points?$/i,
+    /\s+(total\s+)?rebounds?$/i,
+    /\s+(total\s+)?assists?$/i,
+    /\s+(total\s+)?blocks?$/i,
+    /\s+(total\s+)?steals?$/i,
+    /\s+(total\s+)?turnovers?$/i,
+    /\s+(total\s+)?(field\s+goals?|fgs?)\s+(made|attempted)?$/i,
+    /\s+(total\s+)?free\s+throws?\s+(made|attempted)?$/i,
+    /\s+(total\s+)?minutes\s+played$/i,
+    // Yes/No exotic markets without numeric line
+    /\s+to\s+score\s+the\s+first\s+(basket|field\s+goal)$/i,
   ];
   for (const re of strips) {
     if (re.test(m)) {
@@ -866,10 +897,18 @@ async function handleRFQ(data) {
 
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
           unknownSports.push(`${baseName} ${tag}${propTag} ${detail}`);
+          // Extract player name eagerly for any leg the resolver tagged as a
+          // player_prop AND whose marketName we captured. Used by the
+          // dashboard to label otherwise-"Unknown" leg rows with something
+          // recognizable ("Wendell Carter Jr." instead of "Unknown").
+          const playerName = (category === 'player_prop' && propMarketName)
+            ? extractPlayerNameFromPropMarket(propMarketName)
+            : null;
           unknownCategories.push({
             lineId,
             category,
             propType, // null for non-MLB-prop legs
+            playerName, // null if classifier doesn't recognize the stat phrase
             sport: eventSport,
             eventName: baseName,
             line: lineNum,

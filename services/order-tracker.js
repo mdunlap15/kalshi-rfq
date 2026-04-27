@@ -1126,6 +1126,12 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
   // Lookup decline info for this parlay so we can flag the problematic leg(s)
   const declineInfo = declinesByParlayId[parlayId] || null;
   const unknownSet = new Set(declineInfo?.unknownLineIds || []);
+  // Build a lineId → unknownCategory lookup so we can enrich unregistered
+  // legs with marketName / propType / playerName captured at decline time.
+  const unknownCatsByLineId = {};
+  for (const uc of (declineInfo?.unknownCategories || [])) {
+    if (uc && uc.lineId) unknownCatsByLineId[uc.lineId] = uc;
+  }
 
   // Resolve leg info from line_ids
   const resolvedLegs = (legs || []).map(l => {
@@ -1136,14 +1142,39 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     if (info?.marketType === 'total' && info?.homeTeam && info?.awayTeam) {
       team = `${team} (${info.awayTeam} @ ${info.homeTeam})`;
     }
+    const wasUnreg = unknownSet.has(lineId) || !info;
+    const enriched = wasUnreg ? unknownCatsByLineId[lineId] : null;
+    // For unregistered legs we know about, prefer the captured player
+    // name (e.g. "Wendell Carter Jr.") over the literal "Unknown". Fall
+    // back to the full PX market name when we couldn't extract a player.
+    let displayTeam = team;
+    let displayMarket = info?.marketType || '-';
+    let displayLine = info?.line ?? l.line ?? null;
+    let displaySport = info?.sport || 'unknown';
+    if (enriched) {
+      if (enriched.playerName) displayTeam = enriched.playerName;
+      else if (enriched.marketName) displayTeam = enriched.marketName;
+      // propType ('pra_combo', 'hitter_hits', 'pitcher_strikeouts', ...)
+      // is a more useful market label than the bare 'player_prop'
+      // category, but fall through to category if propType wasn't set.
+      if (enriched.propType) displayMarket = enriched.propType;
+      else if (enriched.category) displayMarket = enriched.category;
+      if (enriched.line != null) displayLine = enriched.line;
+      if (enriched.sport) displaySport = enriched.sport;
+    }
     return {
       lineId,
-      team,
-      market: info?.marketType || '-',
-      line: info?.line ?? l.line ?? null,
-      sport: info?.sport || 'unknown',
+      team: displayTeam,
+      market: displayMarket,
+      line: displayLine,
+      sport: displaySport,
+      // Surface the full PX market name as a tooltip for unregistered
+      // legs so the operator can hover-read the literal book wording
+      // without losing the cleaner playerName-first display.
+      marketName: enriched?.marketName || null,
+      propType: enriched?.propType || null,
       // Flag legs that blocked us from quoting
-      wasUnregistered: unknownSet.has(lineId) || !info,
+      wasUnregistered: wasUnreg,
     };
   });
 
@@ -1428,6 +1459,12 @@ function recordDecline(reason, detail) {
       reason: bucket,
       unknownLineIds: detail.unknownLegs || [],
       unknownDetails: detail.unknownSports || [],
+      // Full unknownCategories entries (with marketName, propType,
+      // playerName, line, etc.) keyed by lineId for the matched-parlay
+      // leg-row enrichment. Lets the dashboard render "Wendell Carter Jr.
+      // (pra_combo, 9.5)" instead of "Unknown / - / -" when an unknown
+      // leg blocks a quote.
+      unknownCategories: detail.unknownCategories || [],
       declineDetail: detail.declineDetail || null,
       declinedAt,
     };

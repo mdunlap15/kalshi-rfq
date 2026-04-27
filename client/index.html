@@ -10278,8 +10278,21 @@
       // etc.) also carry meaningful line values and were rendering as '-'.
       const lineDisplay = l.line != null ? l.line : '-';
 
-      h += '<td style="padding:' + pad + ';">' + teamLabel + dnbBadge + blockerBadge + '</td>';
-      h += '<td style="padding:' + pad + ';"><span class="market-pill">' + (mkt || '-') + '</span></td>';
+      // For unregistered legs, surface the literal PX market name as a
+      // tooltip on the team-cell so the operator can hover-read the
+      // book wording behind the cleaner playerName-first label.
+      const teamCellTitle = (l.wasUnregistered && l.marketName)
+        ? ' title="' + escapeHtml(l.marketName) + '"'
+        : '';
+      h += '<td style="padding:' + pad + ';"' + teamCellTitle + '>' + teamLabel + dnbBadge + blockerBadge + '</td>';
+      // Tag unregistered prop-leg market pills so the operator sees the
+      // propType ("pra_combo", "hitter_hits", etc.) plus a "(unregistered)"
+      // qualifier — distinguishes a leg we recognized but don't quote
+      // from a leg whose market we couldn't classify at all.
+      const unregMktSuffix = (l.wasUnregistered && l.propType)
+        ? ' <span style="color:var(--amber); font-size:9px;">(unregistered)</span>'
+        : '';
+      h += '<td style="padding:' + pad + ';"><span class="market-pill">' + (mkt || '-') + '</span>' + unregMktSuffix + '</td>';
       h += '<td style="padding:' + pad + '; color:var(--text2);">' + lineDisplay + '</td>';
       h += '<td style="padding:' + pad + '; white-space:nowrap; font-size:11px; color:var(--text3);">' + eventTime + '</td>';
       if (showOdds) {
