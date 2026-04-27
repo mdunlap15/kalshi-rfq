@@ -5607,9 +5607,35 @@ function getAlerts() {
   });
 
   // Recent rejections (all reasons — these are limit hits at confirm time)
+  // Filters out two flavors of false-positive that would otherwise inflate
+  // the alarm counter:
+  //
+  //   (a) `accept-POST-failed: no orderUuid` rejections younger than 5s.
+  //       These are transient — handleConfirm queues verifyAcceptUnknown
+  //       3s after the failed accept POST, and most of them flip back to
+  //       'confirmed' via importPxBookedOrder (PX booked the bet, just
+  //       didn't return order_uuid in the synchronous response). The 5s
+  //       grace period gives the verify task time to land before we count
+  //       the parlay as a real rejection.
+  //
+  //   (b) Any reject whose parlayId now has status === 'confirmed' in
+  //       orders[] — that's the verify path having flipped it back. The
+  //       rejectStats.recent log entry stays for audit but we don't
+  //       count it as a current rejection, since it isn't one anymore.
+  //
+  // Without this filter the dashboard cried wolf on every accept-POST
+  // hiccup even though the SP had taken the bet correctly.
+  const VERIFY_GRACE_MS = 5000;
   const recentRejects = rejectStats.recent.filter(r => {
     const t = new Date(r.time).getTime();
-    return !isNaN(t) && t >= cutoff;
+    if (isNaN(t) || t < cutoff) return false;
+    // (b) Parlay flipped back to confirmed by verifyAcceptUnknown. Exclude.
+    const order = r.parlayId ? orders[r.parlayId] : null;
+    if (order && order.status === 'confirmed') return false;
+    // (a) accept-POST-failed: no orderUuid in the verify-pending window.
+    const reason = r.reason || '';
+    if (reason.includes('no orderUuid') && (now - t) < VERIFY_GRACE_MS) return false;
+    return true;
   });
 
   // Group declines by reason
