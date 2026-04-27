@@ -6218,6 +6218,195 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// THE ODDS API FALLBACK for player props (Phase 1 supplemental source)
+// ---------------------------------------------------------------------------
+// SharpAPI Hobby tier exposes pitcher_strikeouts for only ~4 of ~15 MLB
+// games per slate (filter logic unclear — possibly top-N by liquidity).
+// The Odds API has full coverage from 4-5 books for the games SharpAPI
+// misses, so we fall back to it on no_event_match.
+//
+// Cost: TOA charges ~1 credit per market×region×event. With aggressive
+// caching (5min TTL on events list + per-event odds), a typical day's
+// MLB slate uses well under 100 credits — fits comfortably in the free
+// 500/mo tier or the $30/mo 20K-credit tier.
+const TOA_PROP_TTL_MS = 5 * 60 * 1000;
+const toaEventsCache = {};   // { sportKey: { fetchedAt, events: [...] } }
+const toaPropOddsCache = {}; // { `${sport}:${eventId}:${marketKey}`: { fetchedAt, ...respBody } }
+
+// Map our internal sport keys to TOA sport keys. They happen to match
+// for MLB but kept explicit for future expansion.
+const TOA_SPORT_KEYS = {
+  'baseball_mlb': 'baseball_mlb',
+  'basketball_nba': 'basketball_nba',
+};
+
+async function _getTheOddsApiEvents(sport) {
+  const apiKey = process.env.THE_ODDS_API_KEY;
+  if (!apiKey) return null;
+  const sportKey = TOA_SPORT_KEYS[sport] || sport;
+  const now = Date.now();
+  const cached = toaEventsCache[sportKey];
+  if (cached && (now - cached.fetchedAt) < TOA_PROP_TTL_MS) return cached.events;
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events?apiKey=${apiKey}`;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      log.warn('OddsFeed', `TOA events fetch failed: ${resp.status}`);
+      return cached ? cached.events : null;
+    }
+    const events = await resp.json();
+    if (!Array.isArray(events)) return cached ? cached.events : null;
+    toaEventsCache[sportKey] = { fetchedAt: now, events };
+    return events;
+  } catch (err) {
+    log.warn('OddsFeed', `TOA events error: ${err.message}`);
+    return cached ? cached.events : null;
+  }
+}
+
+async function _getTheOddsApiPropOdds(sport, eventId, marketKey) {
+  const apiKey = process.env.THE_ODDS_API_KEY;
+  if (!apiKey) return null;
+  const sportKey = TOA_SPORT_KEYS[sport] || sport;
+  const cacheKey = `${sportKey}:${eventId}:${marketKey}`;
+  const now = Date.now();
+  const cached = toaPropOddsCache[cacheKey];
+  if (cached && (now - cached.fetchedAt) < TOA_PROP_TTL_MS) return cached;
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events/${eventId}/odds`
+    + `?apiKey=${apiKey}&regions=us&markets=${marketKey}&oddsFormat=american`;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      log.warn('OddsFeed', `TOA per-event odds failed (${eventId}/${marketKey}): ${resp.status}`);
+      return null;
+    }
+    const data = await resp.json();
+    toaPropOddsCache[cacheKey] = { fetchedAt: now, ...data };
+    return toaPropOddsCache[cacheKey];
+  } catch (err) {
+    log.warn('OddsFeed', `TOA per-event odds error: ${err.message}`);
+    return null;
+  }
+}
+
+// TOA equivalent of lookupPlayerStrikeoutProp. Returns the same shape
+// so the websocket caller can swap them transparently. Async because
+// TOA requires HTTP calls (cached, but not pre-warmed).
+async function lookupPlayerStrikeoutPropFromTheOddsApi(sport, pxEventInfo, playerName, line) {
+  const stages = [];
+  if (!sport || !pxEventInfo || !playerName) {
+    return { error: 'missing_input', stages: ['precondition'] };
+  }
+  if (!process.env.THE_ODDS_API_KEY) {
+    return { error: 'toa_key_missing', stages: ['no_api_key'] };
+  }
+
+  const events = await _getTheOddsApiEvents(sport);
+  if (!events) return { error: 'toa_events_fail', stages: ['events_fetch_failed'] };
+  stages.push(`toa_events:${events.length}`);
+
+  // Match event by team last-words (same approach as SharpAPI helper).
+  const lastWords = (name, n = 2) => {
+    const words = normalizeTeamName(name).split(/\s+/).filter(Boolean);
+    return words.slice(-n).join(' ');
+  };
+  const pxHomeKey = lastWords(pxEventInfo.homeTeam || '');
+  const pxAwayKey = lastWords(pxEventInfo.awayTeam || '');
+  stages.push(`px:${pxEventInfo.awayTeam || '?'}@${pxEventInfo.homeTeam || '?'}`);
+  const matchingEvents = events.filter(e => {
+    const eh = lastWords(e.home_team || '');
+    const ea = lastWords(e.away_team || '');
+    return (eh === pxHomeKey && ea === pxAwayKey) ||
+           (eh === pxAwayKey && ea === pxHomeKey);
+  });
+  stages.push(`event_match:${matchingEvents.length}`);
+  if (matchingEvents.length === 0) {
+    return { error: 'no_event_match', stages,
+             availableEvents: events.slice(0, 8).map(e => `${e.away_team}@${e.home_team}`) };
+  }
+
+  // Disambiguate doubleheaders by start-time proximity.
+  const pxStartMs = pxEventInfo.startTime ? Date.parse(pxEventInfo.startTime) : null;
+  let event = matchingEvents[0];
+  if (pxStartMs && matchingEvents.length > 1) {
+    matchingEvents.sort((a, b) =>
+      Math.abs(Date.parse(a.commence_time) - pxStartMs) -
+      Math.abs(Date.parse(b.commence_time) - pxStartMs));
+    event = matchingEvents[0];
+  }
+
+  const odds = await _getTheOddsApiPropOdds(sport, event.id, 'pitcher_strikeouts');
+  if (!odds) return { error: 'toa_odds_fetch_fail', stages, resolvedEventId: event.id };
+  const bookmakers = odds.bookmakers || [];
+  stages.push(`books_in_resp:${bookmakers.length}`);
+
+  // Filter outcomes by player name (description field) + line value (point).
+  // TOA's "description" is clean — no "Thrown"/"Recorded" suffix like SharpAPI.
+  const stripDiacritics = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const normPlayer = stripDiacritics(playerName).toLowerCase().trim();
+  const matched = []; // {book, side, point, price}
+  for (const bk of bookmakers) {
+    const market = (bk.markets || []).find(m => m.key === 'pitcher_strikeouts');
+    if (!market) continue;
+    for (const o of (market.outcomes || [])) {
+      const outcomePlayer = stripDiacritics(o.description || '').toLowerCase().trim();
+      const playerOk = outcomePlayer === normPlayer ||
+                       outcomePlayer.includes(normPlayer) ||
+                       normPlayer.includes(outcomePlayer);
+      const lineOk = line == null || Math.abs((o.point || 0) - line) < 0.01;
+      if (playerOk && lineOk) {
+        matched.push({ book: bk.key, side: o.name, point: o.point, price: o.price });
+      }
+    }
+  }
+  stages.push(`player_line_match:${matched.length}`);
+  if (matched.length === 0) {
+    return { error: 'no_player_or_line_match', stages, resolvedEventId: event.id,
+             samplePlayers: [...new Set(
+               bookmakers.flatMap(bk =>
+                 (bk.markets || []).flatMap(m =>
+                   (m.outcomes || []).map(o => o.description))).filter(Boolean))].slice(0, 5) };
+  }
+
+  // Per-book Over/Under devig.
+  const overByBook = {};
+  const underByBook = {};
+  for (const m of matched) {
+    if (/over/i.test(m.side)) overByBook[m.book] = m;
+    else if (/under/i.test(m.side)) underByBook[m.book] = m;
+  }
+  const books = [...new Set(matched.map(m => m.book))];
+  stages.push(`sides:over=${Object.keys(overByBook).length},under=${Object.keys(underByBook).length}`);
+
+  const fairProbsOver = [];
+  const fairProbsUnder = [];
+  for (const book of books) {
+    const o = overByBook[book];
+    const u = underByBook[book];
+    if (!o || !u) continue;
+    const oProb = americanToImpliedProb(o.price);
+    const uProb = americanToImpliedProb(u.price);
+    if (oProb == null || uProb == null) continue;
+    const dv = deVig2Way(oProb, uProb);
+    if (Array.isArray(dv) && dv.length === 2 && Number.isFinite(dv[0]) && Number.isFinite(dv[1])) {
+      fairProbsOver.push(dv[0]);
+      fairProbsUnder.push(dv[1]);
+    }
+  }
+  const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+
+  return {
+    matchedRows: matched,
+    books,
+    fairProbOver: avg(fairProbsOver),
+    fairProbUnder: avg(fairProbsUnder),
+    booksWithBothSides: fairProbsOver.length,
+    resolvedEventId: event.id,
+    stages,
+  };
+}
+
 // Debug: dump the prop cache for inspection
 function getPropRowsCacheStatus() {
   const out = {};
@@ -6293,5 +6482,6 @@ module.exports = {
   getAltLineCacheEntry,
   // Phase 1 player-prop shadow pricing
   lookupPlayerStrikeoutProp,
+  lookupPlayerStrikeoutPropFromTheOddsApi,
   getPropRowsCacheStatus,
 };

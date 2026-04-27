@@ -993,6 +993,7 @@ async function loadKV(key) {
 //     player_name TEXT,
 //     line NUMERIC,
 //     prop_type TEXT,
+//     source TEXT,                 -- 'sharpapi' | 'theoddsapi' (added in TOA fallback commit)
 //     fair_prob_over NUMERIC,
 //     fair_prob_under NUMERIC,
 //     books_with_both_sides INT,
@@ -1002,6 +1003,8 @@ async function loadKV(key) {
 //     match_stages TEXT[],
 //     recorded_at TIMESTAMPTZ DEFAULT now()
 //   );
+//   -- One-time migration if upgrading from the no-source schema:
+//   --   ALTER TABLE prop_shadow_quotes ADD COLUMN source TEXT;
 async function savePropShadowQuote(entry) {
   const db = getClient();
   if (!db) return;
@@ -1014,6 +1017,7 @@ async function savePropShadowQuote(entry) {
       player_name: entry.playerName || null,
       line: entry.line != null ? entry.line : null,
       prop_type: entry.propType || null,
+      source: entry.source || null,
       fair_prob_over: entry.fairProbOver != null ? entry.fairProbOver : null,
       fair_prob_under: entry.fairProbUnder != null ? entry.fairProbUnder : null,
       books_with_both_sides: entry.booksWithBothSides != null ? entry.booksWithBothSides : null,

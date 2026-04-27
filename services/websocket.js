@@ -800,37 +800,59 @@ async function handleRFQ(data) {
                 homeTeam = homeComp && homeComp.name;
                 awayTeam = awayComp && awayComp.name;
               }
-              const lookup = oddsFeed.lookupPlayerStrikeoutProp(
-                'baseball_mlb',
-                { homeTeam, awayTeam, startTime: eventInfo.scheduled || eventInfo.startTime || eventInfo.commenceTime },
-                playerName,
-                lineNum,
-              );
-              const shadowEntry = {
-                parlayId,
-                lineId,
+              const eventCtx = {
+                homeTeam, awayTeam,
+                startTime: eventInfo.scheduled || eventInfo.startTime || eventInfo.commenceTime,
+              };
+              const captured = {
+                parlayId, lineId,
                 pxEventId: l.sport_event_id || null,
                 marketName: propMarketName,
-                playerName,
-                line: lineNum,
-                propType,
-                fairProbOver: lookup && lookup.fairProbOver != null ? lookup.fairProbOver : null,
-                fairProbUnder: lookup && lookup.fairProbUnder != null ? lookup.fairProbUnder : null,
-                booksWithBothSides: lookup && lookup.booksWithBothSides != null ? lookup.booksWithBothSides : null,
-                books: lookup && lookup.books ? lookup.books : null,
-                resolvedEventId: lookup && lookup.resolvedEventId ? lookup.resolvedEventId : null,
-                matchError: lookup && lookup.error ? lookup.error : null,
-                matchStages: lookup && lookup.stages ? lookup.stages : null,
+                playerName, lineNum, propType,
               };
-              // Fire-and-forget — never await. Errors logged inside the helper.
-              db.savePropShadowQuote(shadowEntry).catch(() => {});
-              // Also surface in logs for live observability before
-              // dashboard hookup. One-line summary per leg.
-              if (lookup && lookup.error) {
-                log.info('PropShadow', `${playerName} K ${lineNum}: ${lookup.error} [stages: ${(lookup.stages || []).join('|')}]`);
-              } else if (lookup && lookup.fairProbOver != null) {
-                log.info('PropShadow', `${playerName} K ${lineNum}: fairOver=${lookup.fairProbOver.toFixed(4)} fairUnder=${lookup.fairProbUnder.toFixed(4)} books=${lookup.books.join(',')} (${lookup.booksWithBothSides} both-sides)`);
-              }
+
+              // Async shadow-price + persist. Two-tier source strategy:
+              //   1. SharpAPI cache (sync, fast)
+              //   2. The Odds API fallback (async HTTP, only on no_event_match)
+              // SharpAPI Hobby tier covers ~4 of ~15 MLB games per slate;
+              // TOA fills the rest. Both run fire-and-forget so the decline
+              // path is never blocked.
+              (async () => {
+                let lookup = oddsFeed.lookupPlayerStrikeoutProp('baseball_mlb', eventCtx, captured.playerName, captured.lineNum);
+                let source = 'sharpapi';
+                if (lookup && lookup.error === 'no_event_match') {
+                  // SharpAPI Hobby doesn't have this game's props. Try TOA.
+                  const toaLookup = await oddsFeed.lookupPlayerStrikeoutPropFromTheOddsApi(
+                    'baseball_mlb', eventCtx, captured.playerName, captured.lineNum,
+                  );
+                  if (toaLookup) {
+                    // Use TOA result (success OR a different error than SharpAPI's).
+                    // If TOA also failed with no_event_match, keep that — at least
+                    // the shadow row will show both sources tried and failed.
+                    lookup = toaLookup;
+                    source = 'theoddsapi';
+                  }
+                }
+                const entry = {
+                  ...captured,
+                  line: captured.lineNum,
+                  source,
+                  fairProbOver: lookup && lookup.fairProbOver != null ? lookup.fairProbOver : null,
+                  fairProbUnder: lookup && lookup.fairProbUnder != null ? lookup.fairProbUnder : null,
+                  booksWithBothSides: lookup && lookup.booksWithBothSides != null ? lookup.booksWithBothSides : null,
+                  books: lookup && lookup.books ? lookup.books : null,
+                  resolvedEventId: lookup && lookup.resolvedEventId ? lookup.resolvedEventId : null,
+                  matchError: lookup && lookup.error ? lookup.error : null,
+                  matchStages: lookup && lookup.stages ? lookup.stages : null,
+                };
+                await db.savePropShadowQuote(entry).catch(() => {});
+                const tag = `[${source}]`;
+                if (lookup && lookup.error) {
+                  log.info('PropShadow', `${tag} ${captured.playerName} K ${captured.lineNum}: ${lookup.error} [stages: ${(lookup.stages || []).join('|')}]`);
+                } else if (lookup && lookup.fairProbOver != null) {
+                  log.info('PropShadow', `${tag} ${captured.playerName} K ${captured.lineNum}: fairOver=${lookup.fairProbOver.toFixed(4)} fairUnder=${lookup.fairProbUnder.toFixed(4)} books=${(lookup.books || []).join(',')} (${lookup.booksWithBothSides} both-sides)`);
+                }
+              })().catch(err => log.warn('PropShadow', `async error: ${err.message}`));
             } else {
               log.debug('PropShadow', `Could not extract player name from "${propMarketName}"`);
             }
