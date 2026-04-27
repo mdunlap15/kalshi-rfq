@@ -316,6 +316,14 @@ const config = {
     // 2.0 = double the normal vig on each leg of the SGP. Tunable while
     // we gather acceptance + ROI data on re-enabled SGPs.
     sgpVigMultiplier: parseFloat(process.env.SGP_VIG_MULTIPLIER) || 2.0,
+    // Phase 2 K-prop + same-team ML SGP correlation boost. Empirically
+    // calibrated from DK SGP pricing on 3 MLB combos (Guardians/Cardinals/
+    // Rays + their pitcher's K-Over): DK applies 10-19% discount (avg
+    // 14.5%); FD applies 17-33% (avg 24.3%). Default 0.15 splits the
+    // difference toward DK-side (less aggressive correlation cost). The
+    // boost MULTIPLIES fairParlayProb upward — bettor gets shorter odds,
+    // matching how books charge the bettor for positive correlation.
+    sgpPropMlCorrBoost: parseFloat(process.env.SGP_PROP_ML_CORR_BOOST) || 0.15,
     // SGP correlation adjustment factors. The naive product of leg fair
     // probs understates the true joint probability for positively-
     // correlated combos (spread-fav + over, or spread-dog + under) and

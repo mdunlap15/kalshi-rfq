@@ -5970,6 +5970,30 @@ function getLineupCache() {
   return lineupCache;
 }
 
+/**
+ * Determine which side of a game a pitcher is on. Returns 'home' or
+ * 'away' if the pitcher is the listed starter on that side, else null.
+ * Used by the K-prop + ML SGP combo gate to verify the ML leg matches
+ * the pitcher's team (allowed) vs the opposing team (blocked — that
+ * combo is anti-correlated and a weird bet).
+ */
+function getPitcherSide(sport, homeTeam, awayTeam, commenceTime, playerName) {
+  if (!playerName) return null;
+  const bucket = lineupCache[sport];
+  if (!bucket) return null;
+  const key = makeLineupKey(homeTeam, awayTeam, commenceTime);
+  const entry = bucket[key];
+  if (!entry) return null;
+  // Diacritic-insensitive comparison (PX may send "Randy Vásquez" while
+  // SharpAPI lineup has "Randy Vasquez"). Mirror the prop-matcher's
+  // normalization.
+  const norm = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  const target = norm(playerName);
+  if (entry.homeStarter && norm(entry.homeStarter) === target) return 'home';
+  if (entry.awayStarter && norm(entry.awayStarter) === target) return 'away';
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // SCORES — fetch game results from The Odds API for early win detection
 // ---------------------------------------------------------------------------
@@ -6590,6 +6614,7 @@ module.exports = {
   getGameResult,
   checkLineupFreshness,
   getLineupCache,
+  getPitcherSide,
   __debugGetAltLinesCache: () => altLinesCache,
   normalizeEventKey,
   getAltLineCacheEntry,

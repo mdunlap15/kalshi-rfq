@@ -1064,6 +1064,35 @@ function priceParlay(legs, opts = {}) {
   if (sgpCorrelationSign === 'positive') {
     sgpCorrelationFactor = config.pricing.sgpCorrelationPositive || 1;
   }
+
+  // K-prop + same-team ML SGP carve-out (M3 carve-out, operator-approved
+  // 2026-04-27). When the parlay is exactly 2 legs (one player_strikeouts
+  // + one moneyline on the same game) AND the ML team matches the
+  // pitcher's team per lineup cache, apply a positive-correlation boost.
+  // Empirically calibrated from DK SGP pricing: ~14.5% avg discount on
+  // 3 sample combos. Default 0.15. Stacks multiplicatively with the
+  // 2-way spread_total factor above (won't fire simultaneously since
+  // those are different combos).
+  let isKpropMlSameTeamSGP = false;
+  if (isSGPParlay && pricedLegs.length === 2) {
+    const propLeg = pricedLegs.find(l => l.lineInfo.marketType === 'player_strikeouts');
+    const mlLeg = pricedLegs.find(l => l.lineInfo.marketType === 'moneyline');
+    if (propLeg && mlLeg && propLeg.lineInfo.pxEventId === mlLeg.lineInfo.pxEventId) {
+      const pi = propLeg.lineInfo;
+      const pitcherSide = oddsFeed.getPitcherSide(
+        pi.sport, pi.homeTeam, pi.awayTeam, pi.startTime, pi.playerName,
+      );
+      const mlSide = mlLeg.lineInfo.oddsApiSelection || mlLeg.lineInfo.selection;
+      if (pitcherSide && mlSide && pitcherSide === mlSide) {
+        isKpropMlSameTeamSGP = true;
+        const boost = 1 + (config.pricing.sgpPropMlCorrBoost || 0);
+        const before = fairParlayProb;
+        fairParlayProb = Math.max(0.001, Math.min(0.99, fairParlayProb * boost));
+        log.debug('Pricing', `SGP K-prop+ML same-team correlation boost — fair ${(before*100).toFixed(2)}% × ${boost} = ${(fairParlayProb*100).toFixed(2)}% (pitcher ${pi.playerName}, side ${pitcherSide})`);
+      }
+    }
+  }
+
   if (sgpCorrelationFactor !== 1) {
     const before = fairParlayProb;
     fairParlayProb = Math.max(0.001, Math.min(0.99, fairParlayProb * sgpCorrelationFactor));
@@ -1959,17 +1988,19 @@ function shouldDecline(legs) {
           detail: `${lineInfo.playerName || lineInfo.teamName || '?'} K ${lineInfo.line} (${lineInfo.selection}) — prop matcher returned no fair_prob`,
         };
       }
-      // (b) Single-book confidence floor with FanDuel-alone exception.
-      // Accept if 2+ books with both sides, OR exactly 1 book that IS
-      // FanDuel (US prop price-discovery leader). Otherwise decline.
+      // (b) Single-book confidence floor with FD/DK-alone exception.
+      // Accept if 2+ books with both sides, OR exactly 1 book that is
+      // FanDuel or DraftKings (the two leaders for US prop pricing —
+      // operator approved DK-alone alongside FD-alone 2026-04-27).
+      // Otherwise decline.
       const both = lineInfo.booksWithBothSides || 0;
       const propBooks = lineInfo.propBooks || [];
-      const fdAlone = both === 1 && propBooks.includes('fanduel');
-      if (both < 2 && !fdAlone) {
+      const trustedAlone = both === 1 && (propBooks.includes('fanduel') || propBooks.includes('draftkings'));
+      if (both < 2 && !trustedAlone) {
         return {
           declined: true,
           reason: 'prop_low_confidence',
-          detail: `${lineInfo.playerName || '?'} K ${lineInfo.line}: books_with_both_sides=${both}, books=[${propBooks.join(',')}] — need ≥2 books OR fanduel-alone`,
+          detail: `${lineInfo.playerName || '?'} K ${lineInfo.line}: books_with_both_sides=${both}, books=[${propBooks.join(',')}] — need ≥2 books OR fd/dk-alone`,
         };
       }
       // (c) Stale prop data (>15 min old). propFetchedAt is set when
@@ -2032,19 +2063,48 @@ function shouldDecline(legs) {
     // pxEventId is heavily correlated. The pitcher's K count and his
     // team's run total / win probability move together. Decline rather
     // than try to model the correlation.
+    //
+    // CARVE-OUT (operator-approved 2026-04-27): exactly-2-leg parlays
+    // of (K-prop + same-team ML) are allowed. The pitcher's team
+    // moneyline IS positively correlated with their K total, but books
+    // (DK, FD) have stable empirical SGP pricing for this combo (DK
+    // ~14.5% discount, FD ~24.3% across sample). We mirror DK-style
+    // pricing via sgpPropMlCorrBoost (default 0.15) applied to
+    // fairParlayProb in priceParlay. Other K-prop SGP combos (K + total,
+    // K + run-line, K + opposite-team-ML) remain blocked.
     for (const propLeg of propLegs) {
       const eid = propLeg.lineInfo.pxEventId;
       if (!eid) continue;
       const otherSameGame = resolvedLegs.find(l =>
         l !== propLeg && l.lineInfo.pxEventId === eid
       );
-      if (otherSameGame) {
-        return {
-          declined: true,
-          reason: 'prop_correlation_same_game',
-          detail: `${propLeg.lineInfo.playerName || '?'} K ${propLeg.lineInfo.line} + ${otherSameGame.lineInfo.teamName || '?'} ${otherSameGame.lineInfo.marketType || '?'} on same event ${eid}`,
-        };
+      if (!otherSameGame) continue;
+      // Carve-out check: 2-leg parlay, other leg is moneyline, ML team
+      // matches the pitcher's team. Use the lineup cache to determine
+      // the pitcher's side (home/away) and compare to the ML leg's
+      // selection (oddsApiSelection or selection).
+      const isCarveOutCandidate = resolvedLegs.length === 2
+        && otherSameGame.lineInfo.marketType === 'moneyline';
+      if (isCarveOutCandidate) {
+        const pi = propLeg.lineInfo;
+        const pitcherSide = oddsFeed.getPitcherSide(
+          pi.sport, pi.homeTeam, pi.awayTeam, pi.startTime, pi.playerName
+        );
+        const mlSide = otherSameGame.lineInfo.oddsApiSelection || otherSameGame.lineInfo.selection;
+        if (pitcherSide && mlSide && pitcherSide === mlSide) {
+          // Allow — fall through to pricing. Marker on resolvedLegs
+          // so priceParlay can apply the correlation boost (vs naïve
+          // independent multiplication).
+          for (const r of resolvedLegs) r.sgpKpropMlSameTeam = true;
+          break; // exit prop-correlation loop, allow parlay
+        }
       }
+      // Carve-out didn't apply — decline.
+      return {
+        declined: true,
+        reason: 'prop_correlation_same_game',
+        detail: `${propLeg.lineInfo.playerName || '?'} K ${propLeg.lineInfo.line} + ${otherSameGame.lineInfo.teamName || '?'} ${otherSameGame.lineInfo.marketType || '?'} on same event ${eid}`,
+      };
     }
     // (e) Multi-line same-pitcher: two K-prop legs on the same pitcher
     // are perfectly anti-correlated (if Over/Under) or perfectly
@@ -2088,9 +2148,15 @@ function shouldDecline(legs) {
     if (key === 'moneyline_total') return 'ml_total';
     if (key === 'spread_total') return 'spread_total';
     if (key === 'moneyline_spread') return 'ml_spread'; // also blocked below as correlated
+    if (key === 'moneyline_player_strikeouts') return 'kprop_ml'; // 2026-04-27: K-prop + ML same-team SGP
     return null; // any other pair: reject by default
   };
-  const allowedCombos = new Set(config.pricing.sgpAllowedCombos || []);
+  // Auto-include 'kprop_ml' in the allowed-combos set so the K-prop + ML
+  // same-team SGP carve-out (handled in the prop_correlation_same_game
+  // block above + the correlation boost in priceParlay) doesn't get
+  // re-blocked here. The carve-out already enforces the same-team check
+  // and 2-leg constraint; this gate just needs to recognize the combo.
+  const allowedCombos = new Set([...(config.pricing.sgpAllowedCombos || []), 'kprop_ml']);
   // `sgpCombo` is captured on the whole parlay for downstream pricing +
   // order-tracking. Currently we only support single-event SGP legs
   // (length==2 on one pxEventId); multi-event SGPs not supported yet.
