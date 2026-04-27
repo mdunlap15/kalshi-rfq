@@ -2040,19 +2040,20 @@ function shouldDecline(legs) {
           detail: `${lineInfo.playerName || lineInfo.teamName || '?'} K ${lineInfo.line} (${lineInfo.selection}) — prop matcher returned no fair_prob`,
         };
       }
-      // (b) Single-book confidence floor with FD/DK-alone exception.
-      // Accept if 2+ books with both sides, OR exactly 1 book that is
-      // FanDuel or DraftKings (the two leaders for US prop pricing —
-      // operator approved DK-alone alongside FD-alone 2026-04-27).
-      // Otherwise decline.
+      // (b) Single-book confidence floor with trusted-alone exception.
+      // Accept if 2+ books with both sides, OR exactly 1 book that is on
+      // config.pricing.propTrustedSingleBooks (default fanduel /
+      // draftkings / betmgm / betrivers — US books we trust enough to
+      // quote against alone). Otherwise decline.
       const both = lineInfo.booksWithBothSides || 0;
       const propBooks = lineInfo.propBooks || [];
-      const trustedAlone = both === 1 && (propBooks.includes('fanduel') || propBooks.includes('draftkings'));
+      const trustedSet = config.pricing.propTrustedSingleBooks || [];
+      const trustedAlone = both === 1 && propBooks.some(b => trustedSet.includes(String(b).toLowerCase()));
       if (both < 2 && !trustedAlone) {
         return {
           declined: true,
           reason: 'prop_low_confidence',
-          detail: `${lineInfo.playerName || '?'} K ${lineInfo.line}: books_with_both_sides=${both}, books=[${propBooks.join(',')}] — need ≥2 books OR fd/dk-alone`,
+          detail: `${lineInfo.playerName || '?'} K ${lineInfo.line}: books_with_both_sides=${both}, books=[${propBooks.join(',')}] — need ≥2 books OR one of [${trustedSet.join(',')}]`,
         };
       }
       // (c) Stale prop data (>15 min old). propFetchedAt is set when

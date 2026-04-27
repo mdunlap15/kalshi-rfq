@@ -281,6 +281,16 @@ const config = {
     // the same (pxEventId, playerName) prop. Tunable via env vars.
     maxRiskPerParlayWithProp: parseFloat(process.env.MAX_RISK_PER_PARLAY_WITH_PROP) || 200,
     maxExposurePerPitcher: parseFloat(process.env.MAX_EXPOSURE_PER_PITCHER) || 500,
+    // Books we trust as a single source for prop pricing. When a prop
+    // lookup returns exactly 1 book with both sides AND that book is on
+    // this list, shouldDecline rule (b) accepts the leg instead of
+    // declining for low confidence. Default list: FanDuel + DraftKings
+    // (US prop pricing leaders), BetMGM (large US book, generally
+    // sharp), BetRivers (smaller but a frequent sole-book on alt K-prop
+    // lines that DK/FD don't post). Tunable via PROP_TRUSTED_SINGLE_BOOKS
+    // (comma-separated, lowercase book keys).
+    propTrustedSingleBooks: (process.env.PROP_TRUSTED_SINGLE_BOOKS || 'fanduel,draftkings,betmgm,betrivers')
+      .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
     // Per-event aggregate cap. Sums SP-risk across ALL legs touching one
     // pxEventId (regardless of team or market), preventing two-sided
     // event stacking that the per-team cap can't see — e.g. Lakers spread

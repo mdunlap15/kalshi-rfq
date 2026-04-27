@@ -1390,17 +1390,46 @@ async function resolveUnknownLine(rfqLeg) {
               awayTeam: matchedAway,
               startTime: event.scheduled || null,
             };
-            // Try SharpAPI first (sync cache hit), fall back to TOA on miss
+            // Try SharpAPI first (sync cache hit), fall back to TOA when
+            // the SharpAPI result is either missing OR low-confidence.
+            // Previously we only escalated on missing-fair (lookup
+            // returned null fair_prob_over). That meant alt K-prop lines
+            // where SharpAPI had only a single non-trusted book (e.g.
+            // BetRivers alone on Suarez 3.5) silently used SharpAPI's
+            // narrow result and got rejected downstream by shouldDecline
+            // rule (b), even though TOA could have returned 5+ books for
+            // the same line. Now we escalate when book count is < 2 AND
+            // the single book isn't on the trusted-alone list.
             let lookup = oddsFeed.lookupPlayerStrikeoutProp(
               sportKey, eventCtx, playerName, matchingK.line,
             );
             let propSource = 'sharpapi';
             const usableFair = (l) => l && l.fairProbOver != null && l.fairProbUnder != null;
-            if (!usableFair(lookup)) {
+            const trustedSet = (config.pricing && config.pricing.propTrustedSingleBooks) || [];
+            const isHighConfidence = (l) => {
+              if (!usableFair(l)) return false;
+              const both = l.booksWithBothSides || 0;
+              if (both >= 2) return true;
+              const books = l.books || [];
+              return both === 1 && books.some(b => trustedSet.includes(String(b).toLowerCase()));
+            };
+            if (!isHighConfidence(lookup)) {
               const toa = await oddsFeed.lookupPlayerStrikeoutPropFromTheOddsApi(
                 sportKey, eventCtx, playerName, matchingK.line,
               );
-              if (toa) { lookup = toa; propSource = 'theoddsapi'; }
+              // Use TOA if it returned anything usable. Special case: if
+              // SharpAPI was usable (not high-confidence but has fair
+              // probs) AND TOA also returned data, prefer whichever has
+              // more books — TOA usually wins for alt lines (5-8 books vs
+              // 1) but stick with SharpAPI if TOA somehow gave us less.
+              if (toa && usableFair(toa)) {
+                const sharpBoth = (lookup && lookup.booksWithBothSides) || 0;
+                const toaBoth = toa.booksWithBothSides || 0;
+                if (!usableFair(lookup) || toaBoth >= sharpBoth) {
+                  lookup = toa;
+                  propSource = 'theoddsapi';
+                }
+              }
             }
             const fairProb = matchingK.selection === 'over'
               ? (lookup && lookup.fairProbOver != null ? lookup.fairProbOver : null)
