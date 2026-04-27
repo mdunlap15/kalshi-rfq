@@ -788,9 +788,21 @@ async function handleRFQ(data) {
           if (propType === 'pitcher_strikeouts' && propMarketName && eventInfo) {
             const playerName = extractPlayerNameFromPropMarket(propMarketName);
             if (playerName) {
+              // line-manager's eventIndex stores { name, sport, sportName,
+              // competitors, scheduled } — NOT homeTeam/awayTeam directly.
+              // Extract home/away from competitors (mirror the pattern at
+              // line-manager.js:496-501).
+              let homeTeam = null;
+              let awayTeam = null;
+              if (eventInfo.competitors && eventInfo.competitors.length >= 2) {
+                const homeComp = eventInfo.competitors.find(c => c.side === 'home') || eventInfo.competitors[0];
+                const awayComp = eventInfo.competitors.find(c => c.side === 'away') || eventInfo.competitors[1];
+                homeTeam = homeComp && homeComp.name;
+                awayTeam = awayComp && awayComp.name;
+              }
               const lookup = oddsFeed.lookupPlayerStrikeoutProp(
                 'baseball_mlb',
-                { homeTeam: eventInfo.homeTeam, awayTeam: eventInfo.awayTeam, startTime: eventInfo.startTime || eventInfo.commenceTime },
+                { homeTeam, awayTeam, startTime: eventInfo.scheduled || eventInfo.startTime || eventInfo.commenceTime },
                 playerName,
                 lineNum,
               );
