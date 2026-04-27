@@ -1928,6 +1928,19 @@ function shouldDecline(legs) {
     const lineInfo = lineManager.lookupLine(lineId);
     if (!lineInfo) return { declined: true, reason: 'unknown legs', detail: null };
 
+    // M1 guard: pitcher_strikeouts legs are now resolvable (lineInfo
+    // has fair_prob populated) but the vig structure (M2) and decline
+    // rules (M3) aren't built yet. Decline cleanly with a specific
+    // reason until M2 lands so we can validate M1 in production
+    // without risking accidental live offers on prop legs.
+    if (lineInfo.marketType === 'player_strikeouts') {
+      return {
+        declined: true,
+        reason: 'prop_pricing_not_ready',
+        detail: `${lineInfo.playerName || lineInfo.teamName || '?'} K ${lineInfo.line} (${lineInfo.selection}) — M1 stub, vig structure pending`,
+      };
+    }
+
     const isGolfMatchup = lineInfo.sport === 'golf_matchups' || lineInfo.oddsApiSport === 'golf_matchups';
     const startMs = lineInfo.startTimeMs;
     if (startMs != null) {

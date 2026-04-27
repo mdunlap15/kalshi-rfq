@@ -389,6 +389,39 @@ const FIRST_HALF_MARKET_TYPES = [
   '1st_half_total_points',
 ];
 
+// Pitcher strikeouts prop detection.
+//
+// PX uses market.type='total' for these — same as game totals — and
+// disambiguates only via market.name like "Dustin May Total Pitching
+// Strikeouts". Returns true for pitcher K markets, false for hitter K
+// markets ("Batting Strikeouts" — separate market, handled later).
+//
+// Catches PX's standard "Pitching Strikeouts" form plus less-common
+// "K's Thrown" / "Strikeouts Thrown" variants.
+function isPitcherStrikeoutMarket(name) {
+  if (!name) return false;
+  if (/batting\s+strike/i.test(name)) return false; // explicit hitter exclusion
+  if (/pitching\s+strike/i.test(name)) return true;
+  if (/\bk'?s?\s+thrown\b/i.test(name)) return true;
+  if (/strike\s*outs?\s+thrown\b/i.test(name)) return true;
+  return false;
+}
+
+// Extract pitcher name from a K-prop market name. PX format is typically
+// "<Player Name> Total Pitching Strikeouts" — strip the trailing stat
+// phrase. Final cleanup pass strips any leftover "Total" word so future
+// PX naming variants don't bleed through.
+function extractPitcherNameFromKMarket(name) {
+  if (!name) return null;
+  let stripped = String(name)
+    .replace(/\s+(?:total\s+)?pitching\s+strike\s*outs?$/i, '')
+    .replace(/\s+(?:total\s+)?strike\s*outs?\s+thrown$/i, '')
+    .replace(/\s+(?:total\s+)?k'?s?\s+thrown$/i, '')
+    .trim();
+  stripped = stripped.replace(/\s+total$/i, '').trim();
+  return stripped || null;
+}
+
 // ---------------------------------------------------------------------------
 // SEEDING
 // ---------------------------------------------------------------------------
@@ -1288,6 +1321,87 @@ async function resolveUnknownLine(rfqLeg) {
       const playerPropNamePat = /\b(?:made|attempted|assists|rebounds|steals|blocks|turnovers|points|passing|rushing|receiving|tackles|sacks|completions|interceptions|touchdowns|yards|shots|saves|hits|runs|rbis?|strikeouts|walks|home runs|goals|pim|faceoffs?|aces|double faults|games won|milestones|pitching|batting|earned|fantasy|doubles?|triples?|errors|stolen bases?|outs recorded|innings pitched|at bats?|put outs?|fouls|cards|bookings|offsides?|crosses|clearances|throw.?ins?)\b/i;
       for (const market of markets || []) {
         if (!SUPPORTED_TYPES.includes(market.type)) continue;
+
+        // M1: Pitcher strikeouts prop. PX tags these as type='total' but
+        // the market name reveals it's a player K prop. Route to the prop
+        // fair-prob lookup (services/odds-feed.js lookupPlayerStrikeoutProp)
+        // instead of the standard game-total resolver. Falls through to
+        // the next market if the lineId isn't in this one.
+        //
+        // After M1 lands, shouldDecline gates these legs with a temporary
+        // 'prop_pricing_not_ready' reason. Vig structure + decline rules
+        // come in M2/M3 before live quoting.
+        if (market.type === 'total' && isPitcherStrikeoutMarket(market.name || '')) {
+          const parsedK = px.parseMarketSelections(market);
+          const matchingK = parsedK.find(s => s.lineId === lineId);
+          if (matchingK) {
+            const playerName = extractPitcherNameFromKMarket(market.name);
+            if (!playerName) {
+              log.warn('Lines', `K-prop name extract failed: "${market.name}" (lineId ${lineId})`);
+              resolveUnknownLine._lastFailure = {
+                lineId,
+                reason: 'k_prop_name_extract_failed',
+                marketType: 'player_strikeouts',
+                marketName: market.name,
+                sport: sportKey,
+                eventName: event.name,
+              };
+              return null;
+            }
+            const eventCtx = {
+              homeTeam: matchedHome,
+              awayTeam: matchedAway,
+              startTime: event.scheduled || null,
+            };
+            // Try SharpAPI first (sync cache hit), fall back to TOA on miss
+            let lookup = oddsFeed.lookupPlayerStrikeoutProp(
+              sportKey, eventCtx, playerName, matchingK.line,
+            );
+            let propSource = 'sharpapi';
+            const usableFair = (l) => l && l.fairProbOver != null && l.fairProbUnder != null;
+            if (!usableFair(lookup)) {
+              const toa = await oddsFeed.lookupPlayerStrikeoutPropFromTheOddsApi(
+                sportKey, eventCtx, playerName, matchingK.line,
+              );
+              if (toa) { lookup = toa; propSource = 'theoddsapi'; }
+            }
+            const fairProb = matchingK.selection === 'over'
+              ? (lookup && lookup.fairProbOver != null ? lookup.fairProbOver : null)
+              : (lookup && lookup.fairProbUnder != null ? lookup.fairProbUnder : null);
+            foundInfo = {
+              sport: sportKey,
+              pxEventId: eventId,
+              pxEventName: event.name,
+              marketType: 'player_strikeouts',
+              marketName: market.name,
+              selection: matchingK.selection,
+              teamName: playerName, // dashboards display "team" — use pitcher name
+              line: matchingK.line,
+              homeTeam: matchedHome,
+              awayTeam: matchedAway,
+              oddsApiSport: sportKey,
+              oddsApiMarket: 'player_strikeouts',
+              oddsApiSelection: matchingK.selection,
+              startTime: event.scheduled || null,
+              onDemand: true,
+              // Prop-specific metadata
+              playerName,
+              fairProb,
+              fairProbOver: lookup && lookup.fairProbOver != null ? lookup.fairProbOver : null,
+              fairProbUnder: lookup && lookup.fairProbUnder != null ? lookup.fairProbUnder : null,
+              booksWithBothSides: lookup && lookup.booksWithBothSides != null ? lookup.booksWithBothSides : null,
+              propBooks: lookup && lookup.books ? lookup.books : null,
+              propSource,
+              propMatchError: lookup && lookup.error ? lookup.error : null,
+              propMatchStages: lookup && lookup.stages ? lookup.stages : null,
+            };
+            lineFoundInPxMarket = true;
+            break; // exit markets loop — foundInfo will be stored at line ~1680
+          }
+          // lineId not in this K-prop market — continue to next market
+          continue;
+        }
+
         // Reject sub-game markets (halves/quarters/periods) by name BEFORE
         // the bounds check. F5 is exempt because it has its own marketType.
         const isF5ByName = f5NamePat.test(market.name || '');
