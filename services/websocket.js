@@ -17,27 +17,39 @@ function extractPlayerNameFromPropMarket(marketName) {
   if (!marketName) return null;
   const m = String(marketName);
   // Patterns ordered by specificity. Each strips ONE known stat phrase.
+  // Note PX often inserts "Total" between player and stat: "Luis Castillo
+  // Total Pitching Strikeouts" — handle that with an optional `total\s+`
+  // token in each pattern. Also strip a trailing "Total" as a final
+  // cleanup in case any future market uses "<Player> Total" without the
+  // stat phrase being matched.
   const strips = [
-    /\s+pitching\s+strike\s*outs?$/i,
-    /\s+batting\s+strike\s*outs?$/i,
-    /\s+strike\s*outs?\s+(thrown|recorded)$/i,
-    /\s+strike\s*outs?$/i,
+    /\s+(total\s+)?pitching\s+strike\s*outs?$/i,
+    /\s+(total\s+)?batting\s+strike\s*outs?$/i,
+    /\s+(total\s+)?strike\s*outs?\s+(thrown|recorded)$/i,
+    /\s+(total\s+)?strike\s*outs?$/i,
     /\s+total\s+bases$/i,
-    /\s+home\s+runs?$/i,
-    /\s+rbis?$/i,
-    /\s+hits?$/i,
-    /\s+runs?$/i,
-    /\s+walks?$/i,
-    /\s+stolen\s+bases?$/i,
-    /\s+singles?$/i,
-    /\s+doubles?$/i,
-    /\s+triples?$/i,
-    /\s+earned\s+runs?$/i,
+    /\s+(total\s+)?home\s+runs?$/i,
+    /\s+(total\s+)?rbis?$/i,
+    /\s+(total\s+)?hits?$/i,
+    /\s+(total\s+)?runs?$/i,
+    /\s+(total\s+)?walks?$/i,
+    /\s+(total\s+)?stolen\s+bases?$/i,
+    /\s+(total\s+)?singles?$/i,
+    /\s+(total\s+)?doubles?$/i,
+    /\s+(total\s+)?triples?$/i,
+    /\s+(total\s+)?earned\s+runs?$/i,
     /\s+outs\s+recorded$/i,
     /\s+innings\s+pitched$/i,
   ];
   for (const re of strips) {
-    if (re.test(m)) return m.replace(re, '').trim();
+    if (re.test(m)) {
+      let name = m.replace(re, '').trim();
+      // Final cleanup — if a stray "Total" remains at the end, strip it.
+      // Defends against future PX market names like "<Player> Total" we
+      // haven't accounted for in the regex above.
+      name = name.replace(/\s+total$/i, '').trim();
+      return name || null;
+    }
   }
   return null;
 }

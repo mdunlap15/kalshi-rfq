@@ -6111,6 +6111,10 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
   const pxHomeKey = lastWords(pxEventInfo.homeTeam || '');
   const pxAwayKey = lastWords(pxEventInfo.awayTeam || '');
   const pxStartMs = pxEventInfo.startTime ? Date.parse(pxEventInfo.startTime) : null;
+  // Always surface PX teams in stages — makes "no_event_match" failures
+  // self-debuggable from the persisted shadow log without needing to
+  // cross-reference px_event_id back to the event mapping.
+  stages.push(`px:${pxEventInfo.awayTeam || '?'}@${pxEventInfo.homeTeam || '?'}`);
   const teamMatchRows = allRows.filter(r => {
     const rh = lastWords(r.home_team || '');
     const ra = lastWords(r.away_team || '');
@@ -6120,7 +6124,12 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
   });
   stages.push(`team_match:${teamMatchRows.length}`);
   if (teamMatchRows.length === 0) {
-    return { error: 'no_event_match', stages, sample: allRows.slice(0, 2).map(r => `${r.away_team}@${r.home_team}`) };
+    // Surface the available SharpAPI events so we can tell at a glance
+    // whether the cache simply doesn't have prop data for this game (PX
+    // game outside SharpAPI's prop slate) vs a team-name-matching bug.
+    const availableEvents = [...new Set(allRows.map(r => `${r.away_team}@${r.home_team}`))];
+    stages.push(`available:${availableEvents.join('|')}`);
+    return { error: 'no_event_match', stages, availableEvents };
   }
 
   // If we have multiple events matching (doubleheader), narrow by start time
