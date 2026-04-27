@@ -727,6 +727,28 @@ function priceParlay(legs, opts = {}) {
       );
       continue;
     }
+    // Player strikeouts (Phase 2). Fair prob was captured at registration
+    // time by line-manager via oddsFeed.lookupPlayerStrikeoutProp (sync
+    // SharpAPI cache) or lookupPlayerStrikeoutPropFromTheOddsApi (async
+    // TOA fallback) and stored on lineInfo.fairProb keyed to selection.
+    // The generic getFairProb() below is keyed on home/away game-line
+    // markets and returns null for player props, which previously caused
+    // Phase-3 to decline with "no player_strikeouts quote in our odds
+    // feed" even though lineInfo.fairProb was already populated. Use the
+    // cached value directly.
+    //
+    // Staleness is guarded upstream in shouldDecline rule (c) — anything
+    // older than STALE_MS already declined before reaching priceParlay.
+    if (s.lineInfo.marketType === 'player_strikeouts') {
+      if (s.lineInfo.fairProb != null) {
+        fairProbs[i] = s.lineInfo.fairProb;
+        continue;
+      }
+      // fairProb missing — leave fairProbs[i] undefined so Phase 3's
+      // null-check fires the standard 'no fair value' decline path.
+      // (shouldDecline rule (a) should have caught this already; this
+      // is the defensive fallback if it didn't.)
+    }
     // Primary cache fast path — try sync before dispatching async.
     const syncPrimary = oddsFeed.getFairProb(
       s.lineInfo.oddsApiSport,
