@@ -6674,7 +6674,7 @@
    * - Totals: "over (Los Angeles Dodgers @ Washington Nationals)" → "LAD @ WSH O 6.5"
    * - Spreads: "Chicago Cubs" with line -1.5 → "Chicago Cubs -1.5"
    */
-  function formatSelection(teamStr, market, line) {
+  function formatSelection(teamStr, market, line, selection) {
     if (!teamStr) return '?';
     const mkt = (market || '').toLowerCase();
 
@@ -6691,6 +6691,17 @@
     // Handle spreads: append line
     if (mkt === 'spread' && line != null) {
       return teamStr + ' ' + (line >= 0 ? '+' : '') + line;
+    }
+
+    // Player strikeouts (and any prop where teamStr is the player name and
+    // selection holds 'over'/'under'). Render "<Player> Over 4.5" /
+    // "<Player> Under 4.5" so it's clear which side the bettor took.
+    // Without this, a K-prop leg shows just "Luis Castillo / 4.5" and the
+    // operator can't tell whether the bet is on the over or the under.
+    if (mkt === 'player_strikeouts' && selection) {
+      const side = String(selection).charAt(0).toUpperCase() + String(selection).slice(1).toLowerCase();
+      const lineStr = line != null ? ' ' + line : '';
+      return teamStr + ' ' + side + lineStr;
     }
 
     // Capitalize first letter
@@ -6753,7 +6764,7 @@
           const ctx = (away && home) ? (away + ' @ ' + home + ' ') : '';
           return ctx + periodTag + side + lineStr;
         }
-        return periodTag + formatSelection(name, mkt, line);
+        return periodTag + formatSelection(name, mkt, line, l.selection);
       }).join(', ');
     } catch (e) {
       // Fallback if formatting fails
@@ -10255,7 +10266,7 @@
       const mkt = l.market || l.marketType || '';
       // Same broad fallback as formatParlaySelections — PX-backfilled legs
       // carry selection/pxEventName but lack team/teamName.
-      let teamLabel = formatSelection(l.team || l.teamName || l.selection || l.pxEventName || '?', mkt, l.line);
+      let teamLabel = formatSelection(l.team || l.teamName || l.selection || l.pxEventName || '?', mkt, l.line, l.selection);
       // For bare Over/Under selections (including first-half / first-5
       // variants), append the game context so "Under 4.5" becomes
       // "Over 4.5 · ARI @ TOR". Without this, a multi-leg near-miss
