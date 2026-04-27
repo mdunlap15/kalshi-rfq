@@ -3681,7 +3681,7 @@
       const expanded = expandedRows.has(rowKey);
       html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
         <td style="white-space:nowrap; font-size:12px;">${time}</td>
-        <td style="max-width:320px; white-space:nowrap;" title="${teams}"><span style="display:inline-block; max-width:280px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">${teamsShort}</span>${sgpBadge(legs)}</td>
+        <td style="max-width:320px; white-space:nowrap;" title="${teams}"><span style="display:inline-block; max-width:280px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">${teamsShort}</span>${sgpBadge(legs)}${propBadge(legs)}</td>
         <td>${legs.length}</td>
         <td style="font-weight:600;">${offeredAm}</td>
         <td style="text-align:right; color:var(--purple);">${posPinFmt}</td>
@@ -3960,7 +3960,7 @@
       const expanded = expandedRows.has(rowKey);
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">';
       html += '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>';
-      html += '<td style="max-width:290px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + '</td>';
+      html += '<td style="max-width:290px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + propBadge(legs) + '</td>';
       html += '<td>' + legs.length + '</td>';
       html += '<td style="font-weight:600;">' + offeredAm + '</td>';
       html += '<td style="text-align:right; color:var(--purple);">' + sPinFmt + '</td>';
@@ -6031,7 +6031,7 @@
 
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">' +
         '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>' +
-        '<td style="font-size:12px; max-width:290px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + '</td>' +
+        '<td style="font-size:12px; max-width:290px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + propBadge(legs) + '</td>' +
         '<td>' + legs.length + '</td>' +
         '<td style="text-align:right; font-weight:600;">' + oddsStr + '</td>' +
         '<td style="text-align:right;">' + fairFmt + '</td>' +
@@ -6300,7 +6300,7 @@
       const expanded = expandedRows.has(rowKey);
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">';
       html += '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>';
-      html += '<td style="font-size:12px; max-width:260px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:220px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + '</td>';
+      html += '<td style="font-size:12px; max-width:260px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:220px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + propBadge(legs) + '</td>';
       html += '<td>' + legs.length + '</td>';
       html += '<td style="font-weight:600;">' + oddsStr + '</td>';
       html += '<td style="text-align:right;">' + psFairFmt + '</td>';
@@ -6787,6 +6787,45 @@
   function sgpBadge(legs) {
     if (!isSameGameParlay(legs)) return '';
     return ' <span title="Same-Game Parlay — competitor (Pin/FD/DK) parlay columns compound per-leg implied probs as if independent and are NOT a fair benchmark. Our offer applies a correlation penalty for SGPs." style="display:inline-block; background:rgba(139,92,246,0.15); color:#a78bfa; border:1px solid rgba(139,92,246,0.4); font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;">SGP</span>';
+  }
+
+  /** Detect whether any leg in this parlay is a player prop. Catches:
+   *   1. Quoted props with marketType === 'player_strikeouts' (the only
+   *      prop we currently price)
+   *   2. Unregistered/blocking props enriched at decline time with a
+   *      propType field (pra_combo, hitter_hits, threes_made, etc.) —
+   *      see services/order-tracker.js recordMatchedParlay enrichment.
+   *   3. Any leg whose marketType matches a known classifier propType
+   *      bucket (defensive — catches future quoted prop markets without
+   *      requiring a dashboard change). */
+  const _PROP_TYPE_BUCKETS = new Set([
+    'player_strikeouts',
+    // MLB classifier output buckets
+    'pitcher_strikeouts', 'pitcher_other', 'hitter_strikeouts',
+    'hitter_total_bases', 'hitter_hits', 'hitter_hr', 'hitter_rbi_runs',
+    'hitter_other', 'mlb_prop_ambiguous', 'other_mlb_prop',
+    // NBA classifier output buckets
+    'points', 'rebounds', 'assists', 'threes_made', 'blocks', 'steals',
+    'steals_blocks', 'pra_combo', 'double_double', 'triple_double',
+    'turnovers', 'first_basket', 'nba_prop_ambiguous', 'other_nba_prop',
+  ]);
+  function containsPlayerProp(legs) {
+    if (!Array.isArray(legs)) return false;
+    for (const l of legs) {
+      if (!l) continue;
+      if (l.propType) return true;
+      const m = l.market || l.marketType;
+      if (m && _PROP_TYPE_BUCKETS.has(m)) return true;
+    }
+    return false;
+  }
+  /** Render a PROP badge (empty string when no prop legs). Mirrors
+   *  sgpBadge in shape and placement; teal so it's visually distinct
+   *  from the purple SGP badge. Both badges can co-exist (a 2-leg
+   *  K-prop + same-team-ML SGP renders both). */
+  function propBadge(legs) {
+    if (!containsPlayerProp(legs)) return '';
+    return ' <span title="Contains a player prop leg — pricing applies prop-specific rules (single-book floor, 15-min staleness check, per-pitcher exposure cap, $200 per-parlay cap)." style="display:inline-block; background:rgba(20,184,166,0.15); color:#5eead4; border:1px solid rgba(20,184,166,0.4); font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;">PROP</span>';
   }
 
   function sportLabel(sport) {
@@ -11156,7 +11195,7 @@
       const expanded = expandedRows.has(rowKey);
       html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
         <td style="white-space:nowrap;">${time}</td>
-        <td style="max-width:290px; white-space:nowrap;" title="${teams}"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">${teamsShort}</span>${sgpBadge(legs)}</td>
+        <td style="max-width:290px; white-space:nowrap;" title="${teams}"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">${teamsShort}</span>${sgpBadge(legs)}${propBadge(legs)}</td>
         <td>${legs.length}</td>
         <td>${fairAm}</td>
         <td style="font-weight:600;">${offeredAm}</td>
