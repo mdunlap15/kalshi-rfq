@@ -6152,10 +6152,12 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
 
   // Step 2: filter by player_name. SharpAPI appends side-disambiguation
   // suffixes: "Tarik Skubal Thrown" (pitcher), "Aaron Judge Recorded"
-  // (batter K). Strip the suffix before matching.
-  const normPlayer = playerName.toLowerCase().trim();
+  // (batter K). Strip the suffix before matching. Also strip diacritics
+  // — PX sends "Randy Vásquez" but SharpAPI returns "Randy Vasquez".
+  const stripDiacritics = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const normPlayer = stripDiacritics(playerName).toLowerCase().trim();
   const matchedRows = eventRows.filter(r => {
-    const raw = (r.player_name || '').toLowerCase();
+    const raw = stripDiacritics(r.player_name || '').toLowerCase();
     const stripped = raw.replace(/\s*-\s*total$/, '').replace(/\s+(thrown|recorded)$/, '').trim();
     // Tolerant match — substring both directions in case of formatting drift
     return stripped === normPlayer || stripped.includes(normPlayer) || normPlayer.includes(stripped);
@@ -6178,6 +6180,11 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
   const overRows = lineRows.filter(r => /over/i.test(r.selection || r.selection_type || ''));
   const underRows = lineRows.filter(r => /under/i.test(r.selection || r.selection_type || ''));
   const books = [...new Set(lineRows.map(r => r.sportsbook).filter(Boolean))];
+  // Surface side-availability per book so it's easy to see which side is
+  // missing when books_with_both_sides=0. Common pattern: low-line K
+  // props (Anthony Kay 3.5) only have Over priced because Under is too
+  // long-shot to be open.
+  stages.push(`sides:over=${overRows.length},under=${underRows.length}`);
 
   // Per-book de-vig: pair Over/Under from the same book, devig with the
   // existing 2-way helper, then average fair probs across books.
