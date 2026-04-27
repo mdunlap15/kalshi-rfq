@@ -976,6 +976,66 @@ async function loadKV(key) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// PLAYER-PROP SHADOW QUOTES (Phase 1 — observation-only logging)
+// ---------------------------------------------------------------------------
+// Persists what we WOULD have priced for pitcher_strikeouts legs that
+// arrived in PX RFQs. Used to validate the prop matching pipeline + book
+// coverage before flipping to real quoting in Phase 2.
+//
+// Schema (run manually in Supabase SQL editor before this writes):
+//   CREATE TABLE prop_shadow_quotes (
+//     id BIGSERIAL PRIMARY KEY,
+//     parlay_id TEXT,
+//     line_id TEXT,
+//     px_event_id TEXT,
+//     market_name TEXT,
+//     player_name TEXT,
+//     line NUMERIC,
+//     prop_type TEXT,
+//     fair_prob_over NUMERIC,
+//     fair_prob_under NUMERIC,
+//     books_with_both_sides INT,
+//     books TEXT[],
+//     resolved_event_id TEXT,
+//     match_error TEXT,
+//     match_stages TEXT[],
+//     recorded_at TIMESTAMPTZ DEFAULT now()
+//   );
+async function savePropShadowQuote(entry) {
+  const db = getClient();
+  if (!db) return;
+  try {
+    const row = {
+      parlay_id: entry.parlayId || null,
+      line_id: entry.lineId || null,
+      px_event_id: entry.pxEventId || null,
+      market_name: entry.marketName || null,
+      player_name: entry.playerName || null,
+      line: entry.line != null ? entry.line : null,
+      prop_type: entry.propType || null,
+      fair_prob_over: entry.fairProbOver != null ? entry.fairProbOver : null,
+      fair_prob_under: entry.fairProbUnder != null ? entry.fairProbUnder : null,
+      books_with_both_sides: entry.booksWithBothSides != null ? entry.booksWithBothSides : null,
+      books: entry.books || null,
+      resolved_event_id: entry.resolvedEventId || null,
+      match_error: entry.matchError || null,
+      match_stages: entry.matchStages || null,
+      recorded_at: entry.recordedAt || new Date().toISOString(),
+    };
+    const { error } = await db.from('prop_shadow_quotes').insert(row);
+    if (error && !savePropShadowQuote._warned) {
+      log.error('DB', `savePropShadowQuote failed (run the SQL migration to create 'prop_shadow_quotes' table): ${error.message}`);
+      savePropShadowQuote._warned = true;
+    }
+  } catch (err) {
+    if (!savePropShadowQuote._warned) {
+      log.error('DB', `savePropShadowQuote error: ${err.message}`);
+      savePropShadowQuote._warned = true;
+    }
+  }
+}
+
 module.exports = {
   getClient,
   isEnabled,
@@ -989,6 +1049,7 @@ module.exports = {
   saveDecline,
   loadDeclines,
   lookupDecline,
+  savePropShadowQuote,
   saveKV,
   loadKV,
   saveLineCache,

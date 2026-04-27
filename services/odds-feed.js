@@ -76,6 +76,34 @@ const KALSHI_BUFFER = 0.02;
 // { [sport]: { fetchedAt, events: [{ eventId, homeTeam, awayTeam, startTime }] } }
 const sharpEventsIndex = {};
 
+// Player-prop rows cache — kept SEPARATE from oddsCache so the existing
+// moneyline/spread/total de-vig pipeline isn't disturbed. Phase 1 of the
+// pitcher-strikeouts shadow-pricing experiment populates this with raw
+// SharpAPI rows; lookup is on-demand by event + player + line.
+//
+// Structure:
+//   propRowsCache[sport][marketType] = [
+//     { event_id, home_team, away_team, event_start_time,
+//       sportsbook, player_name, line, selection ('Over'|'Under'),
+//       odds_american, odds_probability, ... }, ...
+//   ]
+//
+// Lookup helper: getPropRows(sport, marketType, filterFn) — returns the
+// array filtered, or [] if cache empty. We don't pre-index by event/
+// player because prop volume per refresh is small (~hundreds of rows
+// per market) and PX RFQ rate is bounded — a linear scan is fine.
+const propRowsCache = {};
+
+// Set of SharpAPI market_type values that are PROPS (not core line markets).
+// Rows with these market_types are partitioned out of the main rows[] array
+// before the de-vig grouping step so the existing pipeline doesn't see them.
+// Update when adding a new prop market to fetchOddsForSport's marketTypesList.
+const PROP_MARKET_TYPES = new Set([
+  'player_strikeouts', // pitcher Ks (Phase 1 shadow target). Player_name
+                       // distinguishes pitcher (" Thrown" suffix) vs batter
+                       // (" Recorded" suffix) sides within the same market.
+]);
+
 // Lineup tracking — MLB starting pitchers, NHL starting goalies.
 // SharpAPI appends starter name in parens to team_name: "New York Yankees (Gerrit Cole)"
 // We capture these per refresh and diff against the prior refresh to detect
@@ -284,8 +312,14 @@ async function fetchOddsForSport(sport, opts) {
   // because of the tier request-rate limit (Hobby = 120/min) — a single
   // drained fetch per market is much cheaper than a single multi-market
   // fetch that then re-pages through everything.
+  //
+  // PROP_MARKET_TYPES: any market_type fetched here that should NOT flow
+  // through the core de-vig pipeline (which expects moneyline / spread /
+  // total shapes). Prop rows are partitioned into propRowsCache for the
+  // shadow-pricing path. Update both this set AND marketTypesList when
+  // adding a new prop market.
   const marketTypesList = {
-    'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total', '1st_5_innings_moneyline', '1st_5_innings_run_line'],
+    'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total', '1st_5_innings_moneyline', '1st_5_innings_run_line', 'player_strikeouts'],
     'icehockey_nhl': ['moneyline', 'puck_line', 'total_goals', 'team_total'],
     'basketball_nba': ['moneyline', 'point_spread', 'total_points', 'team_total'],
     'tennis': ['moneyline', 'point_spread', 'total_points'],
@@ -366,9 +400,46 @@ async function fetchOddsForSport(sport, opts) {
   log.info('OddsFeed', `SharpAPI ${mapping.value} breakdown: ${breakdownStr}`);
   log.info('OddsFeed', `Got ${rows.length} total odds rows for ${mapping.value} across ${marketTypesList.length} markets`);
 
+  // Partition prop rows out of the main pipeline. The downstream de-vig +
+  // line-manager seeding code only knows how to handle moneyline / spread /
+  // total / team_total shapes; prop rows would either be silently dropped
+  // or cause warnings. Keep them in propRowsCache for the shadow-pricing
+  // path (services/websocket.js → odds-feed.lookupPlayerStrikeoutProp).
+  const propRows = [];
+  const coreRows = [];
+  for (const row of rows) {
+    if (row && PROP_MARKET_TYPES.has(row.market_type)) propRows.push(row);
+    else coreRows.push(row);
+  }
+  if (propRows.length > 0) {
+    if (!propRowsCache[sport]) propRowsCache[sport] = {};
+    // Group props by market_type so callers can query "all
+    // player_strikeouts rows for sport=X" with one map lookup.
+    // Apply cleanTeamName here so SharpAPI's abbreviated names
+    // (e.g. "BOS Red Sox") are canonicalized to PX-compatible
+    // forms before the cache stores them — avoids needing the
+    // matcher to handle both forms.
+    const byMt = {};
+    for (const r of propRows) {
+      if (!byMt[r.market_type]) byMt[r.market_type] = [];
+      byMt[r.market_type].push({
+        ...r,
+        home_team: cleanTeamName(r.home_team),
+        away_team: cleanTeamName(r.away_team),
+      });
+    }
+    propRowsCache[sport] = { ...propRowsCache[sport], ...byMt, fetchedAt: Date.now() };
+    const mtSummary = Object.entries(byMt)
+      .map(([mt, arr]) => `${mt}=${arr.length}`)
+      .join(', ');
+    log.info('OddsFeed', `Cached ${propRows.length} prop rows for ${mapping.value} (${mtSummary})`);
+  }
+  // Use coreRows (non-prop) for the existing grouping pipeline.
+  const groupingRows = coreRows;
+
   // Group by event, then by market+selection to de-vig across books
   const eventMap = {};
-  for (const row of rows) {
+  for (const row of groupingRows) {
     const eventId = row.event_id;
     if (!eventMap[eventId]) {
       eventMap[eventId] = {
@@ -5989,6 +6060,165 @@ async function getGameResult(sport, homeTeam, awayTeam, startTime) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// PLAYER-PROP LOOKUP (Phase 1 shadow-pricing)
+// ---------------------------------------------------------------------------
+// Find SharpAPI player_strikeouts rows that match a PX leg's pitcher name +
+// line value. Used by services/websocket.js shadow-pricing hook to log what
+// we WOULD have priced — does NOT affect quote/decline behavior.
+//
+// Inputs:
+//   sport          'baseball_mlb'
+//   pxEventInfo    { homeTeam, awayTeam, startTime, ... } from line-manager
+//                  (used to disambiguate which SharpAPI event_id this PX
+//                  leg belongs to — PX and SharpAPI use different event ids)
+//   playerName     extracted from PX market name e.g. "Tarik Skubal" parsed
+//                  out of "Tarik Skubal Pitching Strikeouts"
+//   line           numeric line value (e.g. 6.5)
+//
+// Returns:
+//   {
+//     matchedRows:    [...all SharpAPI rows matching player+line for this event],
+//     books:          ['draftkings', 'fanduel'],
+//     sides:          { over: [...], under: [...] }, // by selection
+//     fairProbOver:   de-vigged fair P(Over) across books, or null,
+//     fairProbUnder:  de-vigged fair P(Under) across books, or null,
+//     resolvedEventId: SharpAPI event_id we matched against,
+//   }
+//   or null if no match found (for any reason — log the reason via stage).
+function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
+  const stages = []; // for debug visibility into why a lookup failed
+  if (!sport || !pxEventInfo || !playerName) {
+    return { error: 'missing_input', stages: ['precondition'] };
+  }
+  const sportCache = propRowsCache[sport];
+  if (!sportCache || !sportCache.player_strikeouts) {
+    return { error: 'no_prop_cache', stages: ['cache_empty'] };
+  }
+  const allRows = sportCache.player_strikeouts;
+  stages.push(`cache:${allRows.length}rows`);
+
+  // Step 1: filter by event. SharpAPI event_id won't match PX's
+  // sport_event_id, so match by home/away team + start time proximity.
+  // Use normalizeTeamName + last-2-words matching to handle the
+  // "BOS Red Sox" vs "Boston Red Sox" case (cleanTeamName at cache
+  // time should already canonicalize this, but keep last-words
+  // fallback for any abbrevs not in TEAM_ABBREV_TO_CANONICAL).
+  const lastWords = (name, n = 2) => {
+    const words = normalizeTeamName(name).split(/\s+/).filter(Boolean);
+    return words.slice(-n).join(' ');
+  };
+  const pxHomeKey = lastWords(pxEventInfo.homeTeam || '');
+  const pxAwayKey = lastWords(pxEventInfo.awayTeam || '');
+  const pxStartMs = pxEventInfo.startTime ? Date.parse(pxEventInfo.startTime) : null;
+  const teamMatchRows = allRows.filter(r => {
+    const rh = lastWords(r.home_team || '');
+    const ra = lastWords(r.away_team || '');
+    // Bidirectional — SharpAPI sometimes flips home/away.
+    return (rh === pxHomeKey && ra === pxAwayKey) ||
+           (rh === pxAwayKey && ra === pxHomeKey);
+  });
+  stages.push(`team_match:${teamMatchRows.length}`);
+  if (teamMatchRows.length === 0) {
+    return { error: 'no_event_match', stages, sample: allRows.slice(0, 2).map(r => `${r.away_team}@${r.home_team}`) };
+  }
+
+  // If we have multiple events matching (doubleheader), narrow by start time
+  let eventRows = teamMatchRows;
+  if (pxStartMs) {
+    const eventIds = [...new Set(teamMatchRows.map(r => r.event_id))];
+    if (eventIds.length > 1) {
+      // Pick event whose start time is closest to PX leg's start time
+      const eventsByDist = eventIds.map(eid => {
+        const sample = teamMatchRows.find(r => r.event_id === eid);
+        const eMs = sample.event_start_time ? Date.parse(sample.event_start_time) : 0;
+        return { eid, dist: Math.abs(eMs - pxStartMs) };
+      }).sort((a, b) => a.dist - b.dist);
+      const bestId = eventsByDist[0].eid;
+      eventRows = teamMatchRows.filter(r => r.event_id === bestId);
+      stages.push(`dh_resolve:${eventsByDist.length}->${bestId}`);
+    }
+  }
+  const resolvedEventId = eventRows[0].event_id;
+
+  // Step 2: filter by player_name. SharpAPI appends side-disambiguation
+  // suffixes: "Tarik Skubal Thrown" (pitcher), "Aaron Judge Recorded"
+  // (batter K). Strip the suffix before matching.
+  const normPlayer = playerName.toLowerCase().trim();
+  const matchedRows = eventRows.filter(r => {
+    const raw = (r.player_name || '').toLowerCase();
+    const stripped = raw.replace(/\s*-\s*total$/, '').replace(/\s+(thrown|recorded)$/, '').trim();
+    // Tolerant match — substring both directions in case of formatting drift
+    return stripped === normPlayer || stripped.includes(normPlayer) || normPlayer.includes(stripped);
+  });
+  stages.push(`player_match:${matchedRows.length}`);
+  if (matchedRows.length === 0) {
+    return { error: 'no_player_match', stages, resolvedEventId,
+             samplePlayers: [...new Set(eventRows.map(r => r.player_name))].slice(0, 5) };
+  }
+
+  // Step 3: filter by line value (allow tiny float fuzz)
+  const lineRows = line == null ? matchedRows : matchedRows.filter(r => Math.abs((r.line || 0) - line) < 0.01);
+  stages.push(`line_match:${lineRows.length}`);
+  if (lineRows.length === 0) {
+    return { error: 'no_line_match', stages, resolvedEventId,
+             sampleLines: [...new Set(matchedRows.map(r => r.line))].slice(0, 8) };
+  }
+
+  // Step 4: split by side and compute de-vigged fair probs across books.
+  const overRows = lineRows.filter(r => /over/i.test(r.selection || r.selection_type || ''));
+  const underRows = lineRows.filter(r => /under/i.test(r.selection || r.selection_type || ''));
+  const books = [...new Set(lineRows.map(r => r.sportsbook).filter(Boolean))];
+
+  // Per-book de-vig: pair Over/Under from the same book, devig with the
+  // existing 2-way helper, then average fair probs across books.
+  const fairProbsOver = [];
+  const fairProbsUnder = [];
+  for (const book of books) {
+    const o = overRows.find(r => r.sportsbook === book);
+    const u = underRows.find(r => r.sportsbook === book);
+    if (!o || !u) continue;
+    const oProb = americanToImpliedProb(o.odds_american);
+    const uProb = americanToImpliedProb(u.odds_american);
+    if (oProb == null || uProb == null) continue;
+    const dv = deVig2Way(oProb, uProb);
+    if (dv) {
+      fairProbsOver.push(dv.fair1);
+      fairProbsUnder.push(dv.fair2);
+    }
+  }
+  const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+
+  return {
+    matchedRows: lineRows,
+    books,
+    sides: { over: overRows, under: underRows },
+    fairProbOver: avg(fairProbsOver),
+    fairProbUnder: avg(fairProbsUnder),
+    booksWithBothSides: fairProbsOver.length, // count of books that had both Over+Under
+    resolvedEventId,
+    stages,
+  };
+}
+
+// Debug: dump the prop cache for inspection
+function getPropRowsCacheStatus() {
+  const out = {};
+  for (const [sport, mtMap] of Object.entries(propRowsCache)) {
+    out[sport] = {};
+    for (const [mt, arr] of Object.entries(mtMap)) {
+      if (mt === 'fetchedAt') { out[sport].fetchedAt = arr; continue; }
+      out[sport][mt] = {
+        rowCount: arr.length,
+        eventCount: new Set(arr.map(r => r.event_id)).size,
+        bookCount: new Set(arr.map(r => r.sportsbook)).size,
+        books: [...new Set(arr.map(r => r.sportsbook))],
+      };
+    }
+  }
+  return out;
+}
+
 module.exports = {
   fetchOddsForSport,
   refreshAllSports,
@@ -6044,4 +6274,7 @@ module.exports = {
   __debugGetAltLinesCache: () => altLinesCache,
   normalizeEventKey,
   getAltLineCacheEntry,
+  // Phase 1 player-prop shadow pricing
+  lookupPlayerStrikeoutProp,
+  getPropRowsCacheStatus,
 };

@@ -4,6 +4,43 @@ const log = require('./logger');
 const px = require('./prophetx');
 const pricer = require('./pricer');
 const orderTracker = require('./order-tracker');
+const oddsFeed = require('./odds-feed');
+const db = require('./db');
+
+// Extract the player name from a PX prop market name. PX formats like:
+//   "Tarik Skubal Pitching Strikeouts"
+//   "Aaron Judge Total Bases"
+//   "Mookie Betts Home Runs"
+// Strategy: strip the trailing market-stat phrase. Returns null if no
+// recognizable stat suffix found (so the shadow logger can flag it).
+function extractPlayerNameFromPropMarket(marketName) {
+  if (!marketName) return null;
+  const m = String(marketName);
+  // Patterns ordered by specificity. Each strips ONE known stat phrase.
+  const strips = [
+    /\s+pitching\s+strike\s*outs?$/i,
+    /\s+batting\s+strike\s*outs?$/i,
+    /\s+strike\s*outs?\s+(thrown|recorded)$/i,
+    /\s+strike\s*outs?$/i,
+    /\s+total\s+bases$/i,
+    /\s+home\s+runs?$/i,
+    /\s+rbis?$/i,
+    /\s+hits?$/i,
+    /\s+runs?$/i,
+    /\s+walks?$/i,
+    /\s+stolen\s+bases?$/i,
+    /\s+singles?$/i,
+    /\s+doubles?$/i,
+    /\s+triples?$/i,
+    /\s+earned\s+runs?$/i,
+    /\s+outs\s+recorded$/i,
+    /\s+innings\s+pitched$/i,
+  ];
+  for (const re of strips) {
+    if (re.test(m)) return m.replace(re, '').trim();
+  }
+  return null;
+}
 
 // MLB player-prop sub-classifier (Phase 0 of pitcher-strikeouts experiment).
 // We currently bucket all MLB props as `category='player_prop'`. To decide
@@ -728,6 +765,52 @@ async function handleRFQ(data) {
             }
           }
           const propTag = propType ? ` [propType:${propType}]` : '';
+
+          // Phase 1 shadow pricing — pitcher strikeouts only.
+          // If this leg is a pitcher_strikeouts prop AND we have the
+          // pieces needed to look it up (marketName + line + event
+          // info), call the prop matcher and persist what we WOULD
+          // have priced. Does NOT change decline behavior — leg still
+          // routes to the unknown-legs decline path. Async-fire-and-
+          // forget so the decline path isn't blocked on a DB write.
+          if (propType === 'pitcher_strikeouts' && propMarketName && eventInfo) {
+            const playerName = extractPlayerNameFromPropMarket(propMarketName);
+            if (playerName) {
+              const lookup = oddsFeed.lookupPlayerStrikeoutProp(
+                'baseball_mlb',
+                { homeTeam: eventInfo.homeTeam, awayTeam: eventInfo.awayTeam, startTime: eventInfo.startTime || eventInfo.commenceTime },
+                playerName,
+                lineNum,
+              );
+              const shadowEntry = {
+                parlayId,
+                lineId,
+                pxEventId: l.sport_event_id || null,
+                marketName: propMarketName,
+                playerName,
+                line: lineNum,
+                propType,
+                fairProbOver: lookup && lookup.fairProbOver != null ? lookup.fairProbOver : null,
+                fairProbUnder: lookup && lookup.fairProbUnder != null ? lookup.fairProbUnder : null,
+                booksWithBothSides: lookup && lookup.booksWithBothSides != null ? lookup.booksWithBothSides : null,
+                books: lookup && lookup.books ? lookup.books : null,
+                resolvedEventId: lookup && lookup.resolvedEventId ? lookup.resolvedEventId : null,
+                matchError: lookup && lookup.error ? lookup.error : null,
+                matchStages: lookup && lookup.stages ? lookup.stages : null,
+              };
+              // Fire-and-forget — never await. Errors logged inside the helper.
+              db.savePropShadowQuote(shadowEntry).catch(() => {});
+              // Also surface in logs for live observability before
+              // dashboard hookup. One-line summary per leg.
+              if (lookup && lookup.error) {
+                log.info('PropShadow', `${playerName} K ${lineNum}: ${lookup.error} [stages: ${(lookup.stages || []).join('|')}]`);
+              } else if (lookup && lookup.fairProbOver != null) {
+                log.info('PropShadow', `${playerName} K ${lineNum}: fairOver=${lookup.fairProbOver.toFixed(4)} fairUnder=${lookup.fairProbUnder.toFixed(4)} books=${lookup.books.join(',')} (${lookup.booksWithBothSides} both-sides)`);
+              }
+            } else {
+              log.debug('PropShadow', `Could not extract player name from "${propMarketName}"`);
+            }
+          }
 
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
           unknownSports.push(`${baseName} ${tag}${propTag} ${detail}`);
