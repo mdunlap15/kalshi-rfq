@@ -1509,7 +1509,14 @@ function recordDecline(reason, detail) {
 
   // Track near-misses (all legs known but couldn't price)
   // Near-miss reasons include: 'no fair value', 'stale odds', 'parlay too unlikely', 'odds too high'
-  const nearMissReasons = new Set(['no fair value', 'stale odds', 'parlay too unlikely', 'odds too high', 'event started']);
+  // Phase 2 K-prop pricing/data issues are also Near Misses — we tried
+  // to price but couldn't (low book coverage, stale cache, no consensus).
+  // Intentional blocks (correlation, exposure caps) are NOT included
+  // because we never wanted to quote them.
+  const nearMissReasons = new Set([
+    'no fair value', 'stale odds', 'parlay too unlikely', 'odds too high', 'event started',
+    'prop_no_fair_value', 'prop_low_confidence', 'prop_stale',
+  ]);
   if (nearMissReasons.has(reason) && detail) {
     declineStats.nearMisses.unshift({
       parlayId: detail.parlayId,
@@ -5589,7 +5596,13 @@ function backfillGolfMetadata() {
 }
 
 function hydrateDeclinesInMemory(dbDeclines) {
-  const nearMissReasons = new Set(['no fair value', 'stale odds', 'parlay too unlikely', 'odds too high', 'event started']);
+  // Mirror the live-decline near-miss set (services/order-tracker.js:1512)
+  // so restart-rebuilt declines surface in the Near Misses table the same
+  // way live ones do. Includes Phase 2 K-prop pricing/data reasons.
+  const nearMissReasons = new Set([
+    'no fair value', 'stale odds', 'parlay too unlikely', 'odds too high', 'event started',
+    'prop_no_fair_value', 'prop_low_confidence', 'prop_stale',
+  ]);
   for (let i = dbDeclines.length - 1; i >= 0; i--) {
     const d = dbDeclines[i];
     declineStats.total++;
