@@ -738,10 +738,41 @@ function startStatusServer() {
       const playerPropBucket = (memBucket.unknownLegCategories || {}).player_prop || { count: 0, byPropType: {}, bySport: {}, sampleLegs: [] };
       const memPropTypes = { ...(playerPropBucket.byPropType || {}) };
       delete memPropTypes._lastSeen;
-      // Sum of byPropType = MLB-classified legs only (classifier runs
-      // for baseball context only). The bucket's .count includes all
-      // player_prop legs across NBA/NHL/MLB/etc.
-      const memMlbClassified = Object.values(memPropTypes).reduce((a, b) => a + b, 0);
+      // The classifier now runs for BOTH baseball (classifyMlbProp) and
+      // basketball (classifyNbaProp). The byPropType rollup mixes both
+      // sports' bucket names, so compute MLB- and NBA-only sub-totals
+      // by enumerated bucket name. Anything we don't recognize is
+      // reported under `unclassifiedBuckets` so a new bucket added to
+      // either classifier later can't silently inflate the wrong total.
+      const MLB_BUCKETS = new Set([
+        'pitcher_strikeouts', 'pitcher_other',
+        'hitter_strikeouts', 'hitter_total_bases', 'hitter_hr',
+        'hitter_rbi_runs', 'hitter_hits', 'hitter_other',
+        'mlb_prop_ambiguous', 'other_mlb_prop',
+      ]);
+      const NBA_BUCKETS = new Set([
+        'points', 'rebounds', 'assists', 'threes_made', 'blocks',
+        'steals', 'steals_blocks', 'pra_combo', 'double_double',
+        'triple_double', 'turnovers', 'first_basket',
+        'nba_prop_ambiguous', 'other_nba_prop',
+      ]);
+      const sumByBuckets = (counts, allowed) => {
+        let total = 0;
+        for (const [k, v] of Object.entries(counts)) {
+          if (allowed.has(k)) total += v;
+        }
+        return total;
+      };
+      const unclassifiedBuckets = (counts) => {
+        const out = {};
+        for (const [k, v] of Object.entries(counts)) {
+          if (!MLB_BUCKETS.has(k) && !NBA_BUCKETS.has(k)) out[k] = v;
+        }
+        return out;
+      };
+      const memMlbClassified = sumByBuckets(memPropTypes, MLB_BUCKETS);
+      const memNbaClassified = sumByBuckets(memPropTypes, NBA_BUCKETS);
+      const memUnclassified = unclassifiedBuckets(memPropTypes);
       const memAllSports = playerPropBucket.count || 0;
       const memPctPitcherKOfMlb = memMlbClassified > 0
         ? Math.round((memPropTypes.pitcher_strikeouts || 0) / memMlbClassified * 10000) / 100
@@ -797,15 +828,24 @@ function startStatusServer() {
             offset += PAGE_SIZE;
           }
           const total = Object.values(counts).reduce((a, b) => a + b, 0);
+          const dbMlb = sumByBuckets(counts, MLB_BUCKETS);
+          const dbNba = sumByBuckets(counts, NBA_BUCKETS);
+          const dbUnclassified = unclassifiedBuckets(counts);
           dbBreakdown = {
             windowDays: days,
             declineRowsScanned: totalScanned,
             pagesFetched: pages,
             hitMaxRowsCap: totalScanned >= MAX_ROWS,
             propLegsTagged: total,
+            mlbPropLegsClassified: dbMlb,
+            nbaPropLegsClassified: dbNba,
             byPropType: counts,
-            pctPitcherStrikeouts: total > 0
-              ? Math.round((counts.pitcher_strikeouts || 0) / total * 10000) / 100
+            unclassifiedBuckets: dbUnclassified,
+            // Denominator is MLB-only buckets — Phase 2 gate decision
+            // depends on pitcher-K share of MLB-classified prop volume,
+            // not of all-sports prop volume.
+            pctPitcherStrikeoutsOfMlb: dbMlb > 0
+              ? Math.round((counts.pitcher_strikeouts || 0) / dbMlb * 10000) / 100
               : null,
             ...(lastError ? { warning: `pagination aborted at offset ${offset}: ${lastError.message}` } : {}),
           };
@@ -823,12 +863,20 @@ function startStatusServer() {
           // Breakdown of where the player_prop volume lives by sport.
           // Useful for sizing future non-MLB expansions.
           bySport: memBySport,
-          // MLB-only subset (the only one currently classified by
-          // propType — Phase 0 is MLB-pitcher-K-focused).
+          // Sub-totals by classifier sport. The byPropType rollup mixes
+          // MLB and NBA bucket names; these scalars partition them so
+          // pctPitcherStrikeoutsOfMlb has the correct denominator.
           mlbPropLegsClassified: memMlbClassified,
+          nbaPropLegsClassified: memNbaClassified,
           byPropType: memPropTypes,
+          // Any byPropType keys we didn't recognize as MLB or NBA
+          // buckets (should always be empty; surfaces classifier drift
+          // if a new bucket name is added without updating MLB_BUCKETS
+          // / NBA_BUCKETS here).
+          unclassifiedBuckets: memUnclassified,
           // Denominator is mlbPropLegsClassified (NOT the all-sports
-          // total) since the classifier only runs for baseball legs.
+          // total, NOT the all-classified total) — Phase 2 gate is
+          // pitcher-K share of MLB-classified prop volume.
           pctPitcherStrikeoutsOfMlb: memPctPitcherKOfMlb,
           sampleLegs: (playerPropBucket.sampleLegs || []).slice(0, 10),
         },
