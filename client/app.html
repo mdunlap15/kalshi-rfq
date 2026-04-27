@@ -571,15 +571,25 @@
       btn.classList.add('loading');
 
       try {
-        const [statusResp, ordersResp] = await Promise.all([
+        // Also fetch /px-pnl in parallel — the dashboard uses
+        // pxPnL.openExposure as the authoritative Deployed value
+        // (PX-native view of matched stakes). Without this, the
+        // mobile app's Deployed shows status.portfolio.totalRisk,
+        // which is the local tracker's view and can under-count
+        // when orders are flagged as stale-phantom (confirmed
+        // without orderUuid >10min, etc.). Mirroring the dashboard's
+        // source-of-truth keeps the two views in sync.
+        const [statusResp, ordersResp, pxPnLResp] = await Promise.all([
           fetch(BASE + '/status'),
           fetch(BASE + '/orders'),
+          fetch(BASE + '/px-pnl').catch(() => null),
         ]);
         const status = await statusResp.json();
         const ordersData = await ordersResp.json();
+        const pxPnL = pxPnLResp ? await pxPnLResp.json().catch(() => null) : null;
         const allOrders = ordersData.recentOrders || [];
 
-        renderStatus(status, allOrders);
+        renderStatus(status, allOrders, pxPnL);
         renderParlays(allOrders);
         renderDailyVolume(allOrders);
       } catch (e) {
@@ -609,7 +619,7 @@
       return d;
     }
 
-    function renderStatus(status, allOrders) {
+    function renderStatus(status, allOrders, pxPnL) {
       const o = status.orders || {};
       const p = status.portfolio || {};
       const ws = status.websocket || {};
@@ -624,7 +634,13 @@
 
       const pnl = o.runningPnL || 0;
       const pnlCls = pnl >= 0 ? 'positive' : 'negative';
-      const deployed = p.totalRisk || 0;
+      // Prefer PX-native open exposure (authoritative — matches dashboard).
+      // Falls back to status.portfolio.totalRisk when /px-pnl is unavailable
+      // or hasn't loaded yet. The local tracker's view (totalRisk) excludes
+      // stale-phantom orders, which can systematically under-count Deployed.
+      const deployed = (pxPnL && pxPnL.ok && pxPnL.openExposure != null)
+        ? pxPnL.openExposure
+        : (p.totalRisk || 0);
       const toWin = p.totalToWin || 0;
       const balance = p.balance || 0;
 
