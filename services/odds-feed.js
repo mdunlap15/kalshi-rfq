@@ -4098,7 +4098,24 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
     event = getEventMarkets(sport, awayTeam, homeTeam, targetTime);
     if (event) orientationFlipped = true;
   }
-  if (!event) return null;
+  if (!event) {
+    // Last-resort fallback: SharpAPI primary cache doesn't have this
+    // game (event not yet cached, team-name mismatch, sport gap), but
+    // TOA-populated altLinesCache might. Operator caught 2026-04-27:
+    // MLB integer totals like O 8 declining as "no fair value" because
+    // SharpAPI Hobby tier doesn't return Pinnacle's primary integer 8,
+    // and the early `event == null` exit short-circuited the alt path.
+    //
+    // Only applies to spreads/totals (where alt cache exists) and
+    // requires a non-null line (lookup needs the line value).
+    if (line != null && (marketType === 'spreads' || marketType === 'totals')) {
+      const altProb = getAltLineFairProb(
+        normalizeEventKey(homeTeam, awayTeam), marketType, selection, line
+      );
+      if (altProb != null && altProb > 0 && altProb < 1) return altProb;
+    }
+    return null;
+  }
 
   // Flip selection when we found the event under reversed orientation.
   // - h2h / moneyline: home↔away
