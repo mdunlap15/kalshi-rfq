@@ -2591,6 +2591,17 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
   const mlbF5Markets = sport === 'baseball_mlb'
     ? ',alternate_spreads_1st_5_innings,alternate_totals_1st_5_innings'
     : '';
+  // NBA H1 alt markets. PX RFQs occasionally include integer first-half
+  // spreads (e.g. OKC -6 first_half_spread) that no book's PRIMARY h1
+  // line carries — main books only quote half-points (-5.5, -6.5) on
+  // h1 to avoid pushes. Pinnacle and Bovada DO carry integer h1 alts
+  // for select lines via alternate_spreads_h1 / alternate_totals_h1.
+  // H2 deliberately NOT included: H2 lines come back on the board at
+  // halftime and move very fast live; cache TTL is too long to keep
+  // up with halftime volatility, risking stale-quote losses.
+  const nbaH1Markets = sport === 'basketball_nba'
+    ? ',alternate_spreads_h1,alternate_totals_h1'
+    : '';
   // Include the PRIMARY totals market alongside alternate_totals so lines
   // that are a book's primary (e.g. Pinnacle's integer MLB 8) — and thus
   // not listed in alternate_totals — still land in the altTotals cache.
@@ -2599,7 +2610,7 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events/${eventId}/odds`
     + `?apiKey=${theOddsApiKey}`
     + `&regions=us,eu`
-    + `&markets=totals,alternate_spreads,alternate_totals${mlbF5Markets}`
+    + `&markets=totals,alternate_spreads,alternate_totals${mlbF5Markets}${nbaH1Markets}`
     + `&bookmakers=${ALT_LINES_BOOKMAKERS}`
     + `&oddsFormat=american`;
 
@@ -2614,7 +2625,7 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
     }
 
     const data = await resp.json();
-    const result = { fetchedAt: Date.now(), altSpreads: {}, altTotals: {}, altSpreadsF5: {}, altTotalsF5: {} };
+    const result = { fetchedAt: Date.now(), altSpreads: {}, altTotals: {}, altSpreadsF5: {}, altTotalsF5: {}, altSpreadsH1: {}, altTotalsH1: {} };
 
     for (const book of (data.bookmakers || [])) {
       for (const market of (book.markets || [])) {
@@ -2659,6 +2670,50 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
             result.altTotalsF5[lineKey].books.add(book.key);
             if (!result.altTotalsF5[lineKey].byBook[book.key]) result.altTotalsF5[lineKey].byBook[book.key] = {};
             result.altTotalsF5[lineKey].byBook[book.key][isOver ? 'over' : 'under'] = o.price;
+          }
+          continue;
+        }
+        if (market.key === 'alternate_spreads_h1') {
+          // NBA H1 alt spreads. Same signed-home-point keying as full-game
+          // alternate_spreads. Routed to altSpreadsH1 so consumers querying
+          // marketType='spreads_h1' don't collide with full-game alts.
+          for (const o of (market.outcomes || [])) {
+            const normOutcome = normalizeTeamName(o.name);
+            const normHome = normalizeTeamName(homeTeam);
+            const normAway = normalizeTeamName(awayTeam);
+            const normDataHome = data.home_team ? normalizeTeamName(data.home_team) : '';
+            const homeMatch = normOutcome === normHome || normOutcome === normDataHome
+              || normHome.includes(normOutcome) || normOutcome.includes(normHome)
+              || (normDataHome && (normDataHome.includes(normOutcome) || normOutcome.includes(normDataHome)));
+            const awayMatch = normOutcome === normAway
+              || normAway.includes(normOutcome) || normOutcome.includes(normAway);
+            if (homeMatch === awayMatch) continue;
+            const isHome = homeMatch;
+            const homePoint = isHome ? o.point : -o.point;
+            const lineKey = String(homePoint);
+            if (!result.altSpreadsH1[lineKey]) {
+              result.altSpreadsH1[lineKey] = { probs: [], books: new Set(), byBook: {}, homePoint };
+            }
+            const prob = americanToImpliedProb(o.price);
+            result.altSpreadsH1[lineKey].probs.push({ isHome, prob, point: o.point });
+            result.altSpreadsH1[lineKey].books.add(book.key);
+            if (!result.altSpreadsH1[lineKey].byBook[book.key]) result.altSpreadsH1[lineKey].byBook[book.key] = {};
+            result.altSpreadsH1[lineKey].byBook[book.key][isHome ? 'home' : 'away'] = o.price;
+          }
+          continue;
+        }
+        if (market.key === 'alternate_totals_h1') {
+          for (const o of (market.outcomes || [])) {
+            const lineKey = o.point;
+            if (!result.altTotalsH1[lineKey]) {
+              result.altTotalsH1[lineKey] = { probs: [], books: new Set(), byBook: {} };
+            }
+            const isOver = o.name === 'Over';
+            const prob = americanToImpliedProb(o.price);
+            result.altTotalsH1[lineKey].probs.push({ isOver, prob });
+            result.altTotalsH1[lineKey].books.add(book.key);
+            if (!result.altTotalsH1[lineKey].byBook[book.key]) result.altTotalsH1[lineKey].byBook[book.key] = {};
+            result.altTotalsH1[lineKey].byBook[book.key][isOver ? 'over' : 'under'] = o.price;
           }
           continue;
         }
@@ -2822,13 +2877,47 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
         delete result.altTotalsF5[lineKey];
       }
     }
+    // NBA H1 alt spreads + totals. Same consolidation as the F5 loops —
+    // de-vig per line with the same min-books + Pinnacle-alone gate, keep
+    // byBook stubs for missing consensus so per-book accessors still resolve.
+    for (const [lineKey, lineData] of Object.entries(result.altSpreadsH1)) {
+      const bookCount = lineData.books.size;
+      const byBook = lineData.byBook;
+      const homeProbs = lineData.probs.filter(p => p.isHome).map(p => p.prob);
+      const awayProbs = lineData.probs.filter(p => !p.isHome).map(p => p.prob);
+      if (homeProbs.length > 0 && awayProbs.length > 0 && bookCountOk(bookCount, byBook)) {
+        const [fh, fa] = deVig2Way(avg(homeProbs), avg(awayProbs));
+        result.altSpreadsH1[lineKey] = { home: fh, away: fa, books: bookCount, byBook };
+      } else if (Object.keys(byBook).length > 0) {
+        result.altSpreadsH1[lineKey] = { home: null, away: null, books: bookCount, byBook };
+      } else {
+        delete result.altSpreadsH1[lineKey];
+      }
+    }
+    for (const [lineKey, lineData] of Object.entries(result.altTotalsH1)) {
+      const bookCount = lineData.books.size;
+      const byBook = lineData.byBook;
+      const overProbs = lineData.probs.filter(p => p.isOver).map(p => p.prob);
+      const underProbs = lineData.probs.filter(p => !p.isOver).map(p => p.prob);
+      if (overProbs.length > 0 && underProbs.length > 0 && bookCountOk(bookCount, byBook)) {
+        const [fo, fu] = deVig2Way(avg(overProbs), avg(underProbs));
+        result.altTotalsH1[lineKey] = { over: fo, under: fu, books: bookCount, byBook };
+      } else if (Object.keys(byBook).length > 0) {
+        result.altTotalsH1[lineKey] = { over: null, under: null, books: bookCount, byBook };
+      } else {
+        delete result.altTotalsH1[lineKey];
+      }
+    }
 
     altLinesCache[key] = result;
     const skippedNote = (skippedThinSpreads + skippedThinTotals) > 0 ? ` (skipped ${skippedThinSpreads} spreads + ${skippedThinTotals} totals with <${ALT_LINES_MIN_BOOKS} books)` : '';
     const f5Note = (Object.keys(result.altSpreadsF5).length || Object.keys(result.altTotalsF5).length) > 0
       ? `, F5: ${Object.keys(result.altSpreadsF5).length} spreads + ${Object.keys(result.altTotalsF5).length} totals`
       : '';
-    log.info('OddsFeed', `Cached alt lines: ${Object.keys(result.altSpreads).length} spreads, ${Object.keys(result.altTotals).length} totals${f5Note}${skippedNote}`);
+    const h1Note = (Object.keys(result.altSpreadsH1).length || Object.keys(result.altTotalsH1).length) > 0
+      ? `, H1: ${Object.keys(result.altSpreadsH1).length} spreads + ${Object.keys(result.altTotalsH1).length} totals`
+      : '';
+    log.info('OddsFeed', `Cached alt lines: ${Object.keys(result.altSpreads).length} spreads, ${Object.keys(result.altTotals).length} totals${f5Note}${h1Note}${skippedNote}`);
     return result;
   } catch (err) {
     log.error('OddsFeed', `Alt lines error: ${err.message}`);
@@ -4923,14 +5012,15 @@ function getAltLineCacheEntry(eventKey, marketType, selection, line) {
   const alt = altLinesCache[eventKey];
   if (!alt) return null;
   const isF5 = marketType === 'spreads_f5' || marketType === 'totals_f5';
-  if (marketType === 'spreads' || marketType === 'spreads_f5') {
+  const isH1 = marketType === 'spreads_h1' || marketType === 'totals_h1';
+  if (marketType === 'spreads' || marketType === 'spreads_f5' || marketType === 'spreads_h1') {
     const homePoint = spreadHomePoint(line, selection);
     if (homePoint == null) return null;
-    const bucket = isF5 ? alt.altSpreadsF5 : alt.altSpreads;
+    const bucket = isH1 ? alt.altSpreadsH1 : (isF5 ? alt.altSpreadsF5 : alt.altSpreads);
     return bucket?.[String(homePoint)] || null;
   }
-  if (marketType === 'totals' || marketType === 'totals_f5') {
-    const bucket = isF5 ? alt.altTotalsF5 : alt.altTotals;
+  if (marketType === 'totals' || marketType === 'totals_f5' || marketType === 'totals_h1') {
+    const bucket = isH1 ? alt.altTotalsH1 : (isF5 ? alt.altTotalsF5 : alt.altTotals);
     return bucket?.[Math.abs(line)] || null;
   }
   return null;
@@ -4949,15 +5039,17 @@ function getAltLineFairProb(eventKey, marketType, selection, line) {
   }
 
   // Route F5 alt markets to altSpreadsF5 / altTotalsF5 buckets (MLB only).
+  // Route H1 alt markets to altSpreadsH1 / altTotalsH1 buckets (NBA only).
   const isF5 = marketType === 'spreads_f5' || marketType === 'totals_f5';
-  if (marketType === 'spreads' || marketType === 'spreads_f5') {
+  const isH1 = marketType === 'spreads_h1' || marketType === 'totals_h1';
+  if (marketType === 'spreads' || marketType === 'spreads_f5' || marketType === 'spreads_h1') {
     const homePoint = spreadHomePoint(line, selection);
     if (homePoint == null) {
       log.debug('AltLine', `MISS homePoint null: ${eventKey} ${selection} line=${line}`);
       return null;
     }
     const lineKey = String(homePoint);
-    const bucket = isF5 ? alt.altSpreadsF5 : alt.altSpreads;
+    const bucket = isH1 ? alt.altSpreadsH1 : (isF5 ? alt.altSpreadsF5 : alt.altSpreads);
     const lineData = bucket?.[lineKey];
     if (!lineData) {
       const availableKeys = Object.keys(bucket || {}).slice(0, 10).join(', ');
@@ -4967,8 +5059,8 @@ function getAltLineFairProb(eventKey, marketType, selection, line) {
     const fairProb = selection === 'home' ? (lineData.home || null) : (selection === 'away' ? (lineData.away || null) : null);
     log.debug('AltLine', `HIT ${marketType}: ${eventKey} ${selection} line=${line} homePoint=${lineKey} fair=${fairProb?.toFixed(4) ?? 'null'} books=${lineData.books}`);
     return fairProb;
-  } else if (marketType === 'totals' || marketType === 'totals_f5') {
-    const bucket = isF5 ? alt.altTotalsF5 : alt.altTotals;
+  } else if (marketType === 'totals' || marketType === 'totals_f5' || marketType === 'totals_h1') {
+    const bucket = isH1 ? alt.altTotalsH1 : (isF5 ? alt.altTotalsF5 : alt.altTotals);
     const lineData = bucket?.[Math.abs(line)];
     if (!lineData) {
       const availableKeys = Object.keys(bucket || {}).slice(0, 10).join(', ');
@@ -4999,12 +5091,14 @@ function getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, boo
   if (!alt) return null;
 
   let lineData;
-  if (marketType === 'spreads') {
+  if (marketType === 'spreads' || marketType === 'spreads_h1') {
     const homePoint = spreadHomePoint(line, selection);
     if (homePoint == null) return null;
-    lineData = alt.altSpreads[String(homePoint)];
-  } else if (marketType === 'totals') {
-    lineData = alt.altTotals[Math.abs(line)];
+    const bucket = marketType === 'spreads_h1' ? alt.altSpreadsH1 : alt.altSpreads;
+    lineData = bucket?.[String(homePoint)];
+  } else if (marketType === 'totals' || marketType === 'totals_h1') {
+    const bucket = marketType === 'totals_h1' ? alt.altTotalsH1 : alt.altTotals;
+    lineData = bucket?.[Math.abs(line)];
   } else {
     return null;
   }
@@ -5013,10 +5107,10 @@ function getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, boo
   const bookOdds = lineData.byBook[book];
   if (!bookOdds) return null;
 
-  if (marketType === 'spreads') {
+  if (marketType === 'spreads' || marketType === 'spreads_h1') {
     if (selection === 'home') return bookOdds.home != null ? bookOdds.home : null;
     if (selection === 'away') return bookOdds.away != null ? bookOdds.away : null;
-  } else if (marketType === 'totals') {
+  } else if (marketType === 'totals' || marketType === 'totals_h1') {
     if (selection === 'over') return bookOdds.over != null ? bookOdds.over : null;
     if (selection === 'under') return bookOdds.under != null ? bookOdds.under : null;
   }
