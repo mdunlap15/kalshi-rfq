@@ -1009,10 +1009,19 @@ function startStatusServer() {
       };
 
       // ---- Pull data ----
-      const allOrders = await db.loadOrdersInDateRange(fromIso, toIso);
-      const kOrders = allOrders.filter(isKPropOrder);
-      // Pass fromIso to bound the declines scan — without it, loadDeclines
-      // hits Supabase's statement timeout on large windowed datasets.
+      // Server-side narrow to K-prop orders via the new legMarketEquals
+      // filter — avoids loading 25,000+ rows just to client-side-filter
+      // down to ~150 K-prop parlays. Previously timed out the endpoint
+      // at 60s+ on busy days; now resolves in 1-2s.
+      const kOrders = await db.loadOrdersInDateRange(fromIso, toIso, {
+        legMarketEquals: 'player_strikeouts',
+      });
+      // Declines path: still pulls the full window since the K-prop
+      // signal lives in mixed fields (reason or unknown_details) and
+      // there's no clean server-side JSONB filter for both. Bounded by
+      // fromIso to avoid the historical timeout. Most decline reasons
+      // are short strings; 7d × ~471 K-prop declines/day plus other
+      // reasons stays under the 20k cap.
       const recentDeclines = await db.loadDeclines(20000, { fromIso });
       const kDeclines = recentDeclines.filter(isKPropDecline);
 

@@ -747,6 +747,14 @@ async function loadOrdersInDateRange(fromIso, toIso, opts = {}) {
   if (!db) return [];
   const groupBy = opts.groupBy === 'settled_at' ? 'settled_at' : 'quoted_at';
   const statusFilter = opts.status; // optional — e.g. 'settled_lost'
+  // Optional JSONB legs filter — server-side narrows the result to
+  // parlays containing a specific market type (e.g. 'player_strikeouts'
+  // for K-prop visibility). Avoids loading 25,000+ rows just to filter
+  // 100 K-prop parlays client-side, which was timing out /prop-performance
+  // at 60s+. Uses the PostgREST `or` filter with `cs` (contains) to
+  // match either {market: X} or {marketType: X} since legs use both
+  // shapes depending on the registration path.
+  const legMarket = opts.legMarketEquals; // string or null
   const PAGE_SIZE = 1000;
   const MAX_PAGE_RETRIES = 4;
   const MAX_ROWS = opts.maxRows || 10000;
@@ -764,6 +772,11 @@ async function loadOrdersInDateRange(fromIso, toIso, opts = {}) {
           .gte(groupBy, fromIso)
           .lte(groupBy, toIso);
         if (statusFilter) query = query.eq('status', statusFilter);
+        if (legMarket) {
+          query = query.or(
+            `legs.cs.[{"market":"${legMarket}"}],legs.cs.[{"marketType":"${legMarket}"}]`
+          );
+        }
         const result = await query.order(groupBy, { ascending: true }).range(offset, offset + pageSize - 1);
         if (!result.error) { pageData = result.data; lastError = null; break; }
         lastError = result.error;
@@ -778,7 +791,7 @@ async function loadOrdersInDateRange(fromIso, toIso, opts = {}) {
       if (pageData.length < pageSize) break;
       offset += pageSize;
     }
-    log.info('DB', `loadOrdersInDateRange ${fromIso}..${toIso} (${groupBy}${statusFilter ? ',' + statusFilter : ''}): ${rows.length} rows (${Date.now() - startMs}ms)`);
+    log.info('DB', `loadOrdersInDateRange ${fromIso}..${toIso} (${groupBy}${statusFilter ? ',' + statusFilter : ''}${legMarket ? ',leg=' + legMarket : ''}): ${rows.length} rows (${Date.now() - startMs}ms)`);
     return rows;
   } catch (err) {
     log.warn('DB', `loadOrdersInDateRange error: ${err.message}`);
