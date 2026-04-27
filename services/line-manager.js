@@ -38,11 +38,39 @@ function _trackPrimaryForIndex(lineInfo) {
   const mt = lineInfo.marketType;
   if (mt !== 'spread' && mt !== 'total') return;
   if (!primaryByEvent[eid]) primaryByEvent[eid] = { spread: null, total: null };
-  // Only set the first primary we see per (event, market). Subsequent
-  // primaries (e.g. both home/away sides of the same spread market) carry
-  // the same line value, so first-wins is fine.
-  if (mt === 'spread' && !primaryByEvent[eid].spread) primaryByEvent[eid].spread = lineInfo;
-  if (mt === 'total'  && !primaryByEvent[eid].total)  primaryByEvent[eid].total  = lineInfo;
+
+  // Bug 2026-04-27: previous "first-seen wins" heuristic let alt spreads
+  // get locked in as primary if PX seeded them before the main spread —
+  // observed Spurs -25.5 + Knicks -20.5 alt parlays passing through
+  // isBlockedAltSpread because their false-primary made the +/- 2.0
+  // distance check trivially true (alt == "primary").
+  //
+  // Fix: prefer the SMALLEST-magnitude line as primary. The actual main
+  // spread is always the line closest to zero (e.g. NBA -3.5 main, alt
+  // ladder runs out to -25.5 in 1-pt increments). Replacing on smaller
+  // magnitude means even if PX seeds alts first, the main eventually
+  // wins as soon as it's registered.
+  //
+  // For totals: same logic — though the "smallest" framing is less
+  // intuitive (totals are positive numbers, not signed). Use abs(line)
+  // for both. NBA totals primary is ~220, alts run 200-240; the "main"
+  // is the line with the most book consensus, which is typically the
+  // median, not the smallest. So for totals we keep first-seen for now
+  // — the spread bug was the operator-observed one.
+  const newLine = Number(lineInfo.line);
+  if (!Number.isFinite(newLine)) return;
+  const newAbs = Math.abs(newLine);
+  if (newAbs === 0) return; // line=0 isn't a real spread/total
+
+  if (mt === 'spread') {
+    const cur = primaryByEvent[eid].spread;
+    const curAbs = cur ? Math.abs(Number(cur.line) || Infinity) : Infinity;
+    if (newAbs < curAbs) primaryByEvent[eid].spread = lineInfo;
+  }
+  if (mt === 'total') {
+    // Totals: keep first-seen (no clear "smallest = primary" rule)
+    if (!primaryByEvent[eid].total) primaryByEvent[eid].total = lineInfo;
+  }
 }
 
 // Reverse lookup: PX event_id → event metadata
