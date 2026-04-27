@@ -992,6 +992,14 @@ function startStatusServer() {
         'prop_stale', 'prop_correlation_same_game', 'prop_correlation_same_pitcher',
         'pitcher_exposure_cap',
       ]);
+      // Near-miss subset: pricing/data issues we WANTED to quote but
+      // couldn't. Mirrors order-tracker.js:1512 nearMissReasons for K
+      // props. Excludes intentional blocks (correlation, exposure caps)
+      // because those aren't "near misses" in any meaningful sense —
+      // we never wanted to quote them.
+      const K_PROP_NEAR_MISS_REASONS = new Set([
+        'prop_no_fair_value', 'prop_low_confidence', 'prop_stale',
+      ]);
       const isKPropDecline = (d) => {
         if (PROP_REASONS.has(d.reason)) return true;
         const details = d.unknown_details || [];
@@ -1009,9 +1017,25 @@ function startStatusServer() {
 
       // ---- Funnel ----
       const declinesByReason = {};
+      const nearMissesByReason = {};
+      const recentNearMisses = [];
       for (const d of kDeclines) {
         declinesByReason[d.reason] = (declinesByReason[d.reason] || 0) + 1;
+        if (K_PROP_NEAR_MISS_REASONS.has(d.reason)) {
+          nearMissesByReason[d.reason] = (nearMissesByReason[d.reason] || 0) + 1;
+          if (recentNearMisses.length < 20) {
+            recentNearMisses.push({
+              parlayId: d.parlayId,
+              reason: d.reason,
+              detail: d.detail,
+              declinedAt: d.declinedAt,
+              knownLegs: d.knownLegs || [],
+            });
+          }
+        }
       }
+      // Sort recent near misses by time descending
+      recentNearMisses.sort((a, b) => (b.declinedAt || '').localeCompare(a.declinedAt || ''));
 
       const byStatus = {};
       for (const o of kOrders) {
@@ -1029,6 +1053,14 @@ function startStatusServer() {
         rfqsWithKProp: kOrders.length + kDeclines.length, // rough — orders we quoted + declines that mentioned K props
         declined: kDeclines.length,
         declinedByReason: declinesByReason,
+        // Near-miss subset: declines where we wanted to quote but
+        // couldn't (no fair value / low confidence / stale data).
+        // Excludes intentional blocks like correlation rules and
+        // exposure caps. These are the K-prop analog of game-line
+        // Near Misses surfaced in the dashboard table.
+        nearMissCount: Object.values(nearMissesByReason).reduce((a, b) => a + b, 0),
+        nearMissesByReason,
+        recentNearMisses,
         quoted: kOrders.length,
         bidsWon: kOrders.filter(isBidWon).length,
         filled: kOrders.filter(isFill).length,
