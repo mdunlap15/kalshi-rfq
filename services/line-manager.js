@@ -68,8 +68,17 @@ function _trackPrimaryForIndex(lineInfo) {
     if (newAbs < curAbs) primaryByEvent[eid].spread = lineInfo;
   }
   if (mt === 'total') {
-    // Totals: keep first-seen (no clear "smallest = primary" rule)
+    // Totals: same bug class as spreads (first-seen could be an alt
+    // seeded before the main), but "smallest wins" doesn't translate —
+    // totals are positive and the main is near-median, not near-zero.
+    //
+    // Fix: track ALL seen total lines per event, then getPrimaryTotalLine
+    // returns the median. With ≥3 alts seeded, the median converges to
+    // the main quickly (alt ladders cluster symmetrically around the
+    // main). With <3 known lines, fall back to first-seen.
     if (!primaryByEvent[eid].total) primaryByEvent[eid].total = lineInfo;
+    if (!primaryByEvent[eid].seenTotalLines) primaryByEvent[eid].seenTotalLines = new Set();
+    primaryByEvent[eid].seenTotalLines.add(newAbs);
   }
 }
 
@@ -2024,7 +2033,21 @@ function getEventInfo(eventId) {
 function getPrimaryTotalLine(pxEventId) {
   if (pxEventId == null) return null;
   const slot = primaryByEvent[pxEventId];
-  if (!slot || !slot.total) return null;
+  if (!slot) return null;
+  // Prefer median of all seen totals when we have ≥3 lines for this
+  // event. Median converges to the main even when PX seeded alts
+  // before the main (the bug we fixed for spreads, applied here too
+  // with a different — more robust — heuristic). Fall back to first-
+  // seen for sparse events with <3 lines.
+  const seenSet = slot.seenTotalLines;
+  if (seenSet && seenSet.size >= 3) {
+    const sorted = [...seenSet].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0
+      ? (sorted[mid - 1] + sorted[mid]) / 2
+      : sorted[mid];
+  }
+  if (!slot.total) return null;
   const li = slot.total;
   if (li.line == null || !Number.isFinite(Number(li.line))) return null;
   return Math.abs(Number(li.line));
