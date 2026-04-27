@@ -6181,6 +6181,7 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
 
   // Per-book de-vig: pair Over/Under from the same book, devig with the
   // existing 2-way helper, then average fair probs across books.
+  // NOTE: deVig2Way returns an ARRAY [fair1, fair2], not an object.
   const fairProbsOver = [];
   const fairProbsUnder = [];
   for (const book of books) {
@@ -6191,9 +6192,9 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
     const uProb = americanToImpliedProb(u.odds_american);
     if (oProb == null || uProb == null) continue;
     const dv = deVig2Way(oProb, uProb);
-    if (dv) {
-      fairProbsOver.push(dv.fair1);
-      fairProbsUnder.push(dv.fair2);
+    if (Array.isArray(dv) && dv.length === 2 && Number.isFinite(dv[0]) && Number.isFinite(dv[1])) {
+      fairProbsOver.push(dv[0]);
+      fairProbsUnder.push(dv[1]);
     }
   }
   const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
