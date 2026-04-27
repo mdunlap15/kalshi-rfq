@@ -320,6 +320,7 @@ function buildPendingReservation(legs, worstCaseRisk, offerValidSeconds) {
   if (!legs || legs.length === 0) return null;
   const teamKeys = [];
   const gameKeys = [];
+  const pitcherKeys = [];
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
     const li = leg.lineInfo || leg;
@@ -349,11 +350,23 @@ function buildPendingReservation(legs, worstCaseRisk, offerValidSeconds) {
     // Per-game key
     const gameKey = eventId ? (eventId + '|' + gameDate) : ('syn_' + eventSuffix);
     gameKeys.push({ key: gameKey, risk: weightedRisk });
+    // Per-pitcher key (only player_strikeouts legs). Use FULL worstCaseRisk
+    // — not the otherProb-weighted version — to match addExposure's
+    // pitcher-tracking semantics (which uses raw payout, not weighted).
+    // checkPitcherExposure compares wouldBe against maxPerPitcher with
+    // unweighted risk, so the pending side must match.
+    if (li.marketType === 'player_strikeouts') {
+      const pkey = pitcherKeyForLeg(li);
+      if (pkey) {
+        pitcherKeys.push({ key: pkey, risk: worstCaseRisk });
+      }
+    }
   }
   return {
     expiresAt: Date.now() + (offerValidSeconds || 120) * 1000,
     teamKeys,
     gameKeys,
+    pitcherKeys,
   };
 }
 
@@ -369,6 +382,13 @@ function buildPendingReservation(legs, worstCaseRisk, offerValidSeconds) {
 // O(N×2) hash lookups regardless of pending volume.
 const pendingTeamRiskByKey = new Map(); // key → running risk total
 const pendingGameRiskByKey = new Map(); // key → running risk total
+// Per-pitcher pending index. Mirror of the team/game indices, added
+// 2026-04-27 to close the K-prop quote-time race window where N
+// concurrent RFQs all read pitcherExposure[key].risk == 0 (because none
+// have confirmed yet) and all pass the per-pitcher cap. With this index
+// the first reservation increments it; the next checkPitcherExposure
+// reads real + pending and declines correctly.
+const pendingPitcherRiskByKey = new Map(); // key → running risk total
 
 function _addToIndex(idx, key, risk) {
   idx.set(key, (idx.get(key) || 0) + risk);
@@ -387,6 +407,10 @@ function _applyReservationToIndices(reservation, sign) {
   for (const gk of reservation.gameKeys || []) {
     if (sign > 0) _addToIndex(pendingGameRiskByKey, gk.key, gk.risk);
     else _subFromIndex(pendingGameRiskByKey, gk.key, gk.risk);
+  }
+  for (const pk of reservation.pitcherKeys || []) {
+    if (sign > 0) _addToIndex(pendingPitcherRiskByKey, pk.key, pk.risk);
+    else _subFromIndex(pendingPitcherRiskByKey, pk.key, pk.risk);
   }
 }
 
@@ -428,6 +452,15 @@ function getPendingTeamRisk(teamEventKey) {
 
 function getPendingGameRisk(gameKey) {
   return pendingGameRiskByKey.get(gameKey) || 0;
+}
+
+/**
+ * Sum of in-flight pending risk against a pitcher key. Used by
+ * checkPitcherExposure to close the quote-time race window. Same lazy-
+ * expiry contract as the team/game variants.
+ */
+function getPendingPitcherRisk(pitcherKey) {
+  return pendingPitcherRiskByKey.get(pitcherKey) || 0;
 }
 
 function recordQuote(parlayId, legs, offeredOdds, maxRisk, fairParlayProb, meta) {
@@ -2421,17 +2454,37 @@ function removeExposure(order) {
  */
 function getPitcherExposureSnapshot() {
   const out = [];
+  // Union of confirmed + pending keys so a pitcher with only in-flight
+  // quotes still shows up.
+  const seen = new Set();
   for (const [key, v] of Object.entries(pitcherExposure)) {
+    seen.add(key);
+    const pending = getPendingPitcherRisk(key);
     out.push({
       key,
       pxEventId: v.pxEventId,
       playerName: v.playerName,
       risk: Math.round((v.risk || 0) * 100) / 100,
+      pending: Math.round(pending * 100) / 100,
+      total: Math.round(((v.risk || 0) + pending) * 100) / 100,
       parlayCount: v.parlays ? v.parlays.size : 0,
       parlayIds: v.parlays ? [...v.parlays] : [],
     });
   }
-  return out.sort((a, b) => b.risk - a.risk);
+  for (const [key, pending] of pendingPitcherRiskByKey.entries()) {
+    if (seen.has(key)) continue;
+    out.push({
+      key,
+      pxEventId: null,
+      playerName: key.split('|')[1] || null,
+      risk: 0,
+      pending: Math.round(pending * 100) / 100,
+      total: Math.round(pending * 100) / 100,
+      parlayCount: 0,
+      parlayIds: [],
+    });
+  }
+  return out.sort((a, b) => (b.total || b.risk) - (a.total || a.risk));
 }
 
 function checkPitcherExposure(legs, additionalRisk, maxPerPitcher) {
@@ -2446,13 +2499,21 @@ function checkPitcherExposure(legs, additionalRisk, maxPerPitcher) {
     const key = pitcherKeyForLeg(li);
     if (!key) continue;
     const current = pitcherExposure[key]?.risk || 0;
-    const wouldBe = current + additionalRisk;
+    // Include in-flight (quoted but not yet confirmed) reservations
+    // against this pitcher. Closes the race where N concurrent RFQs all
+    // pass because none has confirmed yet. websocket.js calls
+    // releasePending(parlayId) before the per-team confirm-time recheck;
+    // we don't have a confirm-time pitcher recheck, but the pending
+    // index still drains correctly when each quote releases or expires.
+    const pending = getPendingPitcherRisk(key);
+    const wouldBe = current + pending + additionalRisk;
     if (wouldBe > maxPerPitcher) {
       return {
         exceeded: true,
         pitcher: li.playerName || li.teamName,
         pxEventId: li.pxEventId,
         current: Math.round(current * 100) / 100,
+        pending: Math.round(pending * 100) / 100,
         wouldBe: Math.round(wouldBe * 100) / 100,
         max: maxPerPitcher,
       };

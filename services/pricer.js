@@ -2331,11 +2331,12 @@ function shouldDecline(legs) {
       resolvedLegs, propParlayCap, config.pricing.maxExposurePerPitcher,
     );
     if (pitcherCheck && pitcherCheck.exceeded) {
+      const pendingTxt = pitcherCheck.pending ? ` + pending $${pitcherCheck.pending}` : '';
       log.info('Pricing', `Pitcher exposure cap: ${pitcherCheck.pitcher} would be $${pitcherCheck.wouldBe} (max $${pitcherCheck.max})`);
       return {
         declined: true,
         reason: 'pitcher_exposure_cap',
-        detail: `${pitcherCheck.pitcher}: current $${pitcherCheck.current} + this parlay $${propParlayCap} = $${pitcherCheck.wouldBe} > cap $${pitcherCheck.max}`,
+        detail: `${pitcherCheck.pitcher}: current $${pitcherCheck.current}${pendingTxt} + this parlay $${propParlayCap} = $${pitcherCheck.wouldBe} > cap $${pitcherCheck.max}`,
         violations: [{ team: pitcherCheck.pitcher, wouldBe: pitcherCheck.wouldBe, limit: pitcherCheck.max }],
         estPayout: propParlayCap,
       };
