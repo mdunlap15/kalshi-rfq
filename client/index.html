@@ -7778,9 +7778,9 @@
     // Overlaid bars: wider risk bar in back, narrower P&L bar centered in front
     const riskBarW = barGroupW * 0.85;
     const pnlBarW = barGroupW * 0.45;
-    // When many days are on screen, every-other-bar labels avoid overlap.
-    const labelStride = days.length > 18 ? 2 : 1;
-    const showXTickAt = (i) => i % labelStride === 0 || i === days.length - 1;
+    // Show value labels on every bar — Mike wants no missing amounts.
+    // Compact K-format keeps them readable at any density.
+    const showXTickAt = (_i) => true;
 
     // Compute cumulative P&L running total across days
     const cumul = [];
@@ -7860,19 +7860,14 @@
       svg += '</g>';
     }
 
-    // X-axis labels: rotated date + fill count. Drawing OUTSIDE the per-day
-    // <g> so transform doesn't affect bars. Stride drops every-other label
-    // when the chart is dense; the tooltip still carries the precise day.
+    // X-axis labels: rotated date only. Fill counts removed (Mike wanted
+    // them gone — they were ambiguous and noisy). Per-bar tooltip still
+    // carries the fill count for anyone who wants it.
     for (let i = 0; i < days.length; i++) {
-      if (!showXTickAt(i)) continue;
-      const d = byDay[days[i]];
       const cx = pad.l + (i + 0.5) * colW;
       const dayLabel = days[i].substring(5); // MM-DD
       // Rotate -40° so longer date strings don't collide horizontally.
       svg += `<text x="${cx}" y="${H - pad.b + 16}" font-size="10" fill="var(--text2)" text-anchor="end" transform="rotate(-40 ${cx} ${H - pad.b + 16})">${dayLabel}</text>`;
-      // Fill count just below the rotated date — use compact "Nf" form so
-      // it never visibly collides even at single-digit char width.
-      svg += svgText(cx, H - pad.b + 32, d.count + 'f', { size: 8, fill: 'var(--text3)' });
     }
 
     // Cumulative P&L line (overlaid on the bars)
@@ -7887,15 +7882,19 @@
         const cy = scaleY(cumul[i]);
         svg += `<circle cx="${cx}" cy="${cy}" r="2.5" fill="#f5b942" stroke="var(--bg)" stroke-width="1"/>`;
       }
-      // Final cumulative label — rendered as a chip with background so it
-      // pops over the bars and never overlaps a numeric label.
+      // Final cumulative label — solid yellow chip with dark text so it
+      // pops cleanly off both the bars AND the yellow cumulative line
+      // (yellow-on-yellow blended into illegibility).
       const lastCx = pad.l + (days.length - 0.5) * colW;
       const lastCy = scaleY(cumul[cumul.length - 1]);
       const lastTxt = fmtPnlK(cumul[cumul.length - 1]);
-      const chipW = lastTxt.length * 6.2 + 10;
-      const chipX = Math.min(lastCx + 6, W - pad.r - chipW);
-      svg += `<rect x="${chipX}" y="${lastCy - 8}" width="${chipW}" height="14" fill="rgba(245,185,66,0.18)" stroke="#f5b942" stroke-width="0.8" rx="3"/>`;
-      svg += svgText(chipX + chipW / 2, lastCy + 2, lastTxt, { anchor: 'middle', size: 9, fill: '#f5b942' });
+      const chipW = lastTxt.length * 7 + 14;
+      const chipH = 18;
+      // Position to the right of the last point when there's room, otherwise
+      // tuck it just left of the right edge so it never gets clipped.
+      const chipX = Math.min(lastCx + 8, W - pad.r - chipW);
+      svg += `<rect x="${chipX}" y="${lastCy - chipH / 2}" width="${chipW}" height="${chipH}" fill="#f5b942" stroke="#1a1a1a" stroke-width="0.8" rx="4"/>`;
+      svg += `<text x="${chipX + chipW / 2}" y="${lastCy + 4}" font-size="11" font-weight="700" fill="#1a1a1a" text-anchor="middle">${lastTxt}</text>`;
     }
 
     // Legend — left-aligned at bottom
