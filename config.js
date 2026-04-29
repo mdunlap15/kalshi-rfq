@@ -161,6 +161,17 @@ const config = {
     // alts. Like the spread carve-out, also requires book coverage in
     // our altLines cache — no derived/inferred lines.
     nbaAltTotalMaxDistance: parseFloat(process.env.NBA_ALT_TOTAL_MAX_DISTANCE) || 2.0,
+    // MLB alt run-line allowed |line| values. Mike spec'd ±0.5 and ±1.5
+    // only — i.e. the primary 1.5 plus the half-run "buy" alt. Discrete
+    // allowlist (not a distance from primary) because a distance check
+    // of 1.0 would also pull in 2.5, which is too aggressive.
+    // Comma-separated env override; values are absolute (sign-agnostic).
+    mlbAllowedRunLines: (process.env.MLB_ALLOWED_RUN_LINES || '0.5,1.5')
+      .split(',').map(s => parseFloat(s.trim())).filter(n => Number.isFinite(n)),
+    // MLB alt-total max distance from primary (default ±1.5 in any 0.5
+    // step). E.g. primary 7.5 → allow 6.0/6.5/7.0/7.5/8.0/8.5/9.0.
+    // Also requires book coverage in the altTotals cache.
+    mlbAltTotalMaxDistance: parseFloat(process.env.MLB_ALT_TOTAL_MAX_DISTANCE) || 1.5,
     // v2 pricing engine: shadow-mode by default. When enabled, runs the
     // unified calibration-corrected + correlation-aware + EV-targeted
     // pipeline alongside v1 and logs the comparison. Does NOT affect

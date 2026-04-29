@@ -77,11 +77,35 @@ function isBlockedAltSpread(lineInfo) {
   const lineNum = Number(lineInfo.line);
   if (!Number.isFinite(lineNum)) return null;
   const absLine = Math.abs(lineNum);
-  // MLB / NHL: primary spread is always ±1.5; opposite-symbol alt
-  // (same magnitude, flipped sign) is also allowed by intent.
-  if (sport === 'baseball_mlb' || sport === 'icehockey_nhl') {
+  // NHL: primary spread is always ±1.5; no alt carve-out in place.
+  if (sport === 'icehockey_nhl') {
     if (absLine === 1.5) return null;
     return `${sport} alt spread (line ${lineNum}, primary is ±1.5)`;
+  }
+  // MLB: discrete allowlist of |line| values (default ±0.5 and ±1.5).
+  // Each non-primary value also requires alt-spread cache book coverage —
+  // mirrors the NBA carve-out's coverage gate so we never derive a line
+  // ourselves. Primary ±1.5 passes without coverage check.
+  if (sport === 'baseball_mlb') {
+    const allowed = config.pricing.mlbAllowedRunLines || [0.5, 1.5];
+    const isAllowed = allowed.some(v => Math.abs(absLine - v) < 0.001);
+    if (!isAllowed) {
+      return `MLB run line ${absLine} not in allowed set [${allowed.join(', ')}]`;
+    }
+    // Primary ±1.5 — no coverage check needed
+    if (Math.abs(absLine - 1.5) < 0.001) return null;
+    // Non-primary alt — require book coverage
+    const sel = lineInfo.oddsApiSelection || lineInfo.selection;
+    if (lineInfo.homeTeam && lineInfo.awayTeam) {
+      const eventKey = oddsFeed.normalizeEventKey(lineInfo.homeTeam, lineInfo.awayTeam);
+      const cacheEntry = oddsFeed.getAltLineCacheEntry(eventKey, 'spreads', sel, lineNum);
+      if (!cacheEntry || !cacheEntry.books || cacheEntry.books === 0) {
+        return `MLB alt run line: no book coverage for line ${absLine} (cache miss or 0 books)`;
+      }
+    } else {
+      return `MLB alt run line: missing team names, can't verify book coverage`;
+    }
+    return null;
   }
   // NBA: within-±N alts with book coverage allowed.
   if (sport === 'basketball_nba') {
@@ -130,14 +154,14 @@ function isBlockedAltSpread(lineInfo) {
 }
 
 /**
- * NBA alt-totals analog of isBlockedAltSpread. Allows alt totals
- * within ±config.pricing.nbaAltTotalMaxDistance points of the primary
- * O/U line, AND only if the line has real book coverage in our alt-
- * lines cache. Block farther alts or any without book coverage.
+ * Alt-totals carve-out check. Allows alt totals within a sport-specific
+ * distance of the primary O/U line AND only if the line has real book
+ * coverage in our alt-totals cache (no derived/inferred lines).
  *
- * Currently NBA-only (Mike's request 2026-04-26). Other sports'
- * totals are not affected by this function — they pass through
- * unrestricted (subject to other decline rules elsewhere).
+ * Sports gated:
+ *   - NBA: ±config.pricing.nbaAltTotalMaxDistance (default 2.0)
+ *   - MLB: ±config.pricing.mlbAltTotalMaxDistance (default 1.5)
+ * Other sports pass through unrestricted (subject to other rules).
  *
  * Returns null when the leg is allowed, or a human-readable reason
  * string when it should be declined.
@@ -146,7 +170,17 @@ function isBlockedAltTotal(lineInfo) {
   if (!lineInfo) return null;
   if (lineInfo.marketType !== 'total') return null;
   const sport = lineInfo.sport || '';
-  if (sport !== 'basketball_nba') return null;
+  let maxDist;
+  let label;
+  if (sport === 'basketball_nba') {
+    maxDist = config.pricing.nbaAltTotalMaxDistance || 2.0;
+    label = 'NBA';
+  } else if (sport === 'baseball_mlb') {
+    maxDist = config.pricing.mlbAltTotalMaxDistance || 1.5;
+    label = 'MLB';
+  } else {
+    return null;
+  }
   // Need a line value to compare
   if (lineInfo.line == null) return null;
   const lineNum = Number(lineInfo.line);
@@ -155,32 +189,24 @@ function isBlockedAltTotal(lineInfo) {
   // Find primary total for this event
   const primaryTotal = lineManager.getPrimaryTotalLine(lineInfo.pxEventId);
   if (primaryTotal == null) {
-    return `NBA alt-total: no primary total registered for event ${lineInfo.pxEventId}`;
+    return `${label} alt-total: no primary total registered for event ${lineInfo.pxEventId}`;
   }
   // If THIS leg IS the primary line, allow without further checks.
-  //
-  // Pre-Apr-26 used `onDemand !== true` as a proxy for "is primary",
-  // but PX seeds many ALT totals as non-on-demand entries during
-  // regular line-manager seeding — they bypassed the distance check
-  // entirely. Operator caught a parlay 2026-04-26 with NBA total
-  // alts 10+ points off the actual primary (CLE @ TOR U 235.5 when
-  // primary was ~225). Use line-value match as the real truth signal.
   if (Math.abs(absLine - primaryTotal) < 0.001) return null;
   // Alt: must be within ±N of primary
   const dist = Math.abs(absLine - primaryTotal);
-  const maxDist = config.pricing.nbaAltTotalMaxDistance || 2.0;
   if (dist > maxDist + 0.001) {
-    return `NBA alt-total outside ±${maxDist} of primary (alt=${absLine}, primary=${primaryTotal}, dist=${dist})`;
+    return `${label} alt-total outside ±${maxDist} of primary (alt=${absLine}, primary=${primaryTotal}, dist=${dist})`;
   }
   // Verify book coverage exists in alt-totals cache (no derived lines)
   if (lineInfo.homeTeam && lineInfo.awayTeam) {
     const eventKey = oddsFeed.normalizeEventKey(lineInfo.homeTeam, lineInfo.awayTeam);
     const cacheEntry = oddsFeed.getAltLineCacheEntry(eventKey, 'totals', lineInfo.oddsApiSelection || lineInfo.selection, lineNum);
     if (!cacheEntry || !cacheEntry.books || cacheEntry.books === 0) {
-      return `NBA alt-total: no book coverage for line ${absLine} (cache miss or 0 books)`;
+      return `${label} alt-total: no book coverage for line ${absLine} (cache miss or 0 books)`;
     }
   } else {
-    return `NBA alt-total: missing team names, can't verify book coverage`;
+    return `${label} alt-total: missing team names, can't verify book coverage`;
   }
   return null;
 }

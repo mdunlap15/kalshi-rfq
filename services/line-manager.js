@@ -1742,17 +1742,24 @@ async function resolveUnknownLine(rfqLeg) {
             // Max deviation from primary: sport-aware. NBA/NCAAB alt spreads
             // can deviate ±15+, but MLB/NHL/soccer rarely deviate more than
             // ±3 from the primary run/puck line.
-            // Only basketball and football get virtual alt spread registration.
-            // MLB/NHL/soccer: set to 0 to block all virtual alt spreads
-            // (too easy to confuse with player props, puck/run lines rarely
-            // have meaningful alt-line volume anyway).
+            // Only basketball and football get virtual alt spread registration
+            // by *distance*. MLB uses a discrete allowlist instead.
             const MAX_ALT_DEVIATION = {
               'basketball_nba': 20, 'basketball_ncaab': 20, 'basketball_wnba': 20,
               'americanfootball_nfl': 15, 'americanfootball_ncaaf': 15,
             };
             const maxDeviation = MAX_ALT_DEVIATION[sportKey] ?? 0;
             const deviation = Math.abs(absLine - primaryAbsSpread);
-            if (absLine <= maxSpread && deviation <= maxDeviation) {
+            // MLB-specific: allow values from the discrete allowlist
+            // (default ±0.5 and ±1.5). Pricer enforces book coverage on
+            // non-primary alts; we just need to virtually register so
+            // the leg can reach the pricer in the first place.
+            let mlbAllowed = false;
+            if (sportKey === 'baseball_mlb') {
+              const allowed = config.pricing.mlbAllowedRunLines || [0.5, 1.5];
+              mlbAllowed = allowed.some(v => Math.abs(absLine - v) < 0.001);
+            }
+            if ((absLine <= maxSpread && deviation <= maxDeviation) || mlbAllowed) {
               inferredType = 'spread';
               // For spreads: negative line = favorite, positive = underdog.
               // Map to home/away using the primary spread's polarity.
@@ -1773,13 +1780,40 @@ async function resolveUnknownLine(rfqLeg) {
           // If we didn't infer spread, check if it's a total
           if (!inferredType && hasTotal && primaryTotal) {
             const primaryAbsTotal = Math.abs(primaryTotal.line || 0);
-            // Totals are typically within a few points of the primary total
-            if (absLine >= primaryAbsTotal * 0.3 && absLine <= primaryAbsTotal * 2.0) {
-              inferredType = 'total';
-              // For totals we can't determine over/under from the line alone —
-              // PX doesn't tell us. We'll register as 'over' by default and
-              // let the pricer try both. Actually, without knowing, skip this.
-              // Virtual registration for alt totals requires knowing over/under.
+            // Sport-aware tolerance:
+            //   MLB: ±config.pricing.mlbAltTotalMaxDistance (default 1.5)
+            //   Other sports: legacy 0.3x–2.0x heuristic
+            let withinTolerance;
+            if (sportKey === 'baseball_mlb') {
+              const maxDist = config.pricing.mlbAltTotalMaxDistance || 1.5;
+              withinTolerance = Math.abs(absLine - primaryAbsTotal) <= maxDist + 0.001;
+            } else {
+              withinTolerance = absLine >= primaryAbsTotal * 0.3 && absLine <= primaryAbsTotal * 2.0;
+            }
+            if (withinTolerance) {
+              // Determine over/under by walking ALL of PX's markets for this
+              // event (not gated by SUPPORTED_TYPES) and finding the lineId.
+              // PX may register alt-total markets under a non-supported
+              // market.type (e.g. 'alt_total') that the regular seed/walk
+              // skips — but parseMarketSelections still extracts the side.
+              let altSelection = null;
+              for (const market of markets || []) {
+                try {
+                  const sels = px.parseMarketSelections(market);
+                  const match = sels.find(s => s.lineId === lineId);
+                  if (match && (match.selection === 'over' || match.selection === 'under')) {
+                    altSelection = match.selection;
+                    break;
+                  }
+                } catch (_) { /* skip unparseable market */ }
+              }
+              if (altSelection) {
+                inferredType = 'total';
+                inferredSelection = altSelection;
+                inferredOddsMarket = 'totals';
+              } else {
+                log.debug('Lines', `Alt-total virtual reg: cannot determine over/under for ${event.name} line ${rfqLine} — lineId not found in any PX market selection`);
+              }
             }
           }
 
@@ -1847,6 +1881,30 @@ async function resolveUnknownLine(rfqLeg) {
               virtualRegistration: true,
             };
             log.info('Lines', `Virtual registration: ${sportKey} spread ${inferredTeam} ${rfqLine} for ${event.name} (line_id ${lineId} not in PX markets)`);
+          } else if (inferredType === 'total' && (inferredSelection === 'over' || inferredSelection === 'under')) {
+            const pxTime = event.scheduled || null;
+            const oddsEvt = oddsFeed.getEventMarkets(sportKey, matchedHome, matchedAway, pxTime);
+            const startTime = event.scheduled || oddsEvt?.commenceTime || null;
+
+            foundInfo = {
+              sport: sportKey,
+              pxEventId: eventId,
+              pxEventName: event.name,
+              marketType: 'total',
+              marketName: `Virtual Alt Total ${Math.abs(rfqLine)} ${inferredSelection}`,
+              selection: inferredSelection,
+              teamName: null,
+              line: Math.abs(rfqLine),
+              homeTeam: matchedHome,
+              awayTeam: matchedAway,
+              oddsApiSport: sportKey,
+              oddsApiMarket: 'totals',
+              oddsApiSelection: inferredSelection,
+              startTime,
+              onDemand: true,
+              virtualRegistration: true,
+            };
+            log.info('Lines', `Virtual registration: ${sportKey} alt-total ${inferredSelection} ${Math.abs(rfqLine)} for ${event.name}`);
           }
         }
 
