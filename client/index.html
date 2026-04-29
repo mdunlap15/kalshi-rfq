@@ -7691,6 +7691,26 @@
     return nice * mag;
   }
 
+  // Compact dollar formatter for chart labels: thousands → "$12.5K", under
+  // a thousand stays in whole dollars. Mike spec'd this to declutter the
+  // Daily Volume & P&L chart — long labels like "$28,270.34" overlap badly
+  // when 20+ bars share the chart width.
+  function fmtDollarK(v) {
+    if (v == null || !Number.isFinite(v)) return '$0';
+    const abs = Math.abs(v);
+    const sign = v < 0 ? '-' : '';
+    if (abs < 1000) return sign + '$' + Math.round(abs);
+    return sign + '$' + (abs / 1000).toFixed(1) + 'K';
+  }
+  // Same shape but with explicit +/- prefix for P&L values.
+  function fmtPnlK(v) {
+    if (v == null || !Number.isFinite(v)) return '$0';
+    const sign = v >= 0 ? '+' : '-';
+    const abs = Math.abs(v);
+    if (abs < 1000) return sign + '$' + Math.round(abs);
+    return sign + '$' + (abs / 1000).toFixed(1) + 'K';
+  }
+
   // Daily Volume & P&L — grouped bar chart by day
   function renderChartDailyVolume(allOrders) {
     const el = document.getElementById('chart-daily-volume');
@@ -7748,12 +7768,19 @@
       return;
     }
 
-    const W = 700, H = 280, pad = { l: 70, r: 20, t: 30, b: 60 };
+    // Wider canvas + bottom padding gives rotated x-axis labels room.
+    // The x-axis is now stacked: date (slanted) + fills count (centered
+    // dot under the bar) so both stay legible even with 20+ days on screen.
+    const W = 760, H = 320, pad = { l: 56, r: 56, t: 30, b: 76 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
-    const barGroupW = Math.min(80, chartW / days.length - 4);
+    const colW = chartW / days.length;
+    const barGroupW = Math.min(80, colW - 4);
     // Overlaid bars: wider risk bar in back, narrower P&L bar centered in front
     const riskBarW = barGroupW * 0.85;
     const pnlBarW = barGroupW * 0.45;
+    // When many days are on screen, every-other-bar labels avoid overlap.
+    const labelStride = days.length > 18 ? 2 : 1;
+    const showXTickAt = (i) => i % labelStride === 0 || i === days.length - 1;
 
     // Compute cumulative P&L running total across days
     const cumul = [];
@@ -7773,21 +7800,36 @@
     const scaleY = (v) => pad.t + ((yMax - v) / yRange) * chartH;
     const zeroY = scaleY(0);
 
-    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:320px;">`;
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:360px;">`;
 
-    // Grid lines — 4 ticks spanning yMin..yMax
+    // Subtle gradient on the cumulative line for visual polish.
+    svg += '<defs>'
+      + '<linearGradient id="cumulGrad" x1="0" y1="0" x2="1" y2="0">'
+      + '<stop offset="0%" stop-color="#f5b942" stop-opacity="0.6"/>'
+      + '<stop offset="100%" stop-color="#f5b942" stop-opacity="1"/>'
+      + '</linearGradient>'
+      + '</defs>';
+
+    // Grid lines — 4 ticks spanning yMin..yMax. Use fmtDollarK for compactness.
     for (let t = 0; t <= 4; t++) {
       const v = yMin + (yRange * t / 4);
       const y = scaleY(v);
       const isZero = Math.abs(v) < 0.5;
       svg += svgLine(pad.l, y, W - pad.r, y, isZero ? 'var(--text3)' : 'var(--border)', isZero ? 1 : 0.5);
-      svg += svgText(pad.l - 6, y + 3, fmtDollar(Math.round(v)).replace(/\.00$/, ''), { anchor: 'end', size: 9 });
+      svg += svgText(pad.l - 6, y + 3, fmtDollarK(Math.round(v)), { anchor: 'end', size: 9 });
     }
 
-    // Bars — overlaid at same x position
+    // Bars — overlaid at same x position. Wrap each day in a group with a
+    // hover-target rect so users can read full-precision values even when
+    // numeric labels are stripped on dense charts.
     for (let i = 0; i < days.length; i++) {
       const d = byDay[days[i]];
-      const cx = pad.l + (i + 0.5) * (chartW / days.length);
+      const cx = pad.l + (i + 0.5) * colW;
+      const tip = `${days[i]} — ${d.count} fills · risk ${fmtDollar(d.risk)} · P&L ${fmtPnl(d.pnl)} · cumul ${fmtPnl(cumul[i])}`;
+
+      svg += `<g><title>${escapeHtml(tip)}</title>`;
+      // Invisible hover hit area covering the full column
+      svg += `<rect x="${cx - colW / 2}" y="${pad.t}" width="${colW}" height="${chartH}" fill="transparent"/>`;
 
       // Risk bar (blue, semi-transparent, always above zero)
       if (d.risk > 0) {
@@ -7804,50 +7846,67 @@
         svg += svgRect(cx - pnlBarW / 2, yTop, pnlBarW, pnlH, pnlColor, 2);
       }
 
-      // Day label
-      const dayLabel = days[i].substring(5); // MM-DD
-      svg += svgText(cx, H - pad.b + 14, dayLabel, { size: 10 });
-
-      // Count label
-      svg += svgText(cx, H - pad.b + 26, d.count + ' fills', { size: 8, fill: 'var(--text3)' });
-
-      // Risk value label above risk bar
-      if (d.risk > 0) {
-        svg += svgText(cx, scaleY(d.risk) - 4, fmtDollar(d.risk).replace(/\.00$/, ''), { size: 8, fill: 'var(--accent)' });
+      // Risk value label above risk bar — only at the stride to avoid crowding
+      if (d.risk > 0 && showXTickAt(i)) {
+        svg += svgText(cx, scaleY(d.risk) - 4, fmtDollarK(d.risk), { size: 9, fill: 'var(--accent)' });
       }
-      // P&L value label — above if positive, below if negative
-      if (d.pnl !== 0) {
+      // P&L value label — above if positive, below if negative. Only at stride.
+      if (d.pnl !== 0 && showXTickAt(i)) {
         const pnlColor = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
-        const y = d.pnl >= 0 ? scaleY(d.pnl) - 14 : scaleY(d.pnl) + 10;
-        svg += svgText(cx, y, fmtPnl(d.pnl), { size: 8, fill: pnlColor });
+        const y = d.pnl >= 0 ? scaleY(d.pnl) - 14 : scaleY(d.pnl) + 11;
+        svg += svgText(cx, y, fmtPnlK(d.pnl), { size: 9, fill: pnlColor });
       }
+
+      svg += '</g>';
+    }
+
+    // X-axis labels: rotated date + fill count. Drawing OUTSIDE the per-day
+    // <g> so transform doesn't affect bars. Stride drops every-other label
+    // when the chart is dense; the tooltip still carries the precise day.
+    for (let i = 0; i < days.length; i++) {
+      if (!showXTickAt(i)) continue;
+      const d = byDay[days[i]];
+      const cx = pad.l + (i + 0.5) * colW;
+      const dayLabel = days[i].substring(5); // MM-DD
+      // Rotate -40° so longer date strings don't collide horizontally.
+      svg += `<text x="${cx}" y="${H - pad.b + 16}" font-size="10" fill="var(--text2)" text-anchor="end" transform="rotate(-40 ${cx} ${H - pad.b + 16})">${dayLabel}</text>`;
+      // Fill count just below the rotated date — use compact "Nf" form so
+      // it never visibly collides even at single-digit char width.
+      svg += svgText(cx, H - pad.b + 32, d.count + 'f', { size: 8, fill: 'var(--text3)' });
     }
 
     // Cumulative P&L line (overlaid on the bars)
     if (cumul.length >= 1) {
       const linePoints = days.map((_, i) => {
-        const cx = pad.l + (i + 0.5) * (chartW / days.length);
+        const cx = pad.l + (i + 0.5) * colW;
         return cx + ',' + scaleY(cumul[i]);
       }).join(' ');
-      svg += `<polyline points="${linePoints}" fill="none" stroke="var(--yellow, #f5b942)" stroke-width="2.5" stroke-linejoin="round"/>`;
+      svg += `<polyline points="${linePoints}" fill="none" stroke="url(#cumulGrad)" stroke-width="2.5" stroke-linejoin="round"/>`;
       for (let i = 0; i < days.length; i++) {
-        const cx = pad.l + (i + 0.5) * (chartW / days.length);
+        const cx = pad.l + (i + 0.5) * colW;
         const cy = scaleY(cumul[i]);
-        svg += `<circle cx="${cx}" cy="${cy}" r="3" fill="var(--yellow, #f5b942)" stroke="var(--bg)" stroke-width="1"/>`;
+        svg += `<circle cx="${cx}" cy="${cy}" r="2.5" fill="#f5b942" stroke="var(--bg)" stroke-width="1"/>`;
       }
-      // Final cumulative label at the last point
-      const lastCx = pad.l + (days.length - 0.5) * (chartW / days.length);
+      // Final cumulative label — rendered as a chip with background so it
+      // pops over the bars and never overlaps a numeric label.
+      const lastCx = pad.l + (days.length - 0.5) * colW;
       const lastCy = scaleY(cumul[cumul.length - 1]);
-      svg += svgText(lastCx + 6, lastCy + 3, fmtPnl(cumul[cumul.length - 1]), { anchor: 'start', size: 9, fill: 'var(--yellow, #f5b942)' });
+      const lastTxt = fmtPnlK(cumul[cumul.length - 1]);
+      const chipW = lastTxt.length * 6.2 + 10;
+      const chipX = Math.min(lastCx + 6, W - pad.r - chipW);
+      svg += `<rect x="${chipX}" y="${lastCy - 8}" width="${chipW}" height="14" fill="rgba(245,185,66,0.18)" stroke="#f5b942" stroke-width="0.8" rx="3"/>`;
+      svg += svgText(chipX + chipW / 2, lastCy + 2, lastTxt, { anchor: 'middle', size: 9, fill: '#f5b942' });
     }
 
-    // Legend
-    svg += `<rect x="${pad.l}" y="${H - 10}" width="8" height="8" fill="var(--accent)" fill-opacity="0.35"/>`;
-    svg += svgText(pad.l + 12, H - 3, 'My Risk (volume)', { anchor: 'start', size: 9 });
-    svg += svgRect(pad.l + 120, H - 10, 8, 8, 'var(--green)', 1);
-    svg += svgText(pad.l + 132, H - 3, 'Daily P&L', { anchor: 'start', size: 9 });
-    svg += svgLine(pad.l + 210, H - 6, pad.l + 226, H - 6, 'var(--yellow, #f5b942)', 2.5);
-    svg += svgText(pad.l + 230, H - 3, 'Cumulative P&L', { anchor: 'start', size: 9 });
+    // Legend — left-aligned at bottom
+    svg += `<rect x="${pad.l}" y="${H - 12}" width="9" height="9" fill="var(--accent)" fill-opacity="0.35" rx="1"/>`;
+    svg += svgText(pad.l + 13, H - 4, 'My Risk', { anchor: 'start', size: 9 });
+    svg += svgRect(pad.l + 70, H - 12, 9, 9, 'var(--green)', 1);
+    svg += svgText(pad.l + 83, H - 4, 'Daily P&L', { anchor: 'start', size: 9 });
+    svg += svgLine(pad.l + 145, H - 8, pad.l + 161, H - 8, '#f5b942', 2.5);
+    svg += svgText(pad.l + 165, H - 4, 'Cumulative P&L', { anchor: 'start', size: 9 });
+    // Hover hint on the right end
+    svg += svgText(W - pad.r, H - 4, 'hover bars for detail', { anchor: 'end', size: 8, fill: 'var(--text3)' });
 
     svg += '</svg>';
 
