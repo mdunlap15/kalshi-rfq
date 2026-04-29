@@ -5559,7 +5559,7 @@
       if (knownSports.length === 0) sport = 'Unknown';
       else if (knownSports.length === 1) sport = knownSports[0];
       else sport = 'Multi-league';
-      if (!bySport[sport]) bySport[sport] = { pnl: 0, wins: 0, losses: 0, staked: 0, oddsSum: 0, count: 0 };
+      if (!bySport[sport]) bySport[sport] = { sport, pnl: 0, wins: 0, losses: 0, staked: 0, oddsSum: 0, count: 0 };
       bySport[sport].pnl += (o.pnl || 0);
       bySport[sport].staked += (o.confirmedStake || 0);
       bySport[sport].count++;
@@ -5568,18 +5568,58 @@
       else if (o.pnl < 0) bySport[sport].losses++;
     }
 
-    let html = '<table><tr><th>Sport</th><th style="text-align:right">Record</th><th style="text-align:right">Staked</th><th style="text-align:right">P&L</th><th style="text-align:right">ROI</th></tr>';
-    for (const [sport, d] of Object.entries(bySport).sort((a, b) => Math.abs(b[1].pnl) - Math.abs(a[1].pnl))) {
-      const cls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
-      const roi = d.staked > 0 ? (d.pnl / d.staked * 100) : 0;
-      const roiCls = roi > 0 ? 'positive' : roi < 0 ? 'negative' : 'neutral';
-      html += '<tr>' +
-        '<td>' + sportPill(sport) + '</td>' +
-        '<td style="text-align:right">' + d.wins + '-' + d.losses + '</td>' +
-        '<td style="text-align:right">$' + d.staked.toFixed(2) + '</td>' +
-        '<td style="text-align:right" class="' + cls + '">' + fmtPnl(d.pnl) + '</td>' +
-        '<td style="text-align:right" class="' + roiCls + '">' + (roi >= 0 ? '+' : '') + roi.toFixed(1) + '%</td>' +
-      '</tr>';
+    // Build rows with derived fields used for sorting (record = wins+losses,
+    // roi = pnl/staked).
+    const rows = Object.values(bySport).map(d => ({
+      ...d,
+      record: d.wins + d.losses,
+      roi: d.staked > 0 ? (d.pnl / d.staked * 100) : 0,
+    }));
+
+    // Filter by search (substring match on sport name, case-insensitive)
+    const search = (window._sportSearch || '').toLowerCase();
+    const filtered = search ? rows.filter(r => r.sport.toLowerCase().includes(search)) : rows;
+
+    // Sort. Default: pnl desc. Sport column sorts ascending by default.
+    const sortCol = window._sportSortCol || 'pnl';
+    const sortDir = window._sportSortDir != null ? window._sportSortDir : -1;
+    filtered.sort((a, b) => {
+      let va = a[sortCol], vb = b[sortCol];
+      if (sortCol === 'sport') return sortDir * String(va).localeCompare(String(vb));
+      return sortDir * ((va || 0) - (vb || 0));
+    });
+
+    const arrow = (col) => sortCol === col ? (sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const sortClick = (col, defaultDir) => "onclick=\"event.stopPropagation(); if(window._sportSortCol==='" + col + "') window._sportSortDir=(window._sportSortDir||1)*-1; else { window._sportSortCol='" + col + "'; window._sportSortDir=" + defaultDir + "; } renderPortfolioBySport(window._lastSettledData||[])\" style=\"cursor:pointer; user-select:none;\"";
+
+    let html = '';
+    html += '<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">';
+    html += '<input type="text" placeholder="Search sport..." value="' + escapeHtml(window._sportSearch || '') + '" oninput="window._sportSearch=this.value; rerenderWithFocus(()=>renderPortfolioBySport(window._lastSettledData||[]))" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:11px; width:160px;" id="sport-pnl-search">';
+    html += '<span style="font-size:11px; color:var(--text3);">' + filtered.length + ' of ' + rows.length + '</span>';
+    html += '</div>';
+
+    html += '<table>';
+    html += '<tr>';
+    html += '<th ' + sortClick('sport', 1) + '>Sport' + arrow('sport') + '</th>';
+    html += '<th style="text-align:right;" ' + sortClick('record', -1) + '>Record' + arrow('record') + '</th>';
+    html += '<th style="text-align:right;" ' + sortClick('staked', -1) + '>Staked' + arrow('staked') + '</th>';
+    html += '<th style="text-align:right;" ' + sortClick('pnl', -1) + '>P&L' + arrow('pnl') + '</th>';
+    html += '<th style="text-align:right;" ' + sortClick('roi', -1) + '>ROI' + arrow('roi') + '</th>';
+    html += '</tr>';
+    if (filtered.length === 0) {
+      html += '<tr><td colspan="5" style="text-align:center; color:var(--text3); padding:12px;">No matches</td></tr>';
+    } else {
+      for (const d of filtered) {
+        const cls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
+        const roiCls = d.roi > 0 ? 'positive' : d.roi < 0 ? 'negative' : 'neutral';
+        html += '<tr>' +
+          '<td>' + sportPill(d.sport) + '</td>' +
+          '<td style="text-align:right">' + d.wins + '-' + d.losses + '</td>' +
+          '<td style="text-align:right">$' + d.staked.toFixed(2) + '</td>' +
+          '<td style="text-align:right" class="' + cls + '">' + fmtPnl(d.pnl) + '</td>' +
+          '<td style="text-align:right" class="' + roiCls + '">' + (d.roi >= 0 ? '+' : '') + d.roi.toFixed(1) + '%</td>' +
+        '</tr>';
+      }
     }
     html += '</table>';
     el.innerHTML = html;
@@ -5595,8 +5635,8 @@
     const byLegs = {};
     for (const o of settled) {
       const legs = o.legs || o.meta?.legs || [];
-      const n = legs.length || '?';
-      if (!byLegs[n]) byLegs[n] = { pnl: 0, wins: 0, losses: 0, staked: 0, count: 0, oddsSum: 0 };
+      const n = legs.length || 0;
+      if (!byLegs[n]) byLegs[n] = { legs: n, pnl: 0, wins: 0, losses: 0, staked: 0, count: 0, oddsSum: 0 };
       byLegs[n].pnl += (o.pnl || 0);
       byLegs[n].staked += (o.confirmedStake || 0);
       byLegs[n].count++;
@@ -5605,21 +5645,62 @@
       else if (o.pnl < 0) byLegs[n].losses++;
     }
 
-    let html = '<table><tr><th>Legs</th><th style="text-align:right">Record</th><th style="text-align:right">Avg Odds</th><th style="text-align:right">P&L</th><th style="text-align:right">ROI</th></tr>';
-    for (const n of Object.keys(byLegs).sort((a, b) => Number(a) - Number(b))) {
-      const d = byLegs[n];
-      const cls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
-      const roi = d.staked > 0 ? (d.pnl / d.staked * 100) : 0;
-      const roiCls = roi > 0 ? 'positive' : roi < 0 ? 'negative' : 'neutral';
-      const avgOdds = d.count > 0 ? Math.round(d.oddsSum / d.count) : 0;
-      const avgOddsStr = avgOdds >= 0 ? '+' + avgOdds : '' + avgOdds;
-      html += '<tr>' +
-        '<td>' + n + '-leg</td>' +
-        '<td style="text-align:right">' + d.wins + '-' + d.losses + '</td>' +
-        '<td style="text-align:right">' + avgOddsStr + '</td>' +
-        '<td style="text-align:right" class="' + cls + '">' + fmtPnl(d.pnl) + '</td>' +
-        '<td style="text-align:right" class="' + roiCls + '">' + (roi >= 0 ? '+' : '') + roi.toFixed(1) + '%</td>' +
-      '</tr>';
+    const rows = Object.values(byLegs).map(d => ({
+      ...d,
+      record: d.wins + d.losses,
+      avgOdds: d.count > 0 ? Math.round(d.oddsSum / d.count) : 0,
+      roi: d.staked > 0 ? (d.pnl / d.staked * 100) : 0,
+    }));
+
+    // Filter by min/max legs
+    const minLegs = window._legMinFilter != null ? window._legMinFilter : '';
+    const maxLegs = window._legMaxFilter != null ? window._legMaxFilter : '';
+    const filtered = rows.filter(r => {
+      if (minLegs !== '' && r.legs < Number(minLegs)) return false;
+      if (maxLegs !== '' && r.legs > Number(maxLegs)) return false;
+      return true;
+    });
+
+    // Sort. Default: legs asc (natural reading order).
+    const sortCol = window._legSortCol || 'legs';
+    const sortDir = window._legSortDir != null ? window._legSortDir : 1;
+    filtered.sort((a, b) => sortDir * ((a[sortCol] || 0) - (b[sortCol] || 0)));
+
+    const arrow = (col) => sortCol === col ? (sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
+    const sortClick = (col, defaultDir) => "onclick=\"event.stopPropagation(); if(window._legSortCol==='" + col + "') window._legSortDir=(window._legSortDir||1)*-1; else { window._legSortCol='" + col + "'; window._legSortDir=" + defaultDir + "; } renderPortfolioByLegs(window._lastSettledData||[])\" style=\"cursor:pointer; user-select:none;\"";
+
+    let html = '';
+    html += '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">';
+    html += '<span style="font-size:11px; color:var(--text3);">Legs:</span>';
+    html += '<input type="number" min="1" max="20" placeholder="min" value="' + escapeHtml(String(minLegs)) + '" oninput="window._legMinFilter=this.value; rerenderWithFocus(()=>renderPortfolioByLegs(window._lastSettledData||[]))" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px; width:60px;">';
+    html += '<span style="font-size:11px; color:var(--text3);">to</span>';
+    html += '<input type="number" min="1" max="20" placeholder="max" value="' + escapeHtml(String(maxLegs)) + '" oninput="window._legMaxFilter=this.value; rerenderWithFocus(()=>renderPortfolioByLegs(window._lastSettledData||[]))" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:4px; font-size:11px; width:60px;">';
+    html += '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + rows.length + '</span>';
+    html += '</div>';
+
+    html += '<table>';
+    html += '<tr>';
+    html += '<th ' + sortClick('legs', 1) + '>Legs' + arrow('legs') + '</th>';
+    html += '<th style="text-align:right;" ' + sortClick('record', -1) + '>Record' + arrow('record') + '</th>';
+    html += '<th style="text-align:right;" ' + sortClick('avgOdds', -1) + '>Avg Odds' + arrow('avgOdds') + '</th>';
+    html += '<th style="text-align:right;" ' + sortClick('pnl', -1) + '>P&L' + arrow('pnl') + '</th>';
+    html += '<th style="text-align:right;" ' + sortClick('roi', -1) + '>ROI' + arrow('roi') + '</th>';
+    html += '</tr>';
+    if (filtered.length === 0) {
+      html += '<tr><td colspan="5" style="text-align:center; color:var(--text3); padding:12px;">No matches</td></tr>';
+    } else {
+      for (const d of filtered) {
+        const cls = d.pnl > 0 ? 'positive' : d.pnl < 0 ? 'negative' : 'neutral';
+        const roiCls = d.roi > 0 ? 'positive' : d.roi < 0 ? 'negative' : 'neutral';
+        const avgOddsStr = d.avgOdds >= 0 ? '+' + d.avgOdds : '' + d.avgOdds;
+        html += '<tr>' +
+          '<td>' + d.legs + '-leg</td>' +
+          '<td style="text-align:right">' + d.wins + '-' + d.losses + '</td>' +
+          '<td style="text-align:right">' + avgOddsStr + '</td>' +
+          '<td style="text-align:right" class="' + cls + '">' + fmtPnl(d.pnl) + '</td>' +
+          '<td style="text-align:right" class="' + roiCls + '">' + (d.roi >= 0 ? '+' : '') + d.roi.toFixed(1) + '%</td>' +
+        '</tr>';
+      }
     }
     html += '</table>';
     el.innerHTML = html;

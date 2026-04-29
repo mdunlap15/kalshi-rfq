@@ -651,6 +651,11 @@ function startStatusServer() {
   });
 
   // Decline stats from Supabase — grouped by reason
+  app.get('/recent-rejects', (req, res) => {
+    const limit = parseInt(req.query.limit) || 100;
+    res.json({ rejects: orderTracker.getRecentRejects(limit) });
+  });
+
   app.get('/decline-stats', async (req, res) => {
     try {
       const days = parseInt(req.query.days) || 7;

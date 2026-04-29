@@ -793,6 +793,13 @@ function importPxBookedOrder(parlayId, orderUuid, confirmedStake, confirmedOdds)
   if (confirmedStake != null && Number.isFinite(+confirmedStake)) order.confirmedStake = +confirmedStake;
   if (confirmedOdds != null && Number.isFinite(+confirmedOdds)) order.confirmedOdds = +confirmedOdds;
 
+  // Clear rejection metadata so the startup self-heal at loadFromDb()
+  // doesn't demote this order back to rejected on the next restart.
+  // The self-heal triggers on rejectedAt being set with status !== 'rejected',
+  // which would otherwise undo every successful drift recovery on redeploy.
+  delete order.rejectedAt;
+  delete order.rejectionReason;
+
   // Stats: count this as a confirmation, back off the prior rejection.
   stats.totalConfirmations++;
   if (prevStatus === 'rejected' && stats.totalRejections > 0) stats.totalRejections--;
@@ -4844,9 +4851,72 @@ async function reconcileGhostConfirmed(px) {
       }
     }
   }
+  // Second pass: rejected → confirmed recovery (the accept-POST-failed
+  // drift backstop). Walks orders our local state has as 'rejected' and
+  // checks whether PX actually has them booked. If so, call
+  // importPxBookedOrder to flip status back to 'confirmed' and rebuild
+  // exposure. Catches the case where verifyAcceptUnknown's retry window
+  // (3s/15s/60s) timed out before PX finalized — without this loop those
+  // parlays sit forever as locally-rejected while PX reports them in
+  // /px-positions, causing the All Quotes vs Open Positions mismatch.
+  //
+  // Scope guards:
+  //   - Only consider rejections from the accept/confirm path (rejection
+  //     reason starts with 'accept-POST-failed:' or contains 'PX state').
+  //     We do NOT auto-import rejections from local risk/correlation/etc.
+  //     declines — those were intentional and must stay rejected even if
+  //     PX somehow booked them in a sandbox/race scenario.
+  //   - Only flip if PX shows the order as actually booked (tbd/finalized
+  //     or settled won/lost/push) — never on 'requested', 'cancelled', etc.
+  //   - Skip if rejectedAt is younger than the verify-retry window so we
+  //     don't race verifyAcceptUnknown's own retries.
+  let rejectedRecovered = 0;
+  const RECOVERY_MIN_AGE_MS = 90 * 1000; // > final 60s verify retry, with margin
+  const ACCEPT_REJECT_PREFIX = /^accept-POST-failed:/i;
+  for (const order of Object.values(orders)) {
+    if (order.status !== 'rejected') continue;
+    if (!order.rejectedAt) continue;
+    if ((Date.now() - new Date(order.rejectedAt).getTime()) < RECOVERY_MIN_AGE_MS) continue;
+    const reason = order.rejectionReason || '';
+    if (!ACCEPT_REJECT_PREFIX.test(reason) && !/PX state/i.test(reason)) continue;
+    // Find PX's record. Prefer orderUuid if we have one, fall back to parlayId.
+    let pxMatch = null;
+    if (order.orderUuid && pxByUuid[order.orderUuid]) {
+      pxMatch = pxByUuid[order.orderUuid];
+    } else if (pxByParlayId[order.parlayId] && pxByParlayId[order.parlayId].length > 0) {
+      pxMatch = pxByParlayId[order.parlayId][0];
+    }
+    if (!pxMatch) continue;
+    const pxStatus = (pxMatch.status || '').toLowerCase();
+    const pxSettlement = (pxMatch.settlement_status || pxMatch.settlementStatus || '').toLowerCase();
+    const isBooked = pxStatus === 'finalized'
+      || pxStatus === 'matched'
+      || pxStatus === 'confirmed'
+      || pxSettlement === 'tbd'
+      || pxSettlement === 'won'
+      || pxSettlement === 'lost'
+      || pxSettlement === 'push';
+    if (!isBooked) continue;
+    const uuid = order.orderUuid || pxMatch.order_uuid || pxMatch.orderUuid;
+    const stake = pxMatch.confirmed_stake != null ? Number(pxMatch.confirmed_stake)
+      : (order.confirmedStake != null ? Number(order.confirmedStake) : null);
+    const odds = pxMatch.confirmed_odds != null ? Number(pxMatch.confirmed_odds)
+      : (order.confirmedOdds != null ? Number(order.confirmedOdds) : null);
+    log.warn('GhostReconcile', `Rejected→Confirmed recovery: ${order.parlayId.substring(0,8)} (reason="${reason}", PX status=${pxStatus}/${pxSettlement}) — importing`);
+    const result = importPxBookedOrder(order.parlayId, uuid, stake, odds);
+    if (result && result.ok) {
+      rejectedRecovered++;
+      // If PX has it settled too, record the settlement so P&L is captured.
+      if (pxSettlement === 'won' || pxSettlement === 'lost' || pxSettlement === 'push') {
+        const profit = pxMatch.profit != null ? Number(pxMatch.profit) : 0;
+        recordSettlement(uuid, pxSettlement, profit);
+      }
+    }
+  }
+
   const elapsedMs = Date.now() - startedAt;
-  log.info('GhostReconcile', `Checked ${checked} confirmed orders in ${elapsedMs}ms — ghosts: ${ghostsFound}, auto-cleared phantoms: ${autoCleared}, orderUuids filled in: ${orderUuidFilledIn}, PX-status-mismatches: ${settledFound}`);
-  return { checked, ghostsFound, autoCleared, orderUuidFilledIn, settledFound, phantomIds, elapsedMs };
+  log.info('GhostReconcile', `Checked ${checked} confirmed orders in ${elapsedMs}ms — ghosts: ${ghostsFound}, auto-cleared phantoms: ${autoCleared}, orderUuids filled in: ${orderUuidFilledIn}, PX-status-mismatches: ${settledFound}, rejected-recovered: ${rejectedRecovered}`);
+  return { checked, ghostsFound, autoCleared, orderUuidFilledIn, settledFound, rejectedRecovered, phantomIds, elapsedMs };
 }
 
 /**
@@ -5066,6 +5136,7 @@ module.exports = {
   sweepGhostOrders,
   getMarketIntel,
   getAlerts,
+  getRecentRejects: (limit = 100) => rejectStats.recent.slice(0, Math.max(1, Math.min(limit, 100))),
   getExposureLimitStats,
   recordExposureRejection,
   refreshLiveOdds,

@@ -1355,26 +1355,59 @@ async function handleConfirm(data) {
  * current state for the order_uuid and decides based on ground truth:
  *   - PX has it finalized / tbd  → import as confirmed (addExposure fires)
  *   - PX already settled         → import + record settlement
- *   - PX has no record           → mark rejected
- *   - Verify itself fails        → mark rejected defensively + log loudly
+ *   - PX has no record           → retry up to ATTEMPT_DELAYS_MS, then reject
+ *   - Verify itself fails        → retry, then reject defensively
  *
- * Called 3 seconds after the accept-POST exception (see handleConfirm),
- * giving PX time to finalize if the failure came after their
- * server-side commit. Safe to call multiple times on the same parlay
- * (importPxBookedOrder and recordRejection are both idempotent on
- * already-resolved orders).
+ * Called 3 seconds after the accept-POST exception (see handleConfirm).
+ * If PX hasn't finalized within the first attempt, retries at 15s and 60s
+ * before giving up — covers the case where PX commits server-side after
+ * the HTTP error returned to us. The `attempt` parameter (default 0) is
+ * the index into ATTEMPT_DELAYS_MS for the next retry, NOT the current
+ * attempt number — when there are no more delays we record rejection.
+ *
+ * Safe to call multiple times on the same parlay (importPxBookedOrder and
+ * recordRejection are both idempotent on already-resolved orders).
  */
-async function verifyAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmedStake) {
+const VERIFY_ATTEMPT_DELAYS_MS = [15000, 60000]; // after the initial 3s, retry at +15s and +60s
+
+async function verifyAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmedStake, attempt = 0) {
   if (!orderUuid) {
     log.warn('AcceptVerify', `${parlayId}: no orderUuid to verify against PX — marking rejected`);
     orderTracker.recordRejection(parlayId, 'accept-POST-failed: no orderUuid');
     return;
   }
+
+  // Skip verify if the order has already been resolved by another path
+  // (e.g. order.matched + order.finalized arrived during the wait window
+  // and promoted it to confirmed). Belt-and-suspenders against retry races.
+  const current = orderTracker.findByParlayId
+    ? orderTracker.findByParlayId(parlayId)
+    : null;
+  if (current && (current.status === 'confirmed' || (current.status || '').startsWith('settled_'))) {
+    log.debug('AcceptVerify', `${parlayId}: already ${current.status} via another path — skipping verify`);
+    return;
+  }
+
+  const scheduleRetryOrReject = (rejectReason) => {
+    const nextDelay = VERIFY_ATTEMPT_DELAYS_MS[attempt];
+    if (nextDelay == null) {
+      log.warn('AcceptVerify', `${parlayId}: exhausted retries → ${rejectReason}`);
+      orderTracker.recordRejection(parlayId, rejectReason);
+      return;
+    }
+    log.info('AcceptVerify', `${parlayId}: retry ${attempt + 1}/${VERIFY_ATTEMPT_DELAYS_MS.length} in ${nextDelay}ms (${rejectReason})`);
+    setTimeout(() => {
+      verifyAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmedStake, attempt + 1).catch(err =>
+        log.warn('AcceptVerify', `${parlayId} retry-task threw: ${err.message}`)
+      );
+    }, nextDelay);
+  };
+
   try {
     const pxOrder = await px.fetchOrderByUuid(orderUuid);
     if (!pxOrder) {
-      log.info('AcceptVerify', `${parlayId} (${orderUuid}): PX has no record → rejected`);
-      orderTracker.recordRejection(parlayId, 'accept-POST-failed: PX has no record');
+      // PX has no record yet — could be propagation delay. Retry before giving up.
+      scheduleRetryOrReject('accept-POST-failed: PX has no record');
       return;
     }
     const pxSettleStatus = pxOrder.settlement_status;
@@ -1383,7 +1416,7 @@ async function verifyAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmed
     const pxOdds = pxOrder.confirmed_odds != null ? Number(pxOrder.confirmed_odds) : confirmedOdds;
 
     if (['won', 'lost', 'push'].includes(pxSettleStatus)) {
-      // Edge case: the 3s window was enough for PX to settle the leg too.
+      // Edge case: PX settled the leg during the verify window.
       // Promote then settle so exposure lifecycle stays coherent.
       log.info('AcceptVerify', `${parlayId}: PX already ${pxSettleStatus} → importing + settling`);
       orderTracker.importPxBookedOrder(parlayId, orderUuid, pxStake, pxOdds);
@@ -1397,13 +1430,20 @@ async function verifyAcceptUnknown(parlayId, orderUuid, confirmedOdds, confirmed
       return;
     }
 
-    // Any other PX state (e.g. 'requested', 'cancelled', unknown) — don't
-    // assume booked. Mark rejected defensively.
-    log.warn('AcceptVerify', `${parlayId}: unexpected PX state settle=${pxSettleStatus}, status=${pxOrderStatus} → rejected`);
-    orderTracker.recordRejection(parlayId, `accept-POST-failed: PX state ${pxSettleStatus}/${pxOrderStatus}`);
+    // 'cancelled' is definitive — PX explicitly killed the order. Don't retry.
+    if (pxOrderStatus === 'cancelled' || pxSettleStatus === 'cancelled') {
+      log.info('AcceptVerify', `${parlayId}: PX cancelled → rejected (no retry)`);
+      orderTracker.recordRejection(parlayId, `accept-POST-failed: PX cancelled`);
+      return;
+    }
+
+    // Any other PX state (e.g. 'requested', 'pending', unknown) — could be
+    // mid-commit. Retry before giving up.
+    scheduleRetryOrReject(`accept-POST-failed: PX state ${pxSettleStatus}/${pxOrderStatus}`);
   } catch (err) {
-    log.error('AcceptVerify', `${parlayId} verify failed: ${err.message} — rejecting defensively`);
-    orderTracker.recordRejection(parlayId, `accept-POST-failed + verify-failed: ${err.message}`);
+    // Network / PX REST hiccup. Retry on transient errors before giving up.
+    log.warn('AcceptVerify', `${parlayId} verify attempt ${attempt} threw: ${err.message}`);
+    scheduleRetryOrReject(`accept-POST-failed + verify-failed: ${err.message}`);
   }
 }
 
