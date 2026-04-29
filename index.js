@@ -6096,38 +6096,36 @@ function startStatusServer() {
       // rather than applying our default vig on top of fair.
       let bookPriceOverride = null;
       try {
-        // Pass the SIGNED line to getFairProb — critical for spreads
-        // where home -1.5 and home +1.5 are different bets. Previously
-        // Math.abs() was applied which stripped the sign and routed
-        // every spread to getAltLineFairProb with the wrong-sign
-        // homePoint bucket, returning the opposite side's fair prob
-        // (e.g. NHL home -1.5 returning 0.76 — the fair for home
-        // +1.5 — instead of 0.37, the actual fair for home -1.5).
-        // getFairProb applies Math.abs internally for totals, so
-        // signed input is safe for both markets.
-        fairProb = oddsFeed.getFairProb(
-          info.oddsApiSport || info.sport,
-          info.homeTeam,
-          info.awayTeam,
-          info.oddsApiMarket || info.marketType,
-          info.oddsApiSelection || info.selection,
-          info.line != null ? info.line : null,
-          info.startTime
-        );
-        // Golf matchup fallback: oddsFeed only covers DataGolf 1v1
-        // pairs. For team events (Zurich) the fair prob lives in the
-        // DK scraper or BetOnline manual cache, which the pricer's
-        // getGolfMatchupFairProb cascades through. Use that helper
-        // here so the Lines tab shows a fair for team-matchup lines,
-        // matching what would actually be priced at RFQ time.
-        if (fairProb == null && info.sport === 'golf_matchups') {
+        // Golf matchups: route through pricer.getGolfMatchupFairProb
+        // FIRST so the manual book upload (operator-supplied Bookmaker
+        // odds) wins over DataGolf, matching what priceParlay does at
+        // RFQ time. Otherwise oddsFeed.getFairProb would hit DataGolf
+        // first and the dashboard would show DataGolf's de-vigged fair
+        // even with a manual override sitting in cache.
+        if (info.sport === 'golf_matchups') {
           const golfRes = pricer.getGolfMatchupFairProb(info);
           if (golfRes != null && typeof golfRes === 'object') {
             fairProb = golfRes.fairProb;
             bookPriceOverride = golfRes.bookPriceOverride;
-          } else {
+          } else if (golfRes != null) {
             fairProb = golfRes;
           }
+        }
+        // Non-golf, OR golf matchup with no manual/scraper hit: fall
+        // through to the generic oddsFeed.getFairProb. Pass the SIGNED
+        // line — critical for spreads where home -1.5 and home +1.5
+        // are different bets. getFairProb applies Math.abs internally
+        // for totals, so signed input is safe for both markets.
+        if (fairProb == null) {
+          fairProb = oddsFeed.getFairProb(
+            info.oddsApiSport || info.sport,
+            info.homeTeam,
+            info.awayTeam,
+            info.oddsApiMarket || info.marketType,
+            info.oddsApiSelection || info.selection,
+            info.line != null ? info.line : null,
+            info.startTime
+          );
         }
       } catch (_) { /* ignore */ }
       // If bookPriceOverride is set, quote at that raw implied
