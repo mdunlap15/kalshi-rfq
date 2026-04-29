@@ -311,7 +311,36 @@ function getGolfMatchupFairProb(lineInfo) {
   const mt = lineInfo?.marketType || '';
   if (mt !== 'moneyline') return null; // golf matchups are h2h only
 
-  // Primary path: DataGolf via oddsFeed.getGolfMatchupEvent. Covers
+  // PRIORITY 1: Manual book upload (operator-supplied Bookmaker / BetOnline
+  // odds via /betonline-zurich/upload). When present, this is the
+  // operator's authoritative quoting price — overrides DataGolf and DK
+  // even when those have coverage. Without this priority order, DataGolf's
+  // de-vigged fair would silently win on any regular-tour event where
+  // DataGolf has h2h coverage, and the manual upload would be a no-op.
+  //
+  // Return shape: { fairProb, bookPriceOverride } so priceParlay quotes
+  // AT the raw odds (no de-vig + re-add vig). Mirrors the NBA series
+  // heavy-favorite pattern (pricer.js:~290).
+  const teamName = lineInfo?.teamName || '';
+  if (teamName) {
+    try {
+      const betonlineScraper = require('./betonline-scraper');
+      const boHit = betonlineScraper.lookupZurichMatchupFairProb(teamName, lineInfo.roundNum ?? null);
+      if (boHit && boHit.fairProb != null) {
+        const rawAm = boHit.americanOdds;
+        let rawImplied = boHit.impliedProb;
+        if (rawImplied == null && Number.isFinite(rawAm)) {
+          rawImplied = rawAm >= 0 ? 100 / (rawAm + 100) : -rawAm / (-rawAm + 100);
+        }
+        if (rawImplied != null && rawImplied > 0 && rawImplied < 1) {
+          return { fairProb: boHit.fairProb, bookPriceOverride: rawImplied };
+        }
+        return boHit.fairProb;
+      }
+    } catch (_) { /* scraper unavailable — fall through */ }
+  }
+
+  // PRIORITY 2: DataGolf via oddsFeed.getGolfMatchupEvent. Covers
   // individual 1v1 player matchups for regular tour events.
   const event = oddsFeed.getGolfMatchupEvent(
     lineInfo.homeTeam, lineInfo.awayTeam, lineInfo.roundNum ?? null
@@ -325,47 +354,12 @@ function getGolfMatchupFairProb(lineInfo) {
     }
   }
 
-  // Fallback 1: DK scraper. Covers team matchups (Zurich Classic team
-  // events that DataGolf doesn't publish) and any other matchup
-  // DataGolf happens to miss. Look up by the full team-pair name so
-  // "McIlroy / Lowry" resolves regardless of which side PX identifies
-  // as "home" vs "away".
-  const teamName = lineInfo?.teamName || '';
+  // PRIORITY 3: DK scraper. Last-resort fallback for matchups DataGolf
+  // happens to miss. Looked up by the full team-pair name so the
+  // pairing-name match works regardless of home/away orientation.
   if (teamName) {
     const dkHit = dkScraper.lookupGolfMatchupFairProb(teamName, lineInfo.roundNum ?? null);
     if (dkHit && dkHit.fairProb != null) return dkHit.fairProb;
-  }
-
-  // Fallback 2: BetOnline scraper. DK and BetOnline publish DIFFERENT
-  // matchup pairings — BetOnline's pairings mirror PX's for the
-  // Zurich Classic specifically. This path is Zurich-only today; the
-  // scraper file is intentionally narrow so we can delete / repurpose
-  // after the tournament without disturbing other sources.
-  //
-  // Return shape: { fairProb, bookPriceOverride } so priceParlay
-  // quotes AT the raw Bookmaker/BetOnline odds rather than applying
-  // our default vig on top of fair. Operator preference for this
-  // one-week feature — quote-as-book rather than undercut. Mirrors
-  // the NBA series heavy-favorite pattern (pricer.js:101).
-  if (teamName) {
-    try {
-      const betonlineScraper = require('./betonline-scraper');
-      const boHit = betonlineScraper.lookupZurichMatchupFairProb(teamName, lineInfo.roundNum ?? null);
-      if (boHit && boHit.fairProb != null) {
-        // Derive implied prob from the raw American odds if the
-        // scraper didn't populate it directly. This is the offered
-        // price we want to quote — pre-devig.
-        const rawAm = boHit.americanOdds;
-        let rawImplied = boHit.impliedProb;
-        if (rawImplied == null && Number.isFinite(rawAm)) {
-          rawImplied = rawAm >= 0 ? 100 / (rawAm + 100) : -rawAm / (-rawAm + 100);
-        }
-        if (rawImplied != null && rawImplied > 0 && rawImplied < 1) {
-          return { fairProb: boHit.fairProb, bookPriceOverride: rawImplied };
-        }
-        return boHit.fairProb;
-      }
-    } catch (_) { /* scraper unavailable — fall through */ }
   }
   return null;
 }
