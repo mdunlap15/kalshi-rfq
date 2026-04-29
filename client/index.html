@@ -3271,7 +3271,7 @@
     el.innerHTML = html;
   }
 
-  const posState = { sortCol: 'time', sortDir: -1, search: '', statusFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', showHidden: false, _name: 'posState' };
+  const posState = { sortCol: 'time', sortDir: -1, search: '', statusFilter: '', typeFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', showHidden: false, _name: 'posState' };
   window.posRerender = () => renderPositions(window._lastPosData || { recentOrders: [] });
   window.togglePosSort = (col) => {
     if (posState.sortCol === col) posState.sortDir *= -1;
@@ -3461,6 +3461,15 @@
         else if (now >= latest + GAME_DUR && starts.length > 0) st = 'awaiting';
         if (st !== posState.statusFilter) return false;
       }
+      // Type filter — SGP / PROP / both
+      if (posState.typeFilter) {
+        const tLegs = o.legs || o.meta?.legs || [];
+        const isSgp = isSameGameParlay(tLegs);
+        const hasProp = containsPlayerProp(tLegs);
+        if (posState.typeFilter === 'sgp' && !isSgp) return false;
+        if (posState.typeFilter === 'prop' && !hasProp) return false;
+        if (posState.typeFilter === 'both' && !(isSgp && hasProp)) return false;
+      }
       return true;
     });
 
@@ -3543,6 +3552,12 @@
         <option value="inseries"${posState.statusFilter==='inseries'?' selected':''}>In Series</option>
         <option value="upcoming"${posState.statusFilter==='upcoming'?' selected':''}>Upcoming</option>
         <option value="awaiting"${posState.statusFilter==='awaiting'?' selected':''}>Awaiting Settle</option>
+      </select>
+      <select onchange="posState.typeFilter=this.value; posRerender()" style="${pFSel}" title="Filter by parlay type — SGP (multiple legs on same event), PROP (contains a player prop leg), or both.">
+        <option value="">All types</option>
+        <option value="sgp"${posState.typeFilter==='sgp'?' selected':''}>SGP only</option>
+        <option value="prop"${posState.typeFilter==='prop'?' selected':''}>PROP only</option>
+        <option value="both"${posState.typeFilter==='both'?' selected':''}>SGP + PROP</option>
       </select>
       ${dateFilterHtml(posState, 'posRerender', dStyle)}
       <button onclick="posState.showAdvanced=!posState.showAdvanced; posRerender()" style="${pFSel} cursor:pointer;">${posState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
@@ -3721,6 +3736,7 @@
     sportFilter: '',
     resultFilter: '',
     legsFilter: '',
+    typeFilter: '', // '' (all) | 'sgp' | 'prop' | 'both'
     legsMin: '', legsMax: '',
     oddsMin: '', oddsMax: '',
     riskMin: '', riskMax: '',
@@ -3804,6 +3820,15 @@
         const n = (o.legs||o.meta?.legs||[]).length;
         if (String(n) !== settledState.legsFilter) return false;
       }
+      // Type filter — SGP / PROP / both
+      if (settledState.typeFilter) {
+        const tLegs = o.legs || o.meta?.legs || [];
+        const isSgp = isSameGameParlay(tLegs);
+        const hasProp = containsPlayerProp(tLegs);
+        if (settledState.typeFilter === 'sgp' && !isSgp) return false;
+        if (settledState.typeFilter === 'prop' && !hasProp) return false;
+        if (settledState.typeFilter === 'both' && !(isSgp && hasProp)) return false;
+      }
       // Advanced range filters
       const legsCount = (o.legs||o.meta?.legs||[]).length;
       if (!passesRangeFilter(legsCount, settledState.legsMin, settledState.legsMax)) return false;
@@ -3858,6 +3883,12 @@
       + '</select>'
       + '<select onchange="settledState.legsFilter=this.value; ' + rerend + '" style="' + sFSel + '"><option value="">All legs</option>'
       + [2,3,4,5,6,7,8].map(n => '<option value="' + n + '"' + (settledState.legsFilter === String(n) ? ' selected' : '') + '>' + n + '-leg</option>').join('')
+      + '</select>'
+      + '<select onchange="settledState.typeFilter=this.value; ' + rerend + '" style="' + sFSel + '" title="Filter by parlay type — SGP (multiple legs on same event), PROP (contains a player prop leg), or both.">'
+      + '<option value="">All types</option>'
+      + '<option value="sgp"' + (settledState.typeFilter === 'sgp' ? ' selected' : '') + '>SGP only</option>'
+      + '<option value="prop"' + (settledState.typeFilter === 'prop' ? ' selected' : '') + '>PROP only</option>'
+      + '<option value="both"' + (settledState.typeFilter === 'both' ? ' selected' : '') + '>SGP + PROP</option>'
       + '</select>'
       + dateFilterHtml(settledState, 'function(){' + rerend + '}', sDStyle)
       + '<button onclick="settledState.showAdvanced=!settledState.showAdvanced; ' + rerend + '" style="' + sFSel + ' cursor:pointer;">' + (settledState.showAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>'
@@ -4831,6 +4862,7 @@
     search: '',
     statusFilter: [],
     legsFilter: [],
+    typeFilter: '', // '' (all) | 'sgp' | 'prop' | 'both'
     // Default: hide rejected. Rejected orders were confusing operators —
     // they'd appear in the All Quotes table mixed with live positions with
     // no visual distinction, making it look like the SP took on bets that
@@ -4899,6 +4931,15 @@
         const teams = getOrderTeams(o);
         if (!orderState.legsFilter.some(t => teams.includes(t))) return false;
       }
+      // Type filter — SGP / PROP / both
+      if (orderState.typeFilter) {
+        const legs = o.legs || o.meta?.legs || [];
+        const isSgp = isSameGameParlay(legs);
+        const hasProp = containsPlayerProp(legs);
+        if (orderState.typeFilter === 'sgp' && !isSgp) return false;
+        if (orderState.typeFilter === 'prop' && !hasProp) return false;
+        if (orderState.typeFilter === 'both' && !(isSgp && hasProp)) return false;
+      }
       return true;
     });
 
@@ -4937,6 +4978,14 @@
         style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">
         <option value="">All statuses</option>
         ${allStatuses.map(s => `<option value="${s}" ${orderState.statusFilter.includes(s)?'selected':''}>${s}</option>`).join('')}
+      </select>
+      <select onchange="orderState.typeFilter=this.value; orderRerender()"
+        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;"
+        title="Filter by parlay type — SGP (multiple legs on same event), PROP (contains a player prop leg), or both.">
+        <option value="">All types</option>
+        <option value="sgp" ${orderState.typeFilter==='sgp'?'selected':''}>SGP only</option>
+        <option value="prop" ${orderState.typeFilter==='prop'?'selected':''}>PROP only</option>
+        <option value="both" ${orderState.typeFilter==='both'?'selected':''}>SGP + PROP</option>
       </select>
       ${orderState.legsFilter.length > 0 ? `<button class="btn" style="font-size:11px; padding:3px 8px;" onclick="orderState.legsFilter=[]; orderRerender()">Clear team filter</button>` : ''}
       ${(() => {
