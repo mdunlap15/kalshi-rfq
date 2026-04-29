@@ -2882,20 +2882,26 @@
       ? `${totalFills} filled of ${totalSubmitted} quoted (${(totalFills/totalSubmitted*100).toFixed(1)}%)`
       : '';
 
-    // Color thresholds are anchored to the overall fill rate. Fill rates
-    // scale inversely with volume (MLB at 1% of 35k quotes is genuinely
-    // good; Golf at 11% of 115 quotes is genuinely good) so a flat 0-10%
-    // scale hides the real signal. Instead:
-    //   ratio = cell_rate / overall_rate
-    //   ratio ≥ 2.0  → full green  (twice the book's average = strong bucket)
-    //   ratio = 1.0  → full amber  (at the book's baseline)
-    //   ratio ≤ 0.5  → full red    (half the baseline = weak bucket)
-    // The legend shows the actual pp values tied to these ratios so the
-    // operator can read the scale off their current overall rate.
+    // Color thresholds use ABSOLUTE pp deviation from the overall rate,
+    // with a minimum 2pp band so low-overall windows don't paint every
+    // cell red just because ratios diverge wildly near zero.
+    //   absScale = max(2, overallRatePct)  — pp band on each side
+    //   greenAt  = overall + absScale  → full green
+    //   amberAt  = overall             → at baseline
+    //   redAt    = max(0, overall − absScale)  → full red
+    //
+    // Operator feedback (2026-04-29): a 0% cell on a 0% overall shouldn't
+    // paint solid red — it's matching the baseline, not underperforming.
+    // Likewise a 0% cell on a 1% overall is only −1pp absolute, well within
+    // small-sample noise; old scheme (ratio 0/1 = 0× = solid red) flagged
+    // it as a serious problem. Absolute-delta scoring + 2pp floor avoids
+    // this. At higher overall (e.g. 20%), absScale = overall, so a 10pp
+    // miss is full red — same severity as before for meaningful gaps.
     const overallRatePct = totalSubmitted > 0 ? (totalFills / totalSubmitted * 100) : 0;
-    const greenAt = overallRatePct * 2;   // 2× the overall
-    const amberAt = overallRatePct;       // 1× the overall
-    const redAt   = overallRatePct * 0.5; // 0.5× the overall
+    const absScale = Math.max(2, overallRatePct);
+    const greenAt  = overallRatePct + absScale;
+    const amberAt  = overallRatePct;
+    const redAt    = Math.max(0, overallRatePct - absScale);
 
     let html = '';
     // Show the window label + origin so the operator knows the scope.
@@ -2917,10 +2923,10 @@
       + 'PX only notifies us privately on our own fills, so auction losses are inferred from quotes that never matched &mdash; we don\'t see competitors\' prices. '
       + 'Parlays tagged <em>Multi</em> span multiple sports. '
       + '<span style="color:var(--text2);">Overall fill rate this window: ' + overallRatePct.toFixed(2) + '%. '
-      + 'Cells are shaded relative to that baseline &mdash; fill rate scales with volume, so absolute thresholds hide real signal. '
-      + '<span style="color:var(--red);">Red</span> at &le; ' + redAt.toFixed(2) + '% (&frac12;&times; overall), '
-      + 'amber at ' + amberAt.toFixed(2) + '% (1&times;), '
-      + '<span style="color:var(--green);">green</span> at &ge; ' + greenAt.toFixed(2) + '% (2&times;).</span>'
+      + 'Cells are shaded by absolute deviation from baseline (&plusmn;' + absScale.toFixed(1) + 'pp band, min 2pp). '
+      + '<span style="color:var(--red);">Red</span> at &le; ' + redAt.toFixed(2) + '%, '
+      + 'amber at ' + amberAt.toFixed(2) + '% (baseline), '
+      + '<span style="color:var(--green);">green</span> at &ge; ' + greenAt.toFixed(2) + '%.</span>'
       + '</div>';
     html += '<div style="overflow-x:auto; padding:0 12px 12px;"><table style="font-size:13px; min-width:680px; border-collapse:separate; border-spacing:3px;">';
     html += '<tr><th style="text-align:left; padding:6px 12px;">Sport</th>';
@@ -2962,32 +2968,30 @@
         rowSubmitted += c.submitted;
         rowFills += c.fills;
         const wr = c.submitted > 0 ? (c.fills / c.submitted * 100) : 0;
-        // Continuous 3-stop RGB lerp: red(≤0.5×) → amber(1×) → green(≥2×)
-        // of the overall fill rate for this window. See threshold comment
-        // above. RGB lerp (not hue lerp) avoids the yellow/olive detour.
-        // Degenerate overall=0 case falls back to simple absolute scale
-        // so we don't divide by zero; unlikely in practice since the
-        // chart needs settled fills to exist.
+        // Continuous 3-stop RGB lerp driven by absolute pp deviation from
+        // baseline. RGB lerp (not hue lerp) avoids the yellow/olive
+        // detour. absScale (set above) defines the half-width of the
+        // amber→green and red→amber bands; capped to a 2pp minimum so
+        // low-overall windows don't paint everything red. Sample-size
+        // text (n=) on each cell already conveys confidence.
         const redRGB = [248, 81, 73];   // --red  #f85149
         const ambRGB = [210, 153, 34];  // --amber #d29922
         const grnRGB = [63, 185, 80];   // --green #3fb950
+        const absDelta = wr - overallRatePct;
         let cr, cg, cb;
-        if (overallRatePct <= 0) {
-          // No baseline — lean red for anything below 5% just to show something.
-          const t = Math.min(1, wr / 5);
-          cr = redRGB[0] + (grnRGB[0] - redRGB[0]) * t;
-          cg = redRGB[1] + (grnRGB[1] - redRGB[1]) * t;
-          cb = redRGB[2] + (grnRGB[2] - redRGB[2]) * t;
-        } else if (wr >= greenAt) {
-          [cr, cg, cb] = grnRGB;
-        } else if (wr >= amberAt) {
-          const t = (wr - amberAt) / (greenAt - amberAt);
+        if (absDelta >= absScale) {
+          [cr, cg, cb] = grnRGB; // ≥ overall + scale → full green
+        } else if (absDelta <= -absScale) {
+          [cr, cg, cb] = redRGB; // ≤ overall − scale → full red
+        } else if (absDelta >= 0) {
+          // amber → green
+          const t = absDelta / absScale; // 0 = amber, 1 = green
           cr = ambRGB[0] + (grnRGB[0] - ambRGB[0]) * t;
           cg = ambRGB[1] + (grnRGB[1] - ambRGB[1]) * t;
           cb = ambRGB[2] + (grnRGB[2] - ambRGB[2]) * t;
         } else {
-          // Below amber: lerp from red (at ≤ 0.5× overall) to amber (at 1× overall)
-          const t = Math.max(0, Math.min(1, (wr - redAt) / (amberAt - redAt)));
+          // red → amber
+          const t = 1 + (absDelta / absScale); // -scale = 0 (red), 0 = 1 (amber)
           cr = redRGB[0] + (ambRGB[0] - redRGB[0]) * t;
           cg = redRGB[1] + (ambRGB[1] - redRGB[1]) * t;
           cb = redRGB[2] + (ambRGB[2] - redRGB[2]) * t;
