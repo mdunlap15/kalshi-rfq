@@ -19,30 +19,45 @@
   .bignum { font-size:18px; font-weight:700; color:#f5b942; }
   .keyfmt { background:#21262d; padding:2px 6px; border-radius:3px; font-family:"SF Mono",Menlo,monospace; font-size:12px; color:#a78bfa; }
   .footnote { color:#c9d1d9; font-size:12px; font-style:italic; margin-top:24px; padding-top:12px; border-top:1px solid #30363d; }
+  .glossary { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:12px 18px; font-size:12px; color:#c9d1d9; margin:12px 0 28px; line-height:1.6; }
+  .glossary dt { color:#f5b942; font-weight:700; display:inline; }
+  .glossary dd { display:inline; margin:0 0 0 6px; }
+  .glossary dd::after { content:""; display:block; margin-bottom:4px; }
+  .glossary dd:last-of-type::after { margin-bottom:0; }
   .chart-wrap { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:16px; margin:14px 0; }
   .chart-title { font-size:12px; color:#e6edf3; text-align:center; margin-bottom:8px; font-weight:600; }
-  svg .axis text { fill:#e6edf3; font-size:10px; }
-  svg .axis line { stroke:#30363d; }
+  /* Axis text & lines: class is set DIRECTLY on the SVG <text>/<line>
+     element (not on a parent <g>), so use a compound selector that
+     matches the element itself. The earlier `svg .axis text` rule was
+     looking for a <text> *inside* a .axis container and never matched. */
+  svg text.axis { fill:#e6edf3; font-size:10px; }
+  svg line.axis { stroke:#30363d; }
   svg .grid { stroke:#30363d; stroke-dasharray:3,3; stroke-width:0.5; }
   svg .zero { stroke:#fff; stroke-width:1.2; }
-  svg .label { fill:#e6edf3; font-size:11px; font-weight:600; }
-  svg .label-sm { fill:#e6edf3; font-size:10px; }
+  svg text.label { fill:#e6edf3; font-size:11px; font-weight:600; }
+  svg text.label-sm { fill:#e6edf3; font-size:10px; }
 </style>
 </head>
 <body>
 
-<h1>Three Questions About Parlay Pricing — Quick Answers</h1>
-<div class="sub">Q1 and Q2 share a root cause: <strong>percentage points (pp) and ROI percent are different units</strong>. Q3 walks through how I compute fair value.</div>
+<h1>Three Questions About Parlay Pricing</h1>
+<div class="sub">Q1 and Q2 share one root cause: pp and ROI% are different units. Q3 walks through fair-value calculation.</div>
+
+<dl class="glossary">
+  <dt>pp</dt><dd>Percentage points — the <em>absolute</em> arithmetic gap between two percentages.</dd>
+  <dt>%</dt><dd>A <em>relative</em> ratio. 5% → 6% is a +1pp move <em>and</em> a +20% move — same change, different units.</dd>
+  <dt>FAIR</dt><dd>My estimate of the bet's true win probability. Computed by averaging the de-vigged price across multiple sharp books (full method in Q3). Not a universal truth — the cleanest signal extractable from the market. The chart's "FAIR" line is this number.</dd>
+</dl>
 
 <!-- ============================================================ -->
 <!-- Q1                                                           -->
 <!-- ============================================================ -->
-<h2>Q1: "The chart shows tiny margins on longshots — but I thought books make the most on long odds. Is the chart wrong?"</h2>
-<div class="lede">Both observations are true. The chart shows absolute pp, not per-dollar edge. Long odds have small pp gaps but huge per-dollar edge — that's where the longshot profit lives.</div>
+<h2>Q1: "Books make the most on long odds, but the chart shows tiny longshot margins. Which is right?"</h2>
+<div class="lede">Both. The chart shows pp, not per-dollar edge. Long odds have small pp gaps but huge per-dollar edge.</div>
 
 <div class="answer">
   <div class="head">Short Answer</div>
-  A 1pp markup at +1900 odds is a <strong>17% edge per dollar wagered</strong>. The same 1pp at +120 is only <strong>2.4%</strong>. The chart plots pp; "books love longshots" lives in the proportional version. Both are true at once.
+  A 1pp markup is <strong>17% per-dollar edge at +1900</strong>, just <strong>2.4% at +120</strong>. Same markup, vastly different economics. The proportional version is where longshot profit lives.
 </div>
 
 <table>
@@ -55,9 +70,8 @@
     <tr><td>50%</td><td>+100</td><td class="num">1.0pp</td><td class="num">51.0%</td><td class="num">2.0%</td></tr>
   </tbody>
 </table>
-<p>Same 1pp markup, vastly different per-dollar edge. A flat 2% vig collects 17% per $ wagered on +1900 longshots and 2% on coinflips. That longshot profit is hidden when the chart is plotted in pp.</p>
 
-<p>Why does the chart show pp <em>growing</em> with fair prob? Because vig is multiplicative, not additive. <span class="keyfmt">offered = fair × (1 + vig)</span> means at fair=5% the gap is 0.1pp, at fair=40% the gap is 0.8pp. Geometry, not pricing policy.</p>
+<p>Why does pp grow with fair prob in the first place? Vig is multiplicative: <span class="keyfmt">offered = fair × (1 + vig)</span>. At fair=5% a 2% vig produces a 0.1pp gap; at fair=40% it produces 0.8pp. Geometry, not policy.</p>
 
 <!-- Two mini-charts side by side -->
 <div class="chart-wrap">
@@ -66,8 +80,8 @@
   <!-- LEFT: pp view -->
   <g transform="translate(20,20)">
     <text class="label" x="160" y="-4" text-anchor="middle">pp Distance From Fair</text>
-    <line class="axis" x1="40" y1="180" x2="320" y2="180" stroke="#30363d"/>
-    <line class="axis" x1="40" y1="20" x2="40" y2="180" stroke="#30363d"/>
+    <line class="axis" x1="40" y1="180" x2="320" y2="180"/>
+    <line class="axis" x1="40" y1="20" x2="40" y2="180"/>
     <line class="zero" x1="40" y1="160" x2="320" y2="160"/>
     <text class="label-sm" x="324" y="163" text-anchor="start">FAIR</text>
     <line class="grid" x1="40" y1="120" x2="320" y2="120"/>
@@ -97,8 +111,8 @@
   <!-- RIGHT: edge% view -->
   <g transform="translate(420,20)">
     <text class="label" x="160" y="-4" text-anchor="middle">SP Edge Per $ Wagered</text>
-    <line class="axis" x1="40" y1="180" x2="320" y2="180" stroke="#30363d"/>
-    <line class="axis" x1="40" y1="20" x2="40" y2="180" stroke="#30363d"/>
+    <line class="axis" x1="40" y1="180" x2="320" y2="180"/>
+    <line class="axis" x1="40" y1="20" x2="40" y2="180"/>
     <line class="zero" x1="40" y1="180" x2="320" y2="180"/>
     <text class="label-sm" x="324" y="183" text-anchor="start">FAIR</text>
     <line class="grid" x1="40" y1="120" x2="320" y2="120"/>
@@ -119,24 +133,23 @@
     <text class="axis" x="236" y="195" text-anchor="middle">35%</text>
     <text class="axis" x="292" y="195" text-anchor="middle">45%</text>
     <text class="label-sm" x="180" y="215" text-anchor="middle">Fair Prob</text>
-    <text class="label-sm" x="180" y="36" text-anchor="middle">Slope falls with fair prob — longshots are king</text>
+    <text class="label-sm" x="180" y="36" text-anchor="middle">Slope falls — longshots are king</text>
   </g>
 </svg>
 </div>
-<p style="font-size:12px; color:#c9d1d9;">Both panels plot the same five points; only the Y-axis differs. Left = pp gap. Right = SP edge per $ wagered = <span class="keyfmt">pp_gap / offered_prob</span>.</p>
+<p style="font-size:12px; color:#c9d1d9;">Same five points, two Y-axes. Right = <span class="keyfmt">pp_gap / offered_prob</span>.</p>
 
 <!-- ============================================================ -->
 <!-- Q2                                                           -->
 <!-- ============================================================ -->
-<h2>Q2: "Your pp-distance averages 1.5pp but your realized ROI is ~3.75%. Are you just lucky in the short run?"</h2>
-<div class="lede">No — converting pp to ROI% requires dividing by offered probability. 1.5pp on the chart implies a per-dollar edge of ~3-6% depending on the prob mix. ROI of 3.75% is consistent with the pricing, not lucky outperformance.</div>
+<h2>Q2: "Your pp average is ~1.5pp but your ROI is ~3.75%. Are you just lucky?"</h2>
+<div class="lede">No. 1.5pp converts to 3-6% per-dollar edge depending on the prob mix. 3.75% sits inside that band.</div>
 
 <div class="answer">
   <div class="head">Short Answer</div>
-  Same root cause as Q1 — pp ≠ ROI%. Conversion: <span class="keyfmt">edge% = pp_gap ÷ offered_prob</span>. A 1.5pp markup at fair=30% (typical 3-leg parlay) maps to <strong>4.8% edge per $ wagered</strong>. Across the full mix of parlays I quote, implied per-dollar edge averages 3-6%. Realized 3.75% sits inside that range — not luck, the pp framing was understating the true edge.
+  Same trick as Q1: <span class="keyfmt">edge% = pp ÷ offered_prob</span>. A 1.5pp markup at fair=30% is <strong>4.8% per-dollar edge</strong>. Across my fill mix, implied per-dollar edge averages 3-6%. Realized 3.75% is consistent with the pricing — not luck.
 </div>
 
-<p><strong>Conversion Table — What 1.5pp Markup Means By Fair Prob:</strong></p>
 <table>
   <thead><tr><th>Fair Prob (Typical Parlay)</th><th class="num">pp Gap</th><th class="num">Offered Prob</th><th class="num">SP Edge Per $ Wagered</th></tr></thead>
   <tbody>
@@ -145,91 +158,79 @@
     <tr><td>30% (3-leg favorite-heavy)</td><td class="num">1.5pp</td><td class="num">31.5%</td><td class="num">4.8%</td></tr>
     <tr><td>40% (2-leg moderate)</td><td class="num">1.5pp</td><td class="num">41.5%</td><td class="num">3.6%</td></tr>
     <tr><td>50% (2-leg coinflip)</td><td class="num">1.5pp</td><td class="num">51.5%</td><td class="num">2.9%</td></tr>
-    <tr><td colspan="3" style="text-align:right; color:#c9d1d9; padding-top:14px;"><em>Volume-Weighted Average Across Mix</em></td><td class="num"><strong style="color:#3fb950;">~3-6%</strong></td></tr>
+    <tr><td colspan="3" style="text-align:right; color:#c9d1d9; padding-top:14px;"><em>Volume-Weighted Average</em></td><td class="num"><strong style="color:#3fb950;">~3-6%</strong></td></tr>
   </tbody>
 </table>
 
-<p>Realized ROI of <strong>3.75% on risked volume</strong> sits inside the expected band. The chart's pp reading didn't predict 1.5% — it predicted 3-6% depending on which fair-prob bucket dominates fill volume. The apparent gap was a unit-mismatch artifact, not luck.</p>
-
-<p style="font-size:12px; color:#c9d1d9;"><em>Caveat: variance is real. A true 5% edge can produce realized ROI between 0% and 8% over a few hundred fills. The pp-to-edge% conversion settles the apparent 1.5% vs 3.75% gap; sample-size variance ultimately decides whether 3.75% is the long-run number.</em></p>
+<p style="font-size:12px; color:#c9d1d9;"><em>Caveat: variance is real. A true 5% edge can produce realized ROI between 0% and 8% over a few hundred fills. Long-term ROI lands somewhere in the 3-6% band; sample size will narrow it.</em></p>
 
 <!-- ============================================================ -->
 <!-- Q3                                                           -->
 <!-- ============================================================ -->
-<h2>Q3: "How do you de-vig? How are your fair values computed?"</h2>
-<div class="lede">Five-step pipeline per leg: collect each book's two-sided implied probs → drop high-vig outliers → de-vig each book → average the survivors → floor at Pinnacle on favorites. For a parlay, multiply leg fair probs (with correlation adjustments for same-game combos).</div>
+<h2>Q3: "How do you compute fair value?"</h2>
+<div class="lede">Per leg: collect each book's two-sided implied probs → drop high-vig outliers → de-vig each book → average → floor at Pinnacle on favorites. For a parlay, multiply leg fairs (with SGP correlation factors).</div>
 
 <table>
   <thead><tr><th style="width:40px;">Step</th><th>What Happens</th><th>Why</th></tr></thead>
   <tbody>
     <tr>
       <td><strong>1</strong></td>
-      <td><strong>Collect 2-sided book pairs.</strong> For a moneyline, pull each book's home + away American odds and convert to implied probs.</td>
-      <td>Vig only shows up when both sides are quoted. One-sided markets carry no signal to remove.</td>
+      <td><strong>Collect 2-sided book pairs.</strong> Each book's home + away American odds → implied probs.</td>
+      <td>Vig only shows when both sides are quoted.</td>
     </tr>
     <tr>
       <td><strong>2</strong></td>
-      <td><strong>Drop high-vig books.</strong> Any book whose two-side implied probs sum above <strong>106%</strong> is excluded from the consensus.</td>
-      <td>Pinnacle ~102%, DK/FD 104-105%. Books above 110% (Asian square-bookmaking feeds, retail outliers) drag the consensus toward worse-than-fair pricing.</td>
+      <td><strong>Drop high-vig books.</strong> Any book whose two sides sum above <strong>106%</strong> is excluded.</td>
+      <td>Pin ~102%, DK/FD ~104%. Books above 110% (Asian feeds, retail outliers) corrupt the average.</td>
     </tr>
     <tr>
       <td><strong>3</strong></td>
-      <td><strong>De-vig each surviving book</strong> using <span class="keyfmt">fair = imp / (imp_home + imp_away)</span> — proportional redistribution of the overround.</td>
-      <td>Standard method. Each book yields one (fair_home, fair_away) pair summing to 1.0.</td>
+      <td><strong>De-vig each surviving book</strong> with <span class="keyfmt">fair = imp / (imp_home + imp_away)</span>.</td>
+      <td>Standard proportional redistribution. Each book yields a (fair_home, fair_away) pair summing to 1.0.</td>
     </tr>
     <tr>
       <td><strong>4</strong></td>
-      <td><strong>Average the per-book fairs.</strong> Simple mean across surviving books → consensus fair prob.</td>
-      <td>Multiple sharp books cross-validate each other; one alone is too noisy.</td>
+      <td><strong>Average the per-book fairs.</strong> Simple mean across surviving books.</td>
+      <td>Cross-validates noise; one book alone is too noisy.</td>
     </tr>
     <tr>
       <td><strong>5</strong></td>
-      <td><strong>Floor at Pinnacle on favorites.</strong> For any side with consensus fair ≥ 50%, take max(consensus, Pinnacle's de-vigged fair).</td>
-      <td>Pinnacle is the sharpest, lowest-vig book. The floor prevents the consensus from drifting cheaper than Pin on a favorite due to residual noise.</td>
+      <td><strong>Floor at Pinnacle on favorites.</strong> If consensus fair ≥ 50%, take max(consensus, Pin's de-vigged fair).</td>
+      <td>Pin is sharpest. Prevents drift cheaper than Pin on a favorite.</td>
     </tr>
   </tbody>
 </table>
 
 <p><strong>Worked Example — A Moneyline Leg With 3 Books:</strong></p>
 <table style="font-size:13px;">
-  <thead><tr><th>Book</th><th class="num">Home Odds → Implied</th><th class="num">Away Odds → Implied</th><th class="num">Sum (Vig)</th><th class="num">De-Vig (Fair Home, Fair Away)</th></tr></thead>
+  <thead><tr><th>Book</th><th class="num">Home Odds → Implied</th><th class="num">Away Odds → Implied</th><th class="num">Sum (Vig)</th><th class="num">De-Vig (Home, Away)</th></tr></thead>
   <tbody>
     <tr><td>Pinnacle</td><td class="num">−180 → 64.3%</td><td class="num">+165 → 37.7%</td><td class="num">102.0%</td><td class="num">63.0% / 37.0%</td></tr>
     <tr><td>FanDuel</td><td class="num">−200 → 66.7%</td><td class="num">+170 → 37.0%</td><td class="num">103.7%</td><td class="num">64.3% / 35.7%</td></tr>
     <tr><td>DraftKings</td><td class="num">−195 → 66.1%</td><td class="num">+165 → 37.7%</td><td class="num">103.9%</td><td class="num">63.6% / 36.4%</td></tr>
-    <tr><td colspan="3" style="text-align:right; padding-top:14px;"><strong>Consensus Avg of 3 Books</strong></td><td class="num"><strong style="color:#3fb950;">63.6% / 36.4%</strong></td></tr>
-    <tr><td colspan="3" style="text-align:right;">Floor (consensus 63.6% &gt; Pin 63.0% — no floor needed)</td><td class="num"><strong style="color:#3fb950;">Final Fair = 63.6%</strong></td></tr>
+    <tr><td colspan="3" style="text-align:right; padding-top:14px;"><strong>Avg of 3 books</strong></td><td class="num"><strong style="color:#3fb950;">63.6% / 36.4%</strong></td></tr>
+    <tr><td colspan="3" style="text-align:right;">Floor (63.6% &gt; Pin 63.0% — no floor)</td><td class="num"><strong style="color:#3fb950;">Final = 63.6%</strong></td></tr>
   </tbody>
 </table>
 
-<p>Home leg fair = <strong>63.6%</strong>. We add our own vig on top to produce the offered price.</p>
+<p>Home leg fair = <strong>63.6%</strong>. Add my own vig on top to produce the offered price.</p>
 
-<p><strong>Multi-Leg Parlay:</strong> the parlay fair prob is the product of leg fair probs.</p>
+<p><strong>Multi-Leg Parlay:</strong> parlay fair = product of leg fairs.</p>
 
 <div class="chart-wrap" style="font-family:'SF Mono',Menlo,monospace; font-size:13px; padding:14px 22px;">
   parlay_fair  =  leg<sub>1</sub>.fair × leg<sub>2</sub>.fair × leg<sub>3</sub>.fair × ...
 </div>
 
-<p>Three legs at 63.6% / 50% / 55% compound to 0.636 × 0.50 × 0.55 = <strong>17.5%</strong> parlay fair. That's the "Fair" value on the chart and the basis for the offered price.</p>
+<p>Three legs at 63.6% / 50% / 55% compound to <strong>17.5%</strong> parlay fair.</p>
 
-<p><strong>Two Adjustments Before The Multiply:</strong></p>
-<ul style="font-size:14px; color:#e6edf3; padding-left:20px;">
-  <li><strong>SGP correlation.</strong> Two legs on the same game aren't independent — the naive product understates positively-correlated joint probs (favorite + over) and overstates negative ones (favorite + under). The joint prob is multiplied by an empirically-calibrated factor (1.15 positive / 0.90 negative). Same approach books use internally.</li>
-  <li><strong>Calibration backstop.</strong> If a totals-type leg's de-vigged fair drifts more than ±10pp from a simpler book-consensus mean (Pin/DK/FD averaged), the leg auto-declines as an "anomalous total" — a safety net for feed-shape edge cases.</li>
-</ul>
-
-<p><strong>Special-Case Methods Used Elsewhere:</strong></p>
-<ul style="font-size:14px; color:#e6edf3; padding-left:20px;">
-  <li><strong>Additive-margin de-vig with a 0.5 favShare cap.</strong> Used for the DraftKings golf scraper and the manual Bookmaker upload. Pure proportional de-vig over-corrects heavy favorites (on −3000/+1300 it strips ~4pp off the favorite); the capped method limits each side to absorbing at most half the overround, keeping fair closer to what the book actually posts.</li>
-  <li><strong>Naive 2-way de-vig.</strong> Used for golf matchup pricing where only DataGolf's two probabilities are available — same <span class="keyfmt">imp / (imp1 + imp2)</span> formula, single source.</li>
+<p><strong>Two adjustments before the multiply:</strong></p>
+<ul style="font-size:14px; padding-left:20px;">
+  <li><strong>SGP correlation.</strong> Same-game legs aren't independent. Joint prob is multiplied by 1.15 (positive correlation, e.g. fav + over) or 0.90 (negative, e.g. fav + under).</li>
+  <li><strong>Anomalous-totals backstop.</strong> If a totals leg's de-vigged fair drifts >10pp from a simpler book-consensus mean, the leg auto-declines.</li>
 </ul>
 
 <div class="footnote">
-TL;DR — fair value isn't a model; it's a <strong>consensus de-vig of multiple sharp books</strong>, with Pinnacle as a floor on favorites. Per-leg fair → parlay fair via product (with SGP correlation factors). Then I add my own vig to that for the offered price.
-</div>
-
-<div class="footnote" style="margin-top:8px;">
-TL;DR for Q1/Q2 — pp is <strong>additive</strong> on probability; ROI is <strong>multiplicative</strong> on dollars. The chart's pp framing makes longshot margins <em>look</em> small and overall edge <em>look</em> low — neither is what's actually happening with the dollars. Divide pp by offered prob to get the dollar edge, and both apparent paradoxes resolve.
+TL;DR — pp is additive on probability; ROI is multiplicative on dollars. Divide pp by offered prob to convert. Fair value isn't a model — it's a multi-book de-vigged consensus, with Pinnacle as a floor on favorites.
 </div>
 
 </body>
