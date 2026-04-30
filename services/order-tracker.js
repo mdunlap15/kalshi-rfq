@@ -1579,6 +1579,11 @@ function recordDecline(reason, detail) {
     knownLegs: detail?.knownLegs || [],
     unknownLineIds: detail?.unknownLegs || [],
     unknownDetails: detail?.unknownSports || [],
+    // Structured per-leg breakdown (sport, category, propType, playerName,
+    // marketName, line, eventName) — was built in memory above but never
+    // persisted before. Required by /unknown-legs-breakdown to aggregate
+    // unknown-leg volume by sport and market category.
+    unknownCategories: detail?.unknownCategories || [],
     isLimit,
     declinedAt,
   }).catch(() => {});

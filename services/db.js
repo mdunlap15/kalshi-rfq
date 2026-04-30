@@ -335,6 +335,16 @@ async function saveDecline(entry) {
       known_legs: entry.knownLegs || [],
       unknown_line_ids: entry.unknownLineIds || [],
       unknown_details: entry.unknownDetails || [],
+      // NEW: structured per-leg unknown categorization (sport, category,
+      // propType, playerName, marketName, line, eventName, etc.). Was
+      // built in memory at decline-time but never persisted; needed for
+      // /unknown-legs-breakdown analytics. Run this SQL once before the
+      // next deploy:
+      //   ALTER TABLE declines ADD COLUMN unknown_categories JSONB;
+      // The insert silently no-ops on rows where the column doesn't
+      // exist (Supabase rejects with "column does not exist" — gated
+      // behind the same warn-once guard as the original saveDecline).
+      unknown_categories: entry.unknownCategories || [],
       is_limit: !!entry.isLimit,
       declined_at: entry.declinedAt || new Date().toISOString(),
     };
@@ -392,6 +402,9 @@ async function loadDeclines(limit = 2000, opts = {}) {
       knownLegs: row.known_legs || [],
       unknownLineIds: row.unknown_line_ids || [],
       unknownDetails: row.unknown_details || [],
+      // unknown_categories may be missing on older rows (column was
+      // added later) — default to empty array so consumers can iterate.
+      unknownCategories: row.unknown_categories || [],
       isLimit: !!row.is_limit,
       declinedAt: row.declined_at,
     }));

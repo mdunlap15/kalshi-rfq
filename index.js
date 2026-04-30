@@ -1354,6 +1354,135 @@ function startStatusServer() {
     }
   });
 
+  // Aggregated breakdown of "unknown legs" declines by sport, category,
+  // propType, and specific market. The dominant decline reason today is
+  // "unknown legs" (~95% of all 24h declines = ~168k/day). This endpoint
+  // tells you WHAT specifically those unknown legs are so you can
+  // prioritize what scope to add next.
+  //
+  // Reads two data sources per row and merges:
+  //   1. unknown_categories JSONB (structured: sport, category, propType,
+  //      playerName, marketName, line) — present on rows declined after
+  //      the column was added; empty otherwise
+  //   2. unknown_details TEXT[] (legacy text format, includes [tag] hints
+  //      like [propType:X], [unsupported event], [unregistered market])
+  //
+  // Query params:
+  //   days  (default 1)  — lookback window
+  //   sport (optional)   — filter to specific sport key
+  //   limit (default 5000) — max declines to scan
+  app.get('/unknown-legs-breakdown', async (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(30, parseInt(req.query.days) || 1));
+      const sportFilter = String(req.query.sport || '').trim();
+      const limit = Math.max(100, Math.min(50000, parseInt(req.query.limit) || 5000));
+      const fromIso = new Date(Date.now() - days * 86400000).toISOString();
+
+      const declines = await db.loadDeclines(limit, { fromIso });
+      const unknownLegDeclines = declines.filter(d => d.reason === 'unknown legs');
+
+      const bySport = {};
+      const byCategory = {};
+      const byPropType = {};
+      const byTag = { 'unsupported_event': 0, 'unregistered_market': 0, 'other': 0 };
+      const byMarketName = {}; // top market names per sport
+      const byPropTypeBySport = {}; // sport → propType → count
+      let parsedRows = 0;
+      let structuredRows = 0;
+      let totalUnknownLegs = 0;
+
+      // Parser for the legacy text format: extracts tag + propType from
+      // bracketed hints in unknown_details strings.
+      const parseTextString = (s) => {
+        if (typeof s !== 'string') return null;
+        const tagMatch = s.match(/\[(unsupported event|unregistered market)\]/);
+        const propMatch = s.match(/\[propType:([^\]]+)\]/);
+        return {
+          tag: tagMatch ? tagMatch[1] : null,
+          propType: propMatch ? propMatch[1] : null,
+        };
+      };
+
+      for (const d of unknownLegDeclines) {
+        parsedRows++;
+        const cats = Array.isArray(d.unknownCategories) ? d.unknownCategories : [];
+        const txts = Array.isArray(d.unknownDetails) ? d.unknownDetails : [];
+        const usingStructured = cats.length > 0;
+        if (usingStructured) structuredRows++;
+
+        // Choose source: prefer structured if present, else parse text
+        const legCount = Math.max(cats.length, txts.length);
+        for (let i = 0; i < legCount; i++) {
+          totalUnknownLegs++;
+          const cat = cats[i];
+          const txt = txts[i];
+          const parsed = txt ? parseTextString(txt) : null;
+
+          let sport = (cat && (cat.sport || cat.eventSport)) || 'unknown_sport';
+          if (sportFilter && sport !== sportFilter) continue;
+          let category = (cat && cat.category) || 'unknown';
+          let propType = (cat && cat.propType) || (parsed && parsed.propType) || null;
+          const marketName = (cat && cat.marketName) || null;
+          const tagFromText = parsed && parsed.tag;
+          const tagBucket = tagFromText === 'unsupported event' ? 'unsupported_event'
+            : tagFromText === 'unregistered market' ? 'unregistered_market'
+            : 'other';
+
+          bySport[sport] = (bySport[sport] || 0) + 1;
+          byCategory[category] = (byCategory[category] || 0) + 1;
+          if (propType) byPropType[propType] = (byPropType[propType] || 0) + 1;
+          byTag[tagBucket] = (byTag[tagBucket] || 0) + 1;
+          if (propType) {
+            if (!byPropTypeBySport[sport]) byPropTypeBySport[sport] = {};
+            byPropTypeBySport[sport][propType] = (byPropTypeBySport[sport][propType] || 0) + 1;
+          }
+          if (marketName) {
+            if (!byMarketName[sport]) byMarketName[sport] = {};
+            byMarketName[sport][marketName] = (byMarketName[sport][marketName] || 0) + 1;
+          }
+        }
+      }
+
+      // Sort + slice top-N for the larger maps so the response stays
+      // readable
+      const topN = (obj, n) => Object.entries(obj)
+        .sort((a, b) => b[1] - a[1]).slice(0, n)
+        .map(([k, v]) => ({ key: k, count: v }));
+
+      const topMarketsBySport = {};
+      for (const [sp, mks] of Object.entries(byMarketName)) {
+        topMarketsBySport[sp] = topN(mks, 15);
+      }
+
+      res.json({
+        ok: true,
+        generatedAt: new Date().toISOString(),
+        windowDays: days,
+        sportFilter: sportFilter || null,
+        declinesScanned: declines.length,
+        unknownLegDeclines: unknownLegDeclines.length,
+        parsedRows,
+        structuredRows,
+        textOnlyRows: parsedRows - structuredRows,
+        totalUnknownLegs,
+        bySport: topN(bySport, 30),
+        byCategory: topN(byCategory, 20),
+        byPropType: topN(byPropType, 30),
+        byTag,
+        byPropTypeBySport, // full nested map for sport-specific drill-down
+        topMarketsBySport, // top 15 raw market names per sport
+        note: structuredRows === 0
+          ? 'No structured unknown_categories yet — add the column then redeploy. Until then everything is parsed from text.'
+          : structuredRows < parsedRows
+          ? `${parsedRows - structuredRows}/${parsedRows} rows pre-date the structured-categories column; sport attribution may be missing for those.`
+          : null,
+      });
+    } catch (err) {
+      log.error('API', `/unknown-legs-breakdown failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Live per-(sport,player) exposure snapshot for Phase-2 prop launch
   // types (NBA points/rebounds/assists/threes_made, NHL shots_on_goal,
   // etc.). Aggregates SP-risk across ALL parlays containing ANY prop
