@@ -882,6 +882,19 @@ function classifyRejectionReason(reason) {
 }
 
 function recordRejection(parlayId, reason) {
+  // Guard against clobbering a confirmed/settled order. The verify-accept
+  // retry chain and other late-arriving rejection signals can fire AFTER
+  // a parallel order.matched / order.finalized event has already promoted
+  // the order to confirmed (or PX has already settled it). Without this
+  // check, the late rejection overwrites the authoritative status and the
+  // parlay shows as "Rejected" in All Quotes despite being live in Open
+  // Positions. Mirrors the late-event guard in recordConfirmation.
+  const order = orders[parlayId];
+  if (order && (order.status === 'confirmed' || (order.status || '').startsWith('settled_'))) {
+    log.debug('Orders', `Skipping late rejection for ${parlayId} — already ${order.status} (reason ignored: ${reason})`);
+    return order;
+  }
+
   stats.totalRejections++;
   rejectStats.total++;
 
@@ -895,7 +908,6 @@ function recordRejection(parlayId, reason) {
   });
   if (rejectStats.recent.length > 100) rejectStats.recent.pop();
 
-  const order = orders[parlayId];
   if (order) {
     order.status = 'rejected';
     order.rejectedAt = new Date().toISOString();
