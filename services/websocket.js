@@ -952,6 +952,71 @@ async function handleRFQ(data) {
             }
           }
 
+          // Phase 1 shadow pricing — NBA player props via The Odds API.
+          // Captures points, rebounds, assists, and threes side-by-side
+          // with the SharpAPI block above. TOA's NBA prop coverage is
+          // far broader (probe 2026-04-30: 100% slate coverage, 9 books
+          // incl. Pinnacle on points/rebounds/assists, 8 books on
+          // threes) so this is the data source we'll use for Phase-2
+          // live quoting if shadow match rates hold up.
+          //
+          // Mapping: NBA classifier propType → TOA market key
+          const NBA_PROP_TYPE_TO_TOA_MARKET = {
+            points: 'player_points',
+            rebounds: 'player_rebounds',
+            assists: 'player_assists',
+            threes_made: 'player_threes',
+          };
+          const toaMarketKey = NBA_PROP_TYPE_TO_TOA_MARKET[propType];
+          if (toaMarketKey && propMarketName && eventInfo
+              && eventSport && eventSport.includes('basketball')) {
+            const playerName = extractPlayerNameFromPropMarket(propMarketName);
+            if (playerName) {
+              let homeTeam = null;
+              let awayTeam = null;
+              if (eventInfo.competitors && eventInfo.competitors.length >= 2) {
+                const homeComp = eventInfo.competitors.find(c => c.side === 'home') || eventInfo.competitors[0];
+                const awayComp = eventInfo.competitors.find(c => c.side === 'away') || eventInfo.competitors[1];
+                homeTeam = homeComp && homeComp.name;
+                awayTeam = awayComp && awayComp.name;
+              }
+              const eventCtx = {
+                homeTeam, awayTeam,
+                startTime: eventInfo.scheduled || eventInfo.startTime || eventInfo.commenceTime,
+              };
+              const captured = {
+                parlayId, lineId,
+                pxEventId: l.sport_event_id || null,
+                marketName: propMarketName,
+                playerName, lineNum, propType,
+              };
+              const tagBase = `[theoddsapi/nba_${propType}]`;
+              (async () => {
+                const lookup = await oddsFeed.lookupTheOddsApiPlayerProp(
+                  'basketball_nba', toaMarketKey, eventCtx, captured.playerName, captured.lineNum,
+                );
+                const entry = {
+                  ...captured,
+                  line: captured.lineNum,
+                  source: 'theoddsapi',
+                  fairProbOver: lookup && lookup.fairProbOver != null ? lookup.fairProbOver : null,
+                  fairProbUnder: lookup && lookup.fairProbUnder != null ? lookup.fairProbUnder : null,
+                  booksWithBothSides: lookup && lookup.booksWithBothSides != null ? lookup.booksWithBothSides : null,
+                  books: lookup && lookup.books ? lookup.books : null,
+                  resolvedEventId: lookup && lookup.resolvedEventId ? lookup.resolvedEventId : null,
+                  matchError: lookup && lookup.error ? lookup.error : null,
+                  matchStages: lookup && lookup.stages ? lookup.stages : null,
+                };
+                await db.savePropShadowQuote(entry).catch(() => {});
+                if (lookup && lookup.error) {
+                  log.info('PropShadow', `${tagBase} ${captured.playerName} ${propType} ${captured.lineNum}: ${lookup.error} [stages: ${(lookup.stages || []).join('|')}]`);
+                } else if (lookup && lookup.fairProbOver != null) {
+                  log.info('PropShadow', `${tagBase} ${captured.playerName} ${propType} ${captured.lineNum}: fairOver=${lookup.fairProbOver.toFixed(4)} fairUnder=${lookup.fairProbUnder.toFixed(4)} books=${(lookup.books || []).join(',')} (${lookup.booksWithBothSides} both-sides)`);
+                }
+              })().catch(err => log.warn('PropShadow', `async error: ${err.message}`));
+            }
+          }
+
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
           unknownSports.push(`${baseName} ${tag}${propTag} ${detail}`);
           // Extract player name eagerly for any leg the resolver tagged as a
