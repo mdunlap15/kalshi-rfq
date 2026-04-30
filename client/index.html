@@ -4342,14 +4342,51 @@
     //     Formula: confirmedStake × 100 / |offeredOdds|
     // When bettor's parlay HITS (all legs win): SP loses spRisk
     // When bettor's parlay MISSES: SP wins spProfit (bettor's wager)
+    //
+    // Resolved-leg handling:
+    //   - Any leg already 'lost' → bettor's parlay can't hit → SP locked-in win → +spProfit
+    //   - Any leg already 'won'  → drop from sim (no uncertainty, but parlay still depends on remaining legs)
+    //   - Any leg already 'push' → drop from sim (push voids leg, parlay continues with one fewer)
+    //   - If after dropping won/push there are no pending legs:
+    //       all 'push' → parlay pushes → $0
+    //       otherwise (≥1 'won')      → bettor's parlay wins → SP loses spRisk
+    const getLegResult = (l) => l && (l.inferredResult || l.settlementStatus || l.settlement_status) || null;
     const orderSpecs = [];
+    let lockedPnl = 0;
+    let lockedOrderCount = 0;
     for (const o of confirmed) {
       const legs = mergedLegs(o);
       if (legs.length === 0) continue;
       const spRisk = o.confirmedStake || 0;
       const spProfit = (spRisk && o.offeredOdds) ? calcSpProfit(spRisk, o.offeredOdds) : 0;
       if (!spRisk || !spProfit) continue;
-      const legSpecs = legs.map(l => {
+
+      // Rule 1: Any leg lost → parlay is dead → SP wins bettor's wager
+      if (legs.some(l => getLegResult(l) === 'lost')) {
+        lockedPnl += spProfit;
+        lockedOrderCount++;
+        continue;
+      }
+
+      // Rules 2+3: drop won/push legs from the sim spec
+      const pendingLegs = legs.filter(l => {
+        const r = getLegResult(l);
+        return r !== 'won' && r !== 'push';
+      });
+
+      // If no pending legs remain, parlay is fully resolved
+      if (pendingLegs.length === 0) {
+        const allPush = legs.every(l => getLegResult(l) === 'push');
+        if (!allPush) {
+          // ≥1 won leg, rest won/push → bettor's parlay wins → SP loses
+          lockedPnl -= spRisk;
+        }
+        // (allPush → $0, no change)
+        lockedOrderCount++;
+        continue;
+      }
+
+      const legSpecs = pendingLegs.map(l => {
         const market = l.market || l.marketType;
         const line = (market === 'spread' || market === 'total') && l.line != null ? Math.abs(l.line) : '';
         const mKey = (l.pxEventId || '?') + '|' + market + '|' + line;
@@ -4361,7 +4398,7 @@
       orderSpecs.push({ spRisk, spProfit, legSpecs });
     }
 
-    if (orderSpecs.length === 0) return null;
+    if (orderSpecs.length === 0 && lockedOrderCount === 0) return null;
 
     const marketKeys = Object.keys(marketIndex);
     const results = new Array(nSims);
@@ -4373,7 +4410,7 @@
         draws[k] = Math.random() < marketIndex[k].refProb;
       }
       // Evaluate each parlay (from SP perspective)
-      let pnl = 0;
+      let pnl = lockedPnl; // baseline from already-resolved parlays
       for (const spec of orderSpecs) {
         let allHit = true;
         for (const ls of spec.legSpecs) {
@@ -4427,8 +4464,8 @@
     for (let i = 0; i < orderSpecs.length; i++) {
       const h = hitRates[i]; // NOTE: hitRates was re-sorted, so this doesn't line up
     }
-    // Redo properly with unsorted array
-    let analytic = 0;
+    // Redo properly with unsorted array; start with locked deterministic P&L
+    let analytic = lockedPnl;
     for (const spec of orderSpecs) {
       let h = 1;
       for (const ls of spec.legSpecs) {
@@ -4443,6 +4480,8 @@
     return {
       nSims,
       orderCount: orderSpecs.length,
+      lockedOrderCount,
+      lockedPnl,
       marketCount: marketKeys.length,
       totalSpRisk,
       totalSpProfit,
@@ -4503,7 +4542,7 @@
     let html = '<div style="display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start;">';
     // Key stats block
     html += '<div style="min-width:320px; flex:0 0 auto;">'
-      + '<div style="font-size:12px; color:var(--text3); margin-bottom:10px; text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Distribution (' + r.nSims.toLocaleString() + ' sims &middot; ' + r.orderCount + ' positions &middot; ' + r.marketCount + ' markets)</div>'
+      + '<div style="font-size:12px; color:var(--text3); margin-bottom:10px; text-transform:uppercase; letter-spacing:0.5px; font-weight:600;">Distribution (' + r.nSims.toLocaleString() + ' sims &middot; ' + r.orderCount + ' active' + (r.lockedOrderCount ? ' + ' + r.lockedOrderCount + ' locked' : '') + ' &middot; ' + r.marketCount + ' markets)</div>'
       + '<table style="width:100%; border-collapse:collapse;">'
       + row('Worst 1% (P01)', r.p01, 'var(--red)')
       + row('Worst 5% (P05)', r.p05, 'var(--red)')
@@ -4639,6 +4678,7 @@
     html += '</div><div>';
     html += diagRow('Legs with stored fairProb', r.legsWithProb.toLocaleString());
     html += diagRow('Legs missing fairProb (→ default 0.5)', r.legsMissingProb.toLocaleString(), r.legsMissingProb > 0 ? 'may skew results' : '');
+    if (r.lockedOrderCount) html += diagRow('Locked P&L (resolved parlays)', fmtPnl(r.lockedPnl), r.lockedOrderCount + ' parlay' + (r.lockedOrderCount === 1 ? '' : 's') + ' fully decided');
     html += diagRow('Analytic E[P&L] (independence)', fmtPnl(r.analyticExpected), 'should match mean');
     html += diagRow('Simulated mean vs analytic', fmtPnl(r.mean - r.analyticExpected), 'correlation effect');
     html += '</div></div>';
