@@ -317,6 +317,17 @@ const config = {
     // de-vig confidence — single-book or near-single-book pricing is
     // just re-quoting that book's vigged line).
     propMinBooksWithBothSides: parseInt(process.env.PROP_MIN_BOOKS_WITH_BOTH_SIDES) || 3,
+    // Max distance (in stat units) the requested prop line can sit
+    // from the primary line for that (player, propType) before we
+    // decline. Default ±2 — restricts quoting to near-primary alts
+    // where book coverage is dense and bettor edge from "deep alt"
+    // mispricing is bounded. Set 0 to allow only primary; set very
+    // large (e.g. 99) to disable the cap.
+    //
+    // Primary line is determined by the line value with the most
+    // bookmaker coverage in TOA's per-event response (most books
+    // posting both sides → that's the line they all anchor on).
+    propAltLineMaxDistance: parseFloat(process.env.PROP_ALT_LINE_MAX_DISTANCE) || 2.0,
     // Master allowlist for live prop quoting. Comma-separated list of
     // "${sport}.${propType}" pairs. Only props in this allowlist are
     // resolved live and quoted; everything else falls into the existing

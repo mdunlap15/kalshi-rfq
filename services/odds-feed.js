@@ -6644,6 +6644,55 @@ async function lookupTheOddsApiPlayerProp(sport, marketKey, pxEventInfo, playerN
     }
   }
   stages.push(`player_line_match:${matched.length}`);
+
+  // Identify the primary line for this player (line with the most book
+  // coverage = the consensus anchor) so we can reject deep alts that
+  // are exploit-vulnerable. Books only post the primary at ~-110/-110;
+  // the deeper the alt the thinner the coverage AND the more sensitive
+  // to thin de-vig errors.
+  //
+  // The cap is propAltLineMaxDistance (default ±2 stat units). Set to
+  // a very large value to disable; set to 0 to allow only the primary.
+  if (line != null) {
+    const cfgConfig = require('../config').config;
+    const maxDist = cfgConfig && cfgConfig.pricing && cfgConfig.pricing.propAltLineMaxDistance;
+    if (maxDist != null && Number.isFinite(maxDist)) {
+      const lineCounts = {};
+      for (const bk of bookmakers) {
+        const market = (bk.markets || []).find(m => m.key === marketKey);
+        if (!market) continue;
+        for (const o of (market.outcomes || [])) {
+          const outcomePlayer = normPlayerName(o.description);
+          const playerOk = outcomePlayer === normPlayer ||
+                           outcomePlayer.includes(normPlayer) ||
+                           normPlayer.includes(outcomePlayer);
+          if (!playerOk || o.point == null) continue;
+          const k = String(o.point);
+          lineCounts[k] = (lineCounts[k] || 0) + 1;
+        }
+      }
+      let primaryLine = null;
+      let primaryCount = 0;
+      for (const [k, n] of Object.entries(lineCounts)) {
+        if (n > primaryCount) { primaryLine = parseFloat(k); primaryCount = n; }
+      }
+      if (primaryLine != null) {
+        const dist = Math.abs(line - primaryLine);
+        stages.push(`primary_line:${primaryLine},dist:${dist.toFixed(1)},max:${maxDist}`);
+        if (dist > maxDist) {
+          return {
+            error: 'alt_line_too_far',
+            stages, resolvedEventId: event.id,
+            requestedLine: line,
+            primaryLine,
+            distance: dist,
+            maxDistance: maxDist,
+          };
+        }
+      }
+    }
+  }
+
   if (matched.length === 0) {
     return { error: 'no_player_or_line_match', stages, resolvedEventId: event.id,
              samplePlayers: [...new Set(
