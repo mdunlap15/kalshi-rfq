@@ -2070,6 +2070,39 @@
     }
     html += `</table></div>`;
 
+    // Phase-2 prop launch caps + allowlist visibility.
+    const allowlist = cfg.propLaunchAllowlist || [];
+    const propCap = cfg.maxRiskPerParlayWithProp;
+    const minBooks = cfg.propMinBooksWithBothSides;
+    const playerCaps = cfg.maxExposurePerPlayerBySport || {};
+    const playerCapDefault = cfg.maxExposurePerPlayerDefault;
+    const allowlistTxt = allowlist.length > 0
+      ? allowlist.map(k => `<span style="background:var(--surface3); padding:2px 6px; border-radius:3px; font-size:11px; margin-right:4px; color:var(--green);">${k}</span>`).join('')
+      : '<span style="color:var(--text3); font-style:italic;">empty — no live prop quoting (set <code>PROP_LAUNCH_ALLOWLIST</code> env var to enable)</span>';
+    const playerCapRows = Object.entries(playerCaps).map(
+      ([sport, cap]) => `<tr><td style="padding:3px 8px;">${sportLabel(sport)}</td><td style="padding:3px 8px; text-align:right;">$${cap}</td></tr>`
+    ).join('') + (playerCapDefault != null
+      ? `<tr><td style="padding:3px 8px; color:var(--text3);">(default for other sports)</td><td style="padding:3px 8px; text-align:right; color:var(--text3);">$${playerCapDefault}</td></tr>`
+      : '');
+
+    html += `<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:12px;">
+      <div style="font-weight:600; margin-bottom:8px; font-size:13px;">Phase-2 Prop Launch</div>
+      <div style="font-size:12px; margin-bottom:10px;"><span style="color:var(--text2);">Allowlist:</span> ${allowlistTxt}</div>
+      <div class="config-item"><span class="config-key">Max Risk / Parlay (with prop)</span><span class="config-val">$${propCap || 0}</span></div>
+      <div class="config-item"><span class="config-key">Min Books (both sides) for Prop Quote</span><span class="config-val">${minBooks || '-'}</span></div>
+      <div style="margin-top:10px; font-size:11px; color:var(--text3); margin-bottom:4px;">Per-Player Exposure Caps (cross-prop within sport)</div>
+      <table style="width:100%; font-size:12px; border-collapse:collapse;">
+        <tr style="border-bottom:1px solid var(--border); font-weight:600; color:var(--text2);">
+          <td style="padding:3px 8px;">Sport</td>
+          <td style="padding:3px 8px; text-align:right;">Cap</td>
+        </tr>
+        ${playerCapRows || '<tr><td colspan="2" style="padding:6px 8px; color:var(--text3); font-style:italic;">No per-sport caps configured</td></tr>'}
+      </table>
+      <div style="margin-top:8px; font-size:11px; color:var(--text3);">
+        Live per-player exposure: <a href="/player-exposure" target="_blank" style="color:var(--blue);">/player-exposure</a>
+      </div>
+    </div>`;
+
     el.innerHTML = html;
   }
 

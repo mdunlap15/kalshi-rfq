@@ -589,6 +589,12 @@ function startStatusServer() {
         parlayLevelVig: !!config.pricing.parlayLevelVig,
         sports: config.supportedSports,
         baseUrl: config.px.baseUrl,
+        // Phase-2 prop launch knobs
+        propLaunchAllowlist: [...(config.pricing.propLaunchAllowlist || new Set())],
+        maxRiskPerParlayWithProp: config.pricing.maxRiskPerParlayWithProp,
+        propMinBooksWithBothSides: config.pricing.propMinBooksWithBothSides,
+        maxExposurePerPlayerBySport: config.pricing.maxExposurePerPlayerBySport || {},
+        maxExposurePerPlayerDefault: config.pricing.maxExposurePerPlayerDefault,
       },
       websocket: websocket.getState(),
       lines: {
