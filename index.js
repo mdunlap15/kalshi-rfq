@@ -602,6 +602,11 @@ function startStatusServer() {
         maxPerTeam: config.pricing.maxExposurePerTeam,
         teams: orderTracker.getExposureSnapshot(),
         games: orderTracker.getGameExposureSnapshot(),
+        // Phase-2 prop launch concentration. Empty until prop legs
+        // start landing (post-bridge). Cap config surfaced for visibility.
+        playersByPropExposure: orderTracker.getPlayerExposureSnapshot(),
+        maxPerPlayerBySport: config.pricing.maxExposurePerPlayerBySport || {},
+        maxPerPlayerDefault: config.pricing.maxExposurePerPlayerDefault,
       },
       portfolio: (() => {
         // Account-based P&L is the SOURCE OF TRUTH for the dashboard.
@@ -1339,6 +1344,35 @@ function startStatusServer() {
       });
     } catch (err) {
       log.error('API', `/prop-performance failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Live per-(sport,player) exposure snapshot for Phase-2 prop launch
+  // types (NBA points/rebounds/assists/threes_made, NHL shots_on_goal,
+  // etc.). Aggregates SP-risk across ALL parlays containing ANY prop
+  // leg featuring that player, regardless of prop type — so cross-prop
+  // concentration on one star (e.g. CJ McCollum points + rebounds +
+  // threes) rolls up to a single line.
+  //
+  // Distinct from /prop-performance.pitcherExposure which stays scoped
+  // to MLB player_strikeouts.
+  app.get('/player-exposure', (req, res) => {
+    try {
+      const sport = String(req.query.sport || '').trim();
+      let snap = orderTracker.getPlayerExposureSnapshot();
+      if (sport) snap = snap.filter(e => e.sport === sport);
+      res.json({
+        ok: true,
+        generatedAt: new Date().toISOString(),
+        sport: sport || 'all',
+        capsBySport: config.pricing.maxExposurePerPlayerBySport || {},
+        capDefault: config.pricing.maxExposurePerPlayerDefault,
+        playerCount: snap.length,
+        players: snap,
+      });
+    } catch (err) {
+      log.error('API', `/player-exposure failed: ${err.message}`);
       res.status(500).json({ ok: false, error: err.message });
     }
   });

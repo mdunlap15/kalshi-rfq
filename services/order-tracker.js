@@ -241,6 +241,18 @@ const exposure = {};
 // participate in the netExposure offsetting model.
 const pitcherExposure = {};
 
+// Per-player aggregate exposure for the new Phase-2 prop launch types
+// (NBA points/rebounds/assists/threes_made, NHL shots_on_goal, etc.).
+// Keyed by `${sport}|${normalizedPlayerName}` so the same player's
+// exposure across multiple prop types within a sport rolls up to one
+// number. Critical for cross-prop concentration: CJ McCollum points +
+// rebounds + threes parlays all sum into one McCollum line.
+//
+// Parallel to pitcherExposure (which stays narrowly scoped to MLB
+// player_strikeouts) — the K-prop pattern is preserved for backward
+// compat. Eventually consolidate; for now they coexist cleanly.
+const playerExposure = {};
+
 // ---------------------------------------------------------------------------
 // PENDING EXPOSURE — reservations for quotes not yet confirmed.
 // Closes the race window where N identical RFQs all pass shouldDecline
@@ -389,6 +401,10 @@ const pendingGameRiskByKey = new Map(); // key → running risk total
 // the first reservation increments it; the next checkPitcherExposure
 // reads real + pending and declines correctly.
 const pendingPitcherRiskByKey = new Map(); // key → running risk total
+// Same race-protection lane for the generic playerExposure (Phase-2
+// prop launch types). Mirrors pitcher pending logic exactly — see
+// reservePending / checkPlayerExposure for the read side.
+const pendingPlayerRiskByKey = new Map(); // key → running risk total
 
 function _addToIndex(idx, key, risk) {
   idx.set(key, (idx.get(key) || 0) + risk);
@@ -411,6 +427,10 @@ function _applyReservationToIndices(reservation, sign) {
   for (const pk of reservation.pitcherKeys || []) {
     if (sign > 0) _addToIndex(pendingPitcherRiskByKey, pk.key, pk.risk);
     else _subFromIndex(pendingPitcherRiskByKey, pk.key, pk.risk);
+  }
+  for (const pk of reservation.playerKeys || []) {
+    if (sign > 0) _addToIndex(pendingPlayerRiskByKey, pk.key, pk.risk);
+    else _subFromIndex(pendingPlayerRiskByKey, pk.key, pk.risk);
   }
 }
 
@@ -461,6 +481,15 @@ function getPendingGameRisk(gameKey) {
  */
 function getPendingPitcherRisk(pitcherKey) {
   return pendingPitcherRiskByKey.get(pitcherKey) || 0;
+}
+
+/**
+ * Sum of in-flight pending risk against a player key. Generic player
+ * version of getPendingPitcherRisk; used by checkPlayerExposure to
+ * close the quote-time race window for the new Phase-2 prop types.
+ */
+function getPendingPlayerRisk(playerKey) {
+  return pendingPlayerRiskByKey.get(playerKey) || 0;
 }
 
 function recordQuote(parlayId, legs, offeredOdds, maxRisk, fairParlayProb, meta) {
@@ -2497,6 +2526,10 @@ function addExposure(order) {
     pitcherExposure[key].parlays.add(order.parlayId);
   }
 
+  // Phase 2 prop launch: per-(sport,player) generic exposure for the
+  // new player_<type> markets. No-op for parlays without prop legs.
+  addPlayerExposure(order);
+
   // Recalculate net exposure for all affected games
   recalcNetExposure();
 }
@@ -2570,6 +2603,10 @@ function removeExposure(order) {
     }
   }
 
+  // Phase 2 prop launch: mirror generic per-player removal. No-op for
+  // parlays without player_<type> prop legs.
+  removePlayerExposure(order);
+
   recalcNetExposure();
 }
 
@@ -2613,6 +2650,149 @@ function getPitcherExposureSnapshot() {
       total: Math.round(pending * 100) / 100,
       parlayCount: 0,
       parlayIds: [],
+    });
+  }
+  return out.sort((a, b) => (b.total || b.risk) - (a.total || a.risk));
+}
+
+/**
+ * Compute the playerExposure key for a generic prop leg. Returns null
+ * when the leg isn't a player_<type> prop or is missing required
+ * fields. Recognizes the new Phase-2 marketTypes (player_points,
+ * player_rebounds, player_assists, player_threes, player_shots_on_goal,
+ * etc.) — does NOT include player_strikeouts (that's tracked separately
+ * via pitcherExposure).
+ *
+ * Player name normalization: strip diacritics, periods, apostrophes,
+ * lowercase, collapse whitespace. Same canonicalization as the TOA
+ * lookup so "C.J. McCollum" and "CJ McCollum" produce the same key.
+ */
+function playerKeyForLeg(leg) {
+  if (!leg) return null;
+  const mt = leg.marketType || '';
+  if (!/^player_/.test(mt)) return null;
+  if (mt === 'player_strikeouts') return null; // handled by pitcherExposure
+  const sport = leg.sport || leg.oddsApiSport;
+  const player = leg.playerName;
+  if (!sport || !player) return null;
+  const norm = String(player)
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[.'`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!norm) return null;
+  return `${sport}|${norm}`;
+}
+
+/**
+ * Add a confirmed parlay's exposure against playerExposure for each
+ * prop leg with a player_<type> marketType. Mirrors the addPitcher
+ * loop in addExposure but for the new generic-prop key. Safe to call
+ * unconditionally — leg-level filtering happens via playerKeyForLeg.
+ */
+function addPlayerExposure(order) {
+  const legs = getLegsForExposure(order);
+  const payout = getOrderPayout(order);
+  for (const leg of legs) {
+    const key = playerKeyForLeg(leg);
+    if (!key) continue;
+    if (!playerExposure[key]) {
+      playerExposure[key] = {
+        risk: 0,
+        parlays: new Set(),
+        playerName: leg.playerName,
+        sport: leg.sport || leg.oddsApiSport,
+        propTypes: new Set(),
+      };
+    }
+    playerExposure[key].risk += payout;
+    playerExposure[key].parlays.add(order.parlayId);
+    if (leg.marketType) playerExposure[key].propTypes.add(leg.marketType);
+  }
+}
+
+/**
+ * Mirror of addPlayerExposure for settlement / removal flows.
+ */
+function removePlayerExposure(order) {
+  const legs = getLegsForExposure(order);
+  const payout = getOrderPayout(order);
+  for (const leg of legs) {
+    const key = playerKeyForLeg(leg);
+    if (!key || !playerExposure[key]) continue;
+    playerExposure[key].risk -= payout;
+    playerExposure[key].parlays.delete(order.parlayId);
+    if (playerExposure[key].parlays.size === 0 || playerExposure[key].risk <= 0) {
+      delete playerExposure[key];
+    }
+  }
+}
+
+/**
+ * Quote-time check: would accepting a new parlay's prop legs push any
+ * (sport, player) pair past its cap? Caps may be per-sport via
+ * capBySport map; falls back to defaultCap. Returns null if all clear,
+ * otherwise the first violating entry with details.
+ */
+function checkPlayerExposure(legs, additionalRisk, capBySport, defaultCap) {
+  if (!Array.isArray(legs) || legs.length === 0) return null;
+  if (!(additionalRisk > 0)) return null;
+  for (const leg of legs) {
+    const li = leg.lineInfo || leg;
+    const key = playerKeyForLeg(li);
+    if (!key) continue;
+    const sport = li.sport || li.oddsApiSport;
+    const cap = (capBySport && capBySport[sport] != null) ? capBySport[sport] : defaultCap;
+    if (!(cap > 0)) continue;
+    const current = playerExposure[key]?.risk || 0;
+    const pending = getPendingPlayerRisk(key);
+    const wouldBe = current + pending + additionalRisk;
+    if (wouldBe > cap) {
+      return {
+        exceeded: true,
+        player: li.playerName,
+        sport,
+        current: Math.round(current * 100) / 100,
+        pending: Math.round(pending * 100) / 100,
+        wouldBe: Math.round(wouldBe * 100) / 100,
+        max: cap,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Snapshot of all live per-player exposure entries (Phase-2 props).
+ * Used by /status and /player-exposure to surface concentration risk.
+ */
+function getPlayerExposureSnapshot() {
+  const out = [];
+  const seen = new Set();
+  for (const [key, v] of Object.entries(playerExposure)) {
+    seen.add(key);
+    const pending = getPendingPlayerRisk(key);
+    out.push({
+      key,
+      sport: v.sport,
+      playerName: v.playerName,
+      propTypes: v.propTypes ? [...v.propTypes] : [],
+      risk: Math.round((v.risk || 0) * 100) / 100,
+      pending: Math.round(pending * 100) / 100,
+      total: Math.round(((v.risk || 0) + pending) * 100) / 100,
+      parlayCount: v.parlays ? v.parlays.size : 0,
+      parlayIds: v.parlays ? [...v.parlays] : [],
+    });
+  }
+  for (const [key, pending] of pendingPlayerRiskByKey.entries()) {
+    if (seen.has(key)) continue;
+    const [sport, name] = key.split('|');
+    out.push({
+      key, sport, playerName: name, propTypes: [],
+      risk: 0, pending: Math.round(pending * 100) / 100,
+      total: Math.round(pending * 100) / 100,
+      parlayCount: 0, parlayIds: [],
     });
   }
   return out.sort((a, b) => (b.total || b.risk) - (a.total || a.risk));
@@ -5158,6 +5338,9 @@ module.exports = {
   checkSeriesExposure,
   checkPitcherExposure,
   getPitcherExposureSnapshot,
+  checkPlayerExposure,
+  getPlayerExposureSnapshot,
+  playerKeyForLeg,
   getRecentOrders,
   getStats,
   getPnLBySport,
