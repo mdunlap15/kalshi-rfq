@@ -423,6 +423,11 @@ function computeSingleLegVig(fairProb, sport, marketType) {
   if (!(fairProb > 0 && fairProb < 1)) return null;
   const vigBySport = config.pricing.vigBySport || {};
   const baseVig = (sport && vigBySport[sport] != null) ? vigBySport[sport] : config.pricing.defaultVig;
+  // Player props: flat floor at vigPropFloor (default 3%). Mirrors the
+  // priceParlay-internal getEffectiveVig logic for player_<type> markets.
+  if (marketType && /^player_/.test(marketType)) {
+    return Math.max(config.pricing.vigPropFloor || 0, baseVig);
+  }
   const favSlope = config.pricing.vigFavoriteSlope;
   const favFloor = config.pricing.vigFavoriteFloor;
   const seriesMinVig = config.pricing.vigSeriesMin || 0;
@@ -1210,13 +1215,13 @@ function priceParlay(legs, opts = {}) {
   const seriesMinVig = config.pricing.vigSeriesMin || 0;
   function getEffectiveVig(fairProb, sport, marketType) {
     const baseVig = getBaseVigForSport(sport);
-    // Phase 2 player_strikeouts props: flat per-leg vig at the
-    // VIG_PROP_FLOOR floor (default 3%). Skips the favorite-slope ramp
-    // because props don't have favorites in the team-line sense — a
-    // pitcher with fair K Over=0.55 isn't a "favorite" the way a -350
+    // Player props (Phase-2 launch types + K-prop): flat per-leg vig at
+    // the VIG_PROP_FLOOR floor (default 3%). Skips the favorite-slope
+    // ramp because props don't have favorites in the team-line sense —
+    // a player with fair Over=0.55 isn't a "favorite" the way a -350
     // moneyline is. Still subject to the SGP multiplier and 20% cap
     // below so multi-prop parlays don't compound runaway vig.
-    if (marketType === 'player_strikeouts') {
+    if (marketType && /^player_/.test(marketType)) {
       let vig = Math.max(config.pricing.vigPropFloor || 0, baseVig);
       if (sgpVigMult > 1) {
         vig = Math.min(0.20, vig * sgpVigMult);
@@ -2134,44 +2139,63 @@ function shouldDecline(legs) {
     const lineInfo = lineManager.lookupLine(lineId);
     if (!lineInfo) return { declined: true, reason: 'unknown legs', detail: null };
 
-    // M3 prop-specific decline rules. Applied per-leg as we iterate.
-    // Cross-leg correlation rules (same-game, same-pitcher) checked
-    // AFTER this loop using the resolvedLegs array.
-    if (lineInfo.marketType === 'player_strikeouts') {
+    // Prop-specific decline rules. Applied per-leg as we iterate.
+    // Cross-leg correlation rules checked separately above.
+    //
+    // Applies to ALL player_<type> markets — player_strikeouts (K-prop),
+    // player_points, player_rebounds, player_assists, player_threes,
+    // player_shots_on_goal, etc. Phase-2 launch types share the same
+    // confidence-gate semantics as K-prop.
+    if (lineInfo.marketType && /^player_/.test(lineInfo.marketType)) {
+      const isKProp = lineInfo.marketType === 'player_strikeouts';
+      const propMinBooks = config.pricing.propMinBooksWithBothSides || 3;
+      // Min-books floor: K-prop keeps its 2-book + trusted-alone exception
+      // for backward compat (built around the SharpAPI single-book pattern).
+      // New Phase-2 props use the stricter propMinBooksWithBothSides (default
+      // 3) with no trusted-alone carve-out — TOA's broader coverage means
+      // we should always have ≥3 books for legitimate prop quotes.
+      const playerLabel = lineInfo.playerName || lineInfo.teamName || '?';
+      const propLabel = isKProp ? 'K' : (lineInfo.propType || lineInfo.marketType.replace(/^player_/, ''));
+
       // (a) Missing fair value — prop matcher returned no usable consensus.
       if (lineInfo.fairProb == null) {
         return {
           declined: true,
           reason: 'prop_no_fair_value',
-          detail: `${lineInfo.playerName || lineInfo.teamName || '?'} K ${lineInfo.line} (${lineInfo.selection}) — prop matcher returned no fair_prob`,
+          detail: `${playerLabel} ${propLabel} ${lineInfo.line} (${lineInfo.selection}) — prop matcher returned no fair_prob`,
         };
       }
-      // (b) Single-book confidence floor with trusted-alone exception.
-      // Accept if 2+ books with both sides, OR exactly 1 book that is on
-      // config.pricing.propTrustedSingleBooks (default fanduel /
-      // draftkings / betmgm / betrivers — US books we trust enough to
-      // quote against alone). Otherwise decline.
+      // (b) Min-books gate — branches by prop family.
       const both = lineInfo.booksWithBothSides || 0;
       const propBooks = lineInfo.propBooks || [];
-      const trustedSet = config.pricing.propTrustedSingleBooks || [];
-      const trustedAlone = both === 1 && propBooks.some(b => trustedSet.includes(String(b).toLowerCase()));
-      if (both < 2 && !trustedAlone) {
-        return {
-          declined: true,
-          reason: 'prop_low_confidence',
-          detail: `${lineInfo.playerName || '?'} K ${lineInfo.line}: books_with_both_sides=${both}, books=[${propBooks.join(',')}] — need ≥2 books OR one of [${trustedSet.join(',')}]`,
-        };
+      if (isKProp) {
+        const trustedSet = config.pricing.propTrustedSingleBooks || [];
+        const trustedAlone = both === 1 && propBooks.some(b => trustedSet.includes(String(b).toLowerCase()));
+        if (both < 2 && !trustedAlone) {
+          return {
+            declined: true,
+            reason: 'prop_low_confidence',
+            detail: `${playerLabel} K ${lineInfo.line}: books_with_both_sides=${both}, books=[${propBooks.join(',')}] — need ≥2 books OR one of [${trustedSet.join(',')}]`,
+          };
+        }
+      } else {
+        // Phase-2 launch props: stricter ≥N-book floor.
+        if (both < propMinBooks) {
+          return {
+            declined: true,
+            reason: 'prop_low_confidence',
+            detail: `${playerLabel} ${propLabel} ${lineInfo.line}: books_with_both_sides=${both}, books=[${propBooks.join(',')}] — need ≥${propMinBooks}`,
+          };
+        }
       }
-      // (c) Stale prop data (>15 min old). propFetchedAt is set when
-      // line-manager calls the prop helpers. If the helper didn't set
-      // it (e.g. cached from a previous resolve), fall through cleanly.
+      // (c) Stale prop data (>15 min old).
       const STALE_MS = 15 * 60 * 1000;
       if (lineInfo.propFetchedAt && (Date.now() - lineInfo.propFetchedAt) > STALE_MS) {
         const ageMin = Math.round((Date.now() - lineInfo.propFetchedAt) / 60000);
         return {
           declined: true,
           reason: 'prop_stale',
-          detail: `${lineInfo.playerName || '?'} K ${lineInfo.line}: prop data ${ageMin} min old (>15 min)`,
+          detail: `${playerLabel} ${propLabel} ${lineInfo.line}: prop data ${ageMin} min old (>15 min)`,
         };
       }
     }
@@ -2499,26 +2523,61 @@ function shouldDecline(legs) {
     }
   }
 
-  // M4 per-pitcher exposure cap. Run AFTER the series check so we have
+  // M4 per-player exposure cap. Run AFTER the series check so we have
   // the right estPayout — for prop-containing parlays, the per-parlay
   // cap is config.pricing.maxRiskPerParlayWithProp (smaller than the
   // generic estPayout). Use that as the additional-risk worst case.
-  const hasPropLeg = resolvedLegs.some(l => l.lineInfo.marketType === 'player_strikeouts');
-  if (hasPropLeg) {
-    const propParlayCap = config.pricing.maxRiskPerParlayWithProp || 200;
-    const pitcherCheck = orderTracker.checkPitcherExposure(
-      resolvedLegs, propParlayCap, config.pricing.maxExposurePerPitcher,
-    );
-    if (pitcherCheck && pitcherCheck.exceeded) {
-      const pendingTxt = pitcherCheck.pending ? ` + pending $${pitcherCheck.pending}` : '';
-      log.info('Pricing', `Pitcher exposure cap: ${pitcherCheck.pitcher} would be $${pitcherCheck.wouldBe} (max $${pitcherCheck.max})`);
-      return {
-        declined: true,
-        reason: 'pitcher_exposure_cap',
-        detail: `${pitcherCheck.pitcher}: current $${pitcherCheck.current}${pendingTxt} + this parlay $${propParlayCap} = $${pitcherCheck.wouldBe} > cap $${pitcherCheck.max}`,
-        violations: [{ team: pitcherCheck.pitcher, wouldBe: pitcherCheck.wouldBe, limit: pitcherCheck.max }],
-        estPayout: propParlayCap,
-      };
+  //
+  // Two parallel caps:
+  //   - K-prop (player_strikeouts): pitcherExposure (legacy, per-event)
+  //   - Phase-2 (player_points/rebounds/assists/threes/shots_on_goal):
+  //     playerExposure (per-(sport, player), cross-prop)
+  // Both fire when a parlay contains the matching leg type.
+  const hasKPropLeg = resolvedLegs.some(l => l.lineInfo.marketType === 'player_strikeouts');
+  const hasNewPropLeg = resolvedLegs.some(l =>
+    l.lineInfo.marketType
+    && /^player_/.test(l.lineInfo.marketType)
+    && l.lineInfo.marketType !== 'player_strikeouts'
+  );
+  const hasAnyPropLeg = hasKPropLeg || hasNewPropLeg;
+  if (hasAnyPropLeg) {
+    const propParlayCap = config.pricing.maxRiskPerParlayWithProp || 50;
+
+    if (hasKPropLeg) {
+      const pitcherCheck = orderTracker.checkPitcherExposure(
+        resolvedLegs, propParlayCap, config.pricing.maxExposurePerPitcher,
+      );
+      if (pitcherCheck && pitcherCheck.exceeded) {
+        const pendingTxt = pitcherCheck.pending ? ` + pending $${pitcherCheck.pending}` : '';
+        log.info('Pricing', `Pitcher exposure cap: ${pitcherCheck.pitcher} would be $${pitcherCheck.wouldBe} (max $${pitcherCheck.max})`);
+        return {
+          declined: true,
+          reason: 'pitcher_exposure_cap',
+          detail: `${pitcherCheck.pitcher}: current $${pitcherCheck.current}${pendingTxt} + this parlay $${propParlayCap} = $${pitcherCheck.wouldBe} > cap $${pitcherCheck.max}`,
+          violations: [{ team: pitcherCheck.pitcher, wouldBe: pitcherCheck.wouldBe, limit: pitcherCheck.max }],
+          estPayout: propParlayCap,
+        };
+      }
+    }
+
+    if (hasNewPropLeg) {
+      const playerCheck = orderTracker.checkPlayerExposure(
+        resolvedLegs,
+        propParlayCap,
+        config.pricing.maxExposurePerPlayerBySport || {},
+        config.pricing.maxExposurePerPlayerDefault,
+      );
+      if (playerCheck && playerCheck.exceeded) {
+        const pendingTxt = playerCheck.pending ? ` + pending $${playerCheck.pending}` : '';
+        log.info('Pricing', `Player exposure cap: ${playerCheck.player} (${playerCheck.sport}) would be $${playerCheck.wouldBe} (max $${playerCheck.max})`);
+        return {
+          declined: true,
+          reason: 'player_exposure_cap',
+          detail: `${playerCheck.player} (${playerCheck.sport}): current $${playerCheck.current}${pendingTxt} + this parlay $${propParlayCap} = $${playerCheck.wouldBe} > cap $${playerCheck.max}`,
+          violations: [{ team: playerCheck.player, wouldBe: playerCheck.wouldBe, limit: playerCheck.max }],
+          estPayout: propParlayCap,
+        };
+      }
     }
   }
 
