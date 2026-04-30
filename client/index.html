@@ -8224,6 +8224,19 @@
   //                                    walked away (no orderUuid).
   //   lost     (hollow outline)     — we weren't the best odds, or no
   //                                    SP won the RFQ.
+  if (!window._parlayVsBooksYMode) {
+    // 'pp'   = absolute pp distance from fair (default — original view)
+    // 'edge' = SP edge per $ wagered = (offered − fair) / offered × 100
+    //          shows the proportional / per-dollar economic edge, which
+    //          is largest on longshots even when the absolute pp gap is
+    //          small. Flips the visual slope of the chart.
+    window._parlayVsBooksYMode = 'pp';
+  }
+  window.setParlayVsBooksYMode = function(m) {
+    if (m !== 'pp' && m !== 'edge') return;
+    window._parlayVsBooksYMode = m;
+    if (window._parlayVsBooksData) renderChartParlayVsBooks(null);
+  };
   if (!window._parlayVsBooksToggle) {
     window._parlayVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true, kalshi: true };
   }
@@ -8488,12 +8501,25 @@
     if (!data) data = [];
 
     const T = window._parlayVsBooksToggle;
+    // Y-axis mode — 'pp' shows absolute pp distance from fair (additive),
+    // 'edge' shows SP edge per $ wagered = pp_gap / offered_prob (proportional).
+    // The edge view flips the visual slope: longshots, where 1pp markup is a
+    // huge proportional bite, sit at the top.
+    const yMode = window._parlayVsBooksYMode || 'pp';
+    const calcY = (prob, fairProb) => {
+      if (prob == null || fairProb == null) return null;
+      if (yMode === 'edge') {
+        if (prob <= 0) return null;
+        return (prob - fairProb) / prob * 100;
+      }
+      return (prob - fairProb) * 100;
+    };
     const series = [
-      { key: 'mine',     label: 'My Offer', color: '#ffffff', getDist: d => d.distMine },
-      { key: 'pinnacle', label: 'Pinnacle', color: '#a855f7', getDist: d => d.distPin },
-      { key: 'dk',       label: 'DK',       color: '#22c55e', getDist: d => d.distDk },
-      { key: 'fd',       label: 'FanDuel',  color: '#3b82f6', getDist: d => d.distFd },
-      { key: 'kalshi',   label: 'Kalshi',   color: '#eab308', getDist: d => d.distK },
+      { key: 'mine',     label: 'My Offer', color: '#ffffff', getDist: d => calcY(d.myProb,  d.fairProb) },
+      { key: 'pinnacle', label: 'Pinnacle', color: '#a855f7', getDist: d => calcY(d.pinProb, d.fairProb) },
+      { key: 'dk',       label: 'DK',       color: '#22c55e', getDist: d => calcY(d.dkProb,  d.fairProb) },
+      { key: 'fd',       label: 'FanDuel',  color: '#3b82f6', getDist: d => calcY(d.fdProb,  d.fairProb) },
+      { key: 'kalshi',   label: 'Kalshi',   color: '#eab308', getDist: d => calcY(d.kProb,   d.fairProb) },
     ];
 
     // --- Toggle controls ---
@@ -8510,7 +8536,16 @@
     const R = window._parlayVsBooksRange;
     const isCustomR = R === 'custom';
     const btnStyle = (active) => 'cursor:pointer; padding:3px 10px; border-radius:4px; font-size:11px; border:1px solid var(--border); background:' + (active ? 'var(--accent)' : 'transparent') + '; color:' + (active ? '#fff' : 'var(--text3)') + ';';
-    html += '<span style="margin-left:auto; display:flex; gap:4px; align-items:center;">';
+    // Y-axis mode toggle — switches between absolute pp distance and SP edge
+    // per $ wagered. Edge view answers "where do I make the most per dollar?"
+    // and visually inverts the slope: longshots float to the top because a
+    // small pp markup is a huge proportional bite there.
+    html += '<span style="margin-left:auto; display:flex; gap:4px; align-items:center;" title="Y-axis: pp = absolute distance from fair · edge% = SP edge per $ wagered (proportional)">';
+    html += '<span style="font-size:11px; color:var(--text3); margin-right:2px;">Y-axis:</span>';
+    html += '<button onclick="setParlayVsBooksYMode(\'pp\')" style="' + btnStyle(yMode === 'pp') + '">pp</button>';
+    html += '<button onclick="setParlayVsBooksYMode(\'edge\')" style="' + btnStyle(yMode === 'edge') + '">edge %</button>';
+    html += '</span>';
+    html += '<span style="display:flex; gap:4px; align-items:center;">';
     html += '<span style="font-size:11px; color:var(--text3); margin-right:2px;">Range:</span>';
     for (const ro of RANGE_OPTIONS) {
       html += '<button onclick="setParlayVsBooksRange(\'' + ro.key + '\')" style="' + btnStyle(R === ro.key) + '">' + ro.label + '</button>';
@@ -8715,12 +8750,13 @@
 
     let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; height:auto; display:block;">';
 
-    // Y gridlines
+    // Y gridlines — units depend on mode (pp vs edge %)
+    const yUnit = yMode === 'edge' ? '%' : 'pp';
     const yStep = niceStep(distRange / 8);
     for (let t = Math.ceil(minDist / yStep) * yStep; t <= maxDist; t += yStep) {
       const y = scaleY(t);
       svg += svgLine(pad.l, y, pad.l + chartW, y, 'var(--border)', 0.5);
-      svg += svgText(pad.l - 8, y + 4, (t >= 0 ? '+' : '') + t.toFixed(t % 1 === 0 ? 0 : 1) + 'pp', { anchor: 'end', size: 11, fill: 'var(--text3)' });
+      svg += svgText(pad.l - 8, y + 4, (t >= 0 ? '+' : '') + t.toFixed(t % 1 === 0 ? 0 : 1) + yUnit, { anchor: 'end', size: 11, fill: 'var(--text3)' });
     }
     // Zero line = FAIR
     const zeroY = scaleY(0);
@@ -8753,6 +8789,11 @@
     };
     const tipFor = (d, label) => {
       const fmtPp = (v) => v == null ? 'n/a' : (v >= 0 ? '+' : '') + v.toFixed(2) + 'pp';
+      // Edge per $ wagered = pp_gap / offered_prob × 100
+      const fmtEdge = (prob) => {
+        if (prob == null || d.fairProb == null || prob <= 0) return 'n/a';
+        return ((prob - d.fairProb) / prob * 100).toFixed(2) + '%';
+      };
       const t = fmtEtTs(d.quotedAt);
       const outcomeTag = d.outcome === 'accepted' ? ' · ACCEPTED'
                        : d.outcome === 'offered' ? ' · OFFERED (bettor walked)'
@@ -8765,11 +8806,11 @@
         + '\n\nSelections:\n' + d.selections
         + '\n\nFair: ' + (d.fairProb * 100).toFixed(2) + '%'
         + ' · My offer: ' + (d.myProb * 100).toFixed(2) + '%'
-        + '\nMy dist:  ' + fmtPp(d.distMine)
-        + '\nPIN dist: ' + fmtPp(d.distPin)
-        + '\nDK dist:  ' + fmtPp(d.distDk)
-        + '\nFD dist:  ' + fmtPp(d.distFd)
-        + '\nKAL dist: ' + fmtPp(d.distK);
+        + '\nMy:  ' + fmtPp(d.distMine) + '   edge ' + fmtEdge(d.myProb)
+        + '\nPIN: ' + fmtPp(d.distPin)  + '   edge ' + fmtEdge(d.pinProb)
+        + '\nDK:  ' + fmtPp(d.distDk)   + '   edge ' + fmtEdge(d.dkProb)
+        + '\nFD:  ' + fmtPp(d.distFd)   + '   edge ' + fmtEdge(d.fdProb)
+        + '\nKAL: ' + fmtPp(d.distK)    + '   edge ' + fmtEdge(d.kProb);
     };
 
     // Render — paint order: lost → offered → accepted, so accepted dots
@@ -8825,13 +8866,22 @@
       }
     }
 
-    // Annotations
-    svg += svgText(pad.l + 10, pad.t + 14, 'Above FAIR = more expensive (tighter for bettor)', { anchor: 'start', size: 11, fill: 'var(--text3)' });
-    svg += svgText(pad.l + 10, pad.t + chartH - 6, 'Below FAIR = cheaper (better for bettor)', { anchor: 'start', size: 11, fill: 'var(--text3)' });
+    // Annotations — text adapts to Y-axis mode.
+    const annoTop = yMode === 'edge'
+      ? 'Above FAIR = SP keeps margin per $ wagered (good for SP)'
+      : 'Above FAIR = more expensive (tighter for bettor)';
+    const annoBot = yMode === 'edge'
+      ? 'Below FAIR = SP gives up margin per $ wagered (bad for SP)'
+      : 'Below FAIR = cheaper (better for bettor)';
+    svg += svgText(pad.l + 10, pad.t + 14, annoTop, { anchor: 'start', size: 11, fill: 'var(--text3)' });
+    svg += svgText(pad.l + 10, pad.t + chartH - 6, annoBot, { anchor: 'start', size: 11, fill: 'var(--text3)' });
 
     // Axis titles
     svg += svgText(pad.l + chartW / 2, H - 6, 'Fair Implied Probability', { size: 13, fill: '#ffffff' });
-    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">Distance from FAIR (pp)</text>';
+    const yTitle = yMode === 'edge'
+      ? 'SP edge per $ wagered (%)'
+      : 'Distance from FAIR (pp)';
+    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">' + yTitle + '</text>';
     svg += '</svg>';
 
     html += svg;
@@ -8846,7 +8896,7 @@
       const vals = filtered.map(s.getDist).filter(v => v != null);
       if (vals.length === 0) continue;
       const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-      html += box(s.label + ' avg', (avg >= 0 ? '+' : '') + avg.toFixed(2) + 'pp · n=' + vals.length, s.color);
+      html += box(s.label + ' avg', (avg >= 0 ? '+' : '') + avg.toFixed(2) + yUnit + ' · n=' + vals.length, s.color);
     }
     html += '</div>';
 
