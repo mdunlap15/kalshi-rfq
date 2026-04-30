@@ -974,6 +974,114 @@ function startStatusServer() {
     }
   });
 
+  // One-off probe to measure The Odds API's prop coverage for a sport.
+  // Hits TOA's events endpoint (free) to see what games it knows about,
+  // then fetches per-event odds for the specified markets to count
+  // outcomes and books per game. Used to evaluate whether a prop type
+  // is viable for quoting before wiring it into the lookup pipeline.
+  //
+  // Cost: 1 events call (free) + N event×market credits (e.g. NBA with
+  // 10 games × 4 markets = 40 credits). Cap with the maxEvents param.
+  //
+  // Query params:
+  //   sport      (default basketball_nba) — TOA sport key
+  //   markets    (default player_points,player_rebounds,player_assists,player_threes)
+  //   maxEvents  (default 3) — cap to limit credit burn
+  app.get('/probe-toa-prop-coverage', async (req, res) => {
+    try {
+      const apiKey = process.env.THE_ODDS_API_KEY;
+      if (!apiKey) return res.status(500).json({ ok: false, error: 'THE_ODDS_API_KEY not set' });
+      const sport = String(req.query.sport || 'basketball_nba').trim();
+      const marketsParam = String(req.query.markets ||
+        'player_points,player_rebounds,player_assists,player_threes').trim();
+      const markets = marketsParam.split(',').map(s => s.trim()).filter(Boolean);
+      const maxEvents = Math.max(1, Math.min(20, parseInt(req.query.maxEvents) || 3));
+
+      const fetch = require('node-fetch');
+      const evtUrl = `https://api.the-odds-api.com/v4/sports/${sport}/events?apiKey=${apiKey}`;
+      const evtResp = await fetch(evtUrl);
+      if (!evtResp.ok) {
+        return res.status(502).json({ ok: false, error: `TOA events ${evtResp.status}`, body: await evtResp.text() });
+      }
+      const events = await evtResp.json();
+      if (!Array.isArray(events)) return res.json({ ok: true, sport, eventsCount: 0, events: [] });
+
+      const probed = events.slice(0, maxEvents);
+      const probeResults = [];
+      for (const ev of probed) {
+        const url = `https://api.the-odds-api.com/v4/sports/${sport}/events/${ev.id}/odds`
+          + `?apiKey=${apiKey}&regions=us,eu&markets=${markets.join(',')}&oddsFormat=american`;
+        let odds = null, status = 0, errBody = null;
+        try {
+          const r = await fetch(url);
+          status = r.status;
+          if (r.ok) odds = await r.json();
+          else errBody = await r.text();
+        } catch (e) {
+          errBody = String(e.message);
+        }
+        const perMarket = {};
+        const allBooks = new Set();
+        for (const m of markets) perMarket[m] = { books: new Set(), outcomes: 0, samplePlayers: new Set(), sampleLines: new Set() };
+        for (const bk of (odds?.bookmakers || [])) {
+          allBooks.add(bk.key);
+          for (const m of (bk.markets || [])) {
+            if (!perMarket[m.key]) continue;
+            perMarket[m.key].books.add(bk.key);
+            for (const o of (m.outcomes || [])) {
+              perMarket[m.key].outcomes++;
+              if (o.description && perMarket[m.key].samplePlayers.size < 6) perMarket[m.key].samplePlayers.add(o.description);
+              if (o.point != null && perMarket[m.key].sampleLines.size < 8) perMarket[m.key].sampleLines.add(o.point);
+            }
+          }
+        }
+        probeResults.push({
+          eventId: ev.id,
+          matchup: `${ev.away_team} @ ${ev.home_team}`,
+          commenceTime: ev.commence_time,
+          httpStatus: status,
+          errBody: errBody && errBody.slice(0, 240),
+          totalBooks: allBooks.size,
+          perMarket: Object.fromEntries(Object.entries(perMarket).map(([k, v]) => [k, {
+            books: [...v.books],
+            bookCount: v.books.size,
+            outcomes: v.outcomes,
+            samplePlayers: [...v.samplePlayers],
+            sampleLines: [...v.sampleLines].sort((a, b) => a - b),
+          }])),
+        });
+      }
+
+      // Summary: avg books per market across probed events
+      const marketSummary = {};
+      for (const m of markets) {
+        const eventsWithMarket = probeResults.filter(p => p.perMarket[m].bookCount > 0);
+        const totalBooks = probeResults.reduce((s, p) => s + p.perMarket[m].bookCount, 0);
+        marketSummary[m] = {
+          eventsWithCoverage: eventsWithMarket.length,
+          eventsProbed: probeResults.length,
+          coveragePct: probeResults.length ? Math.round((eventsWithMarket.length / probeResults.length) * 100) : 0,
+          avgBooksPerEvent: probeResults.length ? Math.round((totalBooks / probeResults.length) * 10) / 10 : 0,
+          allBooksSeen: [...new Set(probeResults.flatMap(p => p.perMarket[m].books))],
+        };
+      }
+
+      res.json({
+        ok: true,
+        generatedAt: new Date().toISOString(),
+        sport,
+        markets,
+        eventsAvailable: events.length,
+        eventsProbed: probeResults.length,
+        marketSummary,
+        probeResults,
+      });
+    } catch (err) {
+      log.error('API', `/probe-toa-prop-coverage failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Phase-1 prop shadow inspector. Pulls rows we logged into
   // prop_shadow_quotes for a given propType (e.g. 'points',
   // 'pitcher_strikeouts') and reports counts + a few sample rows so
