@@ -1507,6 +1507,109 @@ async function resolveUnknownLine(rfqLeg) {
         if (playerPropNamePat.test(market.name || '') && !fullGameNamePat.test(market.name || '')) {
           const parsedProp = px.parseMarketSelections(market);
           if (parsedProp.some(s => s.lineId === lineId)) {
+            // Phase-2 prop launch bridge: classify the prop, check the
+            // launch allowlist, and try the live TOA lookup before
+            // falling through to the existing decline path. Empty
+            // allowlist = identical behavior to before (decline as
+            // player_prop_market). When allowlist is populated, eligible
+            // prop legs become quotable here.
+            //
+            // Lazy-require classifiers + name extractor to avoid the
+            // line-manager ↔ websocket circular import at module-load time.
+            let propType = null;
+            let toaMarketKey = null;
+            let nameExtractor = null;
+            try {
+              const ws = require('./websocket');
+              nameExtractor = ws._extractPlayerNameFromPropMarket;
+              if (sportKey.includes('basketball')) {
+                propType = ws._classifyNbaProp(market.name);
+                const NBA_TO_TOA = {
+                  points: 'player_points',
+                  rebounds: 'player_rebounds',
+                  assists: 'player_assists',
+                  threes_made: 'player_threes',
+                };
+                toaMarketKey = NBA_TO_TOA[propType];
+              } else if (sportKey.includes('hockey')) {
+                propType = ws._classifyNhlProp(market.name);
+                const NHL_TO_TOA = {
+                  shots_on_goal: 'player_shots_on_goal',
+                };
+                toaMarketKey = NHL_TO_TOA[propType];
+              }
+            } catch (e) {
+              // Classifier unavailable — fall through to decline below
+            }
+            const allowlist = (config.pricing && config.pricing.propLaunchAllowlist) || new Set();
+            const allowKey = sportKey + '.' + propType;
+            const allowed = propType && toaMarketKey && allowlist.has(allowKey);
+
+            if (allowed) {
+              const matchingProp = parsedProp.find(s => s.lineId === lineId);
+              const playerName = nameExtractor ? nameExtractor(market.name) : null;
+              if (matchingProp && playerName) {
+                const eventCtx = {
+                  homeTeam: matchedHome,
+                  awayTeam: matchedAway,
+                  startTime: event.scheduled || null,
+                };
+                let lookup = null;
+                try {
+                  lookup = await oddsFeed.lookupTheOddsApiPlayerProp(
+                    sportKey, toaMarketKey, eventCtx, playerName, matchingProp.line,
+                  );
+                } catch (err) {
+                  log.warn('Lines', `Phase-2 prop lookup error for ${playerName} ${propType} ${matchingProp.line}: ${err.message}`);
+                }
+                const minBooks = (config.pricing && config.pricing.propMinBooksWithBothSides) || 3;
+                const usable = lookup
+                  && lookup.fairProbOver != null
+                  && lookup.fairProbUnder != null
+                  && (lookup.booksWithBothSides || 0) >= minBooks;
+                if (usable) {
+                  const fairProb = matchingProp.selection === 'over'
+                    ? lookup.fairProbOver
+                    : lookup.fairProbUnder;
+                  foundInfo = {
+                    sport: sportKey,
+                    pxEventId: eventId,
+                    pxEventName: event.name,
+                    marketType: 'player_' + propType,
+                    marketName: market.name,
+                    selection: matchingProp.selection,
+                    teamName: playerName, // dashboards display "team" — use player name
+                    line: matchingProp.line,
+                    homeTeam: matchedHome,
+                    awayTeam: matchedAway,
+                    oddsApiSport: sportKey,
+                    oddsApiMarket: toaMarketKey,
+                    oddsApiSelection: matchingProp.selection,
+                    startTime: event.scheduled || null,
+                    onDemand: true,
+                    playerName,
+                    propType,
+                    fairProb,
+                    fairProbOver: lookup.fairProbOver,
+                    fairProbUnder: lookup.fairProbUnder,
+                    booksWithBothSides: lookup.booksWithBothSides,
+                    propBooks: lookup.books,
+                    propSource: 'theoddsapi',
+                    propFetchedAt: lookup.fetchedAt || Date.now(),
+                  };
+                  lineFoundInPxMarket = true;
+                  log.info('Lines', `Phase-2 prop registered: ${playerName} ${propType} ${matchingProp.selection} ${matchingProp.line} (${lookup.booksWithBothSides} books, fair=${fairProb.toFixed(4)})`);
+                  break; // exit markets loop — foundInfo will be stored downstream
+                }
+                // Lookup failed or insufficient books — log + fall through to decline
+                const reason = !lookup ? 'lookup_null'
+                  : lookup.error ? lookup.error
+                  : (lookup.booksWithBothSides || 0) < minBooks ? `insufficient_books(${lookup.booksWithBothSides || 0}<${minBooks})`
+                  : 'no_fair_prob';
+                log.info('Lines', `Phase-2 prop declined for ${playerName} ${propType} ${matchingProp.line}: ${reason}`);
+              }
+            }
+
             log.info('Lines', `Declined player prop market: ${market.type} / "${market.name}" (${event.name})`);
             resolveUnknownLine._lastFailure = {
               lineId,

@@ -759,15 +759,24 @@ function priceParlay(legs, opts = {}) {
     //
     // Staleness is guarded upstream in shouldDecline rule (c) — anything
     // older than STALE_MS already declined before reaching priceParlay.
-    if (s.lineInfo.marketType === 'player_strikeouts') {
+    // Player-prop legs (Phase-2 launch types: player_points,
+    // player_rebounds, player_assists, player_threes,
+    // player_shots_on_goal) AND the original player_strikeouts. All
+    // store fair prob on lineInfo at registration time (line-manager
+    // calls oddsFeed.lookupTheOddsApiPlayerProp / lookupPlayerStrikeoutProp
+    // with the leg's selection-specific over/under value). The generic
+    // getFairProb() below is keyed on home/away game-line markets and
+    // returns null for player props, so use the cached value directly.
+    //
+    // Staleness is guarded upstream in shouldDecline — anything older
+    // than STALE_MS already declined before reaching priceParlay.
+    if (s.lineInfo.marketType && /^player_/.test(s.lineInfo.marketType)) {
       if (s.lineInfo.fairProb != null) {
         fairProbs[i] = s.lineInfo.fairProb;
         continue;
       }
       // fairProb missing — leave fairProbs[i] undefined so Phase 3's
       // null-check fires the standard 'no fair value' decline path.
-      // (shouldDecline rule (a) should have caught this already; this
-      // is the defensive fallback if it didn't.)
     }
     // Primary cache fast path — try sync before dispatching async.
     const syncPrimary = oddsFeed.getFairProb(

@@ -71,6 +71,23 @@ function extractPlayerNameFromPropMarket(marketName) {
     /\s+(total\s+)?minutes\s+played$/i,
     // Yes/No exotic markets without numeric line
     /\s+to\s+score\s+the\s+first\s+(basket|field\s+goal)$/i,
+    // ---- NHL ----
+    // Goalie-specific multi-word phrases FIRST so bare "Saves" doesn't
+    // partial-match "Goalie Saves" and leave "<Player> Goalie".
+    /\s+(total\s+)?(goalie|goaltender)\s+(saves?|wins?)$/i,
+    /\s+goals?\s+against$/i,
+    // Shots on goal BEFORE bare "goals" so "Shots on Goal" isn't
+    // partially matched as "Goals".
+    /\s+(total\s+)?shots?\s+on\s+goal$/i,
+    /\s+(total\s+)?sog$/i,
+    /\s+(total\s+)?saves?$/i,
+    /\s+anytime\s+(goal|assist)\s*(scorer|recorder)?$/i,
+    /\s+(total\s+)?goals?$/i,
+    /\s+(total\s+)?(blocked\s+shots?|blocks?)$/i,
+    /\s+(total\s+)?hits?$/i,
+    /\s+(total\s+)?(penalty\s+minutes?|pim)$/i,
+    /\s+(total\s+)?faceoffs?(\s+won)?$/i,
+    /\s+(power\s+play|pp)\s+(point|points|goal|goals|assist|assists)$/i,
   ];
   for (const re of strips) {
     if (re.test(m)) {
@@ -2223,4 +2240,5 @@ module.exports = {
   _classifyMlbProp: classifyMlbProp, // exposed for /prop-opportunity sanity testing
   _classifyNbaProp: classifyNbaProp, // exposed for /prop-opportunity sanity testing
   _classifyNhlProp: classifyNhlProp, // exposed for /prop-opportunity sanity testing
+  _extractPlayerNameFromPropMarket: extractPlayerNameFromPropMarket, // exposed for line-manager Phase-2 prop bridge
 };
