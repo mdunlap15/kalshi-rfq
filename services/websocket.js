@@ -234,6 +234,74 @@ function classifyNbaProp(marketName) {
 }
 // (exported via module.exports block at end of file as _classifyNbaProp)
 
+// NHL player-prop sub-classifier. Mirrors classifyMlbProp / classifyNbaProp
+// shape so the same in-memory rollup (recordDecline.byPropType) and the
+// [propType:X] tag in unknown_details capture NHL prop volume.
+//
+// Returns one of:
+//   'shots_on_goal'   — "Player Shots on Goal" / "SOG"
+//   'goals'           — "Player Goals" / "Anytime Goal Scorer"
+//   'assists'         — "Player Assists"
+//   'points'          — "Player Points" (goals + assists, NHL-style)
+//   'saves'           — "Goalie Saves" / "Total Saves"
+//   'pim'             — "Penalty Minutes"
+//   'blocks'          — "Player Blocks" / "Blocked Shots"
+//   'hits'            — "Player Hits"
+//   'goalie_other'    — goalie wins / goals against / shutouts
+//   'nhl_prop_ambiguous' — multi-stat combo
+//   'other_nhl_prop'  — couldn't classify
+//   null              — input wasn't a market name
+//
+// Ordering matters: combos and goalie-specific markets checked before
+// generic stat patterns ("saves" before "shots" since both have shot in
+// the wider context).
+function classifyNhlProp(marketName) {
+  if (!marketName) return null;
+  const n = String(marketName).toLowerCase();
+
+  // Goalie-specific markets first — these are unambiguous and should
+  // not be conflated with skater stats.
+  if (/(goalie|goaltender)\s+save|total\s+save|^saves?\b/.test(n)) return 'saves';
+  if (/(goalie|goaltender).*(win|loss|decision)|goalie\s+win/.test(n)) return 'goalie_other';
+  if (/goals?\s+against|\bga\b|shutout/.test(n)) return 'goalie_other';
+
+  // Combo detection — multi-stat NHL props are rare but possible.
+  // Strip "shots on goal" / "sog" / "blocked shots" before checking
+  // individual stat words so the "goal" inside "shots on goal" doesn't
+  // trip the goals matcher (and same for "shots" inside "blocked shots").
+  const hasShots    = /shots?\s+on\s+goal|\bsog\b/.test(n);
+  const hasBlocks   = /blocked\s+shots?|\bblocks?\b|\bblks?\b/.test(n);
+  const stripped    = n
+    .replace(/shots?\s+on\s+goal/g, '')
+    .replace(/\bsog\b/g, '')
+    .replace(/blocked\s+shots?/g, '');
+  const hasGoals    = /\bgoals?\b/.test(stripped);
+  const hasAssists  = /\bassists?\b/.test(stripped);
+  const hasPointsW  = /\bpoints?\b|\bpts\b/.test(stripped);
+  const hasHits     = /\bhits?\b/.test(stripped);
+  const hasPim      = /penalty\s+minutes?|\bpim\b/.test(stripped);
+
+  // Goals + assists = NHL "points" — collapse to single bucket
+  if (hasGoals && hasAssists && !hasShots && !hasBlocks && !hasHits) return 'points';
+
+  // Any other 2+ core-stat combo
+  const statCount = (hasGoals ? 1 : 0) + (hasAssists ? 1 : 0) + (hasPointsW ? 1 : 0)
+    + (hasShots ? 1 : 0) + (hasBlocks ? 1 : 0) + (hasHits ? 1 : 0);
+  if (statCount >= 2) return 'nhl_prop_ambiguous';
+
+  // Single-stat buckets
+  if (hasShots) return 'shots_on_goal';
+  if (hasGoals) return 'goals';
+  if (hasAssists) return 'assists';
+  if (hasPointsW) return 'points';
+  if (hasBlocks) return 'blocks';
+  if (hasHits) return 'hits';
+  if (hasPim) return 'pim';
+
+  return 'other_nhl_prop';
+}
+// (exported via module.exports block at end of file as _classifyNhlProp)
+
 // ---------------------------------------------------------------------------
 // STATE
 // ---------------------------------------------------------------------------
@@ -805,6 +873,8 @@ async function handleRFQ(data) {
               propType = classifyMlbProp(propMarketName);
             } else if (eventSport.includes('basketball')) {
               propType = classifyNbaProp(propMarketName);
+            } else if (eventSport.includes('hockey')) {
+              propType = classifyNhlProp(propMarketName);
             }
           }
           const propTag = propType ? ` [propType:${propType}]` : '';
@@ -2152,4 +2222,5 @@ module.exports = {
   getQuoteCoverageStats,
   _classifyMlbProp: classifyMlbProp, // exposed for /prop-opportunity sanity testing
   _classifyNbaProp: classifyNbaProp, // exposed for /prop-opportunity sanity testing
+  _classifyNhlProp: classifyNhlProp, // exposed for /prop-opportunity sanity testing
 };

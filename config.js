@@ -285,13 +285,49 @@ const config = {
     confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
     offerValidSeconds: parseInt(process.env.OFFER_VALID_SECONDS) || 60,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
-    // Phase 2 prop quoting caps — conservative initial limits for
-    // pitcher_strikeouts MVP. Tightens MAX_RISK_PER_PARLAY to a smaller
-    // amount when the parlay contains any prop leg, and adds a per-
-    // pitcher exposure cap that aggregates across all parlays containing
-    // the same (pxEventId, playerName) prop. Tunable via env vars.
-    maxRiskPerParlayWithProp: parseFloat(process.env.MAX_RISK_PER_PARLAY_WITH_PROP) || 200,
+    // Phase 2 prop quoting caps — applies to ANY parlay containing one
+    // or more player_prop legs (NBA points/rebounds/assists/threes,
+    // NHL shots_on_goal, MLB pitcher_strikeouts, etc.). Game-line-only
+    // parlays use the standard MAX_RISK_PER_PARLAY ($4000). Tunable via
+    // env vars.
+    maxRiskPerParlayWithProp: parseFloat(process.env.MAX_RISK_PER_PARLAY_WITH_PROP) || 50,
     maxExposurePerPitcher: parseFloat(process.env.MAX_EXPOSURE_PER_PITCHER) || 500,
+    // Per-player aggregate exposure cap, keyed by sport. Sums SP-risk
+    // across ALL parlays containing ANY prop leg featuring that player,
+    // regardless of prop type — so CJ McCollum points + rebounds +
+    // threes parlays all roll up to one McCollum line. Critical for
+    // cross-prop concentration where one star anchors many tickets.
+    // Tunable via MAX_EXPOSURE_PER_PLAYER_BY_SPORT (JSON map). Falls
+    // back to MAX_EXPOSURE_PER_PLAYER_DEFAULT for sports not listed.
+    maxExposurePerPlayerBySport: (() => {
+      if (!process.env.MAX_EXPOSURE_PER_PLAYER_BY_SPORT) {
+        return { 'basketball_nba': 200, 'icehockey_nhl': 200 };
+      }
+      try {
+        const parsed = JSON.parse(process.env.MAX_EXPOSURE_PER_PLAYER_BY_SPORT);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+        return { 'basketball_nba': 200, 'icehockey_nhl': 200 };
+      } catch (e) {
+        return { 'basketball_nba': 200, 'icehockey_nhl': 200 };
+      }
+    })(),
+    maxExposurePerPlayerDefault: parseFloat(process.env.MAX_EXPOSURE_PER_PLAYER_DEFAULT) || 200,
+    // Minimum number of books with both sides required for a prop leg
+    // to be quotable. Below this, decline the parlay (insufficient
+    // de-vig confidence — single-book or near-single-book pricing is
+    // just re-quoting that book's vigged line).
+    propMinBooksWithBothSides: parseInt(process.env.PROP_MIN_BOOKS_WITH_BOTH_SIDES) || 3,
+    // Master allowlist for live prop quoting. Comma-separated list of
+    // "${sport}.${propType}" pairs. Only props in this allowlist are
+    // resolved live and quoted; everything else falls into the existing
+    // shadow / decline-as-unknown path. Empty allowlist = current
+    // behavior (no live prop quoting). Examples:
+    //   PROP_LAUNCH_ALLOWLIST="basketball_nba.points"
+    //   PROP_LAUNCH_ALLOWLIST="basketball_nba.points,basketball_nba.rebounds,basketball_nba.assists,basketball_nba.threes_made,icehockey_nhl.shots_on_goal"
+    propLaunchAllowlist: new Set(
+      (process.env.PROP_LAUNCH_ALLOWLIST || '')
+        .split(',').map(s => s.trim()).filter(Boolean)
+    ),
     // Books we trust as a single source for prop pricing. When a prop
     // lookup returns exactly 1 book with both sides AND that book is on
     // this list, shouldDecline rule (b) accepts the leg instead of
