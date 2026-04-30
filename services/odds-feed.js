@@ -102,6 +102,9 @@ const PROP_MARKET_TYPES = new Set([
   'player_strikeouts', // pitcher Ks (Phase 1 shadow target). Player_name
                        // distinguishes pitcher (" Thrown" suffix) vs batter
                        // (" Recorded" suffix) sides within the same market.
+  'player_points',     // NBA player points (Phase 1 shadow target).
+                       // Single-stat per-player Over/Under. Player_name is
+                       // typically the player's full name with no suffix.
 ]);
 
 // Lineup tracking — MLB starting pitchers, NHL starting goalies.
@@ -321,7 +324,7 @@ async function fetchOddsForSport(sport, opts) {
   const marketTypesList = {
     'baseball_mlb': ['moneyline', 'run_line', 'total_runs', 'team_total', '1st_5_innings_moneyline', '1st_5_innings_run_line', 'player_strikeouts'],
     'icehockey_nhl': ['moneyline', 'puck_line', 'total_goals', 'team_total'],
-    'basketball_nba': ['moneyline', 'point_spread', 'total_points', 'team_total'],
+    'basketball_nba': ['moneyline', 'point_spread', 'total_points', 'team_total', 'player_points'],
     'tennis': ['moneyline', 'point_spread', 'total_points'],
     'soccer': ['moneyline', 'point_spread', 'total_goals', 'team_total'],
     'mma_mixed_martial_arts': ['moneyline'],
@@ -6368,6 +6371,128 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
 }
 
 // ---------------------------------------------------------------------------
+// NBA PLAYER POINTS PROP LOOKUP (Phase 1 shadow-pricing target)
+// ---------------------------------------------------------------------------
+// Mirror of lookupPlayerStrikeoutProp but for SharpAPI's player_points
+// market_type. NBA player names don't carry the " Thrown" / " Recorded"
+// suffix that K-props have, so the player-name match is straightforward.
+// Returns the same shape: { fairProbOver, fairProbUnder, books,
+// booksWithBothSides, resolvedEventId, fetchedAt, stages, error?, ... }.
+function lookupPlayerPointsProp(sport, pxEventInfo, playerName, line) {
+  const stages = [];
+  if (!sport || !pxEventInfo || !playerName) {
+    return { error: 'missing_input', stages: ['precondition'] };
+  }
+  const sportCache = propRowsCache[sport];
+  if (!sportCache || !sportCache.player_points) {
+    return { error: 'no_prop_cache', stages: ['cache_empty'] };
+  }
+  const allRows = sportCache.player_points;
+  stages.push(`cache:${allRows.length}rows`);
+
+  // Step 1: filter by event — match on home/away team last-2-words +
+  // start-time proximity for back-to-backs (rare in NBA but possible).
+  const lastWords = (name, n = 2) => {
+    const words = normalizeTeamName(name).split(/\s+/).filter(Boolean);
+    return words.slice(-n).join(' ');
+  };
+  const pxHomeKey = lastWords(pxEventInfo.homeTeam || '');
+  const pxAwayKey = lastWords(pxEventInfo.awayTeam || '');
+  const pxStartMs = pxEventInfo.startTime ? Date.parse(pxEventInfo.startTime) : null;
+  stages.push(`px:${pxEventInfo.awayTeam || '?'}@${pxEventInfo.homeTeam || '?'}`);
+  const teamMatchRows = allRows.filter(r => {
+    const rh = lastWords(r.home_team || '');
+    const ra = lastWords(r.away_team || '');
+    return (rh === pxHomeKey && ra === pxAwayKey) ||
+           (rh === pxAwayKey && ra === pxHomeKey);
+  });
+  stages.push(`team_match:${teamMatchRows.length}`);
+  if (teamMatchRows.length === 0) {
+    const availableEvents = [...new Set(allRows.map(r => `${r.away_team}@${r.home_team}`))];
+    stages.push(`available:${availableEvents.slice(0, 8).join('|')}`);
+    return { error: 'no_event_match', stages, availableEvents };
+  }
+
+  // Multi-event narrowing (uncommon for NBA single-game, but defensive).
+  let eventRows = teamMatchRows;
+  if (pxStartMs) {
+    const eventIds = [...new Set(teamMatchRows.map(r => r.event_id))];
+    if (eventIds.length > 1) {
+      const eventsByDist = eventIds.map(eid => {
+        const sample = teamMatchRows.find(r => r.event_id === eid);
+        const eMs = sample.event_start_time ? Date.parse(sample.event_start_time) : 0;
+        return { eid, dist: Math.abs(eMs - pxStartMs) };
+      }).sort((a, b) => a.dist - b.dist);
+      const bestId = eventsByDist[0].eid;
+      eventRows = teamMatchRows.filter(r => r.event_id === bestId);
+      stages.push(`multi_event_resolve:${eventsByDist.length}->${bestId}`);
+    }
+  }
+  const resolvedEventId = eventRows[0].event_id;
+
+  // Step 2: filter by player_name. NBA names are typically full + clean
+  // (e.g. "LeBron James"). Strip diacritics ("Nikola Jokić" → "Nikola
+  // Jokic") since SharpAPI may not preserve them. Tolerant substring
+  // match in both directions to handle Jr./III suffix differences.
+  const stripDiacritics = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const normPlayer = stripDiacritics(playerName).toLowerCase().trim();
+  const matchedRows = eventRows.filter(r => {
+    const stripped = stripDiacritics(r.player_name || '').toLowerCase().trim();
+    return stripped === normPlayer ||
+           stripped.includes(normPlayer) ||
+           normPlayer.includes(stripped);
+  });
+  stages.push(`player_match:${matchedRows.length}`);
+  if (matchedRows.length === 0) {
+    return { error: 'no_player_match', stages, resolvedEventId,
+             samplePlayers: [...new Set(eventRows.map(r => r.player_name))].slice(0, 5) };
+  }
+
+  // Step 3: filter by line value (allow tiny float fuzz)
+  const lineRows = line == null ? matchedRows : matchedRows.filter(r => Math.abs((r.line || 0) - line) < 0.01);
+  stages.push(`line_match:${lineRows.length}`);
+  if (lineRows.length === 0) {
+    return { error: 'no_line_match', stages, resolvedEventId,
+             sampleLines: [...new Set(matchedRows.map(r => r.line))].slice(0, 8) };
+  }
+
+  // Step 4: split by side and per-book de-vig
+  const overRows = lineRows.filter(r => /over/i.test(r.selection || r.selection_type || ''));
+  const underRows = lineRows.filter(r => /under/i.test(r.selection || r.selection_type || ''));
+  const books = [...new Set(lineRows.map(r => r.sportsbook).filter(Boolean))];
+  stages.push(`sides:over=${overRows.length},under=${underRows.length}`);
+
+  const fairProbsOver = [];
+  const fairProbsUnder = [];
+  for (const book of books) {
+    const o = overRows.find(r => r.sportsbook === book);
+    const u = underRows.find(r => r.sportsbook === book);
+    if (!o || !u) continue;
+    const oProb = americanToImpliedProb(o.odds_american);
+    const uProb = americanToImpliedProb(u.odds_american);
+    if (oProb == null || uProb == null) continue;
+    const dv = deVig2Way(oProb, uProb);
+    if (Array.isArray(dv) && dv.length === 2 && Number.isFinite(dv[0]) && Number.isFinite(dv[1])) {
+      fairProbsOver.push(dv[0]);
+      fairProbsUnder.push(dv[1]);
+    }
+  }
+  const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+
+  return {
+    matchedRows: lineRows,
+    books,
+    sides: { over: overRows, under: underRows },
+    fairProbOver: avg(fairProbsOver),
+    fairProbUnder: avg(fairProbsUnder),
+    booksWithBothSides: fairProbsOver.length,
+    resolvedEventId,
+    fetchedAt: sportCache.fetchedAt || null,
+    stages,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // THE ODDS API FALLBACK for player props (Phase 1 supplemental source)
 // ---------------------------------------------------------------------------
 // SharpAPI Hobby tier exposes pitcher_strikeouts for only ~4 of ~15 MLB
@@ -6634,5 +6759,6 @@ module.exports = {
   // Phase 1 player-prop shadow pricing
   lookupPlayerStrikeoutProp,
   lookupPlayerStrikeoutPropFromTheOddsApi,
+  lookupPlayerPointsProp,
   getPropRowsCacheStatus,
 };

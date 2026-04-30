@@ -895,6 +895,63 @@ async function handleRFQ(data) {
             }
           }
 
+          // Phase 1 shadow pricing — NBA player points. Mirrors the
+          // pitcher_strikeouts block above, swapping the lookup function
+          // and sport key. SharpAPI fetches player_points rows via the
+          // updated marketTypesList (basketball_nba). No TOA fallback in
+          // this first iteration — coverage will be measured via the
+          // /prop-performance endpoint and TOA can be added in a follow-up
+          // if SharpAPI's NBA prop coverage is too thin.
+          if (propType === 'points' && propMarketName && eventInfo
+              && eventSport && eventSport.includes('basketball')) {
+            const playerName = extractPlayerNameFromPropMarket(propMarketName);
+            if (playerName) {
+              let homeTeam = null;
+              let awayTeam = null;
+              if (eventInfo.competitors && eventInfo.competitors.length >= 2) {
+                const homeComp = eventInfo.competitors.find(c => c.side === 'home') || eventInfo.competitors[0];
+                const awayComp = eventInfo.competitors.find(c => c.side === 'away') || eventInfo.competitors[1];
+                homeTeam = homeComp && homeComp.name;
+                awayTeam = awayComp && awayComp.name;
+              }
+              const eventCtx = {
+                homeTeam, awayTeam,
+                startTime: eventInfo.scheduled || eventInfo.startTime || eventInfo.commenceTime,
+              };
+              const captured = {
+                parlayId, lineId,
+                pxEventId: l.sport_event_id || null,
+                marketName: propMarketName,
+                playerName, lineNum, propType,
+              };
+              (async () => {
+                const lookup = oddsFeed.lookupPlayerPointsProp(
+                  'basketball_nba', eventCtx, captured.playerName, captured.lineNum,
+                );
+                const entry = {
+                  ...captured,
+                  line: captured.lineNum,
+                  source: 'sharpapi',
+                  fairProbOver: lookup && lookup.fairProbOver != null ? lookup.fairProbOver : null,
+                  fairProbUnder: lookup && lookup.fairProbUnder != null ? lookup.fairProbUnder : null,
+                  booksWithBothSides: lookup && lookup.booksWithBothSides != null ? lookup.booksWithBothSides : null,
+                  books: lookup && lookup.books ? lookup.books : null,
+                  resolvedEventId: lookup && lookup.resolvedEventId ? lookup.resolvedEventId : null,
+                  matchError: lookup && lookup.error ? lookup.error : null,
+                  matchStages: lookup && lookup.stages ? lookup.stages : null,
+                };
+                await db.savePropShadowQuote(entry).catch(() => {});
+                if (lookup && lookup.error) {
+                  log.info('PropShadow', `[sharpapi/nba_points] ${captured.playerName} pts ${captured.lineNum}: ${lookup.error} [stages: ${(lookup.stages || []).join('|')}]`);
+                } else if (lookup && lookup.fairProbOver != null) {
+                  log.info('PropShadow', `[sharpapi/nba_points] ${captured.playerName} pts ${captured.lineNum}: fairOver=${lookup.fairProbOver.toFixed(4)} fairUnder=${lookup.fairProbUnder.toFixed(4)} books=${(lookup.books || []).join(',')} (${lookup.booksWithBothSides} both-sides)`);
+                }
+              })().catch(err => log.warn('PropShadow', `async error: ${err.message}`));
+            } else {
+              log.debug('PropShadow', `NBA: could not extract player name from "${propMarketName}"`);
+            }
+          }
+
           const tag = isKnownEvent ? '[unregistered market]' : '[unsupported event]';
           unknownSports.push(`${baseName} ${tag}${propTag} ${detail}`);
           // Extract player name eagerly for any leg the resolver tagged as a
