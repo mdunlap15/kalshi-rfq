@@ -2070,6 +2070,60 @@ function shouldDecline(legs) {
     }
   }
 
+  // Phase-2 prop launch — same-game correlation block. Rule: a prop leg
+  // can never share a game with any other leg in the same parlay (team
+  // line OR another prop, same player or different player). The
+  // mechanical correlation between a player's stat output and his
+  // team's game-level outcome (or another teammate's stat output) is
+  // strong and not modeled by the SGP correlation factors. Cleaner to
+  // block outright than to risk underpricing.
+  //
+  // Applies to all player_<type> marketTypes including player_strikeouts.
+  // The same-pitcher rule above is the narrower variant; this catches
+  // the cross-market-type case (e.g. McCollum points + Pelicans ML, or
+  // McCollum points + Murray rebounds in DEN@NOP).
+  //
+  // Only fires when the parlay actually contains a prop leg, so
+  // game-line-only parlays are unaffected.
+  {
+    const isPropLeg = (li) => li && /^player_/.test(li.marketType || '');
+    const legsByEvent = {};
+    let anyPropLeg = false;
+    for (const leg of legs) {
+      const lineId = leg.line_id || leg.lineId || leg;
+      const lineInfo = lineManager.lookupLine(lineId);
+      if (!lineInfo) continue;
+      const eid = lineInfo.pxEventId;
+      if (!eid) continue;
+      if (!legsByEvent[eid]) legsByEvent[eid] = { props: [], others: [] };
+      if (isPropLeg(lineInfo)) {
+        legsByEvent[eid].props.push(lineInfo);
+        anyPropLeg = true;
+      } else {
+        legsByEvent[eid].others.push(lineInfo);
+      }
+    }
+    if (anyPropLeg) {
+      for (const [eid, group] of Object.entries(legsByEvent)) {
+        // Block: prop + any other leg (team market or another prop) on
+        // same pxEventId.
+        if (group.props.length > 0 && (group.props.length + group.others.length) > 1) {
+          const propLabels = group.props.map(li =>
+            `${li.playerName || li.teamName || '?'} ${li.propType || li.marketType} ${li.selection || ''} ${li.line ?? ''}`.trim());
+          const otherLabels = group.others.map(li =>
+            `${li.teamName || '?'} ${li.marketType || ''}`.trim());
+          const detail = `pxEventId=${eid}: ${group.props.length} prop leg(s) [${propLabels.join('; ')}]`
+            + (group.others.length ? ` + ${group.others.length} same-game leg(s) [${otherLabels.join('; ')}]` : '');
+          return {
+            declined: true,
+            reason: 'prop_correlation_same_game',
+            detail,
+          };
+        }
+      }
+    }
+  }
+
   // Check all legs are known and events haven't started.
   // Uses pre-computed lineInfo.startTimeMs (parsed lazily on first lookupLine
   // and cached on the object) to avoid re-parsing the ISO string per RFQ.
