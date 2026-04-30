@@ -7046,7 +7046,13 @@
       if (!l) continue;
       if (l.propType) return true;
       const m = l.market || l.marketType;
-      if (m && _PROP_TYPE_BUCKETS.has(m)) return true;
+      if (!m) continue;
+      // Match the bridge's marketType prefix (e.g. player_points,
+      // player_rebounds, player_assists, player_threes_made,
+      // player_shots_on_goal, player_strikeouts) so the badge fires
+      // for any sport's player prop, not just K-prop.
+      if (/^player_/.test(m)) return true;
+      if (_PROP_TYPE_BUCKETS.has(m)) return true;
     }
     return false;
   }
@@ -7056,7 +7062,7 @@
    *  K-prop + same-team-ML SGP renders both). */
   function propBadge(legs) {
     if (!containsPlayerProp(legs)) return '';
-    return ' <span title="Contains a player prop leg — pricing applies prop-specific rules (single-book floor, 15-min staleness check, per-pitcher exposure cap, $200 per-parlay cap)." style="display:inline-block; background:rgba(20,184,166,0.15); color:#5eead4; border:1px solid rgba(20,184,166,0.4); font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;">PROP</span>';
+    return ' <span title="Contains a player prop leg — pricing applies prop-specific rules (≥3-book floor, ±2 alt-line cap, 15-min staleness check, per-(sport,player) exposure cap, $50 per-parlay cap, same-game correlation block)." style="display:inline-block; background:rgba(20,184,166,0.15); color:#5eead4; border:1px solid rgba(20,184,166,0.4); font-size:9px; font-weight:700; padding:1px 4px; border-radius:3px; margin-left:4px; vertical-align:middle;">PROP</span>';
   }
 
   function sportLabel(sport) {
