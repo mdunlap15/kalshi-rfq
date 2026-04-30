@@ -401,8 +401,17 @@ async function startup() {
   setInterval(async () => {
     try {
       orderTracker.revertBogusSettlements();
-      await orderTracker.checkLegResults();
+      const resultDiag = await orderTracker.checkLegResults();
       orderTracker.reconcileSettlements();
+      // Rebuild exposure so dead parlays (any leg lost → guaranteed-win
+      // for SP, but PX hasn't settled yet) drop out of Team / Game
+      // Exposure totals immediately. Without this, capacity stays
+      // tied up by parlays we can't lose until PX settles them.
+      // Cheap to run — resolved-leg inserts are rare per cycle and
+      // rebuild is O(orders) anyway.
+      try { orderTracker.rebuildAllExposure(); } catch (err) {
+        log.debug('Results', `post-check rebuildAllExposure failed: ${err.message}`);
+      }
     } catch (err) {
       log.debug('Results', `Result check failed: ${err.message}`);
     }

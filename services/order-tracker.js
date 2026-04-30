@@ -2315,6 +2315,25 @@ function getOrderPayout(order) {
 /**
  * Add a confirmed order to exposure tracking.
  */
+/**
+ * True when ANY leg has already resolved as 'lost' — the parlay is dead
+ * (guaranteed bettor loss / guaranteed SP win) but PX hasn't moved it to
+ * settled_* yet because remaining legs are still in progress. Exposure
+ * tables should treat these as zero risk: we already "have" the bettor's
+ * stake; the remaining open legs can't add liability for us.
+ *
+ * 'push' does NOT make the parlay dead — pushed legs just drop out of
+ * the parlay leaving the rest live. Only 'lost' triggers the skip.
+ */
+function isParlayAlreadyDead(legs) {
+  if (!Array.isArray(legs)) return false;
+  for (const l of legs) {
+    const r = (l && (l.inferredResult || l.settlementStatus || l.settlement_status)) || null;
+    if (r === 'lost') return true;
+  }
+  return false;
+}
+
 function addExposure(order) {
   const legs = getLegsForExposure(order);
   const payout = getOrderPayout(order); // = confirmedStake = our max risk
@@ -2322,6 +2341,13 @@ function addExposure(order) {
   // That's bettor's original wager = our profit on win = americanOddsToProfit(confirmedOdds, confirmedStake).
   const stake = americanOddsToProfit(order.confirmedOdds || 0, order.confirmedStake || 0);
   if (legs.length === 0) return;
+  // Skip already-dead parlays — at least one leg has resolved as 'lost'
+  // so we're guaranteed to win; remaining open legs carry no SP risk.
+  // PX hasn't settled the parlay yet (waiting on all legs to complete),
+  // but the financial outcome is locked in. Operator request 2026-04-30:
+  // exposure tables should reflect this immediately so capacity isn't
+  // tied up by parlays we can't lose.
+  if (isParlayAlreadyDead(legs)) return;
 
   // Precompute per-leg effective prob + gameKey so we can compute the
   // CORRECT per-parlay-per-game weighted risk for SGPs. Without this,

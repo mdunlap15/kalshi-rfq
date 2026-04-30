@@ -5316,7 +5316,7 @@
   // PORTFOLIO TAB
   // -----------------------------------------------------------------------
 
-  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', pnlMin: '', pnlMax: '', roiMin: '', roiMax: '', showAdvanced: false, pageSize: 20, showAll: false, dateFrom: '', dateTo: '', _name: 'portfolioState' };
+  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '', typeFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', pnlMin: '', pnlMax: '', roiMin: '', roiMax: '', showAdvanced: false, pageSize: 20, showAll: false, dateFrom: '', dateTo: '', _name: 'portfolioState' };
   window.portfolioRerender = () => renderPortfolio(window._lastPortfolioData || { recentOrders: [], stats: {}, pnlBySport: {} });
   window.togglePortfolioSort = (col) => {
     if (portfolioState.sortCol === col) portfolioState.sortDir *= -1;
@@ -6233,6 +6233,17 @@
         return true;
       });
     }
+    if (portfolioState.typeFilter) {
+      filtered = filtered.filter(o => {
+        const tLegs = o.legs || o.meta?.legs || [];
+        const isSgp = isSameGameParlay(tLegs);
+        const hasProp = containsPlayerProp(tLegs);
+        if (portfolioState.typeFilter === 'sgp' && !isSgp) return false;
+        if (portfolioState.typeFilter === 'prop' && !hasProp) return false;
+        if (portfolioState.typeFilter === 'both' && !(isSgp && hasProp)) return false;
+        return true;
+      });
+    }
     if (portfolioState.dateFrom || portfolioState.dateTo) {
       filtered = filtered.filter(o => passesDateFilter(o.settledAt || o.quotedAt, portfolioState.dateFrom, portfolioState.dateTo));
     }
@@ -6320,6 +6331,12 @@
     html += '<select onchange="portfolioState.sportFilter=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
     html += '<option value="">All sports</option>';
     for (const s of sports) html += '<option value="' + s + '"' + (portfolioState.sportFilter === s ? ' selected' : '') + '>' + sportLabel(s) + '</option>';
+    html += '</select>';
+    html += '<select onchange="portfolioState.typeFilter=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;" title="Filter by parlay type — SGP (multiple legs on same event), PROP (contains a player prop leg), or both.">';
+    html += '<option value="">All types</option>';
+    html += '<option value="sgp"' + (portfolioState.typeFilter === 'sgp' ? ' selected' : '') + '>SGP only</option>';
+    html += '<option value="prop"' + (portfolioState.typeFilter === 'prop' ? ' selected' : '') + '>PROP only</option>';
+    html += '<option value="both"' + (portfolioState.typeFilter === 'both' ? ' selected' : '') + '>SGP + PROP</option>';
     html += '</select>';
     html += '<select onchange="portfolioState.resultFilter=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
     html += '<option value="">All settlements</option>';
