@@ -1581,10 +1581,20 @@ function priceParlay(legs, opts = {}) {
     typeof l.lineInfo.marketType === 'string' &&
     l.lineInfo.marketType.startsWith('series_')
   );
-  const parlayHasProp = pricedLegs.some(l => l.lineInfo.marketType === 'player_strikeouts');
+  // Detect any player_<type> leg, not just player_strikeouts. Earlier
+  // version of this check only matched K-prop, so the new Phase-2 prop
+  // types (player_points/rebounds/assists/threes_made/shots_on_goal)
+  // were going out with the standard maxRiskPerParlay cap instead of
+  // the much smaller prop-aware maxRiskPerParlayWithProp cap. Caused
+  // the first confirmed prop fill (Hart REB + Tatum AST cross-game)
+  // to land at $90.4 SP risk despite a configured $50 prop cap.
+  const parlayHasProp = pricedLegs.some(l =>
+    typeof l.lineInfo.marketType === 'string' &&
+    /^player_/.test(l.lineInfo.marketType)
+  );
   const candidateCaps = [config.pricing.maxRiskPerParlay];
   if (parlayHasSeries) candidateCaps.push(config.pricing.maxSeriesRiskPerParlay || 500);
-  if (parlayHasProp) candidateCaps.push(config.pricing.maxRiskPerParlayWithProp || 200);
+  if (parlayHasProp) candidateCaps.push(config.pricing.maxRiskPerParlayWithProp || 50);
   const maxRisk = Math.min(...candidateCaps);
 
   // PX expects positive bettor-side American odds in offers (e.g., +215).
