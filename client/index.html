@@ -7887,18 +7887,26 @@
         svg += `<circle cx="${cx}" cy="${cy}" r="2.5" fill="#f5b942" stroke="var(--bg)" stroke-width="1"/>`;
       }
       // Final cumulative label — solid yellow chip with dark text so it
-      // pops cleanly off both the bars AND the yellow cumulative line
-      // (yellow-on-yellow blended into illegibility).
+      // pops cleanly off both the bars AND the yellow cumulative line.
+      // Anchored to the top-right corner of the chart area (above all
+      // bar data labels) with a thin dashed leader line tracing back to
+      // the actual cumulative endpoint. Operator feedback 2026-04-30:
+      // earlier placement at lastCy covered the rightmost bar's risk /
+      // P&L labels, making both the chip and labels hard to read.
       const lastCx = pad.l + (days.length - 0.5) * colW;
       const lastCy = scaleY(cumul[cumul.length - 1]);
       const lastTxt = fmtPnlK(cumul[cumul.length - 1]);
       const chipW = lastTxt.length * 7 + 14;
       const chipH = 18;
-      // Position to the right of the last point when there's room, otherwise
-      // tuck it just left of the right edge so it never gets clipped.
-      const chipX = Math.min(lastCx + 8, W - pad.r - chipW);
-      svg += `<rect x="${chipX}" y="${lastCy - chipH / 2}" width="${chipW}" height="${chipH}" fill="#f5b942" stroke="#1a1a1a" stroke-width="0.8" rx="4"/>`;
-      svg += `<text x="${chipX + chipW / 2}" y="${lastCy + 4}" font-size="11" font-weight="700" fill="#1a1a1a" text-anchor="middle">${lastTxt}</text>`;
+      const chipX = W - pad.r - chipW - 2;
+      const chipY = pad.t + 2;
+      // Leader line from chip's bottom-left to the cumulative endpoint.
+      // Dashed + low opacity so it reads as a guide, not a chart series.
+      const leaderX = chipX + 6;
+      const leaderY = chipY + chipH;
+      svg += `<line x1="${leaderX}" y1="${leaderY}" x2="${lastCx}" y2="${lastCy}" stroke="#f5b942" stroke-width="1" opacity="0.55" stroke-dasharray="2,2"/>`;
+      svg += `<rect x="${chipX}" y="${chipY}" width="${chipW}" height="${chipH}" fill="#f5b942" stroke="#1a1a1a" stroke-width="0.8" rx="4"/>`;
+      svg += `<text x="${chipX + chipW / 2}" y="${chipY + 13}" font-size="11" font-weight="700" fill="#1a1a1a" text-anchor="middle">${lastTxt}</text>`;
     }
 
     // Legend — left-aligned at bottom
