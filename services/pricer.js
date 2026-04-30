@@ -1322,7 +1322,18 @@ function priceParlay(legs, opts = {}) {
     market: l.lineInfo.marketType,
     line: l.lineInfo.line,
   }));
-  const templateDecision = templateExposure.getRampDecision(templateLegsForSig);
+  // Pass parlayId so getRampDecision can atomically reserve a pending
+  // slot on non-decline. Closes the timing race where multiple RFQs on
+  // the same signature land within seconds (faster than the confirm
+  // cycle) and all see priorCount=0 because none had confirmed yet.
+  // estStake uses the RFQ's max_risk if known so /template-exposure-stats
+  // shows realistic in-flight totals; the real confirmedStake replaces it
+  // when recordConfirmation graduates the entry.
+  const templateRfqMaxRisk = (opts && Number.isFinite(+opts.maxRisk)) ? +opts.maxRisk : 0;
+  const templateDecision = templateExposure.getRampDecision(templateLegsForSig, {
+    parlayId: opts ? opts.parlayId : null,
+    estStake: templateRfqMaxRisk,
+  });
   if (templateDecision.decline) {
     log.info('Pricing', `Declined: ${templateDecision.reason} (stake so far $${templateDecision.totalStake.toFixed(2)})`);
     priceParlay._lastFailure = {

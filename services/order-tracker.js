@@ -875,6 +875,11 @@ function recordRejection(parlayId, reason) {
   }
   // Release any pending reservation — rejection means we won't take this risk
   releasePending(parlayId);
+  // Also release the template-exposure pending lane so this RFQ stops
+  // counting toward future ramp decisions on the same signature.
+  // Confirmation path (recordConfirmation → templateExposure.recordConfirmation)
+  // already removes pending on graduation; this covers the reject path.
+  try { templateExposure.releasePending(parlayId); } catch (_) { /* best-effort */ }
   return order;
 }
 

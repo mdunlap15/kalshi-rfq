@@ -52,11 +52,27 @@ const log = require('./logger');
 const WINDOW_MS = (config.pricing.templateRampWindowHours || 24) * 60 * 60 * 1000;
 const ENABLED = config.pricing.templateRampEnabled !== false;
 
-// signature -> { confirmations: [{ parlayId, stake, confirmedAt (ms epoch) }] }
+// Pending reservation TTL — covers in-flight RFQs that haven't yet
+// resolved to confirm/reject. Closes the timing race where multiple
+// RFQs on the same signature land in seconds (faster than the
+// confirm cycle) and all see priorCount=0. Operator caught this
+// 2026-04-29 when 4 identical parlays cleared in 24s with no ramp.
+//
+// 5 minutes is long enough to span any reasonable RFQ→confirm cycle
+// (typical 3-30s) plus PX auction timeouts (~60s) plus a safety
+// buffer. Lost reservations expire on their own without leaking.
+const PENDING_TTL_MS = 5 * 60 * 1000;
+
+// signature -> {
+//   confirmations: [{ parlayId, stake, confirmedAt (ms epoch) }],
+//   pending: [{ parlayId, stake, reservedAt (ms epoch) }],
+// }
 const _exposure = {};
 
 let _stats = {
   recordedConfirmations: 0,
+  recordedPending: 0,
+  releasedPending: 0,
   signaturesActive: 0,
   lastPrunedAt: null,
   rampHits: { tier2: 0, tier3: 0, tier4: 0, decline: 0 },
@@ -135,11 +151,74 @@ function recordConfirmation(legs, parlayId, stake, confirmedAt = null) {
   if (!sig || !parlayId || !(stake > 0)) return;
   const ts = confirmedAt ? new Date(confirmedAt).getTime() : Date.now();
   if (isNaN(ts)) return;
-  if (!_exposure[sig]) _exposure[sig] = { confirmations: [] };
-  // Dedupe by parlayId
-  if (_exposure[sig].confirmations.some(c => c.parlayId === parlayId)) return;
+  if (!_exposure[sig]) _exposure[sig] = { confirmations: [], pending: [] };
+  if (!_exposure[sig].pending) _exposure[sig].pending = [];
+  // Dedupe by parlayId on the confirmed lane.
+  if (_exposure[sig].confirmations.some(c => c.parlayId === parlayId)) {
+    // Already confirmed — but make sure it's not also lingering as pending.
+    _exposure[sig].pending = _exposure[sig].pending.filter(p => p.parlayId !== parlayId);
+    return;
+  }
   _exposure[sig].confirmations.push({ parlayId, stake, confirmedAt: ts });
+  // Graduate from pending → confirmed: remove any matching pending entry
+  // so the parlay isn't counted twice on next exposure read.
+  _exposure[sig].pending = _exposure[sig].pending.filter(p => p.parlayId !== parlayId);
   _stats.recordedConfirmations++;
+}
+
+/**
+ * Reserve a pending slot for an in-flight RFQ. Called from the pricer
+ * once we've decided to quote (i.e. ramp decision was non-decline).
+ * Subsequent RFQs on the same signature will see this reservation in
+ * priorCount, closing the timing race where 4 RFQs in 24s all see
+ * count=0 because none had confirmed yet.
+ *
+ * Idempotent: same parlayId reserving twice is a no-op (e.g. retried
+ * pricing on the same RFQ shouldn't double-count).
+ *
+ * Stake is approximate at reservation time (RFQ's max_risk or 0). The
+ * actual confirmedStake is recorded later via recordConfirmation, which
+ * also removes the pending entry as part of the graduation.
+ */
+function reservePending(legs, parlayId, stake = 0) {
+  if (!ENABLED) return;
+  const sig = canonicalSignature(legs);
+  if (!sig || !parlayId) return;
+  if (!_exposure[sig]) _exposure[sig] = { confirmations: [], pending: [] };
+  if (!_exposure[sig].pending) _exposure[sig].pending = [];
+  // Dedupe across BOTH lanes — already confirmed shouldn't get a pending too.
+  if (_exposure[sig].confirmations.some(c => c.parlayId === parlayId)) return;
+  if (_exposure[sig].pending.some(p => p.parlayId === parlayId)) return;
+  _exposure[sig].pending.push({
+    parlayId,
+    stake: Number.isFinite(+stake) && +stake > 0 ? +stake : 0,
+    reservedAt: Date.now(),
+  });
+  _stats.recordedPending++;
+}
+
+/**
+ * Release a pending reservation. Called when a quote is rejected,
+ * declined post-pricing, or otherwise definitively will not become a
+ * confirmation. Safe to call on a parlayId that was never reserved
+ * or has already graduated to confirmed (no-op in those cases).
+ *
+ * Searches all signatures because the caller (rejection handler)
+ * typically has parlayId but not the legs at that point. Cheap because
+ * pending is small per signature and most signatures have zero pending.
+ */
+function releasePending(parlayId) {
+  if (!ENABLED) return;
+  if (!parlayId) return;
+  let removed = 0;
+  for (const sig of Object.keys(_exposure)) {
+    const entry = _exposure[sig];
+    if (!entry.pending || entry.pending.length === 0) continue;
+    const before = entry.pending.length;
+    entry.pending = entry.pending.filter(p => p.parlayId !== parlayId);
+    removed += (before - entry.pending.length);
+  }
+  if (removed > 0) _stats.releasedPending += removed;
 }
 
 /**
@@ -148,22 +227,48 @@ function recordConfirmation(legs, parlayId, stake, confirmedAt = null) {
  */
 function getExposure(legs, nowMs = null) {
   const sig = canonicalSignature(legs);
-  if (!sig || !_exposure[sig]) return { signature: sig, count: 0, totalStake: 0, firstAt: null, lastAt: null };
-  const now = nowMs || Date.now();
-  const cutoff = now - WINDOW_MS;
-  const entry = _exposure[sig];
-  entry.confirmations = entry.confirmations.filter(c => c.confirmedAt >= cutoff);
-  if (entry.confirmations.length === 0) {
-    delete _exposure[sig];
-    return { signature: sig, count: 0, totalStake: 0, firstAt: null, lastAt: null };
+  if (!sig || !_exposure[sig]) {
+    return {
+      signature: sig, count: 0, confirmedCount: 0, pendingCount: 0,
+      totalStake: 0, firstAt: null, lastAt: null,
+    };
   }
-  const totalStake = entry.confirmations.reduce((s, c) => s + c.stake, 0);
-  const firstAt = Math.min(...entry.confirmations.map(c => c.confirmedAt));
-  const lastAt = Math.max(...entry.confirmations.map(c => c.confirmedAt));
+  const now = nowMs || Date.now();
+  const confirmedCutoff = now - WINDOW_MS;
+  const pendingCutoff = now - PENDING_TTL_MS;
+  const entry = _exposure[sig];
+  entry.confirmations = entry.confirmations.filter(c => c.confirmedAt >= confirmedCutoff);
+  entry.pending = (entry.pending || []).filter(p => p.reservedAt >= pendingCutoff);
+  // Combined count is what drives the ramp decision — confirmed plus
+  // in-flight reservations. This closes the timing race where multiple
+  // RFQs on the same signature land before any confirms.
+  const confirmedCount = entry.confirmations.length;
+  const pendingCount = entry.pending.length;
+  const totalCount = confirmedCount + pendingCount;
+  if (totalCount === 0) {
+    delete _exposure[sig];
+    return {
+      signature: sig, count: 0, confirmedCount: 0, pendingCount: 0,
+      totalStake: 0, firstAt: null, lastAt: null,
+    };
+  }
+  const confirmedStake = entry.confirmations.reduce((s, c) => s + c.stake, 0);
+  const pendingStake = entry.pending.reduce((s, p) => s + p.stake, 0);
+  const totalStake = confirmedStake + pendingStake;
+  const allTimes = [
+    ...entry.confirmations.map(c => c.confirmedAt),
+    ...entry.pending.map(p => p.reservedAt),
+  ];
+  const firstAt = Math.min(...allTimes);
+  const lastAt = Math.max(...allTimes);
   return {
     signature: sig,
-    count: entry.confirmations.length,
+    count: totalCount,
+    confirmedCount,
+    pendingCount,
     totalStake,
+    confirmedStake,
+    pendingStake,
     firstAt: new Date(firstAt).toISOString(),
     lastAt: new Date(lastAt).toISOString(),
   };
@@ -176,14 +281,31 @@ function getExposure(legs, nowMs = null) {
 /**
  * Given a parlay's legs, return the ramp decision:
  *   { extraVig: number, decline: boolean, reason: string|null,
- *     count: number, totalStake: number }
+ *     count: number, confirmedCount: number, pendingCount: number,
+ *     totalStake: number }
  *
- * count is the number of prior confirmations on this signature inside
- * the window. The current RFQ is NOT counted — the ramp applies to the
- * nth bet based on how many identical bets have ALREADY confirmed.
+ * count is the number of prior bets on this signature inside the window —
+ * sum of CONFIRMED bets and in-flight PENDING reservations. The current
+ * RFQ is NOT counted yet; if the decision is non-decline AND opts.parlayId
+ * is supplied, this call will atomically reserve a pending slot for it
+ * so the next concurrent RFQ on the same signature sees an incremented
+ * count.
+ *
+ * Closes the timing race observed 2026-04-29 where 4 identical parlays
+ * cleared in 24s with no ramp because none had confirmed yet.
+ *
+ * @param {Array} legs - parlay legs (team/market/line tuples)
+ * @param {object} [opts]
+ * @param {string} [opts.parlayId] - if provided, auto-reserves on non-decline
+ * @param {number} [opts.estStake] - estimated stake at quote time (max_risk)
  */
-function getRampDecision(legs) {
-  if (!ENABLED) return { extraVig: 0, decline: false, reason: null, count: 0, totalStake: 0 };
+function getRampDecision(legs, opts = {}) {
+  if (!ENABLED) {
+    return {
+      extraVig: 0, decline: false, reason: null,
+      count: 0, confirmedCount: 0, pendingCount: 0, totalStake: 0,
+    };
+  }
   const exp = getExposure(legs);
   const priorCount = exp.count;
 
@@ -197,8 +319,11 @@ function getRampDecision(legs) {
     _stats.rampHits.decline++;
     return {
       extraVig: 0, decline: true,
-      reason: `template_cap: ${priorCount} prior confirmations on this signature in ${WINDOW_MS / 3600000}h window`,
-      count: priorCount, totalStake: exp.totalStake,
+      reason: `template_cap: ${priorCount} prior bets on this signature (${exp.confirmedCount} confirmed + ${exp.pendingCount} pending) in ${WINDOW_MS / 3600000}h window`,
+      count: priorCount,
+      confirmedCount: exp.confirmedCount,
+      pendingCount: exp.pendingCount,
+      totalStake: exp.totalStake,
     };
   }
 
@@ -207,7 +332,22 @@ function getRampDecision(legs) {
   else if (priorCount === 2) { extraVig = tier3Add; _stats.rampHits.tier3++; }
   else if (priorCount >= 3)  { extraVig = tier4Add; _stats.rampHits.tier4++; }
 
-  return { extraVig, decline: false, reason: null, count: priorCount, totalStake: exp.totalStake };
+  // Atomically reserve a pending slot so the NEXT concurrent RFQ on
+  // this signature sees an incremented count. This is the timing-race
+  // fix: 4 RFQs in 24s used to all see priorCount=0 because none had
+  // confirmed yet. Now the 2nd sees count=1, 3rd sees count=2, 4th
+  // sees count=3, and each gets the matching ramp tier.
+  if (opts && opts.parlayId) {
+    reservePending(legs, opts.parlayId, opts.estStake);
+  }
+
+  return {
+    extraVig, decline: false, reason: null,
+    count: priorCount,
+    confirmedCount: exp.confirmedCount,
+    pendingCount: exp.pendingCount,
+    totalStake: exp.totalStake,
+  };
 }
 
 // --------------------------------------------------------------------
@@ -216,15 +356,26 @@ function getRampDecision(legs) {
 
 function prune(nowMs = null) {
   const now = nowMs || Date.now();
-  const cutoff = now - WINDOW_MS;
+  const confirmedCutoff = now - WINDOW_MS;
+  const pendingCutoff = now - PENDING_TTL_MS;
   let pruned = 0;
+  let pendingDropped = 0;
   for (const sig of Object.keys(_exposure)) {
     const entry = _exposure[sig];
-    entry.confirmations = entry.confirmations.filter(c => c.confirmedAt >= cutoff);
-    if (entry.confirmations.length === 0) { delete _exposure[sig]; pruned++; }
+    entry.confirmations = entry.confirmations.filter(c => c.confirmedAt >= confirmedCutoff);
+    if (entry.pending && entry.pending.length > 0) {
+      const before = entry.pending.length;
+      entry.pending = entry.pending.filter(p => p.reservedAt >= pendingCutoff);
+      pendingDropped += (before - entry.pending.length);
+    }
+    if (entry.confirmations.length === 0 && (!entry.pending || entry.pending.length === 0)) {
+      delete _exposure[sig];
+      pruned++;
+    }
   }
   _stats.lastPrunedAt = new Date(now).toISOString();
   _stats.signaturesActive = Object.keys(_exposure).length;
+  if (pendingDropped > 0) _stats.releasedPending += pendingDropped;
   return pruned;
 }
 
@@ -266,18 +417,28 @@ function rebuildFromOrders(orders) {
 // --------------------------------------------------------------------
 
 function getStats() {
-  // Snapshot — include top-N active signatures by count for observability
+  // Snapshot — include top-N active signatures by combined count
+  // (confirmed + pending) for observability.
   const top = Object.entries(_exposure)
-    .map(([sig, e]) => ({
-      signature: sig.slice(0, 100) + (sig.length > 100 ? '…' : ''),
-      count: e.confirmations.length,
-      totalStake: e.confirmations.reduce((s, c) => s + c.stake, 0),
-    }))
+    .map(([sig, e]) => {
+      const confirmedCount = (e.confirmations || []).length;
+      const pendingCount = (e.pending || []).length;
+      const stake = (e.confirmations || []).reduce((s, c) => s + c.stake, 0)
+        + (e.pending || []).reduce((s, p) => s + p.stake, 0);
+      return {
+        signature: sig.slice(0, 100) + (sig.length > 100 ? '…' : ''),
+        count: confirmedCount + pendingCount,
+        confirmedCount,
+        pendingCount,
+        totalStake: stake,
+      };
+    })
     .sort((a, b) => b.count - a.count || b.totalStake - a.totalStake)
     .slice(0, 10);
   return {
     enabled: ENABLED,
     windowHours: WINDOW_MS / 3600000,
+    pendingTtlSeconds: PENDING_TTL_MS / 1000,
     ..._stats,
     // Override _stats.signaturesActive with a live count (prune/rebuild
     // only update the stale field on their own schedules).
@@ -295,6 +456,8 @@ function getStats() {
 module.exports = {
   canonicalSignature,
   recordConfirmation,
+  reservePending,
+  releasePending,
   getExposure,
   getRampDecision,
   prune,
