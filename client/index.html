@@ -4863,14 +4863,19 @@
       html += '<td><div style="background:var(--surface); border-radius:4px; height:6px; overflow:hidden;"><div style="background:' + barColor + '; width:' + Math.min(pct, 100) + '%; height:100%; border-radius:4px;"></div></div></td>';
       html += '</tr>';
 
-      // Expandable: show which parlays contribute
+      // Expandable: show which parlays contribute. Mirrors the Team
+      // Exposure drill-down — for each parlay touching this game, show
+      // the THIS-GAME selection AND the full parlay's leg list (looked
+      // up from orderState.allOrders by parlayId), so operator can see
+      // what other markets this game's exposure is bundled with.
       let detail = '<table style="width:100%; font-size:11px;">';
       detail += '<tr style="color:var(--text3);">'
-        + '<th style="text-align:left; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,0,false)" title="Sort alphabetically">Selection</th>'
-        + '<th style="text-align:left; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,1,true)" title="Sort by leg count">Legs</th>'
-        + '<th style="text-align:right; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,2,true)" title="Sort by weighted risk">Weighted Risk</th>'
-        + '<th style="text-align:right; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,3,true)" title="Sort by my risk">My Risk</th>'
-        + '<th style="text-align:right; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,4,true)" title="Sort by to-win">To Win</th>'
+        + '<th style="text-align:left; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,0,false)" title="Sort alphabetically">This-Game Leg</th>'
+        + '<th style="text-align:left; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,1,false)" title="Sort alphabetically">All Legs</th>'
+        + '<th style="text-align:left; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,2,true)" title="Sort by leg count">Legs</th>'
+        + '<th style="text-align:right; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,3,true)" title="Sort by weighted risk">Weighted Risk</th>'
+        + '<th style="text-align:right; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,4,true)" title="Sort by my risk">My Risk</th>'
+        + '<th style="text-align:right; padding:2px 6px; cursor:pointer; user-select:none;" onclick="sortInlineTable(event,this,5,true)" title="Sort by to-win">To Win</th>'
         + '</tr>';
       for (const p of (g.parlays || [])) {
         // Build a specific "<Team> <±Line>" label. Prefer the concrete
@@ -4899,7 +4904,15 @@
           // Fallback for unknown market types — keep old shape
           sel = (p.market || '') + (p.selection ? ' ' + p.selection : '');
         }
-        detail += '<tr><td style="padding:2px 6px;">' + escapeHtml(sel) + '</td>';
+        // Look up the full parlay (by parlayId) so we can render all of
+        // its legs alongside the this-game leg. Falls back to '-' when
+        // the parlay isn't in the client-side cache yet.
+        const parentOrder = (p.parlayId && orderState.allOrders) ? orderState.allOrders[p.parlayId] : null;
+        const parentLegs = parentOrder ? (parentOrder.legs || parentOrder.meta?.legs || []) : [];
+        const allLegsLabel = parentLegs.length > 0 ? formatParlaySelections(parentLegs) : '—';
+        detail += '<tr>';
+        detail += '<td style="padding:2px 6px;">' + escapeHtml(sel) + '</td>';
+        detail += '<td style="padding:2px 6px; max-width:280px; overflow:hidden; text-overflow:ellipsis;" title="' + escapeHtml(allLegsLabel) + '">' + escapeHtml(allLegsLabel) + '</td>';
         detail += '<td style="padding:2px 6px;">' + p.legCount + '-leg</td>';
         detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.weightedRisk) + '</td>';
         detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.payout) + '</td>';
