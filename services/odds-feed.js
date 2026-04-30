@@ -6015,7 +6015,7 @@ function getPitcherSide(sport, homeTeam, awayTeam, commenceTime, playerName) {
 // ---------------------------------------------------------------------------
 
 const scoresCache = {}; // { sport: { fetchedAt, games: [{ homeTeam, awayTeam, commenceTime, completed, homeScore, awayScore }] } }
-const SCORES_TTL_MS = 2 * 60 * 1000; // 2 minute cache
+const SCORES_TTL_MS = 30 * 1000; // 30s cache — pairs with checkLegResults running every 30s. Bounds TOA hit rate while keeping completion latency low.
 
 // Cache of active sport keys discovered from The Odds API's /v4/sports/.
 // Used to expand 'soccer' (generic) into per-league fetches. The list

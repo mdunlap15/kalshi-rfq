@@ -3689,7 +3689,7 @@
       const posWpColor = posDead ? 'var(--green)' : posWinProb >= 0.8 ? 'var(--green)' : posWinProb >= 0.5 ? 'var(--text)' : posWinProb >= 0.3 ? 'var(--amber)' : 'var(--red)';
       const anyInProgress = gameStatus.label === 'In Progress';
       const posWpLabel = posDead ? '<span style="color:var(--green); font-weight:600;">100% ✓</span>'
-        : anyInProgress ? '<span style="color:' + posWpColor + '; font-weight:600;">' + posWpPct + '%</span>' + (posHasLive ? ' <span style="font-size:9px; color:var(--green);">LIVE</span>' : '')
+        : anyInProgress ? '<span style="color:' + posWpColor + '; font-weight:600;">' + posWpPct + '%</span>' + (posHasLive ? ' <span style="font-size:9px; color:var(--green);">LIVE</span>' + formatLiveStaleness(mLegs) : '')
         : '<span style="color:var(--text3);">' + posWpPct + '%</span>';
 
       const rowKey = 'pos-' + (order.parlayId || '');
@@ -6196,7 +6196,7 @@
       const wpColor = alreadyDead ? 'var(--green)' : winProb >= 0.8 ? 'var(--green)' : winProb >= 0.5 ? 'var(--text)' : winProb >= 0.3 ? 'var(--amber)' : 'var(--red)';
       // Only show for in-progress or if we have live data; show pre-game estimate for upcoming
       const winProbLabel = alreadyDead ? '<span style="color:var(--green); font-weight:600;">100% ✓</span>'
-        : anyStarted ? '<span style="color:' + wpColor + '; font-weight:600;">' + winProbPct + '%</span>' + (hasLiveData ? ' <span style="font-size:9px; color:var(--green);">LIVE</span>' : '')
+        : anyStarted ? '<span style="color:' + wpColor + '; font-weight:600;">' + winProbPct + '%</span>' + (hasLiveData ? ' <span style="font-size:9px; color:var(--green);">LIVE</span>' + formatLiveStaleness(legs) : '')
         : '<span style="color:var(--text3);">' + winProbPct + '%</span>';
 
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">' +
@@ -9581,25 +9581,24 @@
       return 0;
     });
     const arrow = (col) => state.col === col ? (state.dir > 0 ? ' ▲' : ' ▼') : '';
-    const cls = 'style="cursor:pointer; user-select:none;"';
-    const th = (col, label, align) => `<th ${cls} onclick="_togglePnlSort('${which}','${col}')" style="text-align:${align}; cursor:pointer;">${label}${arrow(col)}</th>`;
+    const th = (col, label, align) => `<th onclick="_togglePnlSort('${which}','${col}')" style="text-align:${align}; cursor:pointer; user-select:none; padding:6px 8px;">${label}${arrow(col)}</th>`;
     let html = '<div style="overflow-x:auto;"><table style="width:100%; font-size:12px;">'
       + '<thead><tr style="color:var(--text3); border-bottom:1px solid var(--border);">'
       + th('label', labelHeader, 'left')
-      + th('pnl', 'P&L', 'right')
-      + th('wins', 'Wins', 'right')
-      + th('losses', 'Losses', 'right')
-      + th('count', 'Count', 'right')
+      + th('pnl', 'P&L', 'center')
+      + th('wins', 'Wins', 'center')
+      + th('losses', 'Losses', 'center')
+      + th('count', 'Count', 'center')
       + '</tr></thead><tbody>';
     for (const r of sorted) {
       const pnlCls = r.pnl > 0 ? 'positive' : r.pnl < 0 ? 'negative' : 'neutral';
       const pnlStr = (r.pnl >= 0 ? '+$' : '-$') + Math.abs(r.pnl).toFixed(2);
       html += '<tr style="border-bottom:1px solid var(--border);">'
         + '<td style="padding:6px 8px;">' + labelRender(r.label) + '</td>'
-        + '<td style="padding:6px 8px; text-align:right;" class="' + pnlCls + '">' + pnlStr + '</td>'
-        + '<td style="padding:6px 8px; text-align:right; color:var(--green);">' + r.wins + '</td>'
-        + '<td style="padding:6px 8px; text-align:right; color:var(--red);">' + r.losses + '</td>'
-        + '<td style="padding:6px 8px; text-align:right; color:var(--text2);">' + r.count + '</td>'
+        + '<td style="padding:6px 8px; text-align:center;" class="' + pnlCls + '">' + pnlStr + '</td>'
+        + '<td style="padding:6px 8px; text-align:center; color:var(--green);">' + r.wins + '</td>'
+        + '<td style="padding:6px 8px; text-align:center; color:var(--red);">' + r.losses + '</td>'
+        + '<td style="padding:6px 8px; text-align:center; color:var(--text2);">' + r.count + '</td>'
         + '</tr>';
     }
     html += '</tbody></table></div>';
@@ -11688,6 +11687,30 @@
       return inferred; // our score-based result is more reliable
     }
     return pxStatus || inferred || null;
+  }
+
+  /** Format the most recent liveFairProbUpdatedAt across a leg list as
+   * "(updated Xs/m/h ago)". Returns '' when no leg has live timing data.
+   * Used next to the LIVE badge so staleness is visible — a frozen
+   * 2-min-old prob looks different from a fresh 15s-old one. */
+  function formatLiveStaleness(legs) {
+    if (!Array.isArray(legs)) return '';
+    let mostRecentMs = 0;
+    for (const l of legs) {
+      const ts = l && (l.liveFairProbUpdatedAt || l.live_fair_prob_updated_at);
+      if (!ts) continue;
+      const ms = new Date(ts).getTime();
+      if (Number.isFinite(ms) && ms > mostRecentMs) mostRecentMs = ms;
+    }
+    if (!mostRecentMs) return '';
+    const ageSec = Math.max(0, Math.round((Date.now() - mostRecentMs) / 1000));
+    let label;
+    if (ageSec < 60) label = ageSec + 's';
+    else if (ageSec < 3600) label = Math.round(ageSec / 60) + 'm';
+    else label = (ageSec / 3600).toFixed(1) + 'h';
+    // Color: green when fresh (<90s), amber 90s-5min, red beyond
+    const color = ageSec < 90 ? 'var(--text3)' : ageSec < 300 ? 'var(--amber)' : 'var(--red)';
+    return ' <span style="font-size:9px; color:' + color + ';" title="Live odds last updated ' + new Date(mostRecentMs).toLocaleTimeString() + '">(' + label + ' ago)</span>';
   }
 
   /** Compound per-leg sportsbook odds into parlay American odds.

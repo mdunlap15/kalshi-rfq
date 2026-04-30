@@ -397,7 +397,12 @@ async function startup() {
     }
   }, refreshMs);
 
-  // Check game results every 2 minutes for early win detection + fix bogus settlements
+  // Check game results every 30s for early win detection + fix bogus
+  // settlements. checkLegResults already early-exits when there are no
+  // in-progress legs to check, and the underlying TOA /scores fetch is
+  // bounded by scoresCache TTL — so the cost during quiet windows is
+  // ~zero. During live games this cuts dashboard staleness on completed
+  // games from up to 4 min (2-min interval + 2-min cache) to under 1 min.
   setInterval(async () => {
     try {
       orderTracker.revertBogusSettlements();
@@ -407,15 +412,13 @@ async function startup() {
       // for SP, but PX hasn't settled yet) drop out of Team / Game
       // Exposure totals immediately. Without this, capacity stays
       // tied up by parlays we can't lose until PX settles them.
-      // Cheap to run — resolved-leg inserts are rare per cycle and
-      // rebuild is O(orders) anyway.
       try { orderTracker.rebuildAllExposure(); } catch (err) {
         log.debug('Results', `post-check rebuildAllExposure failed: ${err.message}`);
       }
     } catch (err) {
       log.debug('Results', `Result check failed: ${err.message}`);
     }
-  }, 2 * 60 * 1000);
+  }, 30 * 1000);
 
   // Settlement drift monitor — every 5 min scan PX settled orders and flag
   // any divergence from local state. Runs independently of the settlement

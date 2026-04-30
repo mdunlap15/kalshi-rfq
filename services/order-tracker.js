@@ -3134,8 +3134,12 @@ async function refreshLiveOdds(oddsFeed) {
       const startMs = leg.startTime ? new Date(leg.startTime).getTime() : null;
       if (!startMs || isNaN(startMs)) continue;
       if (startMs > now) continue; // not started yet
-      // Skip legs where game is likely over (>4h since start)
-      if (now - startMs > 4 * 60 * 60 * 1000) continue;
+      // Skip legs where game is very likely over. Bumped from 4h → 5h
+      // to cover extra-innings MLB, NBA/NHL OT, and ceremonial-end
+      // padding — these were freezing on the dashboard at the 4h mark
+      // because the live-odds refresher abandoned them while the game
+      // was still in progress.
+      if (now - startMs > 5 * 60 * 60 * 1000) continue;
       const sport = leg.sport || leg.oddsApiSport;
       if (!sport) continue;
       if (!inProgressLegsBySport[sport]) inProgressLegsBySport[sport] = [];
@@ -3948,10 +3952,19 @@ async function checkLegResults() {
 
       if (l.inferredResult) {
         resolved++;
-        // Sync inferredResult to o.legs as well (frontend may read either source)
+        // Clear liveFairProb so the dashboard stops rendering a frozen
+        // in-game probability next to a resolved leg. The dashboard
+        // should display the result chip (won/lost/push) instead.
+        l.liveFairProb = null;
+        l.liveFairProbUpdatedAt = null;
+        // Sync inferredResult + cleared live prob to o.legs as well (frontend may read either source)
         if (o.legs) {
           const matchingLeg = o.legs.find(ol => ol.lineId === l.lineId || ((ol.team || ol.teamName) === (l.team || l.teamName) && (ol.market || ol.marketType) === market));
-          if (matchingLeg) matchingLeg.inferredResult = l.inferredResult;
+          if (matchingLeg) {
+            matchingLeg.inferredResult = l.inferredResult;
+            matchingLeg.liveFairProb = null;
+            matchingLeg.liveFairProbUpdatedAt = null;
+          }
         }
         log.info('Results', `Leg resolved: ${l.team} ${market} → ${l.inferredResult} (${result.homeScore}-${result.awayScore})`);
       }
