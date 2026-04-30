@@ -974,6 +974,68 @@ function startStatusServer() {
     }
   });
 
+  // Phase-1 prop shadow inspector. Pulls rows we logged into
+  // prop_shadow_quotes for a given propType (e.g. 'points',
+  // 'pitcher_strikeouts') and reports counts + a few sample rows so
+  // we can verify the matching pipeline is working before flipping a
+  // prop type to live quoting.
+  //
+  // Query params:
+  //   propType (required) — prop_type column to filter on
+  //   days     (default 7) — lookback window
+  //   sample   (default 25) — how many newest rows to include verbatim
+  app.get('/prop-shadow', async (req, res) => {
+    try {
+      const propType = String(req.query.propType || '').trim();
+      if (!propType) return res.status(400).json({ ok: false, error: 'propType query param required' });
+      const days = Math.max(1, Math.min(30, parseInt(req.query.days) || 7));
+      const sample = Math.max(1, Math.min(200, parseInt(req.query.sample) || 25));
+      const fromIso = new Date(Date.now() - days * 86400000).toISOString();
+      const rows = await db.loadPropShadowQuotes({ propType, fromIso, limit: 5000 });
+      let matched = 0, unmatched = 0;
+      const errorsByType = {};
+      const bySource = {};
+      const playerCounts = {};
+      for (const r of rows) {
+        const ok = r.fair_prob_over != null && r.fair_prob_under != null;
+        if (ok) matched++; else unmatched++;
+        if (r.match_error) errorsByType[r.match_error] = (errorsByType[r.match_error] || 0) + 1;
+        if (r.source) bySource[r.source] = (bySource[r.source] || 0) + 1;
+        if (r.player_name) playerCounts[r.player_name] = (playerCounts[r.player_name] || 0) + 1;
+      }
+      const topPlayers = Object.entries(playerCounts)
+        .sort((a, b) => b[1] - a[1]).slice(0, 10)
+        .map(([name, n]) => ({ name, n }));
+      res.json({
+        ok: true,
+        generatedAt: new Date().toISOString(),
+        propType, windowDays: days,
+        totalRows: rows.length,
+        matched, unmatched,
+        matchRate: rows.length ? Math.round((matched / rows.length) * 1000) / 10 : null,
+        errorsByType, bySource, topPlayers,
+        sample: rows.slice(0, sample).map(r => ({
+          recordedAt: r.recorded_at,
+          parlayId: r.parlay_id,
+          pxEventId: r.px_event_id,
+          marketName: r.market_name,
+          playerName: r.player_name,
+          line: r.line,
+          source: r.source,
+          fairProbOver: r.fair_prob_over,
+          fairProbUnder: r.fair_prob_under,
+          booksWithBothSides: r.books_with_both_sides,
+          books: r.books,
+          matchError: r.match_error,
+          matchStages: r.match_stages,
+        })),
+      });
+    } catch (err) {
+      log.error('API', `/prop-shadow failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Phase 2 K-prop performance dashboard data. One-stop view of:
   //   - Funnel (RFQs → declines by reason → quotes → fills → settled)
   //   - Competitiveness (avg pp distance from fair, won/lost bid breakdown)

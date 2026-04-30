@@ -1025,6 +1025,24 @@ async function loadKV(key) {
 //   );
 //   -- One-time migration if upgrading from the no-source schema:
 //   --   ALTER TABLE prop_shadow_quotes ADD COLUMN source TEXT;
+// Read counterpart for prop_shadow_quotes — used by /prop-shadow to
+// inspect Phase-1 shadow rows by propType (e.g. NBA 'points', MLB
+// 'pitcher_strikeouts'). Returns at most `limit` rows newest-first.
+async function loadPropShadowQuotes({ propType, fromIso, limit } = {}) {
+  const db = getClient();
+  if (!db) return [];
+  let q = db.from('prop_shadow_quotes').select('*').order('recorded_at', { ascending: false });
+  if (propType) q = q.eq('prop_type', propType);
+  if (fromIso) q = q.gte('recorded_at', fromIso);
+  q = q.limit(Math.min(5000, limit || 500));
+  const { data, error } = await q;
+  if (error) {
+    log.error('DB', `loadPropShadowQuotes failed: ${error.message}`);
+    return [];
+  }
+  return data || [];
+}
+
 async function savePropShadowQuote(entry) {
   const db = getClient();
   if (!db) return;
@@ -1074,6 +1092,7 @@ module.exports = {
   loadDeclines,
   lookupDecline,
   savePropShadowQuote,
+  loadPropShadowQuotes,
   saveKV,
   loadKV,
   saveLineCache,
