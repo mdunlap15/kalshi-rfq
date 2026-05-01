@@ -638,8 +638,18 @@ async function loadLineCacheBulk(lineIds) {
 async function loadAllRecentLineCache(maxAgeDays = 1) {
   const db = getClient();
   if (!db) return {};
-  const cutoff = new Date(Date.now() - maxAgeDays * 24 * 3600 * 1000).toISOString();
+  // Cutoff filters to lines whose start_time is in the future or recent
+  // past. Hydrating yesterday's finished games clutters the Lines tab
+  // with stale entries that never get re-registered (PX no longer
+  // emits markets for settled events). Default 6 hours back catches
+  // in-progress games (started up to ~6h ago, still on the books)
+  // while excluding finished games. Caller can override via maxAgeDays.
+  // Calling convention preserved for back-compat — maxAgeDays > 1
+  // maps to extended history (rare).
+  const lookbackMs = maxAgeDays >= 1 ? Math.min(maxAgeDays * 24, 6) * 3600 * 1000 : 6 * 3600 * 1000;
+  const cutoff = new Date(Date.now() - lookbackMs).toISOString();
   const result = {};
+  let propRowsSkipped = 0;
   try {
     // Supabase paginates at 1000 rows by default — page through with
     // range() until we get an empty page or hit a large safety cap.
@@ -658,6 +668,16 @@ async function loadAllRecentLineCache(maxAgeDays = 1) {
       }
       if (!data || data.length === 0) break;
       for (const row of data) {
+        // Skip player prop rows — line_cache doesn't store the prop
+        // bridge's fair-prob fields (fairProbOver, fairProbUnder,
+        // booksWithBothSides, etc.), so hydrated prop lines would
+        // appear in the Lines tab with null fair-prob and decline at
+        // quote time. Prop lines re-register on-demand via
+        // resolveUnknownLine when PX RFQs them — no hydration needed.
+        if (row.market_type && /^player_/.test(row.market_type)) {
+          propRowsSkipped++;
+          continue;
+        }
         result[row.line_id] = {
           sport: row.sport,
           pxEventId: row.px_event_id,
@@ -680,7 +700,7 @@ async function loadAllRecentLineCache(maxAgeDays = 1) {
       if (data.length < PAGE) break;
       from += PAGE;
     }
-    log.info('DB', `loadAllRecentLineCache: hydrated ${Object.keys(result).length} lines (start_time > ${cutoff})`);
+    log.info('DB', `loadAllRecentLineCache: hydrated ${Object.keys(result).length} game-line rows, skipped ${propRowsSkipped} prop rows (start_time > ${cutoff})`);
   } catch (err) {
     log.warn('DB', `loadAllRecentLineCache error: ${err.message}`);
   }
