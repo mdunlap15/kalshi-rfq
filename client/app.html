@@ -20,13 +20,15 @@
       --accent: #58a6ff;
       --green: #3fb950;
       --red: #f85149;
+      --amber: #f5b942;
+      --tab-bar-h: 56px;
     }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--bg);
       color: var(--text);
       min-height: 100vh;
-      padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+      padding: env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + var(--tab-bar-h));
     }
 
     .header {
@@ -84,7 +86,6 @@
     .stat-card .value.positive { color: var(--green); }
     .stat-card .value.negative { color: var(--red); }
 
-    /* Collapsed summary shows 3 key numbers inline — Balance · Open · P&L */
     .summary-peek {
       display: none;
       padding: 6px 12px;
@@ -101,7 +102,6 @@
     .summary-peek .item strong.positive { color: var(--green); }
     .summary-peek .item strong.negative { color: var(--red); }
 
-    /* Header toggle button to collapse/expand stats */
     .stats-toggle {
       background: var(--surface2);
       border: 1px solid var(--border);
@@ -139,10 +139,7 @@
       align-items: center;
       padding: 10px 12px;
     }
-    .parlay-card .odds {
-      font-size: 16px;
-      font-weight: 600;
-    }
+    .parlay-card .odds { font-size: 16px; font-weight: 600; }
     .parlay-card .result {
       font-size: 11px;
       font-weight: 600;
@@ -154,34 +151,6 @@
     .parlay-card .result.lost { background: rgba(248, 81, 73, 0.15); color: var(--red); }
     .parlay-card .result.push { background: rgba(139, 148, 158, 0.15); color: var(--text2); }
     .parlay-card .result.confirmed { background: rgba(88, 166, 255, 0.15); color: var(--accent); }
-
-    .parlay-card .legs {
-      padding: 0 12px 10px;
-      font-size: 12px;
-      color: var(--text2);
-    }
-    .parlay-card .leg {
-      padding: 3px 0;
-      display: flex;
-      justify-content: space-between;
-      border-top: 1px solid var(--border);
-    }
-    .parlay-card .leg:first-child { border-top: none; }
-    .parlay-card .leg .leg-result { font-size: 11px; }
-    .parlay-card .leg .leg-result.won { color: var(--green); }
-    .parlay-card .leg .leg-result.lost { color: var(--red); }
-
-    .parlay-card .card-footer {
-      display: flex;
-      justify-content: space-between;
-      padding: 6px 12px;
-      font-size: 11px;
-      color: var(--text2);
-      background: var(--surface2);
-    }
-    .parlay-card .pnl { font-weight: 600; }
-    .parlay-card .pnl.positive { color: var(--green); }
-    .parlay-card .pnl.negative { color: var(--red); }
 
     .notify-banner {
       margin: 12px 16px;
@@ -238,6 +207,33 @@
     }
     .tab-btn.active .count { background: var(--accent); color: #fff; }
     .tab-btn:not(.active):active { background: var(--surface2); }
+
+    /* Sport filter chips above parlay list */
+    .sport-filter {
+      display: flex;
+      gap: 6px;
+      padding: 8px 12px 4px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .sport-filter::-webkit-scrollbar { display: none; }
+    .sport-chip {
+      flex: 0 0 auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 4px 10px;
+      font-size: 11px;
+      color: var(--text2);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .sport-chip.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
     .parlay-table-wrap {
       padding: 0 12px 16px;
       background: var(--surface);
@@ -258,43 +254,13 @@
     }
     .parlay-row:first-child { border-top: none; }
     .parlay-row:active { background: var(--surface2); }
-    .parlay-row .main {
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-    }
-    .parlay-row .selections {
-      font-size: 13px;
-      font-weight: 500;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .parlay-row .meta {
-      font-size: 11px;
-      color: var(--text2);
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
+    .parlay-row .main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .parlay-row .selections { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .parlay-row .meta { font-size: 11px; color: var(--text2); display: flex; gap: 8px; flex-wrap: wrap; }
     .parlay-row .meta .sep { color: var(--border); }
-    .parlay-row .right {
-      text-align: right;
-      display: flex;
-      flex-direction: column;
-      align-items: flex-end;
-      gap: 2px;
-      white-space: nowrap;
-    }
-    .parlay-row .odds {
-      font-size: 15px;
-      font-weight: 600;
-    }
-    .parlay-row .pnl {
-      font-size: 12px;
-      font-weight: 600;
-    }
+    .parlay-row .right { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; white-space: nowrap; }
+    .parlay-row .odds { font-size: 15px; font-weight: 600; }
+    .parlay-row .pnl { font-size: 12px; font-weight: 600; }
     .parlay-row .pnl.positive { color: var(--green); }
     .parlay-row .pnl.negative { color: var(--red); }
     .parlay-row .pill {
@@ -310,105 +276,254 @@
     .parlay-row .pill.confirmed { background: rgba(88,166,255,0.15); color: var(--accent); }
     .parlay-row .pill.upcoming { background: rgba(139,148,158,0.15); color: var(--text2); }
     .parlay-row.expanded { background: var(--surface2); }
-    .parlay-detail {
-      padding: 0 8px 10px;
-      font-size: 12px;
-      background: var(--surface2);
-      border-top: 1px solid var(--border);
-    }
-    .parlay-detail .leg-item {
-      display: flex;
-      justify-content: space-between;
-      padding: 4px 0;
-      border-top: 1px solid var(--border);
-      color: var(--text2);
-    }
+    .parlay-detail { padding: 0 8px 10px; font-size: 12px; background: var(--surface2); border-top: 1px solid var(--border); }
+    .parlay-detail .leg-item { display: flex; justify-content: space-between; padding: 4px 0; border-top: 1px solid var(--border); color: var(--text2); }
     .parlay-detail .leg-item:first-child { border-top: none; padding-top: 6px; }
     .parlay-detail .leg-item .leg-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; }
     .parlay-detail .leg-item .leg-status { font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px; }
     .parlay-detail .leg-item .leg-status.won { background: rgba(63,185,80,0.15); color: var(--green); }
     .parlay-detail .leg-item .leg-status.lost { background: rgba(248,81,73,0.15); color: var(--red); }
-    .parlay-detail .footer {
-      display: flex;
-      justify-content: space-between;
-      padding-top: 6px;
-      margin-top: 6px;
-      border-top: 1px solid var(--border);
-      color: var(--text2);
-    }
-    .parlay-detail .footer a {
-      color: var(--accent);
-      text-decoration: none;
-    }
+    .parlay-detail .footer { display: flex; justify-content: space-between; padding-top: 6px; margin-top: 6px; border-top: 1px solid var(--border); color: var(--text2); }
+    .parlay-detail .footer a { color: var(--accent); text-decoration: none; }
 
     /* Daily Volume & P&L section */
     .dv-wrap { padding: 0 12px 16px; }
-    .dv-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      overflow: hidden;
-    }
+    .dv-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
     .dv-chart { padding: 8px 4px 4px; }
     .dv-chart svg { width: 100%; height: auto; display: block; }
     .dv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .dv-table th {
-      text-align: left;
-      padding: 6px 10px;
-      font-size: 10px;
-      color: var(--text2);
-      text-transform: uppercase;
-      letter-spacing: 0.3px;
-      border-bottom: 1px solid var(--border);
-      font-weight: 500;
-    }
+    .dv-table th { text-align: left; padding: 6px 10px; font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.3px; border-bottom: 1px solid var(--border); font-weight: 500; }
     .dv-table th.r { text-align: right; }
     .dv-table td { padding: 6px 10px; border-top: 1px solid var(--border); }
     .dv-table td.r { text-align: right; font-variant-numeric: tabular-nums; }
     .dv-table td.c { text-align: center; }
     .dv-table .dv-month-row { cursor: pointer; font-weight: 600; background: var(--surface); }
-    .dv-table .dv-day-row   { cursor: pointer; background: var(--surface2); }
+    .dv-table .dv-day-row { cursor: pointer; background: var(--surface2); }
     .dv-table .dv-parlay-row { background: var(--surface2); font-size: 11px; }
     .dv-table td.pos { color: var(--green); }
     .dv-table td.neg { color: var(--red); }
     .dv-table .dv-month-row td:first-child { padding-left: 10px; }
-    .dv-table .dv-day-row td:first-child    { padding-left: 22px; }
+    .dv-table .dv-day-row td:first-child { padding-left: 22px; }
     .dv-table .dv-parlay-row td:first-child { padding-left: 34px; }
     .dv-table .dv-header-row { background: var(--surface); }
     .dv-table .dv-sub-header { background: var(--surface); }
     .dv-table .dv-sub-header th { font-size: 9px; padding: 4px 6px; }
     .dv-caret { display: inline-block; width: 10px; font-size: 9px; color: var(--text2); }
-    .dv-section-title {
-      font-size: 13px; color: var(--text2); text-transform: uppercase;
-      letter-spacing: 0.5px; padding: 12px 16px 6px;
-    }
-    /* Legend */
+    .dv-section-title { font-size: 13px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; padding: 12px 16px 6px; }
     .dv-legend { display: flex; gap: 12px; padding: 6px 12px 10px; font-size: 10px; color: var(--text2); flex-wrap: wrap; }
     .dv-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 
     .refresh-btn {
       position: fixed;
-      bottom: 20px;
-      right: 20px;
-      width: 48px;
-      height: 48px;
+      bottom: calc(env(safe-area-inset-bottom) + var(--tab-bar-h) + 12px);
+      right: 16px;
+      width: 44px;
+      height: 44px;
       border-radius: 50%;
       background: var(--accent);
       color: #fff;
       border: none;
-      font-size: 20px;
+      font-size: 18px;
       cursor: pointer;
       box-shadow: 0 2px 8px rgba(0,0,0,0.4);
       display: flex;
       align-items: center;
       justify-content: center;
+      z-index: 20;
     }
     .refresh-btn:active { opacity: 0.8; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .refresh-btn.loading { animation: spin 1s linear infinite; }
+
+    /* Bottom navigation tab bar */
+    .nav-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      height: var(--tab-bar-h);
+      padding-bottom: env(safe-area-inset-bottom);
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      z-index: 30;
+    }
+    .nav-btn {
+      flex: 1;
+      background: none;
+      border: none;
+      color: var(--text2);
+      font-size: 10px;
+      font-weight: 500;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      cursor: pointer;
+      padding: 6px 2px;
+      transition: color 0.15s;
+      position: relative;
+    }
+    .nav-btn .icon { font-size: 18px; line-height: 1; }
+    .nav-btn.active { color: var(--accent); }
+    .nav-btn .badge {
+      position: absolute;
+      top: 4px;
+      right: calc(50% - 18px);
+      min-width: 14px;
+      height: 14px;
+      padding: 0 4px;
+      background: var(--red);
+      color: #fff;
+      font-size: 9px;
+      font-weight: 700;
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Screen visibility — only one screen visible at a time. */
+    .screen { display: none; }
+    .screen.active { display: block; }
+
+    /* Generic data list (Exposure / Props / Declines) */
+    .data-section { padding: 8px 12px 16px; }
+    .data-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 8px;
+    }
+    .data-card .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      border-top: 1px solid var(--border);
+    }
+    .data-card .row:first-of-type { border-top: none; }
+    .data-card .row .label {
+      font-size: 12px;
+      color: var(--text);
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .data-card .row .label .sublabel {
+      font-size: 10px;
+      color: var(--text2);
+      display: block;
+      margin-top: 1px;
+    }
+    .data-card .row .value {
+      font-size: 13px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .data-card .row .value.warn { color: var(--amber); }
+    .data-card .row .value.danger { color: var(--red); }
+    .data-card h3 {
+      font-size: 11px;
+      color: var(--text2);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+
+    /* Progress bar for cap fill */
+    .bar-track {
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+    .bar-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+      transition: width 0.3s;
+    }
+    .bar-fill.warn { background: var(--amber); }
+    .bar-fill.danger { background: var(--red); }
+
+    /* Sparkline mini chart (declines tab) */
+    .spark { display: inline-block; vertical-align: middle; margin-left: 8px; }
+
+    /* Toggle switch (settings) */
+    .toggle {
+      position: relative;
+      display: inline-block;
+      width: 38px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: var(--border);
+      transition: 0.2s;
+      border-radius: 22px;
+    }
+    .toggle .slider::before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background: var(--text);
+      transition: 0.2s;
+      border-radius: 50%;
+    }
+    .toggle input:checked + .slider { background: var(--accent); }
+    .toggle input:checked + .slider::before { transform: translateX(16px); }
+
+    /* Pull-to-refresh indicator */
+    .ptr-indicator {
+      position: fixed;
+      top: env(safe-area-inset-top);
+      left: 0; right: 0;
+      height: 0;
+      background: var(--surface);
+      color: var(--accent);
+      font-size: 11px;
+      text-align: center;
+      transition: height 0.15s, padding 0.15s;
+      overflow: hidden;
+      z-index: 50;
+    }
+    .ptr-indicator.pulling { height: 32px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .ptr-indicator.refreshing .icon { animation: spin 1s linear infinite; display: inline-block; }
+
+    /* Inline metric chart (Home: hourly fills sparkline) */
+    .metric-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 0 12px 12px;
+    }
+    .metric-card .metric-header {
+      display: flex; justify-content: space-between; align-items: baseline;
+      font-size: 11px; color: var(--text2); text-transform: uppercase;
+      letter-spacing: 0.4px; margin-bottom: 6px;
+    }
+    .metric-card .metric-value { font-size: 18px; font-weight: 600; color: var(--text); }
+    .metric-card svg { width: 100%; height: auto; display: block; margin-top: 4px; }
   </style>
 </head>
 <body>
+  <div class="ptr-indicator" id="ptr-indicator"><span class="icon">↻</span> <span id="ptr-text">Pull to refresh</span></div>
+
   <div class="header">
     <h1>Parlay SP</h1>
     <div style="display:flex; align-items:center;">
@@ -417,37 +532,108 @@
     </div>
   </div>
 
-  <div class="summary-peek" id="summary-peek"></div>
-  <div class="summary" id="summary"></div>
+  <!-- HOME SCREEN -->
+  <section id="screen-home" class="screen active">
+    <div class="summary-peek" id="summary-peek"></div>
+    <div class="summary" id="summary"></div>
 
-  <div id="notify-prompt"></div>
+    <div id="notify-prompt"></div>
 
-  <div class="tab-bar" id="tab-bar">
-    <button class="tab-btn active" data-tab="open" onclick="switchParlayTab('open')">
-      Open <span class="count" id="tab-count-open">0</span>
-    </button>
-    <button class="tab-btn" data-tab="settled" onclick="switchParlayTab('settled')">
-      Settled <span class="count" id="tab-count-settled">0</span>
-    </button>
-  </div>
-  <div class="parlay-table-wrap" id="parlay-table-wrap">
-    <div class="empty">Loading...</div>
-  </div>
+    <!-- Hourly fills sparkline (Tier 3) -->
+    <div class="metric-card" id="hourly-metric">
+      <div class="metric-header">
+        <span>Fills · last 12h</span>
+        <span class="metric-value" id="hourly-total">0</span>
+      </div>
+      <svg id="hourly-spark" viewBox="0 0 200 40" preserveAspectRatio="none"></svg>
+    </div>
 
-  <div class="dv-section-title">Daily Volume &amp; P&amp;L</div>
-  <div class="dv-wrap">
-    <div class="dv-card" id="daily-volume-card">
+    <div class="sport-filter" id="sport-filter"></div>
+    <div class="tab-bar" id="tab-bar">
+      <button class="tab-btn active" data-tab="open" onclick="switchParlayTab('open')">
+        Open <span class="count" id="tab-count-open">0</span>
+      </button>
+      <button class="tab-btn" data-tab="settled" onclick="switchParlayTab('settled')">
+        Settled <span class="count" id="tab-count-settled">0</span>
+      </button>
+    </div>
+    <div class="parlay-table-wrap" id="parlay-table-wrap">
       <div class="empty">Loading...</div>
     </div>
-  </div>
+
+    <div class="dv-section-title">Daily Volume &amp; P&amp;L</div>
+    <div class="dv-wrap">
+      <div class="dv-card" id="daily-volume-card">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- EXPOSURE SCREEN -->
+  <section id="screen-exposure" class="screen">
+    <div class="data-section" id="exposure-section">
+      <div class="empty">Loading...</div>
+    </div>
+  </section>
+
+  <!-- PLAYER PROPS SCREEN -->
+  <section id="screen-props" class="screen">
+    <div class="data-section" id="props-section">
+      <div class="empty">Loading...</div>
+    </div>
+  </section>
+
+  <!-- DECLINES SCREEN -->
+  <section id="screen-declines" class="screen">
+    <div class="data-section" id="declines-section">
+      <div class="empty">Loading...</div>
+    </div>
+  </section>
+
+  <!-- SETTINGS SCREEN -->
+  <section id="screen-settings" class="screen">
+    <div class="data-section" id="settings-section">
+      <!-- Populated by renderSettings() -->
+    </div>
+  </section>
 
   <button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()">&#8635;</button>
+
+  <!-- Bottom nav tab bar -->
+  <nav class="nav-bar" id="nav-bar">
+    <button class="nav-btn active" data-screen="home" onclick="switchScreen('home')">
+      <span class="icon">⌂</span><span>Home</span>
+    </button>
+    <button class="nav-btn" data-screen="exposure" onclick="switchScreen('exposure')">
+      <span class="icon">⊞</span><span>Exposure</span>
+    </button>
+    <button class="nav-btn" data-screen="props" onclick="switchScreen('props')">
+      <span class="icon">◉</span><span>Props</span>
+    </button>
+    <button class="nav-btn" data-screen="declines" onclick="switchScreen('declines')">
+      <span class="icon">⊘</span><span>Declines</span>
+    </button>
+    <button class="nav-btn" data-screen="settings" onclick="switchScreen('settings')">
+      <span class="icon">⚙</span><span>Settings</span>
+    </button>
+  </nav>
 
   <script>
     const BASE = location.origin;
     const DASHBOARD_URL = BASE;
 
-    // --- Push Notifications ---
+    // Notification categories the SW understands. Each is independently
+    // muteable in Settings — flip toggles persist via IndexedDB so the SW
+    // can read them without a round-trip.
+    const NOTIFY_CATEGORIES = [
+      { key: 'confirmation', label: 'Parlay confirmed',  desc: 'New parlay accepted' },
+      { key: 'settlement',   label: 'Parlay settled',    desc: 'Won/Lost/Push' },
+      { key: 'cap_hit',      label: 'Exposure cap hit',  desc: 'Team / player / game / portfolio' },
+      { key: 'connection',   label: 'Connection state',  desc: 'Disconnect / reconnect / pause' },
+      { key: 'daily_summary',label: 'Daily summary',     desc: 'End-of-day P&L wrap' },
+    ];
+
+    // --- Service Worker / Push subscription ---
     let swReg = null;
     let pushSubscribed = false;
 
@@ -456,6 +642,13 @@
       try {
         swReg = await navigator.serviceWorker.register('/app/sw.js');
         console.log('SW registered');
+        // SW posts navigate messages on notification click
+        navigator.serviceWorker.addEventListener('message', (e) => {
+          if (e.data && e.data.type === 'navigate' && e.data.url) {
+            const hash = (e.data.url.split('#')[1] || '').toLowerCase();
+            if (hash && document.getElementById('screen-' + hash)) switchScreen(hash);
+          }
+        });
         checkPushSubscription();
       } catch (e) {
         console.error('SW registration failed:', e);
@@ -466,12 +659,10 @@
       if (!swReg) return;
       let sub = await swReg.pushManager.getSubscription();
 
-      // Self-heal: if the browser has no subscription but notification
-      // permission is already granted, silently create one. subscribe()
-      // only needs a user gesture when permission is 'default'; with
-      // 'granted' it can be called any time. This handles the case where
-      // the browser dropped the subscription (PWA reinstall, permissions
-      // reset, sw update, etc.) without forcing the user to tap a banner.
+      // Self-heal: if browser has no subscription but Notification.permission
+      // is already granted, silently re-subscribe. Handles the case where
+      // the browser dropped the subscription (PWA reinstall, sw update, etc.)
+      // without forcing the user to tap a banner.
       if (!sub && 'Notification' in window && Notification.permission === 'granted') {
         try {
           const resp = await fetch(BASE + '/push/vapid-key');
@@ -489,10 +680,9 @@
       pushSubscribed = !!sub;
       renderNotifyPrompt();
 
-      // Re-POST the subscription to the server on every load. The server
-      // keeps subscriptions in memory only, so every deploy/restart forgets
-      // them. Browser-side subscription persists, so we just push it back
-      // up each time the app opens.
+      // Re-POST subscription on every load. The server keeps subscriptions
+      // in memory only — every redeploy forgets them, but the browser-side
+      // subscription persists and we just push it back up each time.
       if (sub) {
         try {
           const r = await fetch(BASE + '/push/subscribe', {
@@ -500,8 +690,7 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(sub.toJSON()),
           });
-          const j = await r.json().catch(() => ({}));
-          console.log('Push subscription registered:', j);
+          await r.json().catch(() => ({}));
         } catch (e) {
           console.warn('Re-register push subscription failed:', e);
         }
@@ -511,22 +700,17 @@
     async function subscribePush() {
       if (!swReg) return;
       try {
-        // Get VAPID public key from server
         const resp = await fetch(BASE + '/push/vapid-key');
         const { publicKey } = await resp.json();
-
         const sub = await swReg.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(publicKey),
         });
-
-        // Send subscription to server
         await fetch(BASE + '/push/subscribe', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(sub.toJSON()),
         });
-
         pushSubscribed = true;
         renderNotifyPrompt();
       } catch (e) {
@@ -557,28 +741,82 @@
       return outputArray;
     }
 
-    // --- Data Loading ---
-    // Manual refresh = explicit user engagement, so clear the badge.
-    // Background auto-refresh must NOT clear — otherwise the badge is
-    // wiped every minute before the user ever sees it.
+    // --- Screen / Tab management ---
+    let _activeScreen = 'home';
+    function switchScreen(name) {
+      if (!document.getElementById('screen-' + name)) return;
+      _activeScreen = name;
+      document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+      document.getElementById('screen-' + name).classList.add('active');
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.screen === name));
+      // Trigger lazy load of secondary screens — keeps Home fast and
+      // defers Exposure / Props / Declines fetches until first view.
+      switch (name) {
+        case 'exposure': loadExposure(); break;
+        case 'props': loadProps(); break;
+        case 'declines': loadDeclines(); break;
+        case 'settings': renderSettings(); break;
+      }
+      try { localStorage.setItem('pxsp_active_screen', name); } catch {}
+      // Sync URL hash so deep links from notifications work
+      try { history.replaceState(null, '', '#' + name); } catch {}
+    }
+    window.switchScreen = switchScreen;
+
+    // --- Pull-to-refresh ---
+    // Touch handling: only triggers when scrollY=0 and user pulls down >70px.
+    // Fires manualRefresh() and shows the indicator briefly.
+    let _ptrStartY = null;
+    let _ptrPulling = false;
+    document.addEventListener('touchstart', (e) => {
+      if (window.scrollY === 0 && e.touches && e.touches[0]) {
+        _ptrStartY = e.touches[0].clientY;
+      } else _ptrStartY = null;
+    }, { passive: true });
+    document.addEventListener('touchmove', (e) => {
+      if (_ptrStartY == null) return;
+      const dy = e.touches[0].clientY - _ptrStartY;
+      const ind = document.getElementById('ptr-indicator');
+      if (dy > 30) {
+        ind.classList.add('pulling');
+        _ptrPulling = true;
+        document.getElementById('ptr-text').textContent = dy > 70 ? 'Release to refresh' : 'Pull to refresh';
+      } else {
+        ind.classList.remove('pulling');
+        _ptrPulling = false;
+      }
+    }, { passive: true });
+    document.addEventListener('touchend', () => {
+      const ind = document.getElementById('ptr-indicator');
+      if (_ptrPulling) {
+        ind.classList.add('refreshing');
+        document.getElementById('ptr-text').textContent = 'Refreshing…';
+        manualRefresh();
+        setTimeout(() => {
+          ind.classList.remove('refreshing');
+          ind.classList.remove('pulling');
+        }, 800);
+      }
+      _ptrStartY = null;
+      _ptrPulling = false;
+    }, { passive: true });
+
+    // --- Data loading ---
     function manualRefresh() {
       if (navigator.clearAppBadge) navigator.clearAppBadge();
       loadData();
+      // Also refresh the currently-visible secondary screen
+      switch (_activeScreen) {
+        case 'exposure': loadExposure(); break;
+        case 'props': loadProps(); break;
+        case 'declines': loadDeclines(); break;
+      }
     }
 
     async function loadData() {
       const btn = document.getElementById('refresh-btn');
       btn.classList.add('loading');
-
       try {
-        // Also fetch /px-pnl in parallel — the dashboard uses
-        // pxPnL.openExposure as the authoritative Deployed value
-        // (PX-native view of matched stakes). Without this, the
-        // mobile app's Deployed shows status.portfolio.totalRisk,
-        // which is the local tracker's view and can under-count
-        // when orders are flagged as stale-phantom (confirmed
-        // without orderUuid >10min, etc.). Mirroring the dashboard's
-        // source-of-truth keeps the two views in sync.
         const [statusResp, ordersResp, pxPnLResp] = await Promise.all([
           fetch(BASE + '/status'),
           fetch(BASE + '/orders'),
@@ -590,6 +828,8 @@
         const allOrders = ordersData.recentOrders || [];
 
         renderStatus(status, allOrders, pxPnL);
+        renderHourlyMetric(allOrders);
+        renderSportFilter(allOrders);
         renderParlays(allOrders);
         renderDailyVolume(allOrders);
       } catch (e) {
@@ -599,33 +839,24 @@
       }
     }
 
-    // Clear badge when the app becomes visible (user switched back to it).
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && navigator.clearAppBadge) {
         navigator.clearAppBadge();
       }
     });
 
-    // Get today's date in ET (US Eastern)
     function getTodayET() {
       return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
     }
-
-    // Get 10am ET today as a Date object
     function getTodayCutoffET() {
       const todayStr = getTodayET();
-      // Create a date at 10:00 ET
-      const d = new Date(todayStr + 'T10:00:00-04:00'); // EDT
-      return d;
+      return new Date(todayStr + 'T10:00:00-04:00');
     }
 
     function renderStatus(status, allOrders, pxPnL) {
       const o = status.orders || {};
       const p = status.portfolio || {};
       const ws = status.websocket || {};
-      // Server exposes connectionState as a string ('connected' | 'connecting'
-      // | 'disconnected'), not a boolean. Reading ws.connected gave undefined
-      // and the badge was permanently red.
       const connected = ws.connectionState === 'connected';
 
       const connEl = document.getElementById('conn-status');
@@ -634,17 +865,12 @@
 
       const pnl = o.runningPnL || 0;
       const pnlCls = pnl >= 0 ? 'positive' : 'negative';
-      // Prefer PX-native open exposure (authoritative — matches dashboard).
-      // Falls back to status.portfolio.totalRisk when /px-pnl is unavailable
-      // or hasn't loaded yet. The local tracker's view (totalRisk) excludes
-      // stale-phantom orders, which can systematically under-count Deployed.
       const deployed = (pxPnL && pxPnL.ok && pxPnL.openExposure != null)
         ? pxPnL.openExposure
         : (p.totalRisk || 0);
       const toWin = p.totalToWin || 0;
       const balance = p.balance || 0;
 
-      // Daily P&L: settled orders after 10am ET today
       const cutoff = getTodayCutoffET();
       const todaySettled = allOrders.filter(ord => {
         if (!ord.status || !ord.status.startsWith('settled_')) return false;
@@ -654,21 +880,6 @@
       const dailyPnl = todaySettled.reduce((sum, ord) => sum + (ord.pnl || 0), 0);
       const dailyPnlCls = dailyPnl >= 0 ? 'positive' : 'negative';
 
-      // Open parlays with a game starting today
-      const todayStr = getTodayET();
-      const openToday = allOrders.filter(ord => {
-        if (ord.status !== 'confirmed') return false;
-        const legs = ord.legs || (ord.meta && ord.meta.legs) || [];
-        return legs.some(l => {
-          if (!l.startTime) return false;
-          const legDay = new Date(l.startTime).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-          return legDay === todayStr;
-        });
-      });
-
-      // Compact 4-column layout, 7 stats total (was 9). Removed Win Rate
-      // and Open Today; renamed Active → Open (it's the count of orders
-      // with status='confirmed' per services/order-tracker.js:1638).
       const fmtShort = (v) => {
         const abs = Math.abs(v);
         if (abs >= 1000) return (v < 0 ? '-' : '') + '$' + (abs / 1000).toFixed(1) + 'k';
@@ -676,37 +887,15 @@
       };
       const openCount = o.activeOrders || 0;
       document.getElementById('summary').innerHTML = `
-        <div class="stat-card">
-          <div class="label">P&L</div>
-          <div class="value ${pnlCls}">${pnl >= 0 ? '+' : ''}${fmtShort(pnl)}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Daily P&L</div>
-          <div class="value ${dailyPnlCls}">${dailyPnl >= 0 ? '+' : ''}${fmtShort(dailyPnl)}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Balance</div>
-          <div class="value">${fmtShort(balance)}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Open</div>
-          <div class="value">${openCount}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Deployed</div>
-          <div class="value">${fmtShort(deployed)}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">To Win</div>
-          <div class="value" style="color:var(--green);">${fmtShort(toWin)}</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Settled Today</div>
-          <div class="value">${todaySettled.length}</div>
-        </div>
+        <div class="stat-card"><div class="label">P&L</div><div class="value ${pnlCls}">${pnl >= 0 ? '+' : ''}${fmtShort(pnl)}</div></div>
+        <div class="stat-card"><div class="label">Daily P&L</div><div class="value ${dailyPnlCls}">${dailyPnl >= 0 ? '+' : ''}${fmtShort(dailyPnl)}</div></div>
+        <div class="stat-card"><div class="label">Balance</div><div class="value">${fmtShort(balance)}</div></div>
+        <div class="stat-card"><div class="label">Open</div><div class="value">${openCount}</div></div>
+        <div class="stat-card"><div class="label">Deployed</div><div class="value">${fmtShort(deployed)}</div></div>
+        <div class="stat-card"><div class="label">To Win</div><div class="value" style="color:var(--green);">${fmtShort(toWin)}</div></div>
+        <div class="stat-card"><div class="label">Settled Today</div><div class="value">${todaySettled.length}</div></div>
       `;
 
-      // Peek bar shown when the full grid is collapsed — 3 key numbers only.
       document.getElementById('summary-peek').innerHTML =
         `<div class="item"><span>Bal</span><strong>${fmtShort(balance)}</strong></div>`
       + `<div class="item"><span>Open</span><strong>${openCount}</strong></div>`
@@ -714,8 +903,6 @@
       + `<div class="item"><span>Daily</span><strong class="${dailyPnlCls}">${dailyPnl >= 0 ? '+' : ''}${fmtShort(dailyPnl)}</strong></div>`;
     }
 
-    // Collapse/expand the full stats grid. Preference persisted across
-    // reloads via localStorage so the user's choice sticks.
     function applyStatsState(collapsed) {
       const summary = document.getElementById('summary');
       const peek = document.getElementById('summary-peek');
@@ -735,12 +922,73 @@
       try { localStorage.setItem('pxsp_stats_collapsed', collapsed ? '1' : '0'); } catch {}
       applyStatsState(collapsed);
     }
-    // Apply saved preference on load — default expanded.
-    try {
-      applyStatsState(localStorage.getItem('pxsp_stats_collapsed') === '1');
-    } catch {}
+    window.toggleStats = toggleStats;
+    try { applyStatsState(localStorage.getItem('pxsp_stats_collapsed') === '1'); } catch {}
 
-    // Current tab + cached orders + expanded rows persist across auto-refresh.
+    // --- Hourly fills sparkline (Tier 3) ---
+    // Builds a 12-bucket bar chart of confirmations by hour of the
+    // current ET day. Useful at-a-glance signal for late-night fall-off
+    // or early-evening spikes without leaving the Home tab.
+    function renderHourlyMetric(allOrders) {
+      const el = document.getElementById('hourly-spark');
+      const totalEl = document.getElementById('hourly-total');
+      if (!el) return;
+      const now = new Date();
+      const buckets = new Array(12).fill(0);
+      for (const o of allOrders) {
+        const ts = o.confirmedAt;
+        if (!ts) continue;
+        const t = new Date(ts);
+        if (isNaN(t.getTime())) continue;
+        const hoursAgo = (now - t) / 3600000;
+        if (hoursAgo < 0 || hoursAgo > 12) continue;
+        const idx = Math.min(11, Math.floor(11 - hoursAgo));
+        if (idx >= 0 && idx < 12) buckets[idx]++;
+      }
+      const total = buckets.reduce((a, b) => a + b, 0);
+      totalEl.textContent = total + ' fill' + (total === 1 ? '' : 's');
+      const max = Math.max(1, ...buckets);
+      const W = 200, H = 40, barW = W / 12 - 2;
+      let svg = '';
+      for (let i = 0; i < 12; i++) {
+        const h = (buckets[i] / max) * (H - 4);
+        const x = i * (W / 12) + 1;
+        const y = H - h;
+        const color = i === 11 ? 'var(--accent)' : 'var(--text2)';
+        const opacity = i === 11 ? '1' : '0.5';
+        svg += `<rect x="${x}" y="${y}" width="${barW}" height="${Math.max(2, h)}" fill="${color}" opacity="${opacity}" rx="1"/>`;
+      }
+      el.innerHTML = svg;
+    }
+
+    // --- Sport filter chips ---
+    let _activeSportFilter = 'all';
+    function renderSportFilter(orders) {
+      const sportCounts = { all: 0 };
+      for (const o of orders) {
+        if (o.status !== 'confirmed' && !(o.status || '').startsWith('settled_')) continue;
+        if (o.meta && o.meta.phantom) continue;
+        sportCounts.all++;
+        const legs = o.legs || (o.meta && o.meta.legs) || [];
+        const sports = new Set(legs.map(l => l.sport).filter(Boolean));
+        for (const s of sports) sportCounts[s] = (sportCounts[s] || 0) + 1;
+      }
+      const sports = Object.keys(sportCounts).filter(k => k !== 'all').sort((a, b) => sportCounts[b] - sportCounts[a]);
+      const labels = { all: 'All', basketball_nba: 'NBA', icehockey_nhl: 'NHL', baseball_mlb: 'MLB', tennis: 'Tennis', soccer: 'Soccer', mma_mixed_martial_arts: 'MMA', golf_matchups: 'Golf', basketball_wnba: 'WNBA', basketball_ncaab: 'NCAAB' };
+      const chips = ['all', ...sports].map(s => {
+        const lbl = labels[s] || s.replace(/_/g, ' ');
+        const cls = s === _activeSportFilter ? 'sport-chip active' : 'sport-chip';
+        return `<div class="${cls}" onclick="setSportFilter('${s}')">${lbl} ${sportCounts[s] || 0}</div>`;
+      }).join('');
+      document.getElementById('sport-filter').innerHTML = chips;
+    }
+    window.setSportFilter = function(s) {
+      _activeSportFilter = s;
+      renderSportFilter(_lastOrdersCache);
+      renderParlays(_lastOrdersCache);
+    };
+
+    // --- Parlay tabs (Open / Settled) ---
     let _activeParlayTab = 'open';
     let _lastOrdersCache = [];
     const _expandedParlays = new Set();
@@ -773,6 +1021,12 @@
       return stake * 100 / Math.abs(odds);
     }
 
+    function parlayMatchesSport(o, sport) {
+      if (sport === 'all') return true;
+      const legs = o.legs || (o.meta && o.meta.legs) || [];
+      return legs.some(l => l.sport === sport);
+    }
+
     function renderParlays(orders) {
       _lastOrdersCache = orders;
       const el = document.getElementById('parlay-table-wrap');
@@ -780,9 +1034,8 @@
       const all = orders
         .filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
         .filter(o => o.quotedAt || o.confirmedAt || (o.meta && o.meta.pxBackfill))
-        // Drop phantom-flagged orders — ghost reconcile determined
-        // PX can't locate them (never a real fill).
-        .filter(o => !(o.meta && o.meta.phantom));
+        .filter(o => !(o.meta && o.meta.phantom))
+        .filter(o => parlayMatchesSport(o, _activeSportFilter));
 
       const openList = all
         .filter(o => o.status === 'confirmed')
@@ -815,7 +1068,6 @@
         const stake = o.confirmedStake || 0;
         const toWinAmt = calcToWin(stake, odds);
 
-        // Summarize selections: first 2-3 truncated names
         const firstNames = legs.slice(0, 3).map(l => {
           const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
           return name.length > 22 ? name.substring(0, 20) + '..' : name;
@@ -823,28 +1075,23 @@
         const more = legs.length > 3 ? ` +${legs.length - 3}` : '';
         const selections = firstNames + more;
 
-        // Timestamp to show: settledAt for settled, confirmedAt for open.
-        // Render as MM/DD HH:MM ET for compactness.
         const tsIso = _activeParlayTab === 'settled' ? (o.settledAt || o.confirmedAt) : (o.confirmedAt || o.quotedAt);
         let timeLabel = '';
         if (tsIso) {
           try {
             const d = new Date(tsIso);
-            const et = d.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-            timeLabel = et;
+            timeLabel = d.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
           } catch { timeLabel = tsIso.substring(5, 16).replace('T', ' '); }
         }
 
         const expanded = _expandedParlays.has(pid);
 
-        // Right-side summary: odds + (pnl if settled else to-win)
         let rightHtml = `<span class="odds">${oddsStr}</span>`;
         if (_activeParlayTab === 'settled' && pnlStr) {
           rightHtml += `<span class="pnl ${pnlCls}">${pnlStr}</span>`;
         } else if (_activeParlayTab === 'open') {
           rightHtml += `<span class="pnl" style="color:var(--green);">$${toWinAmt.toFixed(2)}</span>`;
         }
-        // Result pill
         const pillCls = result === 'won' ? 'won' : result === 'lost' ? 'lost' : result === 'push' ? 'push' : 'confirmed';
         const pillLabel = result.charAt(0).toUpperCase() + result.slice(1);
 
@@ -894,9 +1141,6 @@
     }
 
     // --- Daily Volume & P&L (chart + month→day→parlay table) ---
-    // Persist expanded row state + per-day sort across auto-refresh so
-    // the user's drill-down survives polling. Month rows default
-    // collapsed; days collapsed; parlays only appear when a day is open.
     const _dvExpanded = new Set();
     const _dvSort = {};
 
@@ -948,8 +1192,6 @@
       const confirmed = allOrders.filter(o =>
         (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
         && (o.quotedAt || !(o.meta && o.meta.reconstructed))
-        // Exclude phantoms so Daily Volume bars + fill counts reflect
-        // real activity, not phantom-confirmed parlays PX never had.
         && !(o.meta && o.meta.phantom)
       );
       if (confirmed.length < 1) {
@@ -957,7 +1199,6 @@
         return;
       }
 
-      // Bucket by ET day
       const byDay = {};
       for (const o of confirmed) {
         const day = _etDay(o.confirmedAt || o.quotedAt);
@@ -972,10 +1213,8 @@
       }
       const days = Object.keys(byDay).sort();
 
-      // Build chart
       const W = 360, H = 220, pad = { l: 46, r: 12, t: 18, b: 48 };
       const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
-      // Show latest N days in the chart so it stays readable on mobile.
       const N = Math.min(days.length, 14);
       const chartDays = days.slice(-N);
       const riskBarW = Math.max(6, (chartW / chartDays.length) * 0.75);
@@ -996,7 +1235,6 @@
       const zeroY = scaleY(0);
 
       let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
-      // Grid + axis labels
       for (let t = 0; t <= 3; t++) {
         const v = yMin + (yRange * t / 3);
         const y = scaleY(v);
@@ -1005,7 +1243,6 @@
         const label = v >= 10000 ? '$' + Math.round(v / 1000) + 'k' : '$' + Math.round(v);
         svg += `<text x="${pad.l - 4}" y="${y + 3}" text-anchor="end" font-size="8" fill="var(--text2)">${label}</text>`;
       }
-      // Bars + labels
       for (let i = 0; i < chartDays.length; i++) {
         const d = byDay[chartDays[i]];
         const cx = pad.l + (i + 0.5) * (chartW / chartDays.length);
@@ -1019,12 +1256,10 @@
           const pnlH = Math.abs(scaleY(d.pnl) - zeroY);
           svg += `<rect x="${cx - pnlBarW / 2}" y="${yTop}" width="${pnlBarW}" height="${pnlH}" fill="${pnlColor}" rx="1"/>`;
         }
-        // X label (MM-DD)
         const dayLabel = chartDays[i].substring(5);
         svg += `<text x="${cx}" y="${H - pad.b + 12}" text-anchor="middle" font-size="8" fill="var(--text2)">${dayLabel}</text>`;
         svg += `<text x="${cx}" y="${H - pad.b + 22}" text-anchor="middle" font-size="7" fill="var(--text2)">${d.count}</text>`;
       }
-      // Cumulative P&L line
       if (cumul.length >= 2) {
         const pts = chartDays.map((_, i) => {
           const cx = pad.l + (i + 0.5) * (chartW / chartDays.length);
@@ -1038,7 +1273,6 @@
       }
       svg += '</svg>';
 
-      // Roll days up into months
       const byMonth = {};
       for (const [day, d] of Object.entries(byDay)) {
         const month = day.substring(0, 7);
@@ -1052,7 +1286,6 @@
       }
       const months = Object.keys(byMonth).sort().reverse();
 
-      // Table
       let html = '<div class="dv-chart">' + svg + '</div>';
       html += '<div class="dv-legend">'
         + '<span><span class="swatch" style="background:var(--accent);opacity:0.4;"></span>My Risk</span>'
@@ -1060,12 +1293,7 @@
         + '<span><span class="swatch" style="background:#f5b942;"></span>Cumulative</span>'
         + '</div>';
       html += '<div style="overflow-x:auto;"><table class="dv-table">';
-      html += '<tr class="dv-header-row">'
-        + '<th>Month / Date</th>'
-        + '<th class="r">Fills</th>'
-        + '<th class="r">Risk</th>'
-        + '<th class="r">To Win</th>'
-        + '<th class="r">P&amp;L</th></tr>';
+      html += '<tr class="dv-header-row"><th>Month / Date</th><th class="r">Fills</th><th class="r">Risk</th><th class="r">To Win</th><th class="r">P&amp;L</th></tr>';
 
       for (const month of months) {
         const m = byMonth[month];
@@ -1099,15 +1327,14 @@
           html += '<tr id="' + dayId + '" style="display:' + (dayOpen ? 'table-row' : 'none') + ';"><td colspan="5" style="padding:0;">';
           html += '<table class="dv-table" style="width:100%; background:var(--surface2);">';
           const sortState = _dvSort[dayId] || { col: 'time', dir: 1 };
-          const arr = (c) => sortState.col === c ? (sortState.dir > 0 ? ' \u25B2' : ' \u25BC') : '';
+          const arr = (c) => sortState.col === c ? (sortState.dir > 0 ? ' ▲' : ' ▼') : '';
           const hc = (c) => 'onclick="event.stopPropagation(); dvSortClick(\'' + dayId + '\',\'' + c + '\')"';
           html += '<tr class="dv-sub-header">'
             + '<th ' + hc('time') + '>Time' + arr('time') + '</th>'
             + '<th ' + hc('selections') + '>Selections' + arr('selections') + '</th>'
             + '<th class="c" ' + hc('legs') + '>L' + arr('legs') + '</th>'
             + '<th class="r" ' + hc('odds') + '>Odds' + arr('odds') + '</th>'
-            + '<th class="r" ' + hc('pnl') + '>P&amp;L' + arr('pnl') + '</th>'
-            + '</tr>';
+            + '<th class="r" ' + hc('pnl') + '>P&amp;L' + arr('pnl') + '</th></tr>';
           const parlayRows = d.orders.filter(o => o.pnl != null).map(o => {
             const legs = o.legs || (o.meta && o.meta.legs) || [];
             const selections = legs.map(l => {
@@ -1158,11 +1385,389 @@
       el.innerHTML = html;
     }
 
+    // ===== Tier 2 — Exposure tab =====
+    // Game- and team-level exposure breakdown. Uses /status.exposure for
+    // the in-memory tracker view + /px-positions when available for the
+    // PX-native view. Renders a sortable list of game cards each with a
+    // cap-fill bar so operator can see at a glance which game is closest
+    // to its limit.
+    let _exposureLastFetch = 0;
+    async function loadExposure() {
+      // Re-fetch at most every 30s to cap mobile data.
+      if (Date.now() - _exposureLastFetch < 30000 && document.getElementById('exposure-section').dataset.loaded) return;
+      _exposureLastFetch = Date.now();
+      try {
+        const [statusResp, pxPosResp] = await Promise.all([
+          fetch(BASE + '/status'),
+          fetch(BASE + '/px-positions').catch(() => null),
+        ]);
+        const status = await statusResp.json();
+        const pxPos = pxPosResp ? await pxPosResp.json().catch(() => null) : null;
+        renderExposure(status, pxPos);
+        document.getElementById('exposure-section').dataset.loaded = '1';
+      } catch (e) {
+        document.getElementById('exposure-section').innerHTML = '<div class="empty">Failed to load exposure: ' + (e.message || e) + '</div>';
+      }
+    }
+
+    function renderExposure(status, pxPos) {
+      const el = document.getElementById('exposure-section');
+      const exp = status.exposure || {};
+      const portfolio = status.portfolio || {};
+
+      // exposure.teams and exposure.games are ARRAYS of objects, not maps.
+      // Each team: {key, name, risk, eventName, sport, ...}
+      // Each game: {eventId, name, sport, grossRisk, netExposure, parlays[]}
+      const teams = Array.isArray(exp.teams) ? exp.teams : [];
+      const games = Array.isArray(exp.games) ? exp.games : [];
+      const teamCap = exp.maxPerTeam || 0;
+      // Game cap not surfaced in /status today — leave bar uncolored if cap unknown.
+      const gameCap = exp.maxPerGame || exp.maxExposurePerGame || 0;
+
+      const fmtMoney = (v) => '$' + Math.round(v).toLocaleString();
+      const capPct = (cur, cap) => cap > 0 ? Math.min(100, (cur / cap) * 100) : 0;
+      const capCls = (pct) => pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : '';
+
+      let html = '';
+
+      // Top portfolio summary
+      const pxOpen = pxPos && pxPos.ok && pxPos.openExposure != null ? pxPos.openExposure : (portfolio.totalRisk || 0);
+      const toWin = portfolio.totalToWin || 0;
+      html += '<div class="data-card">';
+      html += '<h3>Portfolio</h3>';
+      html += `<div class="row"><span class="label">Open exposure</span><span class="value">${fmtMoney(pxOpen)}</span></div>`;
+      html += `<div class="row"><span class="label">To win</span><span class="value" style="color:var(--green);">${fmtMoney(toWin)}</span></div>`;
+      html += `<div class="row"><span class="label">Active games</span><span class="value">${games.length}</span></div>`;
+      html += `<div class="row"><span class="label">Active teams</span><span class="value">${teams.length}</span></div>`;
+      html += '</div>';
+
+      // Game exposure (sorted by netExposure desc)
+      const gameRows = games
+        .map(g => ({ id: g.eventId || g.name, label: g.name || g.eventId, risk: g.netExposure != null ? g.netExposure : (g.grossRisk || 0), parlayCount: g.parlayCount || 0, sport: g.sport }))
+        .filter(g => g.risk > 0)
+        .sort((a, b) => b.risk - a.risk);
+      if (gameRows.length > 0) {
+        html += '<div class="data-card"><h3>By Game · ' + gameRows.length + '</h3>';
+        for (const g of gameRows.slice(0, 30)) {
+          const pct = capPct(g.risk, gameCap);
+          const cls = capCls(pct);
+          const sportLbl = g.sport ? g.sport.replace(/_/g, ' ').replace(/^.*?\s/, '') : '';
+          html += `<div class="row"><span class="label">${escapeHtml(g.label)}<div class="sublabel">${fmtMoney(g.risk)} · ${g.parlayCount} parlay${g.parlayCount === 1 ? '' : 's'}${sportLbl ? ' · ' + sportLbl : ''}</div></span>`;
+          html += `<span class="value ${cls}">${fmtMoney(g.risk)}</span></div>`;
+          if (gameCap) html += `<div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
+        }
+        html += '</div>';
+      }
+
+      // Team exposure
+      const teamRows = teams
+        .map(t => ({ name: t.name || t.teamKey || t.key, risk: t.netExposure != null ? t.netExposure : (t.risk || 0), parlays: t.parlays || 0, sport: t.sport, eventName: t.eventName }))
+        .filter(t => t.risk > 0)
+        .sort((a, b) => b.risk - a.risk);
+      if (teamRows.length > 0) {
+        html += '<div class="data-card"><h3>By Team · ' + teamRows.length + '</h3>';
+        for (const t of teamRows.slice(0, 40)) {
+          const pct = capPct(t.risk, teamCap);
+          const cls = capCls(pct);
+          html += `<div class="row"><span class="label">${escapeHtml(t.name)}<div class="sublabel">${fmtMoney(t.risk)}${teamCap ? ' / ' + fmtMoney(teamCap) : ''} · ${t.parlays} parlay${t.parlays === 1 ? '' : 's'}${t.eventName ? ' · ' + escapeHtml(t.eventName) : ''}</div></span>`;
+          html += `<span class="value ${cls}">${teamCap ? pct.toFixed(0) + '%' : ''}</span></div>`;
+          if (teamCap) html += `<div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
+        }
+        html += '</div>';
+      }
+
+      if (gameRows.length === 0 && teamRows.length === 0) {
+        html += '<div class="empty">No active exposure</div>';
+      }
+
+      el.innerHTML = html;
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    // ===== Tier 2 — Player Props tab =====
+    // Per-(sport, player) exposure with cap fill bars. Pulled directly from
+    // /player-exposure which already tracks Phase-2 NBA points/rebounds/
+    // assists/threes_made + NHL shots_on_goal. Useful to spot heavy concen-
+    // tration on a single player before the cap blocks an RFQ.
+    let _propsLastFetch = 0;
+    async function loadProps() {
+      if (Date.now() - _propsLastFetch < 30000 && document.getElementById('props-section').dataset.loaded) return;
+      _propsLastFetch = Date.now();
+      try {
+        const resp = await fetch(BASE + '/player-exposure');
+        const data = await resp.json();
+        renderProps(data);
+        document.getElementById('props-section').dataset.loaded = '1';
+      } catch (e) {
+        document.getElementById('props-section').innerHTML = '<div class="empty">Failed to load: ' + (e.message || e) + '</div>';
+      }
+    }
+
+    function renderProps(data) {
+      const el = document.getElementById('props-section');
+      // /player-exposure shape (from getPlayerExposureSnapshot):
+      //   players[]: { key, sport, playerName, propTypes[], risk, pending, total, parlayCount }
+      const players = data.players || [];
+      const capsBySport = data.capsBySport || {};
+      const capDefault = data.capDefault || 0;
+
+      const fmtMoney = (v) => '$' + Math.round(v).toLocaleString();
+      const capCls = (pct) => pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : '';
+
+      let html = '';
+      const totalRisk = players.reduce((s, p) => s + (p.total || p.risk || 0), 0);
+      html += '<div class="data-card"><h3>Summary</h3>';
+      html += `<div class="row"><span class="label">Players with exposure</span><span class="value">${players.length}</span></div>`;
+      html += `<div class="row"><span class="label">Total prop risk</span><span class="value">${fmtMoney(totalRisk)}</span></div>`;
+      html += `<div class="row"><span class="label">Default cap / player</span><span class="value">${fmtMoney(capDefault)}</span></div>`;
+      // Surface configured per-sport caps so operator knows what's enforced.
+      for (const [sport, cap] of Object.entries(capsBySport)) {
+        const lbl = { basketball_nba: 'NBA', icehockey_nhl: 'NHL' }[sport] || sport;
+        html += `<div class="row"><span class="label">${lbl} cap / player</span><span class="value">${fmtMoney(cap)}</span></div>`;
+      }
+      html += '</div>';
+
+      if (players.length === 0) {
+        html += '<div class="empty">No active player exposure<br><span style="font-size:11px;color:var(--text2);">Caps reset on each service restart — confirmed-prop parlays in Supabase don\'t rehydrate the in-memory map.</span></div>';
+        el.innerHTML = html;
+        return;
+      }
+
+      const bySport = {};
+      for (const p of players) {
+        const sport = p.sport || 'unknown';
+        if (!bySport[sport]) bySport[sport] = [];
+        bySport[sport].push(p);
+      }
+      for (const [sport, list] of Object.entries(bySport)) {
+        list.sort((a, b) => (b.total || b.risk || 0) - (a.total || a.risk || 0));
+        const cap = capsBySport[sport] || capDefault;
+        const sportLabel = { basketball_nba: 'NBA', icehockey_nhl: 'NHL' }[sport] || sport;
+        html += `<div class="data-card"><h3>${sportLabel} · ${list.length} player${list.length === 1 ? '' : 's'}</h3>`;
+        for (const p of list) {
+          const risk = p.total || p.risk || 0;
+          const pending = p.pending || 0;
+          const pct = cap > 0 ? Math.min(100, (risk / cap) * 100) : 0;
+          const cls = capCls(pct);
+          const propTypesStr = (p.propTypes && p.propTypes.length) ? p.propTypes.join(' · ') : '';
+          const pendingStr = pending > 0 ? ' (pending ' + fmtMoney(pending) + ')' : '';
+          html += `<div class="row"><span class="label">${escapeHtml(p.playerName || '?')}<div class="sublabel">${fmtMoney(risk)} / ${fmtMoney(cap)}${pendingStr} · ${p.parlayCount || 0} parlay${(p.parlayCount || 0) === 1 ? '' : 's'}${propTypesStr ? ' · ' + propTypesStr : ''}</div></span>`;
+          html += `<span class="value ${cls}">${pct.toFixed(0)}%</span></div>`;
+          html += `<div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
+        }
+        html += '</div>';
+      }
+
+      el.innerHTML = html;
+    }
+
+    // ===== Tier 2 — Declines tab =====
+    // Top decline reasons last 24h with a 7-day mini-trend. Hits
+    // /decline-stats?days=7 once per visit; reasons are ranked by
+    // last-24h count, sparkline shows trend over the full week.
+    let _declinesLastFetch = 0;
+    async function loadDeclines() {
+      if (Date.now() - _declinesLastFetch < 60000 && document.getElementById('declines-section').dataset.loaded) return;
+      _declinesLastFetch = Date.now();
+      try {
+        const resp = await fetch(BASE + '/decline-stats?days=7');
+        const data = await resp.json();
+        renderDeclines(data);
+        document.getElementById('declines-section').dataset.loaded = '1';
+      } catch (e) {
+        document.getElementById('declines-section').innerHTML = '<div class="empty">Failed to load: ' + (e.message || e) + '</div>';
+      }
+    }
+
+    function renderDeclines(data) {
+      const el = document.getElementById('declines-section');
+      const byReasonByDay = data.byReasonByDay || {};
+      const reasons = Object.keys(byReasonByDay);
+      const days = []; // last 7 ET dates ascending
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(Date.now() - i * 86400000);
+        days.push(d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }));
+      }
+      const todayStr = days[days.length - 1];
+
+      // Compute today's count + 7d total per reason
+      const rows = reasons.map(reason => {
+        const series = days.map(d => byReasonByDay[reason][d] || 0);
+        const today = series[series.length - 1];
+        const weekTotal = series.reduce((a, b) => a + b, 0);
+        return { reason, today, weekTotal, series };
+      }).filter(r => r.weekTotal > 0)
+        .sort((a, b) => b.today - a.today || b.weekTotal - a.weekTotal);
+
+      let html = '';
+      const totalToday = rows.reduce((s, r) => s + r.today, 0);
+      const totalWeek = rows.reduce((s, r) => s + r.weekTotal, 0);
+
+      html += '<div class="data-card"><h3>Last 24h</h3>';
+      html += `<div class="row"><span class="label">Total declines today</span><span class="value">${totalToday.toLocaleString()}</span></div>`;
+      html += `<div class="row"><span class="label">Total last 7 days</span><span class="value">${totalWeek.toLocaleString()}</span></div>`;
+      html += '</div>';
+
+      if (rows.length === 0) {
+        html += '<div class="empty">No declines recorded — service may be paused or DB unavailable.</div>';
+        el.innerHTML = html;
+        return;
+      }
+
+      html += '<div class="data-card"><h3>Top reasons (today)</h3>';
+      for (const r of rows.slice(0, 12)) {
+        const sparkSvg = sparkline(r.series, 60, 16);
+        html += `<div class="row"><span class="label">${escapeHtml(r.reason)}<div class="sublabel">${r.weekTotal.toLocaleString()} in 7d</div></span>`;
+        html += `<span class="value">${r.today.toLocaleString()} <span class="spark">${sparkSvg}</span></span></div>`;
+      }
+      html += '</div>';
+
+      el.innerHTML = html;
+    }
+
+    // Sparkline helper — tiny inline SVG bar/line for trend visualization.
+    function sparkline(series, w, h) {
+      if (!series || series.length === 0) return '';
+      const max = Math.max(1, ...series);
+      const barW = w / series.length;
+      let svg = `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="vertical-align:middle;">`;
+      for (let i = 0; i < series.length; i++) {
+        const v = series[i];
+        const bh = (v / max) * (h - 2);
+        const x = i * barW;
+        const y = h - bh;
+        const isToday = i === series.length - 1;
+        svg += `<rect x="${x + 0.5}" y="${y}" width="${Math.max(1, barW - 1)}" height="${Math.max(1, bh)}" fill="${isToday ? 'var(--accent)' : 'var(--text2)'}" opacity="${isToday ? '1' : '0.5'}"/>`;
+      }
+      svg += '</svg>';
+      return svg;
+    }
+
+    // ===== Tier 2 — Settings tab =====
+    // Per-category notification mute toggles persisted via IndexedDB
+    // (so the SW can read them at push-event time without a chat-server
+    // round-trip). Also exposes a "Send test notification" button per
+    // category for hands-on verification.
+    const PREF_DB = 'sw-prefs';
+    const PREF_STORE = 'mutes';
+    function openPrefDb() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(PREF_DB, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(PREF_STORE)) db.createObjectStore(PREF_STORE);
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    async function getMute(category) {
+      try {
+        const db = await openPrefDb();
+        return await new Promise(resolve => {
+          const tx = db.transaction(PREF_STORE, 'readonly');
+          const req = tx.objectStore(PREF_STORE).get(category);
+          req.onsuccess = () => resolve(req.result === true);
+          req.onerror = () => resolve(false);
+        });
+      } catch { return false; }
+    }
+    async function setMute(category, value) {
+      try {
+        const db = await openPrefDb();
+        return await new Promise(resolve => {
+          const tx = db.transaction(PREF_STORE, 'readwrite');
+          const req = tx.objectStore(PREF_STORE).put(value === true, category);
+          req.onsuccess = () => resolve(true);
+          req.onerror = () => resolve(false);
+        });
+      } catch { return false; }
+    }
+
+    async function renderSettings() {
+      const el = document.getElementById('settings-section');
+      // Prefetch all current mute states
+      const states = {};
+      for (const c of NOTIFY_CATEGORIES) {
+        states[c.key] = await getMute(c.key);
+      }
+
+      // Push status from server
+      let pushStatus = null;
+      try {
+        const r = await fetch(BASE + '/push/status');
+        pushStatus = await r.json();
+      } catch {}
+
+      let html = '';
+      html += '<div class="data-card"><h3>Notification status</h3>';
+      const perm = ('Notification' in window) ? Notification.permission : 'unsupported';
+      html += `<div class="row"><span class="label">Browser permission</span><span class="value">${perm}</span></div>`;
+      html += `<div class="row"><span class="label">Subscribed on this device</span><span class="value">${pushSubscribed ? 'yes' : 'no'}</span></div>`;
+      if (pushStatus) html += `<div class="row"><span class="label">Server subscriptions</span><span class="value">${pushStatus.subscriptions || 0}</span></div>`;
+      html += '</div>';
+
+      html += '<div class="data-card"><h3>Categories</h3>';
+      for (const c of NOTIFY_CATEGORIES) {
+        const checked = !states[c.key] ? 'checked' : '';
+        html += `<div class="row">
+          <span class="label">${c.label}<div class="sublabel">${c.desc}</div></span>
+          <label class="toggle"><input type="checkbox" ${checked} onchange="onMuteToggle('${c.key}', !this.checked)"><span class="slider"></span></label>
+        </div>`;
+      }
+      html += '</div>';
+
+      html += '<div class="data-card"><h3>Test notifications</h3>';
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">';
+      for (const c of NOTIFY_CATEGORIES) {
+        html += `<button class="sport-chip" style="text-align:center;padding:8px 6px;" onclick="sendTestNotification('${c.key}')">${c.label}</button>`;
+      }
+      html += '</div></div>';
+
+      html += '<div class="data-card"><h3>About</h3>';
+      html += `<div class="row"><span class="label">Open web dashboard</span><span class="value"><a href="${BASE}" target="_blank" rel="noopener" style="color:var(--accent);">→</a></span></div>`;
+      html += `<div class="row"><span class="label">Reload service worker</span><span class="value"><a href="javascript:reloadSW()" style="color:var(--accent);">↻</a></span></div>`;
+      html += '</div>';
+
+      el.innerHTML = html;
+    }
+    window.onMuteToggle = async function(key, mute) {
+      await setMute(key, mute === true);
+    };
+    window.sendTestNotification = async function(category) {
+      try {
+        const r = await fetch(BASE + '/push/test?category=' + encodeURIComponent(category), { method: 'POST' });
+        const j = await r.json();
+        console.log('test sent', j);
+      } catch (e) {
+        alert('Test send failed: ' + e.message);
+      }
+    };
+    window.reloadSW = async function() {
+      if (!swReg) return;
+      try {
+        await swReg.update();
+        alert('Service worker reload requested. Reload the app.');
+      } catch (e) { alert('SW reload failed: ' + e.message); }
+    };
+
     // --- Init ---
     initServiceWorker();
     loadData();
-    // Auto-refresh every 60s
     setInterval(loadData, 60000);
+    // Pick up screen from URL hash or last-saved preference
+    try {
+      const fromHash = (location.hash || '').replace('#', '').toLowerCase();
+      const saved = localStorage.getItem('pxsp_active_screen');
+      const initial = (fromHash && document.getElementById('screen-' + fromHash)) ? fromHash
+        : (saved && document.getElementById('screen-' + saved)) ? saved : 'home';
+      if (initial !== 'home') switchScreen(initial);
+    } catch {}
   </script>
 </body>
 </html>

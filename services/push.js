@@ -1,6 +1,11 @@
 /**
  * Web Push notification service.
- * Sends push notifications to subscribed devices when parlays are confirmed.
+ * Sends push notifications to subscribed devices for parlay confirmations,
+ * settlements, exposure cap hits, system events (disconnects/restarts),
+ * and end-of-day summaries.
+ *
+ * Each notification category can be debounced to avoid spam — cap-hit
+ * notifications in particular fire many times per minute under load.
  */
 const webpush = require('web-push');
 const log = require('./logger');
@@ -25,6 +30,16 @@ try {
 const subscriptions = new Map();
 let unreadCount = 0;
 let hydrated = false;
+
+// Per-category debounce timestamps (Map<category, lastSentMs>) so cap-hit
+// floods don't push 50 notifications/min. notifyConfirmation/notifySettlement
+// are NOT debounced — those are 1-per-event by nature.
+const lastSentByCategory = new Map();
+const DEBOUNCE_MS = {
+  cap_hit: 5 * 60 * 1000,        // 5 min between same-category cap-hit pushes
+  connection: 60 * 1000,          // 1 min between connection-state pushes
+  daily_summary: 12 * 3600 * 1000,// 12h between summary pushes (1/day)
+};
 
 async function hydrateFromDb() {
   if (hydrated) return;
@@ -61,6 +76,9 @@ function removeSubscription(endpoint) {
 
 /**
  * Send a push notification to all subscribed devices.
+ * `category` allows the SW + client to filter by user prefs (the SW
+ * receives the category in payload.category and respects per-category
+ * mute toggles persisted in IndexedDB).
  */
 async function sendNotification(payload) {
   if (!configured || subscriptions.size === 0) return;
@@ -69,6 +87,7 @@ async function sendNotification(payload) {
   const data = JSON.stringify({
     ...payload,
     badgeCount: unreadCount,
+    sentAt: new Date().toISOString(),
   });
 
   const stale = [];
@@ -85,6 +104,19 @@ async function sendNotification(payload) {
     }
   }
   for (const ep of stale) removeSubscription(ep);
+}
+
+// Debounced wrapper — drops the call when the same category fired within
+// the configured window. Returns true if sent, false if dropped.
+function maybeSend(category, payload) {
+  const window = DEBOUNCE_MS[category];
+  if (window) {
+    const last = lastSentByCategory.get(category) || 0;
+    if (Date.now() - last < window) return false;
+    lastSentByCategory.set(category, Date.now());
+  }
+  sendNotification({ ...payload, category });
+  return true;
 }
 
 /**
@@ -104,10 +136,147 @@ function notifyConfirmation(order) {
     body: `${stake} stake | ${teams}${more}`,
     tag: 'confirm-' + order.parlayId,
     parlayId: order.parlayId,
+    category: 'confirmation',
     // Open the PWA, not the /order/:id JSON endpoint. Previously tapping
     // a confirmation notification dumped raw JSON into the browser.
-    // The parlayId is still on the payload so the app can deep-link to
-    // it via hash fragment if that feature lands later.
+    url: '/app',
+  });
+}
+
+/**
+ * Send notification when a confirmed parlay settles.
+ * Pushes per settlement so the operator gets immediate feedback on
+ * wins/losses without watching the dashboard.
+ */
+function notifySettlement(order) {
+  if (!order || !order.settlementResult) return;
+  const result = order.settlementResult; // 'won' | 'lost' | 'push' | 'void'
+  const pnl = order.pnl || 0;
+  const pnlStr = pnl >= 0 ? '+$' + pnl.toFixed(2) : '-$' + Math.abs(pnl).toFixed(2);
+  const legs = order.legs || order.meta?.legs || [];
+  const legCount = legs.length;
+  const odds = order.confirmedOdds || order.offeredOdds;
+  const oddsStr = odds ? (odds > 0 ? '+' + odds : '' + odds) : '';
+  // SP perspective: 'won' = we kept bettor's wager (good); 'lost' = we paid out (bad)
+  const emoji = result === 'won' ? '✓' : result === 'lost' ? '✗' : '◯';
+  const titlePrefix = result === 'won' ? 'Won' : result === 'lost' ? 'Lost' : result === 'push' ? 'Push' : 'Void';
+
+  sendNotification({
+    title: `${emoji} ${titlePrefix}: ${pnlStr}`,
+    body: `${legCount}-leg ${oddsStr} settled ${result}`,
+    tag: 'settle-' + order.parlayId,
+    parlayId: order.parlayId,
+    category: 'settlement',
+    url: '/app',
+  });
+}
+
+/**
+ * Send notification when an exposure cap blocks an RFQ.
+ * Categories: 'team', 'player', 'game', 'parlay_risk', 'portfolio'.
+ * Debounced 5 min per (cap_type) so a fast RFQ flow doesn't spam.
+ */
+function notifyCapHit(capType, details) {
+  const subj = details.subject || '';
+  const limit = details.limit ? '$' + Math.round(details.limit) : '';
+  const current = details.current != null ? '$' + Math.round(details.current) : '';
+  let title = '';
+  let body = '';
+  switch (capType) {
+    case 'team':
+      title = `Team Cap: ${subj}`;
+      body = `Exposure ${current} ≥ ${limit} — blocking ${subj} RFQs`;
+      break;
+    case 'player':
+      title = `Player Cap: ${subj}`;
+      body = `Exposure ${current} ≥ ${limit} — blocking ${subj} prop RFQs`;
+      break;
+    case 'game':
+      title = `Game Cap: ${subj}`;
+      body = `Game exposure ${current} ≥ ${limit}`;
+      break;
+    case 'parlay_risk':
+      title = `Parlay Risk Cap`;
+      body = `Single-parlay risk ${current} > ${limit}`;
+      break;
+    case 'portfolio':
+      title = `Portfolio Drawdown`;
+      body = `Open exposure hit drawdown limit ${limit}`;
+      break;
+    default:
+      title = `Cap Hit: ${capType}`;
+      body = `${subj} ${current}/${limit}`;
+  }
+  // Debounce key includes cap type + subject so same-team repeat hits dedupe
+  // but different teams get separate notifications.
+  const dbKey = `cap_hit_${capType}_${subj}`;
+  const last = lastSentByCategory.get(dbKey) || 0;
+  if (Date.now() - last < (DEBOUNCE_MS.cap_hit || 0)) return false;
+  lastSentByCategory.set(dbKey, Date.now());
+  sendNotification({
+    title,
+    body,
+    tag: dbKey,
+    category: 'cap_hit',
+    capType,
+    subject: subj,
+    url: '/app#exposure',
+  });
+  return true;
+}
+
+/**
+ * Send notification on connection state changes (websocket disconnect,
+ * reconnect, restart). Debounced 1min so flapping doesn't spam.
+ */
+function notifyConnectionState(state, reason) {
+  let title = '';
+  let body = '';
+  switch (state) {
+    case 'disconnected':
+      title = '⚠ WebSocket Disconnected';
+      body = reason || 'PX RFQ stream lost — service paused';
+      break;
+    case 'reconnected':
+      title = '✓ WebSocket Reconnected';
+      body = reason || 'PX RFQ stream restored';
+      break;
+    case 'restarted':
+      title = 'Service Restarted';
+      body = reason || 'Parlay SP restarted';
+      break;
+    case 'paused':
+      title = '⏸ Service Paused';
+      body = reason || 'RFQ handling paused (manual)';
+      break;
+    case 'resumed':
+      title = '▶ Service Resumed';
+      body = reason || 'RFQ handling resumed';
+      break;
+    default:
+      title = `Connection: ${state}`;
+      body = reason || '';
+  }
+  return maybeSend('connection', {
+    title, body, tag: `conn-${state}`, url: '/app',
+  });
+}
+
+/**
+ * Send end-of-day summary notification with fills + P&L.
+ */
+function notifyDailySummary(summary) {
+  if (!summary) return;
+  const pnl = summary.pnl || 0;
+  const pnlStr = pnl >= 0 ? '+$' + pnl.toFixed(0) : '-$' + Math.abs(pnl).toFixed(0);
+  const fills = summary.fills || 0;
+  const wins = summary.wins || 0;
+  const losses = summary.losses || 0;
+  const winRate = fills > 0 ? Math.round((wins / (wins + losses)) * 100) : 0;
+  return maybeSend('daily_summary', {
+    title: `Day Wrap: ${pnlStr} (${fills} fills)`,
+    body: `${wins}W / ${losses}L · ${winRate}% SP win rate`,
+    tag: 'daily-summary',
     url: '/app',
   });
 }
@@ -124,9 +293,28 @@ function getSubscriptionCount() {
   return subscriptions.size;
 }
 
+// Diagnostic — operator can hit /push/test to send a sample of each
+// category and verify that the SW handlers + iOS install + browser
+// permissions all work. Safe to call at any time.
+function sendTestNotification(category) {
+  const cat = category || 'test';
+  sendNotification({
+    title: `Test Notification (${cat})`,
+    body: `Triggered at ${new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' })} ET`,
+    tag: 'test-' + Date.now(),
+    category: cat,
+    url: '/app',
+  });
+}
+
 module.exports = {
   addSubscription,
   notifyConfirmation,
+  notifySettlement,
+  notifyCapHit,
+  notifyConnectionState,
+  notifyDailySummary,
+  sendTestNotification,
   resetBadge,
   getVapidPublicKey,
   getSubscriptionCount,

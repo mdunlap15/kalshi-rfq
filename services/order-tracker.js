@@ -1143,6 +1143,14 @@ function recordSettlement(orderUuid, result, payout, opts = {}) {
     log.info('Orders', `Settled: order=${orderUuid}, result=${result}, pnl=$${order.pnl?.toFixed(2)}, running=$${stats.runningPnL.toFixed(2)}`);
     // Critical — log errors on settlement saves so we never silently lose a settled order
     db.saveOrder(order).catch(err => log.error('DB', `CRITICAL: saveOrder(settlement) failed for ${order.parlayId}: ${err.message}`));
+    // Push settlement notification to mobile subscribers. Fire-and-forget;
+    // failures here must never disrupt settlement bookkeeping.
+    try {
+      const push = require('./push');
+      push.notifySettlement(order);
+    } catch (pushErr) {
+      log.debug('Push', `Settlement notification failed: ${pushErr.message}`);
+    }
   } else {
     log.warn('Orders', `Settlement for unknown order ${orderUuid}`);
   }

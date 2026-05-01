@@ -492,6 +492,7 @@ async function connect() {
 
     // Monitor state changes
     pusherClient.connection.bind('state_change', (states) => {
+      const prev = connectionState;
       connectionState = states.current;
       log.info('WS', `State: ${states.previous} → ${states.current}`);
 
@@ -500,11 +501,25 @@ async function connect() {
         if (reconnectAttempts > 10) {
           log.error('WS', 'Too many reconnect attempts — stopping');
         }
+        // Push notification on transition to disconnected (debounced 1min
+        // so a reconnect-storm doesn't spam). Skip the very first transition
+        // out of 'initialized' which is normal startup.
+        if (prev === 'connected') {
+          try {
+            require('./push').notifyConnectionState('disconnected', `WebSocket dropped (attempt ${reconnectAttempts})`);
+          } catch (_) {}
+        }
       }
 
       // On reconnect, re-register
       if (states.current === 'connected' && states.previous !== 'initialized') {
         handleReconnect();
+        // Notify on successful reconnect after a real disconnect.
+        if (prev !== 'connected') {
+          try {
+            require('./push').notifyConnectionState('reconnected', 'PX RFQ stream restored');
+          } catch (_) {}
+        }
       }
     });
   });

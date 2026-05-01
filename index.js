@@ -606,6 +606,7 @@ function startStatusServer() {
       orders: { ...orderTracker.getStats(), dbPnL: cachedDbPnL },
       exposure: {
         maxPerTeam: config.pricing.maxExposurePerTeam,
+        maxPerGame: config.pricing.maxExposurePerGame,
         teams: orderTracker.getExposureSnapshot(),
         games: orderTracker.getGameExposureSnapshot(),
         // Phase-2 prop launch concentration. Empty until prop legs
@@ -4627,11 +4628,13 @@ function startStatusServer() {
   // Pause/resume RFQ handling
   app.post('/pause', (req, res) => {
     websocket.pause();
+    try { require('./services/push').notifyConnectionState('paused', 'RFQ handling paused via /pause'); } catch (_) {}
     res.json({ ok: true, paused: true });
   });
 
   app.post('/resume', (req, res) => {
     websocket.resume();
+    try { require('./services/push').notifyConnectionState('resumed', 'RFQ handling resumed via /resume'); } catch (_) {}
     res.json({ ok: true, paused: false });
   });
 
@@ -6735,8 +6738,70 @@ function startStatusServer() {
     res.json({
       subscriptions: push.getSubscriptionCount(),
       vapidConfigured: !!push.getVapidPublicKey(),
+      lastDailySummary: _lastDailySummaryAt || null,
     });
   });
+
+  // Operator-triggered test notification. Hit /push/test?category=settlement
+  // (or any category name) to verify SW handlers, browser permissions, and
+  // network reach. Safe to call any time.
+  app.post('/push/test', (req, res) => {
+    const cat = (req.body && req.body.category) || (req.query && req.query.category) || 'test';
+    push.sendTestNotification(cat);
+    res.json({ ok: true, category: cat, subscriptions: push.getSubscriptionCount() });
+  });
+  app.get('/push/test', (req, res) => {
+    const cat = (req.query && req.query.category) || 'test';
+    push.sendTestNotification(cat);
+    res.json({ ok: true, category: cat, subscriptions: push.getSubscriptionCount() });
+  });
+
+  // Notify on service start so the operator knows when the service comes
+  // back from a Railway redeploy. Skip the very first boot's wakeup if no
+  // subscriptions are hydrated yet.
+  setTimeout(() => {
+    try {
+      if (push.getSubscriptionCount() > 0) {
+        push.notifyConnectionState('restarted', `Parlay SP online · ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' })} ET`);
+      }
+    } catch (_) { /* fire-and-forget */ }
+  }, 5000);
+
+  // End-of-day summary notification — fires once per ET day at ~23:50 ET.
+  // Composes a P&L + fill summary from the in-memory order tracker and
+  // pushes it. Skipped if no subscriptions or if already sent for the day.
+  let _lastDailySummaryAt = null; // ISO date string (YYYY-MM-DD ET) of last send
+  function maybeSendDailySummary() {
+    try {
+      const nowEt = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false });
+      const [datePart, timePart] = nowEt.split(', ');
+      const [hh, mm] = (timePart || '').split(':').map(Number);
+      // Window: 23:45 — 23:59 ET. Send once per day in that window.
+      if (hh !== 23 || mm < 45) return;
+      const todayEt = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      if (_lastDailySummaryAt === todayEt) return;
+      if (push.getSubscriptionCount() === 0) return;
+      // Build summary from order tracker — fills, wins, losses, P&L since 10am ET today
+      const orderTrackerMod = require('./services/order-tracker');
+      const recentOrders = orderTrackerMod.getRecentOrders(2000);
+      const cutoff = new Date(todayEt + 'T10:00:00-04:00').getTime();
+      let fills = 0, wins = 0, losses = 0, pnl = 0;
+      for (const o of (recentOrders || [])) {
+        const t = o.settledAt ? new Date(o.settledAt).getTime() : 0;
+        if (t < cutoff) continue;
+        if (o.status === 'settled_won') { wins++; fills++; pnl += (o.pnl || 0); }
+        else if (o.status === 'settled_lost') { losses++; fills++; pnl += (o.pnl || 0); }
+        else if (o.status === 'settled_push' || o.status === 'settled_void') { fills++; pnl += (o.pnl || 0); }
+      }
+      push.notifyDailySummary({ fills, wins, losses, pnl });
+      _lastDailySummaryAt = todayEt;
+      log.info('Push', `Daily summary sent for ${todayEt}: ${fills} fills, ${wins}W/${losses}L, $${pnl.toFixed(2)}`);
+    } catch (err) {
+      log.debug('Push', `Daily summary check failed: ${err.message}`);
+    }
+  }
+  // Check every 5 minutes — cheap, no-op outside the 23:45-23:59 window.
+  setInterval(maybeSendDailySummary, 5 * 60 * 1000);
 
   // SPA fallback
   app.get('*', (req, res) => {

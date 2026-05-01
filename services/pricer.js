@@ -2531,6 +2531,11 @@ function shouldDecline(legs) {
   );
   if (!exposureCheck.allowed) {
     log.info('Pricing', `Exposure limit: ${exposureCheck.reason}`);
+    try {
+      const push = require('./push');
+      const v = (exposureCheck.violations || [])[0];
+      if (v) push.notifyCapHit('team', { subject: v.team, limit: v.limit, current: v.wouldBe });
+    } catch (_) { /* fire-and-forget */ }
     return { declined: true, reason: 'team exposure limit', detail: exposureCheck.reason, violations: exposureCheck.violations, estPayout };
   }
 
@@ -2546,6 +2551,10 @@ function shouldDecline(legs) {
   );
   if (!gameCheck.allowed) {
     log.info('Pricing', `Game exposure limit: ${gameCheck.reason}`);
+    try {
+      const push = require('./push');
+      push.notifyCapHit('game', { subject: gameCheck.eventLabel || 'game', limit: gameCheck.limit, current: gameCheck.wouldBe });
+    } catch (_) { /* fire-and-forget */ }
     return {
       declined: true,
       reason: 'game exposure limit',
@@ -2607,6 +2616,10 @@ function shouldDecline(legs) {
       if (pitcherCheck && pitcherCheck.exceeded) {
         const pendingTxt = pitcherCheck.pending ? ` + pending $${pitcherCheck.pending}` : '';
         log.info('Pricing', `Pitcher exposure cap: ${pitcherCheck.pitcher} would be $${pitcherCheck.wouldBe} (max $${pitcherCheck.max})`);
+        try {
+          const push = require('./push');
+          push.notifyCapHit('player', { subject: pitcherCheck.pitcher, limit: pitcherCheck.max, current: pitcherCheck.wouldBe });
+        } catch (_) {}
         return {
           declined: true,
           reason: 'pitcher_exposure_cap',
@@ -2627,6 +2640,10 @@ function shouldDecline(legs) {
       if (playerCheck && playerCheck.exceeded) {
         const pendingTxt = playerCheck.pending ? ` + pending $${playerCheck.pending}` : '';
         log.info('Pricing', `Player exposure cap: ${playerCheck.player} (${playerCheck.sport}) would be $${playerCheck.wouldBe} (max $${playerCheck.max})`);
+        try {
+          const push = require('./push');
+          push.notifyCapHit('player', { subject: `${playerCheck.player} (${playerCheck.sport})`, limit: playerCheck.max, current: playerCheck.wouldBe });
+        } catch (_) {}
         return {
           declined: true,
           reason: 'player_exposure_cap',
