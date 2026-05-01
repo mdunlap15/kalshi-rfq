@@ -2105,7 +2105,9 @@ function shouldDecline(legs) {
   // position so we don't double-implement the K+ML SGP allowance.
   // COMBINED prop-correlation pre-pass. Single iteration over legs
   // produces:
-  //   - same-pitcher detection (two K-prop legs on the same pitcher)
+  //   - same-player detection (two prop legs on the same player, any
+  //     combination of stats — supersedes the older same-pitcher rule
+  //     which only handled K-prop pairs)
   //   - same-game prop+anything block (any prop leg + any same-game
   //     leg in same parlay — covers prop+ML/spread/total AND prop+prop)
   //
@@ -2113,28 +2115,56 @@ function shouldDecline(legs) {
   // here so we walk the legs array once. Also skips the heavier
   // same-game grouping if no prop leg is found at all (game-line-only
   // parlays were paying the iteration cost on every parlay).
+  //
+  // SAME-PLAYER RULE rationale: two prop legs on the same player are
+  // correlated regardless of which stats are measured. Even combos that
+  // look superficially independent (HR + stolen bases, K + walks) share
+  // the underlying "player got significant playing time / pitcher went
+  // deep" factor that inflates BOTH probabilities together. Without
+  // measured per-(sport, prop_a, prop_b) correlation factors, we can't
+  // safely de-vig the joint probability — declining is the asymmetric-
+  // risk-correct call (overestimating correlation just declines a
+  // profitable RFQ; underestimating sells the bettor a parlay too
+  // cheaply).
   {
-    const pitcherSeen = {};      // for same-pitcher rule
+    const playerPropSeen = {};   // for same-player rule (sport|player → first-seen leg meta)
     const legsByEvent = {};      // for same-game rule (only populated if a prop leg appears)
     let anyPropLeg = false;
+    // Player-name normalizer — strip diacritics, periods, apostrophes,
+    // backticks, collapse whitespace, lowercase. Same canonicalization
+    // as the per-(sport, player) exposure system in order-tracker so
+    // "C.J. McCollum" and "CJ McCollum" produce the same key here too.
+    const _normPlayer = (s) => (s || '')
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .toLowerCase().replace(/[.'`]/g, '').replace(/\s+/g, ' ').trim();
     for (const leg of legs) {
       const lineId = leg.line_id || leg.lineId || leg;
       const lineInfo = lineManager.lookupLine(lineId);
       if (!lineInfo) continue; // unknown leg — main loop handles
       const mt = lineInfo.marketType || '';
       const isPropLeg = mt.startsWith('player_');
-      // Same-pitcher rule (K-prop only — narrowest variant)
-      if (mt === 'player_strikeouts') {
-        const player = (lineInfo.playerName || '').toLowerCase().trim();
-        if (player) {
-          if (pitcherSeen[player]) {
+      // Same-player rule — universal across all player_* market types.
+      // Replaces the older same-pitcher rule (which only handled
+      // player_strikeouts pairs); covers MLB hitter props (hits, HR,
+      // total bases, RBIs), Phase-2 NBA points/rebounds/assists/threes,
+      // NHL shots_on_goal, AND legacy K-prop pairs the same way.
+      if (isPropLeg) {
+        const sport = lineInfo.sport || lineInfo.oddsApiSport;
+        // playerName is the canonical field; teamName is also populated
+        // for K-props (legacy) so fall back if playerName is missing.
+        const rawPlayer = lineInfo.playerName || lineInfo.teamName || '';
+        const player = _normPlayer(rawPlayer);
+        if (sport && player) {
+          const playerKey = sport + '|' + player;
+          if (playerPropSeen[playerKey]) {
+            const prev = playerPropSeen[playerKey];
             return {
               declined: true,
-              reason: 'prop_correlation_same_pitcher',
-              detail: `Two legs on pitcher "${lineInfo.playerName}" in same parlay (lines ${pitcherSeen[player]} + ${lineInfo.line})`,
+              reason: 'prop_correlation_same_player',
+              detail: `Two prop legs on "${rawPlayer}" in same parlay (${prev.marketType}${prev.line != null ? ' ' + prev.line : ''} + ${mt}${lineInfo.line != null ? ' ' + lineInfo.line : ''}) — same-player props are correlated regardless of which stats they measure`,
             };
           }
-          pitcherSeen[player] = lineInfo.line;
+          playerPropSeen[playerKey] = { marketType: mt, line: lineInfo.line };
         }
       }
       // Same-game rule grouping — only build if we've actually seen a

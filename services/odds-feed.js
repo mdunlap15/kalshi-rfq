@@ -6046,6 +6046,12 @@ const TEAM_ABBREV_TO_CANONICAL = {
   // MLB
   'BOS Red Sox': 'Boston Red Sox',
   'TOR Blue Jays': 'Toronto Blue Jays',
+  // SharpAPI uses "Chicago WS" while TOA + PX use "Chicago White Sox".
+  // Without canonicalization, F5 / team_totals supplements run against
+  // the SharpAPI-keyed entry (with "Chicago WS") and PX matches against
+  // the TOA-keyed entry (with "Chicago White Sox") — null fair-prob on
+  // F5 ML / spread / total. Operator-flagged 2026-05-01.
+  'Chicago WS': 'Chicago White Sox',
   // Oakland Athletics — three observed variants across feeds:
   //   - SharpAPI: "A's"
   //   - The Odds API: "Oakland Athletics"
