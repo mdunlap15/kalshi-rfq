@@ -4251,9 +4251,11 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
         // consensus in market.byLine — populated by buildConsensusTotals
         // for every distinct line across books, so minority lines (e.g.
         // Pinnacle's integer 8 when majority is 8.5) resolve without a
-        // network fetch. Only applies to totals; spreads have signed
-        // home_point bucketing via getAltLineFairProb.
-        if (marketType === 'totals' && market.byLine) {
+        // network fetch. Applies to totals AND F5/H1 sub-game totals;
+        // the supplement that builds totals_f5/totals_h1 also populates
+        // byLine. Spreads have signed home_point bucketing via
+        // getAltLineFairProb instead.
+        if ((marketType === 'totals' || marketType === 'totals_f5' || marketType === 'totals_h1') && market.byLine) {
           const byLineEntry = market.byLine[String(absLine)];
           if (byLineEntry) {
             const sideProb = selection === 'over' ? byLineEntry.over?.fairProb : byLineEntry.under?.fairProb;
