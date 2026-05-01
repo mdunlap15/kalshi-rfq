@@ -1399,6 +1399,24 @@ function priceParlay(legs, opts = {}) {
     vigRateUsed = Math.min(0.20, avgVig + longshotAdd + templateRampAdd);
   }
 
+  // Fair-prob multiplier floor. Mirrors how Pinnacle / DK / FD price —
+  // markup applied as a fraction of fair, producing pp-distance that
+  // grows with fair prob. Our payout-vig formula above produces a flat
+  // (or slightly decreasing) pp-distance curve; this knob gives the
+  // slope a books-shaped lift without disrupting low-fair behavior
+  // where the longshot ramp already dominates.
+  //
+  // Take the MAX of (current offered, fair × (1 + multiplier)). At low
+  // fair the existing payout formula wins; at high fair the multiplier
+  // floor kicks in. Default 0 = disabled.
+  const fairMult = config.pricing.vigFairMultiplier || 0;
+  if (fairMult > 0 && vigLegs.length > 0 && vigFair > 0) {
+    const multiplierOffered = vigFair * (1 + fairMult) * overrideProduct;
+    if (multiplierOffered > offeredImpliedProb) {
+      offeredImpliedProb = Math.min(0.99, multiplierOffered);
+    }
+  }
+
   // -------------------------------------------------------------------
   // PRICING SAFETY NET: cross-check fair against Pinnacle raw compound.
   //

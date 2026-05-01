@@ -110,6 +110,28 @@ const config = {
     // disable. Tunable via VIG_LONGSHOT_THRESHOLD and VIG_LONGSHOT_MAX_ADD.
     vigLongshotThreshold: parseFloat(process.env.VIG_LONGSHOT_THRESHOLD) || 0.25,
     vigLongshotMaxAdd: parseFloat(process.env.VIG_LONGSHOT_MAX_ADD) || 0.010,
+    // Fair-prob multiplier markup. Mirrors how Pinnacle / DK / FD price
+    // parlays — the pp distance from fair grows linearly with fair_prob
+    // because their markup is applied as a fraction of fair_prob rather
+    // than (1 - vig) on payout. Our existing payout-based vig formula
+    // produces a roughly FLAT pp-distance curve across fair (or even
+    // slightly decreasing); books slope upward.
+    //
+    // When vigFairMultiplier > 0, after computing offeredImpliedProb via
+    // the existing payout formula, we compute a candidate offered prob
+    // as fair × (1 + vigFairMultiplier) and take the MAX of the two.
+    // Means at LOW fair the existing longshot ramp still dominates;
+    // at HIGH fair (where the payout formula gives a tiny pp gap) the
+    // multiplier kicks in and produces a Pinnacle-shaped curve.
+    //
+    // Sample with vigFairMultiplier=0.04:
+    //   fair=10% → multiplier offered = 10.4% → +0.4pp
+    //   fair=20% → multiplier offered = 20.8% → +0.8pp
+    //   fair=40% → multiplier offered = 41.6% → +1.6pp
+    //
+    // Default 0 = disabled (current behavior). Tunable via
+    // VIG_FAIR_MULTIPLIER env var.
+    vigFairMultiplier: parseFloat(process.env.VIG_FAIR_MULTIPLIER) || 0,
     // Template-exposure ramp: penalizes bets whose canonical parlay signature
     // (sorted team+market+line tuple) has already confirmed N times inside a
     // rolling window. Catches the April 18 failure mode: multiple bettors
