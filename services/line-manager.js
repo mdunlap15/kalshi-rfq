@@ -899,7 +899,15 @@ async function seedAllLines() {
           sel.marketType = 'series_winner';
         } else if (isSeriesSpreadMarket && sel.marketType === 'spread') {
           sel.marketType = 'series_spread';
-        } else if (isSeriesTotalMarket && sel.marketType === 'total') {
+        } else if (isSeriesTotalMarket && sel.marketType === 'total' && sportKey !== 'tennis') {
+          // Tennis "Total Games" markets match seriesTotalNamePat but
+          // they are MATCH-LEVEL totals (over/under games in the match),
+          // not playoff series totals. Keep them as marketType 'total'
+          // so they route to the standard totals-cache lookup path
+          // (TOA caches as 'totals'). Without this carve-out, tennis
+          // total-games legs get registered as series_total and look
+          // for fair probs in a cache key (series_total) that doesn't
+          // exist for tennis — every line returns null fair.
           sel.marketType = 'series_total';
         }
 
@@ -1667,7 +1675,11 @@ async function resolveUnknownLine(rfqLeg) {
             sel.marketType = 'series_winner';
           } else if (isSeriesSpreadMarket && sel.marketType === 'spread') {
             sel.marketType = 'series_spread';
-          } else if (isSeriesTotalMarket && sel.marketType === 'total') {
+          } else if (isSeriesTotalMarket && sel.marketType === 'total' && sportKey !== 'tennis') {
+            // Tennis "Total Games" → keep as 'total' (match-level). See
+            // matching carve-out at line 902 — same reason: tennis match
+            // totals route to the standard 'totals' cache, not the series
+            // cache (which has no tennis data).
             sel.marketType = 'series_total';
           }
           // Per-selection bound check: rejects the specific out-of-range
