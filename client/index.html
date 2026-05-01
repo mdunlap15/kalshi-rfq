@@ -1051,6 +1051,23 @@
                   <option value="first_half_">1st Half (all)</option>
                   <option value="btts">Both Teams to Score</option>
                   <option value="double_chance">Double Chance</option>
+                  <!-- Player props — matches against marketType prefix
+                       so "player_" catches every prop family (K-prop,
+                       NBA points/rebounds/assists/threes, NHL SoG,
+                       MLB hitter hits/HR/TB/RBI). Useful when sport=MLB
+                       hits the 500-row limit and pushes prop rows past
+                       the cap. -->
+                  <option value="player_">Player Props (all)</option>
+                  <option value="player_strikeouts">MLB Pitcher Strikeouts</option>
+                  <option value="player_hitter_hits">MLB Hitter Hits</option>
+                  <option value="player_hitter_hr">MLB Hitter HR</option>
+                  <option value="player_hitter_total_bases">MLB Hitter Total Bases</option>
+                  <option value="player_hitter_rbi_runs">MLB Hitter RBIs</option>
+                  <option value="player_points">NBA Points</option>
+                  <option value="player_rebounds">NBA Rebounds</option>
+                  <option value="player_assists">NBA Assists</option>
+                  <option value="player_threes_made">NBA Threes Made</option>
+                  <option value="player_shots_on_goal">NHL Shots on Goal</option>
                 </select>
               </label>
               <input type="text" id="lines-team" placeholder="Search team..." oninput="linesState.team=this.value; debounceLoadLines()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:180px;">
