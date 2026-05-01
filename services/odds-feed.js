@@ -844,6 +844,30 @@ async function fetchOddsForSport(sport, opts) {
   return parsed;
 }
 
+// Merge a freshly-supplemented sub-game market (h2h_f5/spreads_f5/
+// totals_f5/h2h_h1/spreads_h1/totals_h1) into the existing cache entry
+// without losing byLine entries that were populated by an earlier
+// build (typically SharpAPI's '1st_5_innings_run_line' rows that the
+// main parse stored before the per-event TOA supplement ran).
+//
+// Without this merge, the supplement OVERWRITES ev.markets.spreads_f5
+// with TOA data only — and TOA's per-event response often contains
+// only Pinnacle's pick-em (line=0) for thinner-volume games, while
+// SharpAPI had BetMGM at the standard ±0.5. Result: PX RFQs at ±0.5
+// returned null even though the data was in cache moments earlier.
+//
+// Strategy: prefer the FRESH (TOA) market as the base — its primary
+// home/away/line is more reliable since TOA reaches more sharp books.
+// Then union the byLine maps from both, with fresh winning on any
+// line both sides happen to cover. SharpAPI-only lines (e.g. BetMGM
+// ±0.5 when TOA only had Pinnacle line=0) are preserved.
+function _mergeSupplementedMarket(existing, fresh) {
+  if (!existing) return fresh;
+  if (!fresh) return existing;
+  const mergedByLine = { ...(existing.byLine || {}), ...(fresh.byLine || {}) };
+  return { ...fresh, byLine: mergedByLine };
+}
+
 // Per-event TOA supplements (F5 / H1 / team_totals) are best-effort on
 // the primary refresh cycle — if resolveOddsApiEventId misses for an
 // event, or TOA returns a transient 4xx/5xx, that event's supplemented
@@ -1026,14 +1050,14 @@ async function supplementMlbF5Markets(parsedEvents) {
 
         if (h2hPairs.length > 0) {
           const mk = buildConsensusMoneyline(h2hPairs);
-          if (mk) { ev.markets.h2h_f5 = mk; h2hCount++; }
+          if (mk) { ev.markets.h2h_f5 = _mergeSupplementedMarket(ev.markets.h2h_f5, mk); h2hCount++; }
         }
         if (spreadPairs.length > 0) {
           const sp = buildConsensusSpread(spreadPairs);
-          if (sp) { ev.markets.spreads_f5 = sp; spreadCount++; }
+          if (sp) { ev.markets.spreads_f5 = _mergeSupplementedMarket(ev.markets.spreads_f5, sp); spreadCount++; }
         }
         if (totalPairs.length > 0) {
-          ev.markets.totals_f5 = buildConsensusTotals(totalPairs);
+          ev.markets.totals_f5 = _mergeSupplementedMarket(ev.markets.totals_f5, buildConsensusTotals(totalPairs));
           totalCount++;
         }
       } catch (err) {
@@ -1139,14 +1163,14 @@ async function supplementNbaH1Markets(parsedEvents) {
 
         if (mlPairs.length > 0) {
           const mk = buildConsensusMoneyline(mlPairs);
-          if (mk) { ev.markets.h2h_h1 = mk; h2hCount++; }
+          if (mk) { ev.markets.h2h_h1 = _mergeSupplementedMarket(ev.markets.h2h_h1, mk); h2hCount++; }
         }
         if (spreadPairs.length > 0) {
           const sp = buildConsensusSpread(spreadPairs);
-          if (sp) { ev.markets.spreads_h1 = sp; spreadCount++; }
+          if (sp) { ev.markets.spreads_h1 = _mergeSupplementedMarket(ev.markets.spreads_h1, sp); spreadCount++; }
         }
         if (totalPairs.length > 0) {
-          ev.markets.totals_h1 = buildConsensusTotals(totalPairs);
+          ev.markets.totals_h1 = _mergeSupplementedMarket(ev.markets.totals_h1, buildConsensusTotals(totalPairs));
           totalCount++;
         }
       } catch (err) {
