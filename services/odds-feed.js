@@ -6044,6 +6044,19 @@ const TEAM_ABBREV_TO_CANONICAL = {
   // MLB
   'BOS Red Sox': 'Boston Red Sox',
   'TOR Blue Jays': 'Toronto Blue Jays',
+  // Oakland Athletics — three observed variants across feeds:
+  //   - SharpAPI: "A's"
+  //   - The Odds API: "Oakland Athletics"
+  //   - PX (and team's own marketing post-relocation): "Athletics"
+  // Without canonicalization, the cache holds three separate entries
+  // for tonight's Cleveland @ Athletics game and supplements (F5,
+  // team_totals) land on whichever entry resolved the TOA event ID,
+  // not the "Athletics"-keyed entry PX matches against. Operator-
+  // flagged 2026-05-01: F5 ML / team-total nulls for the A's game.
+  // Map all three variants to the PX-side spelling so they collapse
+  // into one cache key.
+  "A's": 'Athletics',
+  'Oakland Athletics': 'Athletics',
   // NHL
   'VGK Golden Knights': 'Vegas Golden Knights',
   'LA Kings': 'Los Angeles Kings',
