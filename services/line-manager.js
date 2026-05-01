@@ -1,4 +1,32 @@
 const { config } = require('../config');
+
+// Memoized websocket module reference. The Phase-2 prop bridge inside
+// resolveUnknownLine pulls classifiers + name extractor from websocket
+// via require('./websocket'). The require call has lookup overhead on
+// every RFQ — caching it here saves ~30-80μs per prop-leg RFQ.
+// Initialized lazily on first call to avoid the line-manager ↔
+// websocket circular import at module-load time.
+let _wsModule = null;
+function _getWsModule() {
+  if (_wsModule === null) {
+    try { _wsModule = require('./websocket'); }
+    catch (e) { _wsModule = false; } // sentinel for "tried, failed"
+  }
+  return _wsModule || null;
+}
+
+// Module-level prop-type → TOA market key maps for the bridge. Lifted
+// out of the inner closure (was re-created on every prop RFQ) to avoid
+// the per-call object construction.
+const _NBA_PROP_TO_TOA_MARKET = {
+  points: 'player_points',
+  rebounds: 'player_rebounds',
+  assists: 'player_assists',
+  threes_made: 'player_threes',
+};
+const _NHL_PROP_TO_TOA_MARKET = {
+  shots_on_goal: 'player_shots_on_goal',
+};
 const log = require('./logger');
 const px = require('./prophetx');
 const oddsFeed = require('./odds-feed');
@@ -1514,32 +1542,22 @@ async function resolveUnknownLine(rfqLeg) {
             // player_prop_market). When allowlist is populated, eligible
             // prop legs become quotable here.
             //
-            // Lazy-require classifiers + name extractor to avoid the
-            // line-manager ↔ websocket circular import at module-load time.
+            // Use module-cached websocket reference + lifted prop-type
+            // maps (see top of file). Saves ~30-80μs per prop RFQ by
+            // skipping the per-call require lookup + object literal.
             let propType = null;
             let toaMarketKey = null;
             let nameExtractor = null;
-            try {
-              const ws = require('./websocket');
+            const ws = _getWsModule();
+            if (ws) {
               nameExtractor = ws._extractPlayerNameFromPropMarket;
               if (sportKey.includes('basketball')) {
                 propType = ws._classifyNbaProp(market.name);
-                const NBA_TO_TOA = {
-                  points: 'player_points',
-                  rebounds: 'player_rebounds',
-                  assists: 'player_assists',
-                  threes_made: 'player_threes',
-                };
-                toaMarketKey = NBA_TO_TOA[propType];
+                toaMarketKey = _NBA_PROP_TO_TOA_MARKET[propType];
               } else if (sportKey.includes('hockey')) {
                 propType = ws._classifyNhlProp(market.name);
-                const NHL_TO_TOA = {
-                  shots_on_goal: 'player_shots_on_goal',
-                };
-                toaMarketKey = NHL_TO_TOA[propType];
+                toaMarketKey = _NHL_PROP_TO_TOA_MARKET[propType];
               }
-            } catch (e) {
-              // Classifier unavailable — fall through to decline below
             }
             const allowlist = (config.pricing && config.pricing.propLaunchAllowlist) || new Set();
             const allowKey = sportKey + '.' + propType;

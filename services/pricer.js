@@ -2103,63 +2103,72 @@ function shouldDecline(legs) {
   // Only handles the same-pitcher case here; same-game correlation rule
   // (d) requires the full carve-out logic and stays in its post-loop
   // position so we don't double-implement the K+ML SGP allowance.
-  {
-    const seen = {};
-    for (const leg of legs) {
-      const lineId = leg.line_id || leg.lineId || leg;
-      const lineInfo = lineManager.lookupLine(lineId);
-      if (!lineInfo) continue; // 'unknown legs' will fire in the main loop
-      if (lineInfo.marketType !== 'player_strikeouts') continue;
-      const player = (lineInfo.playerName || '').toLowerCase().trim();
-      if (!player) continue;
-      if (seen[player]) {
-        return {
-          declined: true,
-          reason: 'prop_correlation_same_pitcher',
-          detail: `Two legs on pitcher "${lineInfo.playerName}" in same parlay (lines ${seen[player]} + ${lineInfo.line})`,
-        };
-      }
-      seen[player] = lineInfo.line;
-    }
-  }
-
-  // Phase-2 prop launch — same-game correlation block. Rule: a prop leg
-  // can never share a game with any other leg in the same parlay (team
-  // line OR another prop, same player or different player). The
-  // mechanical correlation between a player's stat output and his
-  // team's game-level outcome (or another teammate's stat output) is
-  // strong and not modeled by the SGP correlation factors. Cleaner to
-  // block outright than to risk underpricing.
+  // COMBINED prop-correlation pre-pass. Single iteration over legs
+  // produces:
+  //   - same-pitcher detection (two K-prop legs on the same pitcher)
+  //   - same-game prop+anything block (any prop leg + any same-game
+  //     leg in same parlay — covers prop+ML/spread/total AND prop+prop)
   //
-  // Applies to all player_<type> marketTypes including player_strikeouts.
-  // The same-pitcher rule above is the narrower variant; this catches
-  // the cross-market-type case (e.g. McCollum points + Pelicans ML, or
-  // McCollum points + Murray rebounds in DEN@NOP).
-  //
-  // Only fires when the parlay actually contains a prop leg, so
-  // game-line-only parlays are unaffected.
+  // Performance note: was two separate iterations before — combined
+  // here so we walk the legs array once. Also skips the heavier
+  // same-game grouping if no prop leg is found at all (game-line-only
+  // parlays were paying the iteration cost on every parlay).
   {
-    const isPropLeg = (li) => li && /^player_/.test(li.marketType || '');
-    const legsByEvent = {};
+    const pitcherSeen = {};      // for same-pitcher rule
+    const legsByEvent = {};      // for same-game rule (only populated if a prop leg appears)
     let anyPropLeg = false;
     for (const leg of legs) {
       const lineId = leg.line_id || leg.lineId || leg;
       const lineInfo = lineManager.lookupLine(lineId);
-      if (!lineInfo) continue;
-      const eid = lineInfo.pxEventId;
-      if (!eid) continue;
-      if (!legsByEvent[eid]) legsByEvent[eid] = { props: [], others: [] };
-      if (isPropLeg(lineInfo)) {
-        legsByEvent[eid].props.push(lineInfo);
-        anyPropLeg = true;
-      } else {
-        legsByEvent[eid].others.push(lineInfo);
+      if (!lineInfo) continue; // unknown leg — main loop handles
+      const mt = lineInfo.marketType || '';
+      const isPropLeg = mt.startsWith('player_');
+      // Same-pitcher rule (K-prop only — narrowest variant)
+      if (mt === 'player_strikeouts') {
+        const player = (lineInfo.playerName || '').toLowerCase().trim();
+        if (player) {
+          if (pitcherSeen[player]) {
+            return {
+              declined: true,
+              reason: 'prop_correlation_same_pitcher',
+              detail: `Two legs on pitcher "${lineInfo.playerName}" in same parlay (lines ${pitcherSeen[player]} + ${lineInfo.line})`,
+            };
+          }
+          pitcherSeen[player] = lineInfo.line;
+        }
+      }
+      // Same-game rule grouping — only build if we've actually seen a
+      // prop leg (or this is one). Game-line-only parlays skip this work.
+      if (isPropLeg || anyPropLeg) {
+        const eid = lineInfo.pxEventId;
+        if (eid) {
+          if (!legsByEvent[eid]) legsByEvent[eid] = { props: [], others: [] };
+          if (isPropLeg) {
+            legsByEvent[eid].props.push(lineInfo);
+            anyPropLeg = true;
+            // Backfill: if we encountered non-prop legs BEFORE the first
+            // prop leg, they weren't grouped. Re-scan from the start to
+            // catch them. Rare path — only on first prop leg encounter.
+            if (legsByEvent[eid].others.length === 0) {
+              for (const otherLeg of legs) {
+                if (otherLeg === leg) break;
+                const oid = otherLeg.line_id || otherLeg.lineId || otherLeg;
+                const oInfo = lineManager.lookupLine(oid);
+                if (!oInfo || !oInfo.pxEventId) continue;
+                if (oInfo.pxEventId !== eid) continue;
+                if ((oInfo.marketType || '').startsWith('player_')) continue;
+                legsByEvent[eid].others.push(oInfo);
+              }
+            }
+          } else {
+            legsByEvent[eid].others.push(lineInfo);
+          }
+        }
       }
     }
+    // Same-game block — only check when at least one prop leg exists.
     if (anyPropLeg) {
       for (const [eid, group] of Object.entries(legsByEvent)) {
-        // Block: prop + any other leg (team market or another prop) on
-        // same pxEventId.
         if (group.props.length > 0 && (group.props.length + group.others.length) > 1) {
           const propLabels = group.props.map(li =>
             `${li.playerName || li.teamName || '?'} ${li.propType || li.marketType} ${li.selection || ''} ${li.line ?? ''}`.trim());
