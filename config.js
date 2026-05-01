@@ -514,6 +514,62 @@ function validate() {
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
   }
+  // Sanity-check env values for the "name leaked into value" typo class:
+  // operator types `VAR=value1,value2` as the VALUE in Railway, not just
+  // `value1,value2`. The leaked prefix breaks any parser that splits on
+  // delimiter and expects clean tokens. Caught operator-side 2026-05-01:
+  // PROP_LAUNCH_ALLOWLIST first entry was the literal string
+  // 'PROP_LAUNCH_ALLOWLIST=basketball_nba.points' instead of just
+  // 'basketball_nba.points', silently breaking the points-prop allowlist
+  // gate. Walk all process.env keys and warn on any value starting with
+  // its own key followed by '='. Also catches surrounding-quote and
+  // leading-equals typos as a side effect.
+  const warnings = [];
+  for (const [key, val] of Object.entries(process.env)) {
+    if (typeof val !== 'string' || val.length === 0) continue;
+    // Common shape: "VAR=foo,bar" pasted as the value of VAR
+    if (val.startsWith(key + '=')) {
+      const cleaned = val.slice(key.length + 1);
+      warnings.push({
+        type: 'name_leaked',
+        key,
+        rawValue: val.length > 80 ? val.slice(0, 77) + '...' : val,
+        suggestedValue: cleaned.length > 80 ? cleaned.slice(0, 77) + '...' : cleaned,
+      });
+    }
+    // Surrounding single/double quotes — Railway often does NOT strip
+    // these (some platforms do). Warn so operator can decide.
+    else if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      // Ignore short legitimate values like '0', and obvious empty strings
+      if (val.length > 2) {
+        warnings.push({
+          type: 'wrapping_quotes',
+          key,
+          rawValue: val.length > 80 ? val.slice(0, 77) + '...' : val,
+          suggestedValue: val.slice(1, -1),
+        });
+      }
+    }
+    // Leading '=' — operator pasted "=value" by accident
+    else if (val.startsWith('=')) {
+      warnings.push({
+        type: 'leading_equals',
+        key,
+        rawValue: val.length > 80 ? val.slice(0, 77) + '...' : val,
+        suggestedValue: val.slice(1),
+      });
+    }
+  }
+  if (warnings.length > 0) {
+    // Log via console (logger may not be ready at config-load time)
+    for (const w of warnings) {
+      console.warn(
+        `[config] ENV TYPO WARNING (${w.type}) for ${w.key}: value starts with "${w.key}=" or is wrapped in quotes. ` +
+        `Got: ${JSON.stringify(w.rawValue)}. Suggested fix: set value to ${JSON.stringify(w.suggestedValue)}`
+      );
+    }
+  }
+  return { warnings };
 }
 
 module.exports = { config, validate, getBankroll };
