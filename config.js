@@ -183,12 +183,22 @@ const config = {
     // alts. Like the spread carve-out, also requires book coverage in
     // our altLines cache — no derived/inferred lines.
     nbaAltTotalMaxDistance: parseFloat(process.env.NBA_ALT_TOTAL_MAX_DISTANCE) || 2.0,
-    // MLB alt run-line allowed |line| values. Mike spec'd ±0.5 and ±1.5
-    // only — i.e. the primary 1.5 plus the half-run "buy" alt. Discrete
-    // allowlist (not a distance from primary) because a distance check
-    // of 1.0 would also pull in 2.5, which is too aggressive.
+    // MLB alt run-line allowed |line| values. Discrete allowlist (not a
+    // distance from primary) because a distance check of 1.0 would also
+    // pull in 2.5, which is too aggressive.
     // Comma-separated env override; values are absolute (sign-agnostic).
-    mlbAllowedRunLines: (process.env.MLB_ALLOWED_RUN_LINES || '0.5,1.5')
+    // 2026-05-01: Mike expanded to include 1.0 ("MLB and NHL spreads of
+    // ±0.5, ±1.0, ±1.5"). Non-primary alts still require book coverage
+    // in the alt-spread cache; primary ±1.5 passes without coverage check.
+    mlbAllowedRunLines: (process.env.MLB_ALLOWED_RUN_LINES || '0.5,1.0,1.5')
+      .split(',').map(s => parseFloat(s.trim())).filter(n => Number.isFinite(n)),
+    // NHL alt puck-line allowed |line| values. Same pattern as MLB run
+    // lines — primary is ±1.5; ±0.5 and ±1.0 are alts with book-coverage
+    // gating. Without this allowlist, all NHL alt puck-lines decline as
+    // 'icehockey_nhl alt spread' (a hard block from blockAltSpreadSports).
+    // 2026-05-01 unblocked NHL alt-spreads in this range per Mike's request
+    // — was previously the dominant decline category (~4,500/day).
+    nhlAllowedPuckLines: (process.env.NHL_ALLOWED_PUCK_LINES || '0.5,1.0,1.5')
       .split(',').map(s => parseFloat(s.trim())).filter(n => Number.isFinite(n)),
     // MLB alt-total max distance from primary (default ±1.5 in any 0.5
     // step). E.g. primary 7.5 → allow 6.0/6.5/7.0/7.5/8.0/8.5/9.0.

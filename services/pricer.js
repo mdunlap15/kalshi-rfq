@@ -77,10 +77,30 @@ function isBlockedAltSpread(lineInfo) {
   const lineNum = Number(lineInfo.line);
   if (!Number.isFinite(lineNum)) return null;
   const absLine = Math.abs(lineNum);
-  // NHL: primary spread is always ±1.5; no alt carve-out in place.
+  // NHL: discrete allowlist of |line| values (default ±0.5, ±1.0, ±1.5
+  // per Mike 2026-05-01). Mirrors MLB pattern — primary ±1.5 passes
+  // without coverage check; non-primary alts require book coverage in
+  // the alt-spread cache so we never derive a line ourselves.
   if (sport === 'icehockey_nhl') {
-    if (absLine === 1.5) return null;
-    return `${sport} alt spread (line ${lineNum}, primary is ±1.5)`;
+    const allowed = config.pricing.nhlAllowedPuckLines || [0.5, 1.0, 1.5];
+    const isAllowed = allowed.some(v => Math.abs(absLine - v) < 0.001);
+    if (!isAllowed) {
+      return `NHL puck line ${absLine} not in allowed set [${allowed.join(', ')}]`;
+    }
+    // Primary ±1.5 — no coverage check needed
+    if (Math.abs(absLine - 1.5) < 0.001) return null;
+    // Non-primary alt — require book coverage
+    const sel = lineInfo.oddsApiSelection || lineInfo.selection;
+    if (lineInfo.homeTeam && lineInfo.awayTeam) {
+      const eventKey = oddsFeed.normalizeEventKey(lineInfo.homeTeam, lineInfo.awayTeam);
+      const cacheEntry = oddsFeed.getAltLineCacheEntry(eventKey, 'spreads', sel, lineNum);
+      if (!cacheEntry || !cacheEntry.books || cacheEntry.books === 0) {
+        return `NHL alt puck line: no book coverage for line ${absLine} (cache miss or 0 books)`;
+      }
+    } else {
+      return `NHL alt puck line: missing team names, can't verify book coverage`;
+    }
+    return null;
   }
   // MLB: discrete allowlist of |line| values (default ±0.5 and ±1.5).
   // Each non-primary value also requires alt-spread cache book coverage —
