@@ -3442,8 +3442,15 @@
     let hiddenStaleCount = 0;
     positions = positions.filter(p => {
       const local = localByParlayId[p.parlayId];
+      // Strip parlays the local tracker knows are settled OR rejected.
+      // GhostReconcile (server-side) demotes orders to status='rejected'
+      // when PX REST returns the order with rejected/failed status, but
+      // the cached PX positions list (60s ledger TTL) can lag and still
+      // include the parlay — without this filter, the rejected order
+      // appears in Open Positions with blank MY RISK / TO WIN columns
+      // (because confirmedStake was scrubbed by GhostReconcile).
       if (local && typeof local.status === 'string'
-          && local.status.startsWith('settled_')) return false;
+          && (local.status.startsWith('settled_') || local.status === 'rejected')) return false;
       if (isStaleConfirmed(p)) {
         hiddenStaleCount++;
         return !!posState.showHidden; // keep if toggle is on, drop otherwise
