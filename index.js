@@ -1002,6 +1002,62 @@ function startStatusServer() {
   //   sport      (default basketball_nba) — TOA sport key
   //   markets    (default player_points,player_rebounds,player_assists,player_threes)
   //   maxEvents  (default 3) — cap to limit credit burn
+  // Trace the Phase-2 prop bridge end-to-end for a specific player + market.
+  // Mirrors what services/line-manager.js calls inside resolveUnknownLine —
+  // useful when /decline-events shows player_prop legs failing with no
+  // visible reason. Returns the full stages + error/result from
+  // lookupTheOddsApiPlayerProp so the operator can see exactly which gate
+  // (event match, player match, line match, alt-distance, books-with-both)
+  // is dropping the leg.
+  //
+  // Usage:
+  //   /debug/prop-bridge?sport=basketball_nba&market=player_points&player=Cade%20Cunningham&line=24.5&home=Orlando%20Magic&away=Detroit%20Pistons
+  app.get('/debug/prop-bridge', async (req, res) => {
+    try {
+      const sport = String(req.query.sport || '').trim();
+      const market = String(req.query.market || '').trim();
+      const player = String(req.query.player || '').trim();
+      const home = String(req.query.home || '').trim();
+      const away = String(req.query.away || '').trim();
+      const line = req.query.line != null ? parseFloat(req.query.line) : null;
+      const startTime = req.query.startTime || null;
+      if (!sport || !market || !player || !home || !away) {
+        return res.status(400).json({
+          ok: false,
+          error: 'required: sport, market, player, home, away (line + startTime optional)',
+          example: '/debug/prop-bridge?sport=basketball_nba&market=player_points&player=Cade%20Cunningham&line=24.5&home=Orlando%20Magic&away=Detroit%20Pistons',
+        });
+      }
+      const eventCtx = { homeTeam: home, awayTeam: away, startTime };
+      const result = await oddsFeed.lookupTheOddsApiPlayerProp(sport, market, eventCtx, player, line);
+      // Also report config thresholds the bridge applies post-lookup
+      const minBooks = (config.pricing && config.pricing.propMinBooksWithBothSides) || 3;
+      const maxDist = (config.pricing && config.pricing.propAltLineMaxDistance);
+      const usable = result
+        && result.fairProbOver != null
+        && result.fairProbUnder != null
+        && (result.booksWithBothSides || 0) >= minBooks;
+      res.json({
+        ok: true,
+        input: { sport, market, player, line, home, away, startTime },
+        result,
+        bridgeGate: {
+          propMinBooksWithBothSides: minBooks,
+          propAltLineMaxDistance: maxDist,
+          usable,
+          wouldRegister: usable,
+          declineReason: !result ? 'lookup_null'
+            : result.error ? result.error
+            : (result.booksWithBothSides || 0) < minBooks ? `insufficient_books(${result.booksWithBothSides || 0}<${minBooks})`
+            : (result.fairProbOver == null || result.fairProbUnder == null) ? 'no_fair_prob'
+            : null,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack?.split('\n').slice(0, 5) });
+    }
+  });
+
   app.get('/probe-toa-prop-coverage', async (req, res) => {
     try {
       const apiKey = process.env.THE_ODDS_API_KEY;
@@ -6517,6 +6573,23 @@ function startStatusServer() {
             bookPriceOverride = golfRes.bookPriceOverride;
           } else if (golfRes != null) {
             fairProb = golfRes;
+          }
+        }
+        // Player-prop lines (K-prop + Phase-2 NBA/NHL props) carry their
+        // resolved fair prob directly on lineInfo because the seed-time
+        // bridge already paid the SharpAPI / TOA lookup cost. Read it
+        // first; the generic oddsFeed.getFairProb path doesn't know how
+        // to recover prop fair-prob (sync SharpAPI returns null when the
+        // pitcher/player isn't in the SharpAPI cache, and there's no
+        // sync TOA fallback at lookup time). Without this preference,
+        // /lines/detail shows null fair-prob for every K-prop / Phase-2
+        // prop line, even though the prop bridge populated it correctly
+        // at seed and the actual quote-time pricer uses it just fine.
+        if (fairProb == null && info.marketType && /^player_/.test(info.marketType)) {
+          if (info.fairProb != null) {
+            fairProb = info.fairProb;
+          } else if (info.fairProbOver != null && info.fairProbUnder != null) {
+            fairProb = info.selection === 'over' ? info.fairProbOver : info.fairProbUnder;
           }
         }
         // Non-golf, OR golf matchup with no manual/scraper hit: fall

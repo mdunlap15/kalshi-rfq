@@ -872,6 +872,75 @@ async function seedAllLines() {
         log.debug('Lines', `Skipping PX 3-way sub-market at seed: ${market.name}`);
         continue;
       }
+      // K-prop seed branch — MLB pitcher_strikeouts. PX tags these as
+      // type='total' with the player name embedded in market.name (e.g.
+      // "Cole Ragans Total Pitching Strikeouts"). Process them BEFORE the
+      // standard total path so K-prop lines (4.5–8.5) don't get filtered
+      // by the MLB game-total bounds check (which expects 5-15 for game
+      // totals), and so they register with marketType='player_strikeouts'
+      // instead of 'total'. Sync SharpAPI lookup only — TOA escalation
+      // happens via the on-demand resolveUnknownLine path for any K-prop
+      // RFQ lineId we miss here. Pre-seeding moves visible K-prop coverage
+      // from "only previously RFQ'd" (~23) to "every K-prop SharpAPI knows
+      // about" (~60+) so the Lines tab reflects actual quotability.
+      if (sportKey === 'baseball_mlb' && market.type === 'total' && isPitcherStrikeoutMarket(market.name || '')) {
+        const playerName = extractPitcherNameFromKMarket(market.name);
+        if (!playerName) {
+          log.debug('Lines', `K-prop seed: name extract failed for "${market.name}"`);
+          continue;
+        }
+        const eventCtx = { homeTeam: matchedHome, awayTeam: matchedAway, startTime: event.scheduled || null };
+        const parsedK = px.parseMarketSelections(market);
+        let registered = 0;
+        for (const sel of parsedK) {
+          totalLines++;
+          let lookup = oddsFeed.lookupPlayerStrikeoutProp(sportKey, eventCtx, playerName, sel.line);
+          // Confidence gate: same as resolveUnknownLine. Skip if SharpAPI
+          // returned only a single non-trusted book.
+          const trustedSet = (config.pricing && config.pricing.propTrustedSingleBooks) || [];
+          const usableFair = (l) => l && l.fairProbOver != null && l.fairProbUnder != null;
+          const isHighConfidence = (l) => {
+            if (!usableFair(l)) return false;
+            const both = l.booksWithBothSides || 0;
+            if (both >= 2) return true;
+            const books = l.books || [];
+            return both === 1 && books.some(b => trustedSet.includes(String(b).toLowerCase()));
+          };
+          if (!isHighConfidence(lookup)) continue;
+          const fairProb = sel.selection === 'over' ? lookup.fairProbOver : lookup.fairProbUnder;
+          lineIndex[sel.lineId] = {
+            sport: sportKey,
+            pxEventId: event.event_id,
+            pxEventName: event.name,
+            marketType: 'player_strikeouts',
+            marketName: market.name,
+            selection: sel.selection,
+            teamName: playerName, // dashboards display "team" — use pitcher name
+            line: sel.line,
+            homeTeam: matchedHome,
+            awayTeam: matchedAway,
+            oddsApiSport: sportKey,
+            oddsApiMarket: 'player_strikeouts',
+            oddsApiSelection: sel.selection,
+            startTime: event.scheduled || null,
+            playerName,
+            fairProb,
+            fairProbOver: lookup.fairProbOver,
+            fairProbUnder: lookup.fairProbUnder,
+            booksWithBothSides: lookup.booksWithBothSides,
+            propBooks: lookup.books,
+            propSource: 'sharpapi',
+            propFetchedAt: lookup.fetchedAt || Date.now(),
+          };
+          _trackPrimaryForIndex(lineIndex[sel.lineId]);
+          matchedLines++;
+          registered++;
+        }
+        if (registered > 0) {
+          log.debug('Lines', `K-prop seed: ${playerName} registered ${registered} lines`);
+        }
+        continue; // K-prop market done — skip standard processing
+      }
       const parsed = px.parseMarketSelections(market);
       if (isGolfSport) {
         log.info('Lines', `[golf-debug] Parsed market "${market.name}" type=${market.type} → ${parsed.length} selections`);
