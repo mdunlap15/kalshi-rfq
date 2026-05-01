@@ -3608,7 +3608,7 @@
         style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; width:150px;">
       <select onchange="posState.statusFilter=this.value; posRerender()" style="${pFSel}">
         <option value="">All statuses</option>
-        <option value="won"${posState.statusFilter==='won'?' selected':''}>Won ✓</option>
+        <option value="won"${posState.statusFilter==='won'?' selected':''}>Won - Awaiting Settle</option>
         <option value="inprogress"${posState.statusFilter==='inprogress'?' selected':''}>In Progress</option>
         <option value="inseries"${posState.statusFilter==='inseries'?' selected':''}>In Series</option>
         <option value="upcoming"${posState.statusFilter==='upcoming'?' selected':''}>Upcoming</option>
@@ -3745,6 +3745,19 @@
       const posWpPct = (posWinProb * 100).toFixed(1);
       const posWpColor = posDead ? 'var(--green)' : posWinProb >= 0.8 ? 'var(--green)' : posWinProb >= 0.5 ? 'var(--text)' : posWinProb >= 0.3 ? 'var(--amber)' : 'var(--red)';
       const anyInProgress = gameStatus.label === 'In Progress';
+      // Once a single leg has lost, the parlay is mathematically won
+      // for the SP — the bettor can no longer hit the parlay regardless
+      // of remaining legs. Override the time-based gameStatus ("In
+      // Progress" / "In Series" / "Awaiting Settle") with a clearer
+      // "Won - Awaiting Settle" so the operator knows we're locked in
+      // and just waiting on PX to mark settled.
+      if (posDead) {
+        gameStatus = {
+          label: 'Won - Awaiting Settle',
+          color: 'var(--green)',
+          title: 'At least one bettor leg has lost — SP win locked in. Waiting for PX to mark the parlay settled.',
+        };
+      }
       const posWpLabel = posDead ? '<span style="color:var(--green); font-weight:600;">100% ✓</span>'
         : anyInProgress ? '<span style="color:' + posWpColor + '; font-weight:600;">' + posWpPct + '%</span>' + (posHasLive ? ' <span style="font-size:9px; color:var(--green);">LIVE</span>' + formatLiveStaleness(mLegs) : '')
         : '<span style="color:var(--text3);">' + posWpPct + '%</span>';
