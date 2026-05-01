@@ -3275,6 +3275,60 @@ function startStatusServer() {
   // Decline audit: rank unknown events/sports by how often they're declining parlays.
   // Optional ?window=5m|15m|30m|1h|2h|6h|24h — when provided, stats are computed from
   // the rolling event log filtered to the window rather than all-session cumulative.
+  // Drill-down: recent decline events filtered by reason. Backs the
+  // mobile app's expandable decline rows. Returns up to ?limit raw
+  // events from the rolling event log for an exact ?reason match,
+  // newest first. Defaults to 24h window, limit 50.
+  app.get('/decline-events', (req, res) => {
+    try {
+      const reason = req.query.reason;
+      if (!reason) return res.status(400).json({ ok: false, error: 'reason query param required' });
+      const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 500);
+      const windowMs = (() => {
+        const w = req.query.window || '24h';
+        const m = /^(\d+)\s*(s|m|h|d)?$/i.exec(w);
+        if (!m) return 24 * 60 * 60 * 1000;
+        const mult = { s: 1000, m: 60000, h: 3600000, d: 86400000 }[(m[2] || 'h').toLowerCase()] || 3600000;
+        return Number(m[1]) * mult;
+      })();
+      const intel = orderTracker.getMarketIntel(5000);
+      const events = (intel.declines && intel.declines.recentDeclineEvents) || [];
+      const cutoff = Date.now() - windowMs;
+      const matches = [];
+      // Walk newest first
+      for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i];
+        if (new Date(ev.time).getTime() < cutoff) break;
+        if (ev.reason !== reason) continue;
+        // Trim each event to the fields the mobile actually uses, keeps
+        // payload small over cellular.
+        matches.push({
+          time: ev.time,
+          parlayId: ev.parlayId,
+          legCount: (ev.knownLegs || []).length + (ev.unknownCategories || []).length,
+          knownLegs: (ev.knownLegs || []).slice(0, 8).map(l => ({
+            sport: l.sport, marketType: l.marketType, teamName: l.teamName,
+            line: l.line, eventName: l.eventName,
+          })),
+          unknownCategories: (ev.unknownCategories || []).slice(0, 8).map(uc => ({
+            category: uc.category, sport: uc.sport, eventName: uc.eventName,
+            marketName: uc.marketName, propType: uc.propType, line: uc.line,
+            isKnownEvent: uc.isKnownEvent, resolveReason: uc.resolveReason,
+          })),
+          detail: ev.detail,
+        });
+        if (matches.length >= limit) break;
+      }
+      res.json({
+        ok: true, reason, window: req.query.window || '24h', limit,
+        cutoff: new Date(cutoff).toISOString(),
+        count: matches.length, events: matches,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/decline-audit', (req, res) => {
     try {
       const intel = orderTracker.getMarketIntel(1000);
@@ -6730,8 +6784,24 @@ function startStatusServer() {
     res.json({ publicKey: push.getVapidPublicKey() });
   });
   app.post('/push/subscribe', (req, res) => {
-    push.addSubscription(req.body);
+    const body = req.body || {};
+    push.addSubscription(body);
+    // Optional: client may send `mutedCategories` in the same payload
+    // so we don't need a follow-up round trip on first install.
+    if (Array.isArray(body.mutedCategories)) {
+      push.setMutedCategories(body.endpoint, body.mutedCategories);
+    }
     res.json({ ok: true, subscriptions: push.getSubscriptionCount() });
+  });
+
+  // Update muted categories for a subscription. Server-side gate for
+  // per-category notification suppression — authoritative across SW
+  // versions and PWA install states. Body: {endpoint, mutedCategories[]}.
+  app.post('/push/mute-prefs', (req, res) => {
+    const body = req.body || {};
+    if (!body.endpoint) return res.status(400).json({ ok: false, error: 'endpoint required' });
+    push.setMutedCategories(body.endpoint, body.mutedCategories || []);
+    res.json({ ok: true, endpoint: body.endpoint, muted: push.getMutedCategories(body.endpoint) });
   });
   // Debug: how many push subscriptions does the server currently hold?
   app.get('/push/status', (req, res) => {

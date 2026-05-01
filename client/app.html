@@ -29,7 +29,34 @@
       color: var(--text);
       min-height: 100vh;
       padding: env(safe-area-inset-top) 0 calc(env(safe-area-inset-bottom) + var(--tab-bar-h));
+      font-size: 15px;
     }
+    /* Reusable collapsible-section pattern. Used for the hourly-fills card,
+       Daily Volume, and per-card sub-sections in Exposure/Props/Declines.
+       The header always shows a caret + label + optional badge; clicking
+       toggles the body via .collapsed class. State persists in localStorage
+       per section id so collapse choices survive auto-refresh and tab swap. */
+    .collapsible { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin: 0 12px 10px; overflow: hidden; }
+    .collapsible .header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 12px; cursor: pointer; user-select: none;
+      background: var(--surface);
+    }
+    .collapsible .header:active { background: var(--surface2); }
+    .collapsible .header .title {
+      font-size: 12px; color: var(--text2); text-transform: uppercase;
+      letter-spacing: 0.4px; font-weight: 600; display: flex; align-items: center; gap: 6px;
+    }
+    .collapsible .header .badge {
+      font-size: 13px; font-weight: 600; color: var(--text);
+    }
+    .collapsible .header .caret {
+      display: inline-block; width: 12px; font-size: 11px;
+      color: var(--text2); transition: transform 0.15s;
+    }
+    .collapsible.collapsed .caret { transform: rotate(-90deg); }
+    .collapsible .body { padding: 8px 12px 12px; border-top: 1px solid var(--border); }
+    .collapsible.collapsed .body { display: none; }
 
     .header {
       background: var(--surface);
@@ -63,11 +90,11 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 6px 8px;
+      padding: 8px 10px;
       min-width: 0;
     }
     .stat-card .label {
-      font-size: 9px;
+      font-size: 11px;
       color: var(--text2);
       text-transform: uppercase;
       letter-spacing: 0.3px;
@@ -76,9 +103,9 @@
       text-overflow: ellipsis;
     }
     .stat-card .value {
-      font-size: 15px;
+      font-size: 17px;
       font-weight: 600;
-      margin-top: 1px;
+      margin-top: 2px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -88,17 +115,17 @@
 
     .summary-peek {
       display: none;
-      padding: 6px 12px;
+      padding: 8px 12px;
       background: var(--surface);
       border-bottom: 1px solid var(--border);
-      font-size: 12px;
+      font-size: 13px;
       gap: 12px;
       color: var(--text2);
       justify-content: space-around;
     }
     .summary-peek.visible { display: flex; }
     .summary-peek .item { display: flex; align-items: baseline; gap: 4px; }
-    .summary-peek .item strong { color: var(--text); font-size: 13px; font-weight: 600; }
+    .summary-peek .item strong { color: var(--text); font-size: 14px; font-weight: 600; }
     .summary-peek .item strong.positive { color: var(--green); }
     .summary-peek .item strong.negative { color: var(--red); }
 
@@ -107,8 +134,8 @@
       border: 1px solid var(--border);
       color: var(--text2);
       border-radius: 4px;
-      padding: 4px 8px;
-      font-size: 11px;
+      padding: 5px 10px;
+      font-size: 12px;
       cursor: pointer;
       margin-left: 8px;
     }
@@ -164,7 +191,7 @@
     }
     .notify-banner:active { background: var(--surface2); }
 
-    .empty { text-align: center; padding: 40px 16px; color: var(--text2); font-size: 14px; }
+    .empty { text-align: center; padding: 40px 16px; color: var(--text2); font-size: 15px; }
 
     /* Tabbed parlays table (Open / Settled) */
     .tab-bar {
@@ -178,13 +205,13 @@
     }
     .tab-btn {
       flex: 1;
-      padding: 10px 12px;
+      padding: 12px 12px;
       background: var(--surface);
       border: 1px solid var(--border);
       border-bottom: none;
       border-radius: 8px 8px 0 0;
       color: var(--text2);
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.15s;
@@ -192,10 +219,10 @@
     .tab-btn .count {
       display: inline-block;
       margin-left: 6px;
-      padding: 1px 6px;
+      padding: 1px 7px;
       border-radius: 8px;
       background: var(--surface2);
-      font-size: 11px;
+      font-size: 12px;
       color: var(--text2);
       font-weight: 500;
     }
@@ -222,8 +249,8 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 14px;
-      padding: 4px 10px;
-      font-size: 11px;
+      padding: 5px 12px;
+      font-size: 12px;
       color: var(--text2);
       cursor: pointer;
       white-space: nowrap;
@@ -255,17 +282,17 @@
     .parlay-row:first-child { border-top: none; }
     .parlay-row:active { background: var(--surface2); }
     .parlay-row .main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-    .parlay-row .selections { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .parlay-row .meta { font-size: 11px; color: var(--text2); display: flex; gap: 8px; flex-wrap: wrap; }
+    .parlay-row .selections { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .parlay-row .meta { font-size: 12px; color: var(--text2); display: flex; gap: 8px; flex-wrap: wrap; }
     .parlay-row .meta .sep { color: var(--border); }
     .parlay-row .right { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; white-space: nowrap; }
-    .parlay-row .odds { font-size: 15px; font-weight: 600; }
-    .parlay-row .pnl { font-size: 12px; font-weight: 600; }
+    .parlay-row .odds { font-size: 16px; font-weight: 600; }
+    .parlay-row .pnl { font-size: 13px; font-weight: 600; }
     .parlay-row .pnl.positive { color: var(--green); }
     .parlay-row .pnl.negative { color: var(--red); }
     .parlay-row .pill {
-      font-size: 10px;
-      padding: 2px 6px;
+      font-size: 11px;
+      padding: 2px 7px;
       border-radius: 4px;
       font-weight: 600;
       text-transform: uppercase;
@@ -276,11 +303,11 @@
     .parlay-row .pill.confirmed { background: rgba(88,166,255,0.15); color: var(--accent); }
     .parlay-row .pill.upcoming { background: rgba(139,148,158,0.15); color: var(--text2); }
     .parlay-row.expanded { background: var(--surface2); }
-    .parlay-detail { padding: 0 8px 10px; font-size: 12px; background: var(--surface2); border-top: 1px solid var(--border); }
+    .parlay-detail { padding: 0 8px 10px; font-size: 13px; background: var(--surface2); border-top: 1px solid var(--border); }
     .parlay-detail .leg-item { display: flex; justify-content: space-between; padding: 4px 0; border-top: 1px solid var(--border); color: var(--text2); }
     .parlay-detail .leg-item:first-child { border-top: none; padding-top: 6px; }
     .parlay-detail .leg-item .leg-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; }
-    .parlay-detail .leg-item .leg-status { font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px; }
+    .parlay-detail .leg-item .leg-status { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 3px; }
     .parlay-detail .leg-item .leg-status.won { background: rgba(63,185,80,0.15); color: var(--green); }
     .parlay-detail .leg-item .leg-status.lost { background: rgba(248,81,73,0.15); color: var(--red); }
     .parlay-detail .footer { display: flex; justify-content: space-between; padding-top: 6px; margin-top: 6px; border-top: 1px solid var(--border); color: var(--text2); }
@@ -291,15 +318,15 @@
     .dv-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
     .dv-chart { padding: 8px 4px 4px; }
     .dv-chart svg { width: 100%; height: auto; display: block; }
-    .dv-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .dv-table th { text-align: left; padding: 6px 10px; font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.3px; border-bottom: 1px solid var(--border); font-weight: 500; }
+    .dv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .dv-table th { text-align: left; padding: 7px 10px; font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.3px; border-bottom: 1px solid var(--border); font-weight: 500; }
     .dv-table th.r { text-align: right; }
     .dv-table td { padding: 6px 10px; border-top: 1px solid var(--border); }
     .dv-table td.r { text-align: right; font-variant-numeric: tabular-nums; }
     .dv-table td.c { text-align: center; }
     .dv-table .dv-month-row { cursor: pointer; font-weight: 600; background: var(--surface); }
     .dv-table .dv-day-row { cursor: pointer; background: var(--surface2); }
-    .dv-table .dv-parlay-row { background: var(--surface2); font-size: 11px; }
+    .dv-table .dv-parlay-row { background: var(--surface2); font-size: 12px; }
     .dv-table td.pos { color: var(--green); }
     .dv-table td.neg { color: var(--red); }
     .dv-table .dv-month-row td:first-child { padding-left: 10px; }
@@ -307,10 +334,10 @@
     .dv-table .dv-parlay-row td:first-child { padding-left: 34px; }
     .dv-table .dv-header-row { background: var(--surface); }
     .dv-table .dv-sub-header { background: var(--surface); }
-    .dv-table .dv-sub-header th { font-size: 9px; padding: 4px 6px; }
+    .dv-table .dv-sub-header th { font-size: 10px; padding: 5px 6px; }
     .dv-caret { display: inline-block; width: 10px; font-size: 9px; color: var(--text2); }
-    .dv-section-title { font-size: 13px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; padding: 12px 16px 6px; }
-    .dv-legend { display: flex; gap: 12px; padding: 6px 12px 10px; font-size: 10px; color: var(--text2); flex-wrap: wrap; }
+    .dv-section-title { font-size: 14px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; padding: 12px 16px 6px; }
+    .dv-legend { display: flex; gap: 12px; padding: 6px 12px 10px; font-size: 11px; color: var(--text2); flex-wrap: wrap; }
     .dv-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 
     .refresh-btn {
@@ -351,7 +378,7 @@
       background: none;
       border: none;
       color: var(--text2);
-      font-size: 10px;
+      font-size: 11px;
       font-weight: 500;
       display: flex;
       flex-direction: column;
@@ -363,7 +390,7 @@
       transition: color 0.15s;
       position: relative;
     }
-    .nav-btn .icon { font-size: 18px; line-height: 1; }
+    .nav-btn .icon { font-size: 20px; line-height: 1; }
     .nav-btn.active { color: var(--accent); }
     .nav-btn .badge {
       position: absolute;
@@ -405,7 +432,7 @@
     }
     .data-card .row:first-of-type { border-top: none; }
     .data-card .row .label {
-      font-size: 12px;
+      font-size: 14px;
       color: var(--text);
       flex: 1;
       min-width: 0;
@@ -414,13 +441,13 @@
       white-space: nowrap;
     }
     .data-card .row .label .sublabel {
-      font-size: 10px;
+      font-size: 12px;
       color: var(--text2);
       display: block;
-      margin-top: 1px;
+      margin-top: 2px;
     }
     .data-card .row .value {
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 600;
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
@@ -428,11 +455,11 @@
     .data-card .row .value.warn { color: var(--amber); }
     .data-card .row .value.danger { color: var(--red); }
     .data-card h3 {
-      font-size: 11px;
+      font-size: 13px;
       color: var(--text2);
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      margin-bottom: 6px;
+      margin-bottom: 8px;
       font-weight: 600;
     }
 
@@ -455,6 +482,73 @@
 
     /* Sparkline mini chart (declines tab) */
     .spark { display: inline-block; vertical-align: middle; margin-left: 8px; }
+
+    /* Expandable list rows used by Exposure (game/team) and Declines.
+       Click on .row.expandable opens a sibling .row-detail underneath. */
+    .data-card .row.expandable { cursor: pointer; padding: 8px 0; }
+    .data-card .row.expandable:active { background: var(--surface2); }
+    .data-card .row .label .caret-mini {
+      display: inline-block; width: 10px; font-size: 9px;
+      color: var(--text2); transition: transform 0.15s; margin-right: 4px;
+    }
+    .data-card .row.open .label .caret-mini { transform: rotate(90deg); }
+    .data-card .row-detail {
+      padding: 6px 4px 10px 18px;
+      border-top: 1px dashed var(--border);
+      font-size: 12px;
+      color: var(--text2);
+      display: none;
+    }
+    .data-card .row-detail.open { display: block; }
+    .data-card .row-detail .leg-line {
+      display: flex; justify-content: space-between;
+      padding: 4px 0; border-bottom: 1px dotted var(--border);
+    }
+    .data-card .row-detail .leg-line:last-child { border-bottom: none; }
+    .data-card .row-detail .leg-line .leg-name {
+      flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; color: var(--text);
+    }
+    .data-card .row-detail .leg-line .leg-meta {
+      flex: 0 0 auto; font-variant-numeric: tabular-nums;
+      color: var(--text2); margin-left: 8px;
+    }
+    .data-card .row-detail .empty-mini { padding: 6px 0; color: var(--text2); font-size: 12px; }
+    .data-card .row-detail.loading { color: var(--text2); font-style: italic; padding: 6px 0; }
+
+    /* Sort + filter toolbar above each data section */
+    .toolbar {
+      display: flex; gap: 6px; align-items: center;
+      padding: 8px 0 10px;
+      flex-wrap: wrap;
+    }
+    .toolbar input[type=text] {
+      flex: 1 1 130px; min-width: 110px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+    .toolbar input[type=text]:focus { outline: none; border-color: var(--accent); }
+    .toolbar select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 13px;
+    }
+    .toolbar .clear-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text2);
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 12px;
+      cursor: pointer;
+    }
 
     /* Toggle switch (settings) */
     .toggle {
@@ -514,10 +608,10 @@
     }
     .metric-card .metric-header {
       display: flex; justify-content: space-between; align-items: baseline;
-      font-size: 11px; color: var(--text2); text-transform: uppercase;
+      font-size: 12px; color: var(--text2); text-transform: uppercase;
       letter-spacing: 0.4px; margin-bottom: 6px;
     }
-    .metric-card .metric-value { font-size: 18px; font-weight: 600; color: var(--text); }
+    .metric-card .metric-value { font-size: 20px; font-weight: 600; color: var(--text); }
     .metric-card svg { width: 100%; height: auto; display: block; margin-top: 4px; }
   </style>
 </head>
@@ -539,13 +633,17 @@
 
     <div id="notify-prompt"></div>
 
-    <!-- Hourly fills sparkline (Tier 3) -->
-    <div class="metric-card" id="hourly-metric">
-      <div class="metric-header">
-        <span>Fills · last 12h</span>
-        <span class="metric-value" id="hourly-total">0</span>
+    <!-- Hourly fills sparkline (Tier 3). Collapsible, default collapsed
+         since this is exploratory data not actionable signal. Toggle via
+         the chevron in the header; state persists in localStorage. -->
+    <div class="collapsible collapsed" id="hourly-metric" data-collapsible-key="hourly">
+      <div class="header" onclick="toggleCollapsible('hourly')">
+        <span class="title"><span class="caret">&#9660;</span> Fills last 12h</span>
+        <span class="badge" id="hourly-total">0</span>
       </div>
-      <svg id="hourly-spark" viewBox="0 0 200 40" preserveAspectRatio="none"></svg>
+      <div class="body">
+        <svg id="hourly-spark" viewBox="0 0 240 60" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block;"></svg>
+      </div>
     </div>
 
     <div class="sport-filter" id="sport-filter"></div>
@@ -561,10 +659,15 @@
       <div class="empty">Loading...</div>
     </div>
 
-    <div class="dv-section-title">Daily Volume &amp; P&amp;L</div>
-    <div class="dv-wrap">
-      <div class="dv-card" id="daily-volume-card">
-        <div class="empty">Loading...</div>
+    <div class="collapsible" id="daily-volume" data-collapsible-key="daily-volume">
+      <div class="header" onclick="toggleCollapsible('daily-volume')">
+        <span class="title"><span class="caret">&#9660;</span> Daily Volume &amp; P&amp;L</span>
+        <span class="badge" id="daily-volume-total">—</span>
+      </div>
+      <div class="body" style="padding:0;">
+        <div class="dv-card" id="daily-volume-card">
+          <div class="empty">Loading...</div>
+        </div>
       </div>
     </div>
   </section>
@@ -683,12 +786,20 @@
       // Re-POST subscription on every load. The server keeps subscriptions
       // in memory only — every redeploy forgets them, but the browser-side
       // subscription persists and we just push it back up each time.
+      // Include the current mute prefs so the server has the right gate
+      // immediately after a restart (no race window where muted categories
+      // could leak through before the user reopens Settings).
       if (sub) {
         try {
+          const muted = [];
+          for (const c of NOTIFY_CATEGORIES) {
+            if (await getMute(c.key)) muted.push(c.key);
+          }
+          const payload = { ...sub.toJSON(), mutedCategories: muted };
           const r = await fetch(BASE + '/push/subscribe', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(sub.toJSON()),
+            body: JSON.stringify(payload),
           });
           await r.json().catch(() => ({}));
         } catch (e) {
@@ -817,21 +928,28 @@
       const btn = document.getElementById('refresh-btn');
       btn.classList.add('loading');
       try {
-        const [statusResp, ordersResp, pxPnLResp] = await Promise.all([
+        // /daily-pnl is the SOURCE OF TRUTH for the chart. /orders.recentOrders
+        // is bounded (~906 entries) and miss pre-buffer history, which is why
+        // the previous mobile chart's cumulative ended at $7k while the
+        // dashboard's lifetime stat shows $13k+. /daily-pnl reads directly
+        // from Supabase and matches the dashboard's view.
+        const [statusResp, ordersResp, pxPnLResp, dailyPnlResp] = await Promise.all([
           fetch(BASE + '/status'),
           fetch(BASE + '/orders'),
           fetch(BASE + '/px-pnl').catch(() => null),
+          fetch(BASE + '/daily-pnl?days=30').catch(() => null),
         ]);
         const status = await statusResp.json();
         const ordersData = await ordersResp.json();
         const pxPnL = pxPnLResp ? await pxPnLResp.json().catch(() => null) : null;
+        const dailyPnl = dailyPnlResp ? await dailyPnlResp.json().catch(() => null) : null;
         const allOrders = ordersData.recentOrders || [];
 
         renderStatus(status, allOrders, pxPnL);
         renderHourlyMetric(allOrders);
         renderSportFilter(allOrders);
         renderParlays(allOrders);
-        renderDailyVolume(allOrders);
+        renderDailyVolume(allOrders, dailyPnl);
       } catch (e) {
         console.error('Load failed:', e);
       } finally {
@@ -925,15 +1043,39 @@
     window.toggleStats = toggleStats;
     try { applyStatsState(localStorage.getItem('pxsp_stats_collapsed') === '1'); } catch {}
 
+    // --- Generic collapsible-section toggle ---
+    // Persist open/closed state per-key in localStorage so collapse
+    // choices survive auto-refresh, tab swap, and PWA reload.
+    function applyCollapsibleState() {
+      const els = document.querySelectorAll('.collapsible[data-collapsible-key]');
+      for (const el of els) {
+        const key = el.dataset.collapsibleKey;
+        const stored = localStorage.getItem('pxsp_collapsed_' + key);
+        if (stored === '1') el.classList.add('collapsed');
+        else if (stored === '0') el.classList.remove('collapsed');
+        // Otherwise leave default-collapsed state from HTML (e.g. hourly)
+      }
+    }
+    window.toggleCollapsible = function(key) {
+      const el = document.querySelector('.collapsible[data-collapsible-key="' + key + '"]');
+      if (!el) return;
+      const willCollapse = !el.classList.contains('collapsed');
+      el.classList.toggle('collapsed', willCollapse);
+      try { localStorage.setItem('pxsp_collapsed_' + key, willCollapse ? '1' : '0'); } catch {}
+    };
+
     // --- Hourly fills sparkline (Tier 3) ---
-    // Builds a 12-bucket bar chart of confirmations by hour of the
-    // current ET day. Useful at-a-glance signal for late-night fall-off
-    // or early-evening spikes without leaving the Home tab.
+    // 12-hour rolling bar chart of confirmations, labeled with the
+    // ET hour-of-day each bar represents (12a, 1a, …, 11p). Latest
+    // hour highlighted in accent color so the right-edge "now" is
+    // visually anchored. Lives in a collapsible card that defaults
+    // to collapsed — exploratory data, not actionable signal.
     function renderHourlyMetric(allOrders) {
       const el = document.getElementById('hourly-spark');
       const totalEl = document.getElementById('hourly-total');
       if (!el) return;
       const now = new Date();
+      const nowHour = now.getHours(); // local browser hour (close enough to ET for the user's device)
       const buckets = new Array(12).fill(0);
       for (const o of allOrders) {
         const ts = o.confirmedAt;
@@ -948,15 +1090,32 @@
       const total = buckets.reduce((a, b) => a + b, 0);
       totalEl.textContent = total + ' fill' + (total === 1 ? '' : 's');
       const max = Math.max(1, ...buckets);
-      const W = 200, H = 40, barW = W / 12 - 2;
+      const W = 240, H = 60;
+      const padBot = 14;            // room for hour labels
+      const chartH = H - padBot - 2;
+      const slotW = W / 12;
+      const barW = slotW - 4;
       let svg = '';
+      const fmtHour = (h) => {
+        h = ((h % 24) + 24) % 24;
+        if (h === 0) return '12a';
+        if (h === 12) return '12p';
+        return (h <= 12 ? h : h - 12) + (h < 12 ? 'a' : 'p');
+      };
       for (let i = 0; i < 12; i++) {
-        const h = (buckets[i] / max) * (H - 4);
-        const x = i * (W / 12) + 1;
-        const y = H - h;
-        const color = i === 11 ? 'var(--accent)' : 'var(--text2)';
-        const opacity = i === 11 ? '1' : '0.5';
+        const h = (buckets[i] / max) * chartH;
+        const x = i * slotW + 2;
+        const y = chartH - h;
+        const isNow = i === 11;
+        const color = isNow ? 'var(--accent)' : 'var(--text2)';
+        const opacity = isNow ? '1' : '0.55';
         svg += `<rect x="${x}" y="${y}" width="${barW}" height="${Math.max(2, h)}" fill="${color}" opacity="${opacity}" rx="1"/>`;
+        // Hour label below each bar; show value count above non-zero bars
+        const hourLabel = fmtHour(nowHour - (11 - i));
+        svg += `<text x="${x + barW / 2}" y="${H - 3}" text-anchor="middle" font-size="9" fill="var(--text2)">${hourLabel}</text>`;
+        if (buckets[i] > 0) {
+          svg += `<text x="${x + barW / 2}" y="${y - 1}" text-anchor="middle" font-size="8" fill="var(--text)">${buckets[i]}</text>`;
+        }
       }
       el.innerHTML = svg;
     }
@@ -1184,21 +1343,31 @@
       if (window._dvLastOrders) renderDailyVolume(window._dvLastOrders);
     };
 
-    function renderDailyVolume(allOrders) {
+    function renderDailyVolume(allOrders, dailyPnlPayload) {
       const el = document.getElementById('daily-volume-card');
+      const totalBadge = document.getElementById('daily-volume-total');
       if (!el) return;
       window._dvLastOrders = allOrders;
 
+      // Drill-down table beneath the chart still uses the in-memory
+      // recentOrders buffer (it needs per-parlay rows that /daily-pnl
+      // doesn't carry). The chart itself uses the Supabase-backed daily
+      // series from /daily-pnl so the cumulative line matches the
+      // dashboard's view ($13k+ lifetime, not the partial $7k that the
+      // bounded buffer produced before).
       const confirmed = allOrders.filter(o =>
         (o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
         && (o.quotedAt || !(o.meta && o.meta.reconstructed))
         && !(o.meta && o.meta.phantom)
       );
-      if (confirmed.length < 1) {
+      const dailySeries = (dailyPnlPayload && Array.isArray(dailyPnlPayload.daily)) ? dailyPnlPayload.daily : null;
+      if (confirmed.length < 1 && (!dailySeries || dailySeries.length === 0)) {
         el.innerHTML = '<div class="empty">Need confirmed orders to show daily activity</div>';
+        if (totalBadge) totalBadge.textContent = '—';
         return;
       }
 
+      // Build the in-memory rollup for the drill-down table only.
       const byDay = {};
       for (const o of confirmed) {
         const day = _etDay(o.confirmedAt || o.quotedAt);
@@ -1211,44 +1380,84 @@
           ? _calcSpProfit(o.confirmedStake, o.offeredOdds) : 0;
         if (o.pnl != null) { byDay[day].pnl += o.pnl; byDay[day].settled++; }
       }
+      // Merge Supabase daily-pnl values into byDay so the in-memory rollup
+      // for any pre-buffer day surfaces in the drill-down table too. This
+      // keeps the table accurate even when the buffer doesn't contain
+      // those days' parlays.
+      if (dailySeries) {
+        for (const row of dailySeries) {
+          const day = row.date;
+          if (!byDay[day]) byDay[day] = { risk: 0, toWin: 0, pnl: 0, count: 0, settled: 0, orders: [] };
+          // Prefer Supabase values (authoritative) over in-memory aggregate
+          if (row.pnl != null) byDay[day].pnl = row.pnl;
+          if (row.risk != null) byDay[day].risk = row.risk;
+          if (row.fills != null) byDay[day].count = Math.max(byDay[day].count, row.fills);
+          if (row.wins != null && row.losses != null) byDay[day].settled = Math.max(byDay[day].settled, row.wins + row.losses + (row.pushes || 0));
+        }
+      }
       const days = Object.keys(byDay).sort();
 
-      const W = 360, H = 220, pad = { l: 46, r: 12, t: 18, b: 48 };
+      // Chart geometry — bigger overall, taller text so axis/labels are
+      // readable next to the 13px table beneath. Was 360×220 with 8/7px
+      // text which was visually disproportionate on mobile.
+      const W = 360, H = 200, pad = { l: 38, r: 10, t: 14, b: 26 };
       const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
       const N = Math.min(days.length, 14);
       const chartDays = days.slice(-N);
-      const riskBarW = Math.max(6, (chartW / chartDays.length) * 0.75);
-      const pnlBarW = Math.max(3, riskBarW * 0.45);
+      const slotW = chartW / Math.max(1, chartDays.length);
+      const riskBarW = Math.max(6, slotW * 0.7);
+      const pnlBarW  = Math.max(3, riskBarW * 0.45);
 
+      // Cumulative P&L line: prefer Supabase series (gives true lifetime
+      // baseline). If we have ALL days from Supabase, the cumul line will
+      // match the dashboard's chart. The series may not include the FULL
+      // history (default 30d window), so we still show whatever we got.
       const cumul = [];
       let running = 0;
-      for (const day of chartDays) { running += byDay[day].pnl; cumul.push(running); }
+      for (const day of chartDays) { running += (byDay[day].pnl || 0); cumul.push(running); }
+
       const maxRisk = Math.max(0, ...chartDays.map(d => byDay[d].risk));
       const maxPnlPos = Math.max(0, ...chartDays.map(d => byDay[d].pnl));
       const minPnlNeg = Math.min(0, ...chartDays.map(d => byDay[d].pnl));
       const maxCumul = Math.max(0, ...cumul);
       const minCumul = Math.min(0, ...cumul);
-      const yMax = Math.max(1, maxRisk, maxPnlPos, maxCumul);
-      const yMin = Math.min(0, minPnlNeg, minCumul);
+      let yMax = Math.max(1, maxRisk, maxPnlPos, maxCumul);
+      let yMin = Math.min(0, minPnlNeg, minCumul);
+
+      // Snap y-bounds to the next whole $1k so axis ticks land on round
+      // values. Avoids "$7,413 / -$6,222" labels — produces "$8k / -$7k"
+      // instead. Min step = $1k so very small ranges still show 0/1k.
+      const ceilK = (v) => Math.ceil(v / 1000) * 1000;
+      const floorK = (v) => Math.floor(v / 1000) * 1000;
+      yMax = Math.max(1000, ceilK(yMax));
+      yMin = Math.min(0, floorK(yMin));
       const yRange = yMax - yMin || 1;
       const scaleY = (v) => pad.t + ((yMax - v) / yRange) * chartH;
       const zeroY = scaleY(0);
 
-      let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
+      // Format y-axis tick value as $Xk (or $0). Negative as -$Xk.
+      const fmtAxis = (v) => {
+        const k = Math.round(v / 1000);
+        if (k === 0) return '$0';
+        return (k < 0 ? '-' : '') + '$' + Math.abs(k) + 'k';
+      };
+
+      let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block;">`;
+      // Y-axis: 4 ticks (top, 2 middle, bottom) snapped to nearest $1k
       for (let t = 0; t <= 3; t++) {
         const v = yMin + (yRange * t / 3);
         const y = scaleY(v);
         const isZero = Math.abs(v) < 0.5;
         svg += `<line x1="${pad.l}" y1="${y}" x2="${W - pad.r}" y2="${y}" stroke="${isZero ? 'var(--text2)' : 'var(--border)'}" stroke-width="${isZero ? 1 : 0.5}"/>`;
-        const label = v >= 10000 ? '$' + Math.round(v / 1000) + 'k' : '$' + Math.round(v);
-        svg += `<text x="${pad.l - 4}" y="${y + 3}" text-anchor="end" font-size="8" fill="var(--text2)">${label}</text>`;
+        svg += `<text x="${pad.l - 4}" y="${y + 4}" text-anchor="end" font-size="11" fill="var(--text2)">${fmtAxis(v)}</text>`;
       }
+      // Bars
       for (let i = 0; i < chartDays.length; i++) {
         const d = byDay[chartDays[i]];
-        const cx = pad.l + (i + 0.5) * (chartW / chartDays.length);
+        const cx = pad.l + (i + 0.5) * slotW;
         if (d.risk > 0) {
           const yTop = scaleY(d.risk);
-          svg += `<rect x="${cx - riskBarW / 2}" y="${yTop}" width="${riskBarW}" height="${zeroY - yTop}" fill="var(--accent)" fill-opacity="0.4" rx="1"/>`;
+          svg += `<rect x="${cx - riskBarW / 2}" y="${yTop}" width="${riskBarW}" height="${Math.max(0, zeroY - yTop)}" fill="var(--accent)" fill-opacity="0.4" rx="1"/>`;
         }
         if (d.pnl !== 0) {
           const pnlColor = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
@@ -1256,22 +1465,35 @@
           const pnlH = Math.abs(scaleY(d.pnl) - zeroY);
           svg += `<rect x="${cx - pnlBarW / 2}" y="${yTop}" width="${pnlBarW}" height="${pnlH}" fill="${pnlColor}" rx="1"/>`;
         }
+        // X label only — the per-day fill counts beneath bars were noisy,
+        // dropped per operator request. Day shown as MM-DD.
         const dayLabel = chartDays[i].substring(5);
-        svg += `<text x="${cx}" y="${H - pad.b + 12}" text-anchor="middle" font-size="8" fill="var(--text2)">${dayLabel}</text>`;
-        svg += `<text x="${cx}" y="${H - pad.b + 22}" text-anchor="middle" font-size="7" fill="var(--text2)">${d.count}</text>`;
+        svg += `<text x="${cx}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--text2)">${dayLabel}</text>`;
       }
+      // Cumulative P&L line
       if (cumul.length >= 2) {
         const pts = chartDays.map((_, i) => {
-          const cx = pad.l + (i + 0.5) * (chartW / chartDays.length);
+          const cx = pad.l + (i + 0.5) * slotW;
           return cx + ',' + scaleY(cumul[i]);
         }).join(' ');
-        svg += `<polyline points="${pts}" fill="none" stroke="#f5b942" stroke-width="1.5"/>`;
+        svg += `<polyline points="${pts}" fill="none" stroke="#f5b942" stroke-width="1.8"/>`;
         for (let i = 0; i < chartDays.length; i++) {
-          const cx = pad.l + (i + 0.5) * (chartW / chartDays.length);
-          svg += `<circle cx="${cx}" cy="${scaleY(cumul[i])}" r="1.8" fill="#f5b942"/>`;
+          const cx = pad.l + (i + 0.5) * slotW;
+          svg += `<circle cx="${cx}" cy="${scaleY(cumul[i])}" r="2" fill="#f5b942"/>`;
         }
       }
       svg += '</svg>';
+
+      // Update header badge with lifetime totalPnL from Supabase, if present
+      if (totalBadge) {
+        const lifetime = (dailyPnlPayload && dailyPnlPayload.totalPnL != null) ? dailyPnlPayload.totalPnL : null;
+        if (lifetime != null) {
+          totalBadge.textContent = (lifetime >= 0 ? '+' : '-') + '$' + Math.abs(Math.round(lifetime)).toLocaleString();
+          totalBadge.style.color = lifetime >= 0 ? 'var(--green)' : 'var(--red)';
+        } else {
+          totalBadge.textContent = '—';
+        }
+      }
 
       const byMonth = {};
       for (const [day, d] of Object.entries(byDay)) {
@@ -1410,18 +1632,116 @@
       }
     }
 
+    // Per-section sort + filter + expand state for the Exposure tab.
+    // Persists across re-renders so the auto-refresh poll doesn't reset
+    // the operator's drill-downs.
+    const _expState = {
+      gameSort: 'risk', gameFilter: '',
+      teamSort: 'risk', teamFilter: '',
+      openGames: new Set(),  // eventId set
+      openTeams: new Set(),  // teamKey set
+      teamParlayCache: {},   // teamKey -> parlay rows (lazy-loaded once)
+    };
+    let _expLastPayload = null;
+
+    function _rerenderExposure() {
+      if (_expLastPayload) renderExposure(_expLastPayload.status, _expLastPayload.pxPos);
+    }
+
+    window.expSetGameSort  = function(v) { _expState.gameSort = v; _rerenderExposure(); };
+    window.expSetGameFilter= function(v) { _expState.gameFilter = (v || '').toLowerCase(); _rerenderExposure(); };
+    window.expSetTeamSort  = function(v) { _expState.teamSort = v; _rerenderExposure(); };
+    window.expSetTeamFilter= function(v) { _expState.teamFilter = (v || '').toLowerCase(); _rerenderExposure(); };
+
+    window.expToggleGame = function(eventId) {
+      if (_expState.openGames.has(eventId)) _expState.openGames.delete(eventId);
+      else _expState.openGames.add(eventId);
+      _rerenderExposure();
+    };
+
+    window.expToggleTeam = async function(teamKey) {
+      if (_expState.openTeams.has(teamKey)) {
+        _expState.openTeams.delete(teamKey);
+        _rerenderExposure();
+        return;
+      }
+      _expState.openTeams.add(teamKey);
+      _rerenderExposure();
+      // Lazy-fetch the parlay list for this team (one /orders call,
+      // results cached). The team payload in /status only carries a
+      // count, not the list, so we cross-reference against orders.
+      if (!_expState.teamParlayCache[teamKey]) {
+        try {
+          const r = await fetch(BASE + '/orders');
+          const data = await r.json();
+          const orders = data.recentOrders || [];
+          // Match parlays whose any leg has a matching teamKey. Team key
+          // shape from order-tracker exposure snapshot is
+          // "<normName>|<eventId>|<dateYYYY-MM-DD>" — split off the name.
+          const targetName = (teamKey.split('|')[0] || '').toLowerCase();
+          const targetEvent = teamKey.split('|')[1] || '';
+          const matches = orders.filter(o => {
+            if (o.status !== 'confirmed' && !(o.status || '').startsWith('settled_')) return false;
+            if (o.meta && o.meta.phantom) return false;
+            const legs = o.legs || (o.meta && o.meta.legs) || [];
+            return legs.some(l => {
+              const eid = String(l.pxEventId || '');
+              if (targetEvent && eid !== targetEvent) return false;
+              const name = ((l.teamName || l.team || '') + '').toLowerCase();
+              return name && (name === targetName || name.includes(targetName) || targetName.includes(name));
+            });
+          });
+          _expState.teamParlayCache[teamKey] = matches;
+        } catch (e) {
+          _expState.teamParlayCache[teamKey] = [];
+        }
+        _rerenderExposure();
+      }
+    };
+
+    function _renderParlayRows(parlays) {
+      if (!parlays || parlays.length === 0) return '<div class="empty-mini">No parlays</div>';
+      // Each row: stake · payout · selection · time
+      return parlays.slice(0, 30).map(p => {
+        const stake = (p.stake != null) ? '$' + Math.round(p.stake).toLocaleString() : (p.confirmedStake ? '$' + Math.round(p.confirmedStake).toLocaleString() : '');
+        const payout = (p.payout != null) ? '$' + Math.round(p.payout).toLocaleString() : '';
+        const sel = p.selection || (p.legs && p.legs[0] && p.legs[0].selection) || '';
+        const market = p.market || (p.legs && p.legs[0] && p.legs[0].marketType) || '';
+        const teamName = p.teamName || '';
+        const time = p.confirmedAt ? new Date(p.confirmedAt).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }) : '';
+        const label = teamName
+          ? `${escapeHtml(teamName)} ${escapeHtml(market)} ${escapeHtml(sel)}`
+          : (p.legs ? `${p.legs.length}-leg parlay` : '?');
+        const meta = [stake, payout, time].filter(Boolean).join(' · ');
+        return `<div class="leg-line"><span class="leg-name">${label}</span><span class="leg-meta">${meta}</span></div>`;
+      }).join('');
+    }
+
+    function _renderTeamParlayRows(orders) {
+      if (orders === undefined) return '<div class="row-detail loading">Loading parlays…</div>';
+      if (!orders || orders.length === 0) return '<div class="row-detail open"><div class="empty-mini">No matching parlays in the last buffer window.</div></div>';
+      const html = orders.slice(0, 30).map(o => {
+        const stake = o.confirmedStake ? '$' + Math.round(o.confirmedStake).toLocaleString() : '';
+        const odds = o.confirmedOdds || o.offeredOdds;
+        const oddsStr = odds ? (odds > 0 ? '+' + odds : '' + odds) : '';
+        const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }) : '';
+        const legs = o.legs || (o.meta && o.meta.legs) || [];
+        const label = legs.length + '-leg ' + oddsStr;
+        const meta = [stake, time].filter(Boolean).join(' · ');
+        return `<div class="leg-line"><span class="leg-name">${label}</span><span class="leg-meta">${meta}</span></div>`;
+      }).join('');
+      return '<div class="row-detail open">' + html + '</div>';
+    }
+
     function renderExposure(status, pxPos) {
+      _expLastPayload = { status, pxPos };
       const el = document.getElementById('exposure-section');
       const exp = status.exposure || {};
       const portfolio = status.portfolio || {};
 
-      // exposure.teams and exposure.games are ARRAYS of objects, not maps.
-      // Each team: {key, name, risk, eventName, sport, ...}
-      // Each game: {eventId, name, sport, grossRisk, netExposure, parlays[]}
       const teams = Array.isArray(exp.teams) ? exp.teams : [];
       const games = Array.isArray(exp.games) ? exp.games : [];
       const teamCap = exp.maxPerTeam || 0;
-      // Game cap not surfaced in /status today — leave bar uncolored if cap unknown.
       const gameCap = exp.maxPerGame || exp.maxExposurePerGame || 0;
 
       const fmtMoney = (v) => '$' + Math.round(v).toLocaleString();
@@ -1430,7 +1750,7 @@
 
       let html = '';
 
-      // Top portfolio summary
+      // ---- Portfolio summary ----
       const pxOpen = pxPos && pxPos.ok && pxPos.openExposure != null ? pxPos.openExposure : (portfolio.totalRisk || 0);
       const toWin = portfolio.totalToWin || 0;
       html += '<div class="data-card">';
@@ -1441,42 +1761,121 @@
       html += `<div class="row"><span class="label">Active teams</span><span class="value">${teams.length}</span></div>`;
       html += '</div>';
 
-      // Game exposure (sorted by netExposure desc)
-      const gameRows = games
-        .map(g => ({ id: g.eventId || g.name, label: g.name || g.eventId, risk: g.netExposure != null ? g.netExposure : (g.grossRisk || 0), parlayCount: g.parlayCount || 0, sport: g.sport }))
-        .filter(g => g.risk > 0)
-        .sort((a, b) => b.risk - a.risk);
-      if (gameRows.length > 0) {
-        html += '<div class="data-card"><h3>By Game · ' + gameRows.length + '</h3>';
-        for (const g of gameRows.slice(0, 30)) {
+      // ---- By Game ----
+      // Game card has parlay list embedded in /status payload (game.parlays[])
+      // so we expand inline without an extra fetch.
+      const gameRowsRaw = games
+        .map(g => ({
+          id: String(g.eventId || g.name || ''),
+          label: g.name || g.eventId,
+          risk: g.netExposure != null ? g.netExposure : (g.grossRisk || 0),
+          parlayCount: g.parlayCount || (g.parlays ? g.parlays.length : 0),
+          sport: g.sport || '',
+          startTime: g.startTime || '',
+          parlays: g.parlays || [],
+        }))
+        .filter(g => g.risk > 0);
+
+      const gameFiltered = _expState.gameFilter
+        ? gameRowsRaw.filter(g => g.label.toLowerCase().includes(_expState.gameFilter) || (g.sport || '').toLowerCase().includes(_expState.gameFilter))
+        : gameRowsRaw;
+
+      const gameSorted = [...gameFiltered].sort((a, b) => {
+        switch (_expState.gameSort) {
+          case 'parlays': return b.parlayCount - a.parlayCount;
+          case 'name':    return a.label.localeCompare(b.label);
+          case 'sport':   return (a.sport || '').localeCompare(b.sport || '');
+          case 'time':    return (a.startTime || '').localeCompare(b.startTime || '');
+          case 'risk':
+          default:        return b.risk - a.risk;
+        }
+      });
+
+      html += '<div class="data-card">';
+      html += '<h3>By Game · ' + gameRowsRaw.length + (gameFiltered.length !== gameRowsRaw.length ? ` (showing ${gameFiltered.length})` : '') + '</h3>';
+      html += '<div class="toolbar">';
+      html += `<input type="text" placeholder="Filter games…" value="${escapeHtml(_expState.gameFilter)}" oninput="expSetGameFilter(this.value)" />`;
+      html += '<select onchange="expSetGameSort(this.value)">';
+      const gOpts = { risk: 'Risk ↓', parlays: 'Parlays ↓', name: 'Name A-Z', sport: 'Sport', time: 'Start time' };
+      for (const [v, label] of Object.entries(gOpts)) html += `<option value="${v}" ${_expState.gameSort === v ? 'selected' : ''}>${label}</option>`;
+      html += '</select>';
+      if (_expState.gameFilter) html += `<button class="clear-btn" onclick="expSetGameFilter('')">×</button>`;
+      html += '</div>';
+
+      if (gameSorted.length === 0) {
+        html += '<div class="empty-mini">No games match.</div>';
+      } else {
+        for (const g of gameSorted.slice(0, 50)) {
           const pct = capPct(g.risk, gameCap);
           const cls = capCls(pct);
-          const sportLbl = g.sport ? g.sport.replace(/_/g, ' ').replace(/^.*?\s/, '') : '';
-          html += `<div class="row"><span class="label">${escapeHtml(g.label)}<div class="sublabel">${fmtMoney(g.risk)} · ${g.parlayCount} parlay${g.parlayCount === 1 ? '' : 's'}${sportLbl ? ' · ' + sportLbl : ''}</div></span>`;
+          const isOpen = _expState.openGames.has(g.id);
+          const sportLbl = g.sport ? g.sport.replace(/_/g, ' ') : '';
+          html += `<div class="row expandable ${isOpen ? 'open' : ''}" onclick="expToggleGame('${g.id.replace(/'/g, "&#39;")}')">`;
+          html += `<span class="label"><span class="caret-mini">▶</span>${escapeHtml(g.label)}<div class="sublabel">${fmtMoney(g.risk)} · ${g.parlayCount} parlay${g.parlayCount === 1 ? '' : 's'}${sportLbl ? ' · ' + sportLbl : ''}</div></span>`;
           html += `<span class="value ${cls}">${fmtMoney(g.risk)}</span></div>`;
           if (gameCap) html += `<div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
+          if (isOpen) {
+            html += `<div class="row-detail open">${_renderParlayRows(g.parlays)}</div>`;
+          }
         }
-        html += '</div>';
       }
+      html += '</div>';
 
-      // Team exposure
-      const teamRows = teams
-        .map(t => ({ name: t.name || t.teamKey || t.key, risk: t.netExposure != null ? t.netExposure : (t.risk || 0), parlays: t.parlays || 0, sport: t.sport, eventName: t.eventName }))
-        .filter(t => t.risk > 0)
-        .sort((a, b) => b.risk - a.risk);
-      if (teamRows.length > 0) {
-        html += '<div class="data-card"><h3>By Team · ' + teamRows.length + '</h3>';
-        for (const t of teamRows.slice(0, 40)) {
+      // ---- By Team ----
+      const teamRowsRaw = teams
+        .map(t => ({
+          key: t.key || t.teamKey || (t.name || ''),
+          name: t.name || t.teamKey || t.key,
+          risk: t.netExposure != null ? t.netExposure : (t.risk || 0),
+          parlays: t.parlays || 0,
+          sport: t.sport || '',
+          eventName: t.eventName || '',
+        }))
+        .filter(t => t.risk > 0);
+
+      const teamFiltered = _expState.teamFilter
+        ? teamRowsRaw.filter(t => t.name.toLowerCase().includes(_expState.teamFilter) || t.eventName.toLowerCase().includes(_expState.teamFilter))
+        : teamRowsRaw;
+
+      const teamSorted = [...teamFiltered].sort((a, b) => {
+        switch (_expState.teamSort) {
+          case 'parlays': return b.parlays - a.parlays;
+          case 'name':    return a.name.localeCompare(b.name);
+          case 'sport':   return (a.sport || '').localeCompare(b.sport || '');
+          case 'risk':
+          default:        return b.risk - a.risk;
+        }
+      });
+
+      html += '<div class="data-card">';
+      html += '<h3>By Team · ' + teamRowsRaw.length + (teamFiltered.length !== teamRowsRaw.length ? ` (showing ${teamFiltered.length})` : '') + '</h3>';
+      html += '<div class="toolbar">';
+      html += `<input type="text" placeholder="Filter teams…" value="${escapeHtml(_expState.teamFilter)}" oninput="expSetTeamFilter(this.value)" />`;
+      html += '<select onchange="expSetTeamSort(this.value)">';
+      const tOpts = { risk: 'Risk ↓', parlays: 'Parlays ↓', name: 'Name A-Z', sport: 'Sport' };
+      for (const [v, label] of Object.entries(tOpts)) html += `<option value="${v}" ${_expState.teamSort === v ? 'selected' : ''}>${label}</option>`;
+      html += '</select>';
+      if (_expState.teamFilter) html += `<button class="clear-btn" onclick="expSetTeamFilter('')">×</button>`;
+      html += '</div>';
+
+      if (teamSorted.length === 0) {
+        html += '<div class="empty-mini">No teams match.</div>';
+      } else {
+        for (const t of teamSorted.slice(0, 60)) {
           const pct = capPct(t.risk, teamCap);
           const cls = capCls(pct);
-          html += `<div class="row"><span class="label">${escapeHtml(t.name)}<div class="sublabel">${fmtMoney(t.risk)}${teamCap ? ' / ' + fmtMoney(teamCap) : ''} · ${t.parlays} parlay${t.parlays === 1 ? '' : 's'}${t.eventName ? ' · ' + escapeHtml(t.eventName) : ''}</div></span>`;
+          const isOpen = _expState.openTeams.has(t.key);
+          const cached = _expState.teamParlayCache[t.key];
+          html += `<div class="row expandable ${isOpen ? 'open' : ''}" onclick="expToggleTeam('${t.key.replace(/'/g, '&#39;')}')">`;
+          html += `<span class="label"><span class="caret-mini">▶</span>${escapeHtml(t.name)}<div class="sublabel">${fmtMoney(t.risk)}${teamCap ? ' / ' + fmtMoney(teamCap) : ''} · ${t.parlays} parlay${t.parlays === 1 ? '' : 's'}${t.eventName ? ' · ' + escapeHtml(t.eventName) : ''}</div></span>`;
           html += `<span class="value ${cls}">${teamCap ? pct.toFixed(0) + '%' : ''}</span></div>`;
           if (teamCap) html += `<div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
+          if (isOpen) html += _renderTeamParlayRows(cached);
         }
-        html += '</div>';
       }
+      html += '</div>';
 
-      if (gameRows.length === 0 && teamRows.length === 0) {
+      if (gameRowsRaw.length === 0 && teamRowsRaw.length === 0) {
         html += '<div class="empty">No active exposure</div>';
       }
 
@@ -1499,66 +1898,142 @@
       if (Date.now() - _propsLastFetch < 30000 && document.getElementById('props-section').dataset.loaded) return;
       _propsLastFetch = Date.now();
       try {
-        const resp = await fetch(BASE + '/player-exposure');
-        const data = await resp.json();
-        renderProps(data);
+        // Pull all three sources in parallel:
+        //   - /player-exposure: live per-(sport, player) caps
+        //   - /prop-flow:       last ~200 prop-leg RFQs (in-memory rolling log)
+        //   - /orders:          recent confirmed parlays (filter to ones with prop legs)
+        const [expResp, flowResp, ordersResp] = await Promise.all([
+          fetch(BASE + '/player-exposure'),
+          fetch(BASE + '/prop-flow?limit=200').catch(() => null),
+          fetch(BASE + '/orders').catch(() => null),
+        ]);
+        const exp = await expResp.json();
+        const flow = flowResp ? await flowResp.json().catch(() => null) : null;
+        const orders = ordersResp ? await ordersResp.json().catch(() => null) : null;
+        renderProps(exp, flow, orders);
         document.getElementById('props-section').dataset.loaded = '1';
       } catch (e) {
         document.getElementById('props-section').innerHTML = '<div class="empty">Failed to load: ' + (e.message || e) + '</div>';
       }
     }
 
-    function renderProps(data) {
+    function renderProps(expData, flowData, ordersData) {
       const el = document.getElementById('props-section');
       // /player-exposure shape (from getPlayerExposureSnapshot):
       //   players[]: { key, sport, playerName, propTypes[], risk, pending, total, parlayCount }
-      const players = data.players || [];
-      const capsBySport = data.capsBySport || {};
-      const capDefault = data.capDefault || 0;
+      const players = (expData && expData.players) || [];
+      const capsBySport = (expData && expData.capsBySport) || {};
+      const capDefault = (expData && expData.capDefault) || 0;
+      const flow = (flowData && flowData.flow) || [];
+      const flowBySport = (flowData && flowData.bySport) || {};
+      const flowByPropType = (flowData && flowData.byPropType) || {};
+      const allOrders = (ordersData && ordersData.recentOrders) || [];
 
       const fmtMoney = (v) => '$' + Math.round(v).toLocaleString();
       const capCls = (pct) => pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : '';
 
+      // Pull confirmed prop parlays from the order buffer
+      const propParlays = allOrders.filter(o => {
+        if (o.status !== 'confirmed' && !(o.status || '').startsWith('settled_')) return false;
+        if (o.meta && o.meta.phantom) return false;
+        const legs = o.legs || (o.meta && o.meta.legs) || [];
+        return legs.some(l => /^player_/.test((l.marketType || '').toLowerCase()));
+      }).sort((a, b) => (b.confirmedAt || '').localeCompare(a.confirmedAt || ''));
+
       let html = '';
+
+      // ---- Caps + summary ----
       const totalRisk = players.reduce((s, p) => s + (p.total || p.risk || 0), 0);
-      html += '<div class="data-card"><h3>Summary</h3>';
-      html += `<div class="row"><span class="label">Players with exposure</span><span class="value">${players.length}</span></div>`;
+      html += '<div class="data-card"><h3>Caps · summary</h3>';
+      html += `<div class="row"><span class="label">Players with active exposure</span><span class="value">${players.length}</span></div>`;
       html += `<div class="row"><span class="label">Total prop risk</span><span class="value">${fmtMoney(totalRisk)}</span></div>`;
       html += `<div class="row"><span class="label">Default cap / player</span><span class="value">${fmtMoney(capDefault)}</span></div>`;
-      // Surface configured per-sport caps so operator knows what's enforced.
       for (const [sport, cap] of Object.entries(capsBySport)) {
-        const lbl = { basketball_nba: 'NBA', icehockey_nhl: 'NHL' }[sport] || sport;
+        const lbl = { basketball_nba: 'NBA', icehockey_nhl: 'NHL', baseball_mlb: 'MLB' }[sport] || sport;
         html += `<div class="row"><span class="label">${lbl} cap / player</span><span class="value">${fmtMoney(cap)}</span></div>`;
       }
       html += '</div>';
 
-      if (players.length === 0) {
-        html += '<div class="empty">No active player exposure<br><span style="font-size:11px;color:var(--text2);">Caps reset on each service restart — confirmed-prop parlays in Supabase don\'t rehydrate the in-memory map.</span></div>';
-        el.innerHTML = html;
-        return;
+      // ---- Active per-player exposure (when populated) ----
+      if (players.length > 0) {
+        const bySport = {};
+        for (const p of players) {
+          const sport = p.sport || 'unknown';
+          if (!bySport[sport]) bySport[sport] = [];
+          bySport[sport].push(p);
+        }
+        for (const [sport, list] of Object.entries(bySport)) {
+          list.sort((a, b) => (b.total || b.risk || 0) - (a.total || a.risk || 0));
+          const cap = capsBySport[sport] || capDefault;
+          const sportLabel = { basketball_nba: 'NBA', icehockey_nhl: 'NHL', baseball_mlb: 'MLB' }[sport] || sport;
+          html += `<div class="data-card"><h3>${sportLabel} · ${list.length} player${list.length === 1 ? '' : 's'} active</h3>`;
+          for (const p of list) {
+            const risk = p.total || p.risk || 0;
+            const pending = p.pending || 0;
+            const pct = cap > 0 ? Math.min(100, (risk / cap) * 100) : 0;
+            const cls = capCls(pct);
+            const propTypesStr = (p.propTypes && p.propTypes.length) ? p.propTypes.join(' · ') : '';
+            const pendingStr = pending > 0 ? ' (pending ' + fmtMoney(pending) + ')' : '';
+            html += `<div class="row"><span class="label">${escapeHtml(p.playerName || '?')}<div class="sublabel">${fmtMoney(risk)} / ${fmtMoney(cap)}${pendingStr} · ${p.parlayCount || 0} parlay${(p.parlayCount || 0) === 1 ? '' : 's'}${propTypesStr ? ' · ' + propTypesStr : ''}</div></span>`;
+            html += `<span class="value ${cls}">${pct.toFixed(0)}%</span></div>`;
+            html += `<div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
+          }
+          html += '</div>';
+        }
+      } else {
+        html += '<div class="data-card"><h3>Active per-player exposure</h3>';
+        html += '<div class="empty-mini">No active exposure tracked. Caps reset on each service restart — confirmed prop parlays in Supabase don\'t rehydrate the in-memory map. The flow + activity sections below still reflect real bettor demand and confirmations.</div>';
+        html += '</div>';
       }
 
-      const bySport = {};
-      for (const p of players) {
-        const sport = p.sport || 'unknown';
-        if (!bySport[sport]) bySport[sport] = [];
-        bySport[sport].push(p);
+      // ---- Recent confirmed prop parlays ----
+      if (propParlays.length > 0) {
+        html += '<div class="data-card"><h3>Confirmed prop parlays · ' + propParlays.length + '</h3>';
+        for (const o of propParlays.slice(0, 20)) {
+          const legs = o.legs || (o.meta && o.meta.legs) || [];
+          const propLeg = legs.find(l => /^player_/.test((l.marketType || '').toLowerCase()));
+          const propLabel = propLeg ? `${propLeg.playerName || propLeg.teamName || '?'} ${(propLeg.marketType || '').replace(/^player_/, '')} ${propLeg.selection || ''} ${propLeg.line != null ? propLeg.line : ''}` : '(prop)';
+          const stake = o.confirmedStake ? '$' + Math.round(o.confirmedStake).toLocaleString() : '';
+          const odds = o.confirmedOdds || o.offeredOdds;
+          const oddsStr = odds ? (odds > 0 ? '+' + odds : '' + odds) : '';
+          const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+          const statusPill = o.status === 'confirmed' ? '' : (o.status || '').replace('settled_', '');
+          html += `<div class="row"><span class="label">${escapeHtml(propLabel.trim())}<div class="sublabel">${legs.length}-leg ${oddsStr} · ${stake}${statusPill ? ' · ' + statusPill : ''} · ${time}</div></span></div>`;
+        }
+        html += '</div>';
       }
-      for (const [sport, list] of Object.entries(bySport)) {
-        list.sort((a, b) => (b.total || b.risk || 0) - (a.total || a.risk || 0));
-        const cap = capsBySport[sport] || capDefault;
-        const sportLabel = { basketball_nba: 'NBA', icehockey_nhl: 'NHL' }[sport] || sport;
-        html += `<div class="data-card"><h3>${sportLabel} · ${list.length} player${list.length === 1 ? '' : 's'}</h3>`;
-        for (const p of list) {
-          const risk = p.total || p.risk || 0;
-          const pending = p.pending || 0;
-          const pct = cap > 0 ? Math.min(100, (risk / cap) * 100) : 0;
-          const cls = capCls(pct);
-          const propTypesStr = (p.propTypes && p.propTypes.length) ? p.propTypes.join(' · ') : '';
-          const pendingStr = pending > 0 ? ' (pending ' + fmtMoney(pending) + ')' : '';
-          html += `<div class="row"><span class="label">${escapeHtml(p.playerName || '?')}<div class="sublabel">${fmtMoney(risk)} / ${fmtMoney(cap)}${pendingStr} · ${p.parlayCount || 0} parlay${(p.parlayCount || 0) === 1 ? '' : 's'}${propTypesStr ? ' · ' + propTypesStr : ''}</div></span>`;
-          html += `<span class="value ${cls}">${pct.toFixed(0)}%</span></div>`;
-          html += `<div class="bar-track"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>`;
+
+      // ---- Flow: per-prop-type breakdown ----
+      const flowTypeRows = Object.entries(flowByPropType).sort((a, b) => b[1] - a[1]);
+      if (flowTypeRows.length > 0) {
+        html += '<div class="data-card"><h3>Recent RFQ flow · by prop type</h3>';
+        const flowTotal = flowTypeRows.reduce((s, [, n]) => s + n, 0);
+        for (const [propType, count] of flowTypeRows) {
+          const pct = flowTotal > 0 ? Math.round(count / flowTotal * 100) : 0;
+          html += `<div class="row"><span class="label">${escapeHtml(propType || '(unclassified)')}<div class="sublabel">${count} of ${flowTotal} (${pct}%)</div></span><span class="value">${count}</span></div>`;
+          html += `<div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>`;
+        }
+        html += '</div>';
+      }
+
+      // ---- Flow: per-sport breakdown ----
+      const flowSportRows = Object.entries(flowBySport).sort((a, b) => b[1] - a[1]);
+      if (flowSportRows.length > 0) {
+        html += '<div class="data-card"><h3>Recent RFQ flow · by sport</h3>';
+        for (const [sport, count] of flowSportRows) {
+          const lbl = { basketball_nba: 'NBA', icehockey_nhl: 'NHL', baseball_mlb: 'MLB', tennis: 'Tennis' }[sport] || sport;
+          html += `<div class="row"><span class="label">${lbl}</span><span class="value">${count}</span></div>`;
+        }
+        html += '</div>';
+      }
+
+      // ---- Recent prop legs (last 12 from flow) ----
+      if (flow.length > 0) {
+        html += '<div class="data-card"><h3>Recent prop RFQs</h3>';
+        for (const f of flow.slice(0, 15)) {
+          const time = f.time ? new Date(f.time).toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }) : '';
+          const known = f.isKnownEvent ? '' : ' · unknown event';
+          html += `<div class="row"><span class="label">${escapeHtml(f.marketName || f.propType || '?')}<div class="sublabel">${escapeHtml(f.eventName || '?')}${f.line != null ? ' · line ' + f.line : ''}${known} · ${time}</div></span></div>`;
         }
         html += '</div>';
       }
@@ -1584,7 +2059,73 @@
       }
     }
 
+    // Per-reason expand state + fetched-event cache. Persists across the
+    // page's auto-refresh poll so opened drill-downs don't snap shut.
+    const _declineState = {
+      openReasons: new Set(),
+      eventCache: {}, // reason -> events[] (or 'loading' / 'error')
+    };
+    let _declineLastPayload = null;
+
+    function _rerenderDeclines() {
+      if (_declineLastPayload) renderDeclines(_declineLastPayload);
+    }
+
+    window.declineToggleReason = async function(reason) {
+      if (_declineState.openReasons.has(reason)) {
+        _declineState.openReasons.delete(reason);
+        _rerenderDeclines();
+        return;
+      }
+      _declineState.openReasons.add(reason);
+      // Cached or in-flight already? Render immediately.
+      if (_declineState.eventCache[reason]) {
+        _rerenderDeclines();
+        return;
+      }
+      _declineState.eventCache[reason] = 'loading';
+      _rerenderDeclines();
+      try {
+        const r = await fetch(BASE + '/decline-events?reason=' + encodeURIComponent(reason) + '&window=24h&limit=10');
+        const data = await r.json();
+        _declineState.eventCache[reason] = (data && data.events) || [];
+      } catch (e) {
+        _declineState.eventCache[reason] = 'error';
+      }
+      _rerenderDeclines();
+    };
+
+    function _formatDeclineEvent(ev) {
+      const time = ev.time ? new Date(ev.time).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }) : '';
+      const knownLeg = (ev.knownLegs && ev.knownLegs[0]) || null;
+      const unknownLeg = (ev.unknownCategories && ev.unknownCategories[0]) || null;
+      let label = '';
+      let meta = '';
+      if (unknownLeg) {
+        label = unknownLeg.eventName || unknownLeg.marketName || unknownLeg.category || '?';
+        const propTag = unknownLeg.propType ? ' · ' + unknownLeg.propType : '';
+        const lineTag = unknownLeg.line != null ? ' · line ' + unknownLeg.line : '';
+        meta = `${unknownLeg.category || '?'}${propTag}${lineTag}`;
+      } else if (knownLeg) {
+        label = knownLeg.eventName || knownLeg.teamName || '?';
+        meta = `${knownLeg.marketType || '?'} ${knownLeg.line != null ? knownLeg.line : ''}`;
+      } else {
+        label = ev.detail || '?';
+        meta = '';
+      }
+      return `<div class="leg-line"><span class="leg-name">${escapeHtml(label)}</span><span class="leg-meta">${escapeHtml(meta)} · ${time}</span></div>`;
+    }
+
+    function _renderDeclineDrilldown(reason) {
+      const cached = _declineState.eventCache[reason];
+      if (cached === 'loading' || cached === undefined) return '<div class="row-detail open"><div class="empty-mini">Loading…</div></div>';
+      if (cached === 'error') return '<div class="row-detail open"><div class="empty-mini" style="color:var(--red);">Failed to load events.</div></div>';
+      if (!Array.isArray(cached) || cached.length === 0) return '<div class="row-detail open"><div class="empty-mini">No recent events for this reason in the in-memory log (max 5000 entries / 24h window).</div></div>';
+      return '<div class="row-detail open">' + cached.map(_formatDeclineEvent).join('') + '</div>';
+    }
+
     function renderDeclines(data) {
+      _declineLastPayload = data;
       const el = document.getElementById('declines-section');
       const byReasonByDay = data.byReasonByDay || {};
       const reasons = Object.keys(byReasonByDay);
@@ -1593,9 +2134,7 @@
         const d = new Date(Date.now() - i * 86400000);
         days.push(d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }));
       }
-      const todayStr = days[days.length - 1];
 
-      // Compute today's count + 7d total per reason
       const rows = reasons.map(reason => {
         const series = days.map(d => byReasonByDay[reason][d] || 0);
         const today = series[series.length - 1];
@@ -1619,11 +2158,15 @@
         return;
       }
 
-      html += '<div class="data-card"><h3>Top reasons (today)</h3>';
-      for (const r of rows.slice(0, 12)) {
+      html += '<div class="data-card"><h3>Top reasons (today) · tap to drill in</h3>';
+      for (const r of rows.slice(0, 15)) {
         const sparkSvg = sparkline(r.series, 60, 16);
-        html += `<div class="row"><span class="label">${escapeHtml(r.reason)}<div class="sublabel">${r.weekTotal.toLocaleString()} in 7d</div></span>`;
+        const isOpen = _declineState.openReasons.has(r.reason);
+        const safeReason = r.reason.replace(/'/g, '&#39;');
+        html += `<div class="row expandable ${isOpen ? 'open' : ''}" onclick="declineToggleReason('${safeReason}')">`;
+        html += `<span class="label"><span class="caret-mini">▶</span>${escapeHtml(r.reason)}<div class="sublabel">${r.weekTotal.toLocaleString()} in 7d</div></span>`;
         html += `<span class="value">${r.today.toLocaleString()} <span class="spark">${sparkSvg}</span></span></div>`;
+        if (isOpen) html += _renderDeclineDrilldown(r.reason);
       }
       html += '</div>';
 
@@ -1738,7 +2281,33 @@
     }
     window.onMuteToggle = async function(key, mute) {
       await setMute(key, mute === true);
+      // Push the updated mute list to the server. The server is the
+      // authoritative gate now — relying solely on the SW-side check
+      // was unreliable across SW versions and iOS PWA update cadences.
+      await syncMutePrefsToServer();
     };
+    // POST the current mute set + this device's subscription endpoint
+    // so the server skips sending pushes for muted categories. Called
+    // after every toggle and once at app boot to handle restarts that
+    // wiped the in-memory state.
+    async function syncMutePrefsToServer() {
+      try {
+        if (!swReg) return;
+        const sub = await swReg.pushManager.getSubscription();
+        if (!sub) return;
+        const muted = [];
+        for (const c of NOTIFY_CATEGORIES) {
+          if (await getMute(c.key)) muted.push(c.key);
+        }
+        await fetch(BASE + '/push/mute-prefs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint: sub.endpoint, mutedCategories: muted }),
+        });
+      } catch (e) {
+        console.warn('mute-prefs sync failed:', e);
+      }
+    }
     window.sendTestNotification = async function(category) {
       try {
         const r = await fetch(BASE + '/push/test?category=' + encodeURIComponent(category), { method: 'POST' });
@@ -1757,6 +2326,7 @@
     };
 
     // --- Init ---
+    applyCollapsibleState();
     initServiceWorker();
     loadData();
     setInterval(loadData, 60000);

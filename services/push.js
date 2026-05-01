@@ -28,6 +28,13 @@ try {
 // meaning every deploy silently wiped every subscription and operators
 // had to re-enable notifications in their browser.
 const subscriptions = new Map();
+// Per-endpoint mute state. The PWA POSTs the user's per-category mute
+// prefs to /push/subscribe alongside the subscription itself; we store
+// them here and use them to skip sends in sendNotification(). This is
+// the authoritative gate — relying on the SW's IndexedDB read inside
+// the push event was unreliable across SW versions and iOS PWA update
+// cadences. The SW-side check stays as defense-in-depth.
+const mutedByEndpoint = new Map(); // endpoint -> Set<category>
 let unreadCount = 0;
 let hydrated = false;
 
@@ -70,8 +77,30 @@ function addSubscription(sub) {
 
 function removeSubscription(endpoint) {
   subscriptions.delete(endpoint);
+  mutedByEndpoint.delete(endpoint);
   db.deletePushSubscription(endpoint).catch(err =>
     log.warn('Push', `deletePushSubscription failed: ${err.message}`));
+}
+
+/**
+ * Update the muted-categories list for a subscription endpoint. Called
+ * from /push/mute-prefs whenever the operator flips a toggle in the
+ * Settings tab. Categories not in the array are considered enabled.
+ * Pass null/undefined for categories to clear all mutes for that
+ * endpoint (re-enable everything).
+ */
+function setMutedCategories(endpoint, categories) {
+  if (!endpoint) return;
+  if (!Array.isArray(categories) || categories.length === 0) {
+    mutedByEndpoint.delete(endpoint);
+    return;
+  }
+  mutedByEndpoint.set(endpoint, new Set(categories));
+}
+
+function getMutedCategories(endpoint) {
+  const s = mutedByEndpoint.get(endpoint);
+  return s ? [...s] : [];
 }
 
 /**
@@ -83,6 +112,21 @@ function removeSubscription(endpoint) {
 async function sendNotification(payload) {
   if (!configured || subscriptions.size === 0) return;
 
+  // Bump the unread badge count IF at least one subscriber will actually
+  // receive this push. If all subscribers have muted this category, skip
+  // the bump too — otherwise the badge would inch up forever for muted
+  // notifications, which is the same UX problem as showing the toast.
+  const category = payload.category || null;
+  let anyEligible = false;
+  for (const [endpoint] of subscriptions) {
+    const muted = mutedByEndpoint.get(endpoint);
+    if (!category || !muted || !muted.has(category)) { anyEligible = true; break; }
+  }
+  if (!anyEligible) {
+    log.debug('Push', `All subscribers have muted category "${category}" — skipping send`);
+    return;
+  }
+
   unreadCount++;
   const data = JSON.stringify({
     ...payload,
@@ -92,6 +136,13 @@ async function sendNotification(payload) {
 
   const stale = [];
   for (const [endpoint, sub] of subscriptions) {
+    // Per-endpoint mute gate. Authoritative — independent of whatever
+    // SW version the client has installed.
+    const muted = mutedByEndpoint.get(endpoint);
+    if (category && muted && muted.has(category)) {
+      log.debug('Push', `Endpoint muted "${category}" — skipping`);
+      continue;
+    }
     try {
       await webpush.sendNotification(sub, data);
     } catch (err) {
@@ -309,6 +360,8 @@ function sendTestNotification(category) {
 
 module.exports = {
   addSubscription,
+  setMutedCategories,
+  getMutedCategories,
   notifyConfirmation,
   notifySettlement,
   notifyCapHit,
