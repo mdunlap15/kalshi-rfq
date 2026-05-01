@@ -5376,6 +5376,24 @@ function getGolfMatchupEvent(homeTeam, awayTeam, roundNum) {
   return match || null;
 }
 
+// Markets attached by per-event TOA supplements (supplementMlbF5Markets,
+// supplementNbaH1Markets, supplementTeamTotals). These don't conflict
+// across sibling cache entries because they're MARKET TYPES not present
+// on the primary feed. When a sport's cache holds multiple entries for
+// the same matchup — either same-key siblings (back-to-backs, generic-
+// time vs real-time entries) OR reverse-key siblings (SharpAPI feed
+// stores home/away reversed from TOA, common for NBA/NHL/MLB) — the
+// supplement may write these markets to a sibling entry that PX doesn't
+// match against, causing /lines/detail to show null fair-prob even
+// though the data is in cache one entry away. Union them across all
+// siblings so the consumer sees them regardless of which entry the
+// closest-by-time + correct-orientation lookup picks.
+const _MERGEABLE_SUPP_MARKETS = [
+  'h2h_h1', 'spreads_h1', 'totals_h1',          // NBA / NCAAB H1
+  'h2h_f5', 'spreads_f5', 'totals_f5',          // MLB F5
+  'team_totals',                                 // NBA / MLB / NHL
+];
+
 function getEventMarkets(sport, homeTeam, awayTeam, targetTime) {
   const sportCache = oddsCache[sport];
   if (!sportCache) return null;
@@ -5387,25 +5405,109 @@ function getEventMarkets(sport, homeTeam, awayTeam, targetTime) {
   const events = Array.isArray(entry) ? entry : [entry];
   if (events.length === 0) return null;
 
-  // If only one event or no target time, return first
-  if (events.length === 1 || !targetTime) return events[0];
-
-  // Find closest by time
-  const targetMs = new Date(targetTime).getTime();
-  if (isNaN(targetMs)) return events[0];
-
-  let closest = events[0];
-  let closestDiff = Infinity;
-  for (const ev of events) {
-    const evMs = new Date(ev.commenceTime).getTime();
-    if (isNaN(evMs)) continue;
-    const diff = Math.abs(evMs - targetMs);
-    if (diff < closestDiff) {
-      closestDiff = diff;
-      closest = ev;
+  // Pick closest-by-time as the base. Primary markets (h2h, spreads,
+  // totals) come from THIS entry — same-day doubleheaders and back-to-
+  // backs legitimately have different prices per event.
+  let closest;
+  if (events.length === 1 || !targetTime) {
+    closest = events[0];
+  } else {
+    const targetMs = new Date(targetTime).getTime();
+    closest = events[0];
+    let closestDiff = Infinity;
+    if (!isNaN(targetMs)) {
+      for (const ev of events) {
+        const evMs = new Date(ev.commenceTime).getTime();
+        if (isNaN(evMs)) continue;
+        const diff = Math.abs(evMs - targetMs);
+        if (diff < closestDiff) { closestDiff = diff; closest = ev; }
+      }
     }
   }
-  return closest;
+
+  // Merge supplemented markets from same-key siblings (no orientation flip)
+  let merged = _mergeSameKeySiblings(events, closest);
+
+  // Merge supplemented markets from REVERSE-key siblings (orientation
+  // flipped). SharpAPI's MLB feed periodically reverses home/away vs
+  // TOA on the same matchup. The supplement runs against TOA event-IDs
+  // and writes h2h_f5 / team_totals onto whichever cache entry it found
+  // — often the reverse-key one. PX matches the forward-key one.
+  // Without this merge, /lines/detail and pricing return null for the
+  // requested market even though its data is one cache key away.
+  const reverseKey = normalizeEventKey(awayTeam, homeTeam);
+  if (reverseKey !== key) {
+    const reverseEntry = sportCache.events[reverseKey];
+    if (reverseEntry) {
+      const reverseEvents = Array.isArray(reverseEntry) ? reverseEntry : [reverseEntry];
+      const baseMarkets = (merged && merged.markets) || (closest && closest.markets) || {};
+      for (const ev of reverseEvents) {
+        if (!ev || !ev.markets) continue;
+        for (const k of _MERGEABLE_SUPP_MARKETS) {
+          if (!ev.markets[k]) continue;
+          if (baseMarkets[k]) continue;
+          // First reverse-key sibling that has this market wins.
+          if (!merged) merged = { ...closest, markets: { ...(closest.markets || {}) } };
+          if (merged.markets[k]) continue;
+          merged.markets[k] = _flipMarketOrientation(k, ev.markets[k]);
+        }
+      }
+    }
+  }
+
+  return merged || closest;
+}
+
+// Build a merged event view: keep `closest` as the base, then union in
+// any _MERGEABLE_SUPP_MARKETS that same-key sibling entries have but
+// `closest` doesn't. Returns the original `closest` (no copy) when no
+// merging applies — preserves existing reference semantics. Otherwise
+// returns a shallow copy with a new .markets object so we don't mutate
+// the cache entry.
+function _mergeSameKeySiblings(events, closest) {
+  if (!closest || events.length < 2) return null;
+  let merged = null;
+  for (const ev of events) {
+    if (ev === closest || !ev || !ev.markets) continue;
+    for (const k of _MERGEABLE_SUPP_MARKETS) {
+      if (ev.markets[k] && !(closest.markets && closest.markets[k]) && !(merged && merged.markets[k])) {
+        if (!merged) merged = { ...closest, markets: { ...(closest.markets || {}) } };
+        merged.markets[k] = ev.markets[k];
+      }
+    }
+  }
+  return merged;
+}
+
+// Flip a supplemented-market block when it was sourced from a reverse-
+// orientation cache entry. h2h_f5/h2h_h1: swap home<->away.
+// spreads_f5/spreads_h1: swap home<->away AND negate point/line on each
+// side (home -1.5 ↔ away +1.5). team_totals: swap home<->away (over/
+// under per side stay symmetric). totals_f5/totals_h1: over/under are
+// team-agnostic, no flip needed.
+function _flipMarketOrientation(marketType, market) {
+  if (!market) return market;
+  if (marketType === 'totals_h1' || marketType === 'totals_f5') return market;
+  if (marketType === 'h2h_h1' || marketType === 'h2h_f5') {
+    return { ...market, home: market.away, away: market.home };
+  }
+  if (marketType === 'spreads_h1' || marketType === 'spreads_f5') {
+    const flipSide = (s) => s == null ? null : {
+      ...s,
+      point: s.point != null ? -s.point : null,
+      line: s.line != null ? -s.line : null,
+    };
+    return {
+      ...market,
+      home: flipSide(market.away),
+      away: flipSide(market.home),
+      line: market.line != null ? -market.line : null,
+    };
+  }
+  if (marketType === 'team_totals') {
+    return { ...market, home: market.away, away: market.home };
+  }
+  return market;
 }
 
 function getCacheAge(sport) {
