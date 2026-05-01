@@ -2346,6 +2346,12 @@ const altLinesCache = {};
 // The 60s warm loop and boot pre-warm (both added in 0caa4d3) remain — they
 // fetch MORE often, not less. No fill-rate risk from those.
 const ALT_LINES_TTL_MS = 10 * 60 * 1000;
+// Refresh-ahead window for alt-lines cache. When a cached entry is
+// older than this but younger than ALT_LINES_TTL_MS, return the cached
+// value AND fire a background refresh (fire-and-forget). Eliminates
+// the synchronous block-on-fetch latency tail that was driving the
+// pricer's price_phase2 P95 to ~40ms after Phase-C launch.
+const ALT_LINES_REFRESH_AHEAD_MS = 7 * 60 * 1000;
 
 /**
  * Fetch alternate spreads and totals for a specific event from The Odds API.
@@ -2572,11 +2578,45 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
 
   const key = normalizeEventKey(homeTeam, awayTeam);
 
-  // Check cache
+  // Refresh-ahead check on cache.
+  //   age < REFRESH_AHEAD     → return cached, no refresh
+  //   REFRESH_AHEAD ≤ age < TTL → return cached AND fire background refresh
+  //   age ≥ TTL                → cache miss; do the fetch synchronously
+  // The 'refreshing' bool gates concurrent refreshes for the same key
+  // so 5 simultaneous RFQs hitting a stale entry only spawn ONE refresh.
   const cached = altLinesCache[key];
-  if (cached && (Date.now() - cached.fetchedAt) < ALT_LINES_TTL_MS) {
-    return cached;
+  if (cached) {
+    const age = Date.now() - cached.fetchedAt;
+    if (age < ALT_LINES_REFRESH_AHEAD_MS) return cached;
+    if (age < ALT_LINES_TTL_MS) {
+      if (!cached.refreshing) {
+        cached.refreshing = true;
+        // Fire-and-forget background refresh that bypasses the cache
+        // gate via the internal _doAltLinesFetch helper. Result writes
+        // back into altLinesCache directly. Refreshing flag clears in
+        // finally{} so even on failure we don't deadlock.
+        Promise.resolve().then(() =>
+          _doAltLinesFetch(sport, homeTeam, awayTeam, targetTime, key)
+            .catch(err => log.warn('OddsFeed', `Alt-lines bg refresh failed for ${key}: ${err.message}`))
+            .finally(() => {
+              const c = altLinesCache[key];
+              if (c) c.refreshing = false;
+            })
+        );
+      }
+      return cached;
+    }
   }
+  return _doAltLinesFetch(sport, homeTeam, awayTeam, targetTime, key);
+}
+
+// Internal: actual TOA alt-lines fetch + cache write. Called by both
+// the synchronous block-on-miss path and the background refresh-ahead
+// path inside fetchAltLines. Bypasses any cache gate — caller is
+// responsible for deciding when to invoke.
+async function _doAltLinesFetch(sport, homeTeam, awayTeam, targetTime, key) {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return null;
 
   // Resolve The Odds API event ID (SharpAPI IDs are different). targetTime
   // disambiguates same-matchup doubleheaders / back-to-backs.
@@ -2628,7 +2668,11 @@ async function fetchAltLines(sport, homeTeam, awayTeam, targetTime) {
     }
 
     const data = await resp.json();
-    const result = { fetchedAt: Date.now(), altSpreads: {}, altTotals: {}, altSpreadsF5: {}, altTotalsF5: {}, altSpreadsH1: {}, altTotalsH1: {} };
+    // refreshing:false on every fresh write so the refresh-ahead gate
+    // in fetchAltLines treats the new entry as "not currently being
+    // refreshed" — without this flag the recursive bg refresh path
+    // could see leftover refreshing=true and skip subsequent refreshes.
+    const result = { fetchedAt: Date.now(), refreshing: false, altSpreads: {}, altTotals: {}, altSpreadsF5: {}, altTotalsF5: {}, altSpreadsH1: {}, altTotalsH1: {} };
 
     for (const book of (data.bookmakers || [])) {
       for (const market of (book.markets || [])) {
@@ -4731,9 +4775,27 @@ function getAltLineFairProbSync(sport, homeTeam, awayTeam, marketType, selection
   const key = normalizeEventKey(homeTeam, awayTeam);
   const cached = altLinesCache[key];
   if (!cached) { _recordAltSyncMiss('cache_empty', ctx); return null; }
-  if ((Date.now() - cached.fetchedAt) >= ALT_LINES_TTL_MS) {
-    _recordAltSyncMiss('cache_stale', { ...ctx, ageMs: Date.now() - cached.fetchedAt });
+  const cacheAge = Date.now() - cached.fetchedAt;
+  if (cacheAge >= ALT_LINES_TTL_MS) {
+    _recordAltSyncMiss('cache_stale', { ...ctx, ageMs: cacheAge });
     return null;
+  }
+  // Stale-but-usable: use the cached value AND fire a background refresh.
+  // Without this, the cached entry would expire in the background and
+  // the next sync caller would miss → fall through to async fetch with
+  // 30-60ms HTTP latency. Firing the refresh proactively keeps the sync
+  // path cache-warm. Gated by 'refreshing' bool so concurrent callers
+  // don't dispatch multiple parallel refreshes for the same key.
+  if (cacheAge >= ALT_LINES_REFRESH_AHEAD_MS && !cached.refreshing) {
+    cached.refreshing = true;
+    Promise.resolve().then(() =>
+      _doAltLinesFetch(sport, homeTeam, awayTeam, targetTime, key)
+        .catch(err => log.warn('OddsFeed', `Alt-lines bg refresh (sync-path) failed for ${key}: ${err.message}`))
+        .finally(() => {
+          const c = altLinesCache[key];
+          if (c) c.refreshing = false;
+        })
+    );
   }
 
   // Distance guard (strict-mode) — mirrors async path line-by-line.
