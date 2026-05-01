@@ -6505,8 +6505,17 @@ function lookupPlayerPointsProp(sport, pxEventInfo, playerName, line) {
 // MLB slate uses well under 100 credits — fits comfortably in the free
 // 500/mo tier or the $30/mo 20K-credit tier.
 const TOA_PROP_TTL_MS = 5 * 60 * 1000;
-const toaEventsCache = {};   // { sportKey: { fetchedAt, events: [...] } }
-const toaPropOddsCache = {}; // { `${sport}:${eventId}:${marketKey}`: { fetchedAt, ...respBody } }
+// Refresh-ahead window: when a cached entry is OLDER than this but
+// still YOUNGER than TOA_PROP_TTL_MS, return the cached value
+// immediately AND fire a background refresh (fire-and-forget). This
+// eliminates the synchronous cache-miss latency (100-150ms HTTP RTT)
+// for any prop with traffic > 1 hit per (TTL - REFRESH_AHEAD) window.
+// Without this, the prop bridge blocks on a fresh fetch every 5min
+// per (sport, event, market), driving phase-2 P95 to ~40ms and P99
+// past 100ms — measurable in /latency-breakdown.
+const TOA_PROP_REFRESH_AHEAD_MS = 3 * 60 * 1000;
+const toaEventsCache = {};   // { sportKey: { fetchedAt, events: [...], refreshing: bool } }
+const toaPropOddsCache = {}; // { `${sport}:${eventId}:${marketKey}`: { fetchedAt, refreshing: bool, ...respBody } }
 
 // Map our internal sport keys to TOA sport keys. They happen to match
 // for MLB but kept explicit for future expansion.
@@ -6515,27 +6524,78 @@ const TOA_SPORT_KEYS = {
   'basketball_nba': 'basketball_nba',
 };
 
+// Internal: do the actual TOA events fetch + cache write. Used by both
+// the synchronous cache-miss block path and the background refresh-ahead
+// path inside _getTheOddsApiEvents.
+async function _refreshTheOddsApiEvents(sportKey) {
+  const apiKey = process.env.THE_ODDS_API_KEY;
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events?apiKey=${apiKey}`;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      log.warn('OddsFeed', `TOA events fetch failed: ${resp.status}`);
+      if (toaEventsCache[sportKey]) toaEventsCache[sportKey].refreshing = false;
+      return null;
+    }
+    const events = await resp.json();
+    if (!Array.isArray(events)) {
+      if (toaEventsCache[sportKey]) toaEventsCache[sportKey].refreshing = false;
+      return null;
+    }
+    toaEventsCache[sportKey] = { fetchedAt: Date.now(), events, refreshing: false };
+    return events;
+  } catch (err) {
+    log.warn('OddsFeed', `TOA events error: ${err.message}`);
+    if (toaEventsCache[sportKey]) toaEventsCache[sportKey].refreshing = false;
+    return null;
+  }
+}
+
 async function _getTheOddsApiEvents(sport) {
   const apiKey = process.env.THE_ODDS_API_KEY;
   if (!apiKey) return null;
   const sportKey = TOA_SPORT_KEYS[sport] || sport;
   const now = Date.now();
   const cached = toaEventsCache[sportKey];
-  if (cached && (now - cached.fetchedAt) < TOA_PROP_TTL_MS) return cached.events;
-  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events?apiKey=${apiKey}`;
+  // Fresh: return immediately, no refresh
+  if (cached && (now - cached.fetchedAt) < TOA_PROP_REFRESH_AHEAD_MS) return cached.events;
+  // Stale-but-usable: return cached AND fire background refresh
+  if (cached && (now - cached.fetchedAt) < TOA_PROP_TTL_MS) {
+    if (!cached.refreshing) {
+      cached.refreshing = true;
+      _refreshTheOddsApiEvents(sportKey).catch(() => {
+        if (toaEventsCache[sportKey]) toaEventsCache[sportKey].refreshing = false;
+      });
+    }
+    return cached.events;
+  }
+  // Cache miss or fully expired: block on fetch
+  const events = await _refreshTheOddsApiEvents(sportKey);
+  return events != null ? events : (cached ? cached.events : null);
+}
+
+// Internal: TOA per-event prop-odds fetch + cache write. Same dual-use
+// pattern as _refreshTheOddsApiEvents.
+async function _refreshTheOddsApiPropOdds(sport, eventId, marketKey) {
+  const apiKey = process.env.THE_ODDS_API_KEY;
+  const sportKey = TOA_SPORT_KEYS[sport] || sport;
+  const cacheKey = `${sportKey}:${eventId}:${marketKey}`;
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events/${eventId}/odds`
+    + `?apiKey=${apiKey}&regions=us&markets=${marketKey}&oddsFormat=american`;
   try {
     const resp = await fetch(url);
     if (!resp.ok) {
-      log.warn('OddsFeed', `TOA events fetch failed: ${resp.status}`);
-      return cached ? cached.events : null;
+      log.warn('OddsFeed', `TOA per-event odds failed (${eventId}/${marketKey}): ${resp.status}`);
+      if (toaPropOddsCache[cacheKey]) toaPropOddsCache[cacheKey].refreshing = false;
+      return null;
     }
-    const events = await resp.json();
-    if (!Array.isArray(events)) return cached ? cached.events : null;
-    toaEventsCache[sportKey] = { fetchedAt: now, events };
-    return events;
+    const data = await resp.json();
+    toaPropOddsCache[cacheKey] = { fetchedAt: Date.now(), refreshing: false, ...data };
+    return toaPropOddsCache[cacheKey];
   } catch (err) {
-    log.warn('OddsFeed', `TOA events error: ${err.message}`);
-    return cached ? cached.events : null;
+    log.warn('OddsFeed', `TOA per-event odds error: ${err.message}`);
+    if (toaPropOddsCache[cacheKey]) toaPropOddsCache[cacheKey].refreshing = false;
+    return null;
   }
 }
 
@@ -6546,22 +6606,20 @@ async function _getTheOddsApiPropOdds(sport, eventId, marketKey) {
   const cacheKey = `${sportKey}:${eventId}:${marketKey}`;
   const now = Date.now();
   const cached = toaPropOddsCache[cacheKey];
-  if (cached && (now - cached.fetchedAt) < TOA_PROP_TTL_MS) return cached;
-  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events/${eventId}/odds`
-    + `?apiKey=${apiKey}&regions=us&markets=${marketKey}&oddsFormat=american`;
-  try {
-    const resp = await fetch(url);
-    if (!resp.ok) {
-      log.warn('OddsFeed', `TOA per-event odds failed (${eventId}/${marketKey}): ${resp.status}`);
-      return null;
+  // Fresh: return immediately, no refresh
+  if (cached && (now - cached.fetchedAt) < TOA_PROP_REFRESH_AHEAD_MS) return cached;
+  // Stale-but-usable: return cached AND fire background refresh
+  if (cached && (now - cached.fetchedAt) < TOA_PROP_TTL_MS) {
+    if (!cached.refreshing) {
+      cached.refreshing = true;
+      _refreshTheOddsApiPropOdds(sport, eventId, marketKey).catch(() => {
+        if (toaPropOddsCache[cacheKey]) toaPropOddsCache[cacheKey].refreshing = false;
+      });
     }
-    const data = await resp.json();
-    toaPropOddsCache[cacheKey] = { fetchedAt: now, ...data };
-    return toaPropOddsCache[cacheKey];
-  } catch (err) {
-    log.warn('OddsFeed', `TOA per-event odds error: ${err.message}`);
-    return null;
+    return cached;
   }
+  // Cache miss or fully expired: block on fetch
+  return await _refreshTheOddsApiPropOdds(sport, eventId, marketKey);
 }
 
 // Generic TOA player-prop lookup. Works for any TOA market key with
