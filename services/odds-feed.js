@@ -1216,10 +1216,14 @@ async function supplementTeamTotals(parsedEvents, sport) {
       const resolved = await resolveOddsApiEventId(oaSport, ev.homeTeam, ev.awayTeam, ev.commenceTime);
       if (!resolved) { matchFails++; continue; }
 
+      // Fetch BOTH primary team_totals AND alternate_team_totals so the
+      // per-line consensus has ±1/±2 alts available. Without alt fetching,
+      // PX RFQs for non-primary lines (e.g. Cavaliers +112 when primary
+      // is +111.5) returned null fair-prob even when DK/FD posted them.
       const url = `https://api.the-odds-api.com/v4/sports/${oaSport}/events/${resolved.eventId}/odds`
         + `?apiKey=${theOddsApiKey}`
         + `&regions=us,eu`
-        + `&markets=team_totals`
+        + `&markets=team_totals,alternate_team_totals`
         + `&bookmakers=pinnacle,draftkings,fanduel`
         + `&oddsFormat=american`;
 
@@ -1229,43 +1233,49 @@ async function supplementTeamTotals(parsedEvents, sport) {
         if (!resp.ok) { apiFails++; continue; }
         const data = await resp.json();
 
-        // Build bookPairs: one entry per (book × teamSide) with { over, under }.
-        // Per-event response shape: data.bookmakers[].markets[].outcomes[] where
-        // each outcome has { name:'Over'|'Under', description:<team>, price, point }.
+        // Build bookPairs: one entry per (book × teamSide × line) with
+        // { over, under }. Per-event response shape:
+        // data.bookmakers[].markets[].outcomes[] where each outcome has
+        // { name:'Over'|'Under', description:<team>, price, point }.
+        // The alt market posts multiple over/under pairs per team — group
+        // by (team, line) so each line gets its own bookPair.
         const bookPairs = [];
         for (const book of (data.bookmakers || [])) {
           for (const m of (book.markets || [])) {
-            if (m.key !== 'team_totals') continue;
-            const byTeam = {};
+            if (m.key !== 'team_totals' && m.key !== 'alternate_team_totals') continue;
+            // Group outcomes by (team, line) — alt markets emit many
+            // over/under pairs per team across different lines.
+            const byTeamLine = {};
             for (const o of (m.outcomes || [])) {
               const team = o.description;
-              if (!team) continue;
-              if (!byTeam[team]) byTeam[team] = {};
+              if (!team || o.point == null) continue;
+              const tlKey = team + '|' + o.point;
+              if (!byTeamLine[tlKey]) byTeamLine[tlKey] = { team, line: o.point };
               if (o.name === 'Over') {
-                byTeam[team].over = {
+                byTeamLine[tlKey].over = {
                   odds_probability: americanToImpliedProb(o.price),
                   odds_american: o.price,
                   line: o.point,
                 };
               } else if (o.name === 'Under') {
-                byTeam[team].under = {
+                byTeamLine[tlKey].under = {
                   odds_probability: americanToImpliedProb(o.price),
                   odds_american: o.price,
                   line: o.point,
                 };
               }
             }
-            for (const [team, pair] of Object.entries(byTeam)) {
-              if (!pair.over || !pair.under) continue;
+            for (const entry of Object.values(byTeamLine)) {
+              if (!entry.over || !entry.under) continue;
               let teamSide = null;
-              if (team === data.home_team) teamSide = 'home';
-              else if (team === data.away_team) teamSide = 'away';
+              if (entry.team === data.home_team) teamSide = 'home';
+              else if (entry.team === data.away_team) teamSide = 'away';
               else continue;
               bookPairs.push({
                 book: book.key,
                 teamSide,
-                over: pair.over,
-                under: pair.under,
+                over: entry.over,
+                under: entry.under,
               });
             }
           }
@@ -2037,6 +2047,45 @@ function buildConsensusTeamTotals(bookPairs) {
     const pinFairO = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[0] : 0;
     const pinFairU = pinBook ? deVig2Way(pinBook.over.odds_probability, pinBook.under.odds_probability)[1] : 0;
 
+    // Build per-line consensus alongside the primary so getFairProb can
+    // resolve alt team_total RFQs (PX often asks for ±1 line off primary
+    // — e.g. cached primary 4.5, PX wants 5.5). Without byLine, those
+    // RFQs return null fair-prob even when DK/FD posted the alt.
+    const byLineEntries = {};
+    const linesPresent = [...new Set(sidePairs.map(bp => bp.over.line).filter(l => l != null))];
+    for (const altLine of linesPresent) {
+      const altMatching = sidePairs.filter(bp => bp.over.line === altLine);
+      if (altMatching.length === 0) continue;
+      const altAvgSet = excludeKalshiFromConsensus(altMatching);
+      const altDevigged = { over: [], under: [] };
+      for (const { over, under } of altAvgSet) {
+        const [fo, fu] = deVig2Way(over.odds_probability, under.odds_probability);
+        altDevigged.over.push(fo);
+        altDevigged.under.push(fu);
+      }
+      const altDvOver = avg(altDevigged.over);
+      const altDvUnder = avg(altDevigged.under);
+      const altPinBook = altMatching.find(bp => bp.book === 'pinnacle');
+      const altPinFairO = altPinBook ? deVig2Way(altPinBook.over.odds_probability, altPinBook.under.odds_probability)[0] : 0;
+      const altPinFairU = altPinBook ? deVig2Way(altPinBook.over.odds_probability, altPinBook.under.odds_probability)[1] : 0;
+      byLineEntries[String(altLine)] = {
+        line: altLine,
+        over: {
+          rawOdds: altMatching[0].over.odds_american,
+          impliedProb: altMatching[0].over.odds_probability,
+          fairProb: altDvOver >= 0.65 ? Math.max(altDvOver, altPinFairO) : altDvOver,
+          displayFairProb: altDvOver,
+        },
+        under: {
+          rawOdds: altMatching[0].under.odds_american,
+          impliedProb: altMatching[0].under.odds_probability,
+          fairProb: altDvUnder >= 0.65 ? Math.max(altDvUnder, altPinFairU) : altDvUnder,
+          displayFairProb: altDvUnder,
+        },
+        books: altMatching.length,
+      };
+    }
+
     result[side] = {
       over: {
         rawOdds: matching[0].over.odds_american,
@@ -2053,6 +2102,12 @@ function buildConsensusTeamTotals(bookPairs) {
       line: primaryLine,
       books: matching.length,
       pinnacle: pinBook ? { over: pinBook.over.odds_american, under: pinBook.under.odds_american } : null,
+      // byLine is keyed by stringified line value so getFairProb's lookup
+      // (`market[side].byLine[String(absLine)]`) finds it without a Number
+      // round-trip. Populated only when the supplement saw multiple lines
+      // for this team (alt market_keys returned data) — empty for single-
+      // line consensus, which is the common case.
+      byLine: byLineEntries,
     };
   }
   return Object.keys(result).length > 0 ? result : null;
@@ -4446,16 +4501,29 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
     const dir = parts[1];  // "over" or "under"
     const teamData = market[side];
     if (!teamData) return null;
-    // Require a line match against the cached primary. Without this, an
-    // alt team-total registered by PX (e.g. Lakers Over 114.5) would
-    // receive the primary line's fair prob (e.g. Over 115.5) — wrong
-    // enough to leak money systematically. Same safeguard rationale as
-    // totals/spreads above. Line 0.01 tolerance for float noise.
+    // Require a line match against the cached primary OR a per-line
+    // entry in byLine. Without this, an alt team-total registered by
+    // PX (e.g. Lakers Over 114.5) would receive the primary line's
+    // fair prob (e.g. Over 115.5) — wrong enough to leak money
+    // systematically. Same safeguard rationale as totals/spreads above.
+    // Line 0.01 tolerance for float noise.
     if (line == null) {
       log.warn('OddsFeed', `getFairProb: null line for team_totals ${side}_${dir} ${homeTeam} vs ${awayTeam} — declining`);
       return null;
     }
     if (teamData.line != null && Math.abs(teamData.line - line) > 0.01) {
+      // Primary line doesn't match — check per-line consensus map. The
+      // supplement now fetches alternate_team_totals from TOA and
+      // buildConsensusTeamTotals stores each (team, line) consensus
+      // under teamData.byLine[lineStr]. Picks up Cavaliers +112 / +112.5
+      // alts that PX RFQs even when our primary is +111.5.
+      if (teamData.byLine) {
+        const altEntry = teamData.byLine[String(line)];
+        if (altEntry) {
+          if (dir === 'over') return altEntry.over?.fairProb || null;
+          if (dir === 'under') return altEntry.under?.fairProb || null;
+        }
+      }
       return null;
     }
     if (dir === 'over') return teamData.over?.fairProb || null;
