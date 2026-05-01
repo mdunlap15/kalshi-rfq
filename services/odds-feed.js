@@ -812,6 +812,7 @@ async function fetchOddsForSport(sport, opts) {
     } catch (err) {
       log.warn('OddsFeed', `MLB F5 supplement failed: ${err.message}`);
     }
+    _scheduleSupplementRetry(sport, 'MLB F5', supplementMlbF5Markets, parsed);
   }
 
   // Supplement with 1st-Half markets for NBA (separate from full-game)
@@ -821,6 +822,7 @@ async function fetchOddsForSport(sport, opts) {
     } catch (err) {
       log.warn('OddsFeed', `NBA H1 supplement failed: ${err.message}`);
     }
+    _scheduleSupplementRetry(sport, 'NBA H1', supplementNbaH1Markets, parsed);
   }
 
   // Supplement with team-total markets for NBA/MLB/NHL. SharpAPI Hobby
@@ -835,10 +837,78 @@ async function fetchOddsForSport(sport, opts) {
     } catch (err) {
       log.warn('OddsFeed', `${sport} team_totals supplement failed: ${err.message}`);
     }
+    _scheduleSupplementRetry(sport, `${sport} team_totals`, supplementTeamTotals, parsed, sport);
   }
 
   log.info('OddsFeed', `Cached ${Object.keys(parsed).length} ${liveMode ? 'LIVE ' : ''}events for ${mapping.value}`);
   return parsed;
+}
+
+// Per-event TOA supplements (F5 / H1 / team_totals) are best-effort on
+// the primary refresh cycle — if resolveOddsApiEventId misses for an
+// event, or TOA returns a transient 4xx/5xx, that event's supplemented
+// markets are silently skipped. Until the next full refresh (default
+// 10 min), the affected game's H1 / F5 / team_total RFQs decline as
+// "no fair value." Operator caught Lakers @ Rockets 2026-05-01: H1 ML
+// nulled in the dashboard for the entire window between two refresh
+// cycles even though TOA had the data and a manual /refresh-odds
+// recovered it instantly.
+//
+// This helper schedules background retries at 60s / 120s / 240s after
+// the initial supplement run. Each retry calls the same supplement
+// function on the SAME parsed-events reference. The supplement's
+// "skip events that already have all 3 markets" check (inside each
+// supplement) makes this idempotent — successful events are skipped
+// instantly; only still-missing events get a TOA call.
+//
+// If the cache is wholesale-replaced before a retry fires (next
+// refresh cycle started), the retry is skipped — the new cycle's own
+// retry chain takes over for the new events. Stale references are
+// detected by checking that oddsCache[sport].events still === the
+// captured parsed reference.
+//
+// Retry telemetry exposed via _supplementRetryStats (read by /status).
+const _supplementRetryStats = {
+  scheduled: 0,
+  fired: 0,
+  skippedStale: 0,
+  failed: 0,
+  succeeded: 0,
+};
+function _scheduleSupplementRetry(sport, supplementName, supplementFn, ...args) {
+  const delaysMs = [60_000, 120_000, 240_000];
+  const initialEventsRef = oddsCache[sport]?.events;
+  if (!initialEventsRef) return;
+  let attempt = 0;
+  function next() {
+    if (attempt >= delaysMs.length) return;
+    _supplementRetryStats.scheduled++;
+    setTimeout(async () => {
+      _supplementRetryStats.fired++;
+      // Stale-reference check: skip if the cache has been replaced by
+      // a newer refresh cycle since this retry was scheduled. The new
+      // cycle owns its own retry chain.
+      if (oddsCache[sport]?.events !== initialEventsRef) {
+        _supplementRetryStats.skippedStale++;
+        return;
+      }
+      try {
+        await supplementFn(...args);
+        _supplementRetryStats.succeeded++;
+        log.debug('OddsFeed', `${supplementName} retry attempt ${attempt + 1}/${delaysMs.length} complete`);
+      } catch (err) {
+        _supplementRetryStats.failed++;
+        log.warn('OddsFeed', `${supplementName} retry attempt ${attempt + 1} failed: ${err.message}`);
+      }
+      attempt++;
+      next();
+    }, delaysMs[attempt]);
+  }
+  next();
+}
+
+function getSupplementRetryStats() {
+  return { ..._supplementRetryStats };
 }
 
 /**
@@ -7172,6 +7242,7 @@ module.exports = {
   startPinVerifyWarmLoop,
   getAltLinesWarmStats,
   getJitWarmStats,
+  getSupplementRetryStats,
   getPinVerifyWarmStats,
   getEventMarkets,
   getGolfMatchupEvent,
