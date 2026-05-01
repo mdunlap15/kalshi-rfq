@@ -150,9 +150,12 @@ const LEAGUE_MAP = {
   'icehockey_nhl': { param: 'league', value: 'nhl' },
   'soccer': { param: 'sport', value: 'soccer' },
   'mma_mixed_martial_arts': { param: 'league', value: 'ufc' },
+  // Tennis: TOA dynamic discovery is primary, SharpAPI is fallback when TOA
+  // returns 0 events (e.g. Pinnacle/FD/DK haven't posted Madrid Open prelims).
+  // SharpAPI now carries Caesars/DK/FD/BetMGM rows on tennis; comment that
+  // SharpAPI had "zero bookmaker odds" is stale as of 2026-05-01.
+  'tennis': { param: 'sport', value: 'tennis' },
 };
-// NOTE: tennis removed from LEAGUE_MAP — SharpAPI returns events but zero bookmaker
-// odds for tennis. Routed through The Odds API fallback instead (dynamic tournament discovery).
 
 // Bookmakers for The Odds API — Pinnacle (sharpest), DraftKings, FanDuel
 const ODDS_API_BOOKMAKERS = 'pinnacle,draftkings,fanduel';
@@ -297,8 +300,17 @@ async function fetchOddsForSport(sport, opts) {
     oddsCache[sport] = { fetchedAt: result.fetchedAt, events: result.events };
     return result.events;
   }
-  // Check if this sport uses The Odds API fallback
-  if (ODDS_API_FALLBACK[sport]) {
+  // Tennis: TOA dynamic discovery is primary (Pinnacle/FD/DK), but TOA's
+  // tournament coverage lags overnight — Madrid Open prelims at 7am ET were
+  // returning 0 events from TOA while SharpAPI had Caesars/DK/FD/BetMGM rows.
+  // Try TOA first, fall through to SharpAPI when TOA empty.
+  if (sport === 'tennis') {
+    if (liveMode) return null;
+    const toaResult = await fetchFromTheOddsApi(sport);
+    if (toaResult && Object.keys(toaResult).length > 0) return toaResult;
+    log.info('OddsFeed', 'Tennis TOA returned 0 events — falling through to SharpAPI');
+    // fall through to SharpAPI path below
+  } else if (ODDS_API_FALLBACK[sport]) {
     if (liveMode) {
       // Live odds for Odds-API-fallback sports not implemented yet
       return null;
@@ -3403,6 +3415,19 @@ async function mergeDkMmaFights() {
     // 3-round ≈ 2.5, 5-round ≈ 4.5). Remaining lines become alt.
     const sorted = [...totals].sort((a, b) => a.line - b.line);
     const primary = sorted[Math.floor(sorted.length / 2)];
+    // byLine map keyed by string-line so getFairProb's fast path
+    // (services/odds-feed.js — `if (marketType === 'totals' && market.byLine)`)
+    // can resolve PX alt-line requests without depending on altLinesCache,
+    // which is empty for MMA (not in SPORTS_WITH_ALT_MARKETS).
+    const byLine = {};
+    for (const t of sorted) {
+      byLine[String(t.line)] = {
+        line: t.line,
+        over: { rawOdds: t.over.americanOdds, impliedProb: t.over.impliedProb, fairProb: t.over.fairProb, displayFairProb: t.over.fairProb },
+        under: { rawOdds: t.under.americanOdds, impliedProb: t.under.impliedProb, fairProb: t.under.fairProb, displayFairProb: t.under.fairProb },
+        books: 1,
+      };
+    }
     return {
       line: primary.line,
       over: {
@@ -3414,6 +3439,7 @@ async function mergeDkMmaFights() {
         fairProb: primary.under.fairProb, displayFairProb: primary.under.fairProb,
       },
       books: 1,
+      byLine,
       alt: sorted.map(t => ({
         line: t.line,
         over: { rawOdds: t.over.americanOdds, impliedProb: t.over.impliedProb, fairProb: t.over.fairProb, displayFairProb: t.over.fairProb },
