@@ -621,6 +621,73 @@ async function loadLineCacheBulk(lineIds) {
 }
 
 /**
+ * Bulk-load ALL line_cache entries with a recent start_time. Used at
+ * boot to hydrate lineIndex BEFORE seedAllLines runs, so PX RFQs that
+ * arrive during the 30-90s seed window can still be priced (against
+ * the hydrated marketType/selection/line metadata + the freshly-fetched
+ * oddsCache for fair-prob). Without hydration, the lineIndex starts
+ * empty on every Railway redeploy and ~minute of RFQs decline as
+ * "unknown legs."
+ *
+ * Filters to start_time > now - maxAgeDays so we don't load yesterday's
+ * already-played events. Default 1 day catches everything from
+ * tonight's slate without dragging in stale finished games.
+ *
+ * Returns { lineId: info } map matching the in-memory lineIndex shape.
+ */
+async function loadAllRecentLineCache(maxAgeDays = 1) {
+  const db = getClient();
+  if (!db) return {};
+  const cutoff = new Date(Date.now() - maxAgeDays * 24 * 3600 * 1000).toISOString();
+  const result = {};
+  try {
+    // Supabase paginates at 1000 rows by default — page through with
+    // range() until we get an empty page or hit a large safety cap.
+    const PAGE = 1000;
+    let from = 0;
+    const MAX_PAGES = 20; // safety: 20 × 1000 = 20k rows
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const { data, error } = await db
+        .from('line_cache')
+        .select('*')
+        .gte('start_time', cutoff)
+        .range(from, from + PAGE - 1);
+      if (error) {
+        log.warn('DB', `loadAllRecentLineCache page ${page} failed: ${error.message}`);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      for (const row of data) {
+        result[row.line_id] = {
+          sport: row.sport,
+          pxEventId: row.px_event_id,
+          pxEventName: row.px_event_name,
+          marketType: row.market_type,
+          marketName: row.market_name,
+          isDNB: !!row.is_dnb,
+          selection: row.selection,
+          teamName: row.team_name,
+          line: row.line != null ? Number(row.line) : null,
+          homeTeam: row.home_team,
+          awayTeam: row.away_team,
+          oddsApiSport: row.odds_api_sport,
+          oddsApiMarket: row.odds_api_market,
+          oddsApiSelection: row.odds_api_selection,
+          competitorId: row.competitor_id,
+          startTime: row.start_time,
+        };
+      }
+      if (data.length < PAGE) break;
+      from += PAGE;
+    }
+    log.info('DB', `loadAllRecentLineCache: hydrated ${Object.keys(result).length} lines (start_time > ${cutoff})`);
+  } catch (err) {
+    log.warn('DB', `loadAllRecentLineCache error: ${err.message}`);
+  }
+  return result;
+}
+
+/**
  * Look up line_cache entries by px_event_id. Returns one representative
  * entry per event (any line for that event — we just need homeTeam/awayTeam).
  * Returns { eventId: info }.
@@ -1111,6 +1178,7 @@ module.exports = {
   saveLineCache,
   loadLineCacheEntry,
   loadLineCacheBulk,
+  loadAllRecentLineCache,
   loadLineCacheByEventIds,
   getDailyPnL,
   getTotalPnL,

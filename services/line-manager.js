@@ -518,6 +518,32 @@ async function seedAllLines() {
   log.info('Lines', '=== Starting line seed ===');
   log.info('Lines', '[golf-debug] seedAllLines starting — golf bypass code v2 is live');
 
+  // 0. Hydrate lineIndex from Supabase BEFORE the slow seed loop runs.
+  // The seed itself takes 30-90s (PX fetch + per-event market parse +
+  // matching). Without hydration, every Railway redeploy clears the
+  // in-memory lineIndex and ~minute of RFQs decline as "unknown legs"
+  // until seed completes. Hydration takes <2s and immediately makes
+  // every recent-event line in line_cache priceable. Seed then
+  // overwrites stale entries with fresh data and adds new entries.
+  // Only runs if lineIndex is empty (i.e. fresh boot, not a manual
+  // /refresh-lines call mid-session).
+  if (Object.keys(lineIndex).length === 0) {
+    try {
+      const hydrated = await db.loadAllRecentLineCache(1);
+      let count = 0;
+      for (const [lineId, info] of Object.entries(hydrated)) {
+        lineIndex[lineId] = info;
+        _trackPrimaryForIndex(info);
+        count++;
+      }
+      if (count > 0) {
+        log.info('Lines', `Hydrated ${count} lines from Supabase line_cache before seed`);
+      }
+    } catch (err) {
+      log.warn('Lines', `Line cache hydration failed (non-fatal): ${err.message}`);
+    }
+  }
+
   // 1. Fetch PX events
   const allEvents = await px.fetchSportEvents();
   const pxSportNames = Object.values(config.sportNameMap);

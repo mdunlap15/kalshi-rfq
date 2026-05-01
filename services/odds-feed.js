@@ -2277,6 +2277,54 @@ function buildConsensusSpread(bookPairs) {
     home: dkBookS.home.odds_american,
     away: dkBookS.away.odds_american,
   } : null;
+  // Build per-line consensus alongside the primary so getFairProb can
+  // resolve alt spread RFQs (PX often asks for ±0.5 F5 RL when the
+  // cached primary is 0 from Pinnacle's pick-em — DK/FD post ±0.5 as
+  // their primary). Without byLine, those RFQs fall through to
+  // altLinesCache which doesn't include line=0.5 because TOA's
+  // alternate_spreads market only posts ±1, ±2, etc. (not ±0.5).
+  //
+  // Key shape: "home|<signed_line>" / "away|<signed_line>" — matches
+  // the lookup convention in getFairProb's spreads byLine fast-path.
+  const byLineEntries = {};
+  const linesPresent = [...new Set(bookPairs.map(bp => bp.home.line).filter(l => l != null))];
+  for (const altLine of linesPresent) {
+    const altMatching = bookPairs.filter(bp => bp.home.line === altLine);
+    if (altMatching.length === 0) continue;
+    const altSharp = filterSharpBooks(
+      excludeKalshiFromConsensus(altMatching),
+      bp => [bp.home.odds_probability, bp.away.odds_probability],
+      'spread'
+    );
+    if (altSharp.length === 0) continue;
+    const altDevigged = { home: [], away: [] };
+    for (const { home, away } of altSharp) {
+      const [fh, fa] = deVig2Way(home.odds_probability, away.odds_probability);
+      altDevigged.home.push(fh);
+      altDevigged.away.push(fa);
+    }
+    const altDvHome = avg(altDevigged.home);
+    const altDvAway = avg(altDevigged.away);
+    const altPinBook = altMatching.find(bp => bp.book === 'pinnacle');
+    const altPinHome = altPinBook ? deVig2Way(altPinBook.home.odds_probability, altPinBook.away.odds_probability)[0] : 0;
+    const altPinAway = altPinBook ? deVig2Way(altPinBook.home.odds_probability, altPinBook.away.odds_probability)[1] : 0;
+    const altPricingHome = altDvHome >= 0.50 ? Math.max(altDvHome, altPinHome) : altDvHome;
+    const altPricingAway = altDvAway >= 0.50 ? Math.max(altDvAway, altPinAway) : altDvAway;
+    // Home gets the line as posted; away gets the negated line.
+    byLineEntries['home|' + altLine] = {
+      line: altLine,
+      fairProb: altPricingHome,
+      displayFairProb: altDvHome,
+      books: altMatching.length,
+    };
+    byLineEntries['away|' + (-altLine)] = {
+      line: -altLine,
+      fairProb: altPricingAway,
+      displayFairProb: altDvAway,
+      books: altMatching.length,
+    };
+  }
+
   return {
     home: {
       rawOdds: matching[0].home.odds_american,
@@ -2298,6 +2346,7 @@ function buildConsensusSpread(bookPairs) {
     fanduel,
     kalshi,
     draftkings,
+    byLine: byLineEntries,
   };
 }
 
@@ -4384,6 +4433,20 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
           const byLineEntry = market.byLine[String(absLine)];
           if (byLineEntry) {
             const sideProb = selection === 'over' ? byLineEntry.over?.fairProb : byLineEntry.under?.fairProb;
+            if (sideProb != null && sideProb > 0 && sideProb < 1) return sideProb;
+          }
+        }
+        // For spreads / spreads_f5 / spreads_h1: check the per-line
+        // consensus map populated by buildConsensusSpread. Same pattern
+        // as the totals byLine fast-path above. Captures the case where
+        // different books post different primary lines (Pinnacle line=0
+        // pick-em, DK/FD line=±0.5 standard) and we'd otherwise lose
+        // the non-modal-line data when collapsing to a single primary.
+        if ((marketType === 'spreads' || marketType === 'spreads_f5' || marketType === 'spreads_h1') && market.byLine) {
+          const sideKey = selection + '|' + line; // signed-line key
+          const byLineEntry = market.byLine[sideKey];
+          if (byLineEntry) {
+            const sideProb = byLineEntry.fairProb;
             if (sideProb != null && sideProb > 0 && sideProb < 1) return sideProb;
           }
         }
