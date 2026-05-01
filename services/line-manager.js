@@ -27,6 +27,18 @@ const _NBA_PROP_TO_TOA_MARKET = {
 const _NHL_PROP_TO_TOA_MARKET = {
   shots_on_goal: 'player_shots_on_goal',
 };
+// MLB hitter props. classifyMlbProp's bucket names map to TOA's
+// batter_* market keys. Operator chose to enable the high-volume hitter
+// markets (44% hits, 36% HR per 24h prop-flow sample) — pitcher_other
+// stays unmapped (varies too much: outs recorded vs IP vs walks).
+// pitcher_strikeouts has its own bridge (lookupPlayerStrikeoutProp +
+// lookupPlayerStrikeoutPropFromTheOddsApi), not routed here.
+const _MLB_PROP_TO_TOA_MARKET = {
+  hitter_hits: 'batter_hits',
+  hitter_hr: 'batter_home_runs',
+  hitter_total_bases: 'batter_total_bases',
+  hitter_rbi_runs: 'batter_rbis',
+};
 const log = require('./logger');
 const px = require('./prophetx');
 const oddsFeed = require('./odds-feed');
@@ -1634,6 +1646,14 @@ async function resolveUnknownLine(rfqLeg) {
               } else if (sportKey.includes('hockey')) {
                 propType = ws._classifyNhlProp(market.name);
                 toaMarketKey = _NHL_PROP_TO_TOA_MARKET[propType];
+              } else if (sportKey === 'baseball_mlb') {
+                // pitcher_strikeouts has its own dedicated bridge above
+                // (services/odds-feed.js lookupPlayerStrikeoutProp + TOA
+                // fallback). Other MLB hitter prop types — hits, home
+                // runs, total bases, RBIs — flow through the generic
+                // Phase-2 bridge using TOA's batter_* market keys.
+                propType = ws._classifyMlbProp(market.name);
+                toaMarketKey = _MLB_PROP_TO_TOA_MARKET[propType];
               }
             }
             const allowlist = (config.pricing && config.pricing.propLaunchAllowlist) || new Set();
