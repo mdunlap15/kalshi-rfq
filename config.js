@@ -323,6 +323,12 @@ const config = {
     // parlays use the standard MAX_RISK_PER_PARLAY ($4000). Tunable via
     // env vars.
     maxRiskPerParlayWithProp: parseFloat(process.env.MAX_RISK_PER_PARLAY_WITH_PROP) || 50,
+    // DEPRECATED 2026-05-01: pitcher_strikeouts is now governed by the
+    // unified MAX_EXPOSURE_PER_PLAYER_* system. This var is kept for
+    // backward-compat reads (some legacy logs / instrumentation still
+    // reference it) but does NOT drive quote-time gating anymore.
+    // Configure MLB pitcher caps via MAX_EXPOSURE_PER_PLAYER_BY_SPORT
+    // (e.g. {"baseball_mlb": 2000}) or MAX_EXPOSURE_PER_PLAYER_DEFAULT.
     maxExposurePerPitcher: parseFloat(process.env.MAX_EXPOSURE_PER_PITCHER) || 500,
     // Per-player aggregate exposure cap, keyed by sport. Sums SP-risk
     // across ALL parlays containing ANY prop leg featuring that player,

@@ -2681,12 +2681,14 @@ function getPitcherExposureSnapshot() {
 }
 
 /**
- * Compute the playerExposure key for a generic prop leg. Returns null
- * when the leg isn't a player_<type> prop or is missing required
- * fields. Recognizes the new Phase-2 marketTypes (player_points,
- * player_rebounds, player_assists, player_threes, player_shots_on_goal,
- * etc.) — does NOT include player_strikeouts (that's tracked separately
- * via pitcherExposure).
+ * Compute the playerExposure key for any player_<type> prop leg.
+ * Recognizes Phase-2 marketTypes (player_points, player_rebounds,
+ * player_assists, player_threes, player_shots_on_goal) AND the legacy
+ * player_strikeouts (MLB pitchers). As of 2026-05-01 we consolidated
+ * the legacy MAX_EXPOSURE_PER_PITCHER cap into the unified per-player
+ * system — pitcher_strikeouts now respects MAX_EXPOSURE_PER_PLAYER_*
+ * env vars instead. The pitcherExposure map is still populated for
+ * instrumentation/visibility but no longer drives quote-time gating.
  *
  * Player name normalization: strip diacritics, periods, apostrophes,
  * lowercase, collapse whitespace. Same canonicalization as the TOA
@@ -2696,7 +2698,6 @@ function playerKeyForLeg(leg) {
   if (!leg) return null;
   const mt = leg.marketType || '';
   if (!/^player_/.test(mt)) return null;
-  if (mt === 'player_strikeouts') return null; // handled by pitcherExposure
   const sport = leg.sport || leg.oddsApiSport;
   const player = leg.playerName;
   if (!sport || !player) return null;

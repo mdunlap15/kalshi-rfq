@@ -2589,69 +2589,45 @@ function shouldDecline(legs) {
     }
   }
 
-  // M4 per-player exposure cap. Run AFTER the series check so we have
+  // Per-player exposure cap. Runs AFTER the series check so we have
   // the right estPayout — for prop-containing parlays, the per-parlay
   // cap is config.pricing.maxRiskPerParlayWithProp (smaller than the
   // generic estPayout). Use that as the additional-risk worst case.
   //
-  // Two parallel caps:
-  //   - K-prop (player_strikeouts): pitcherExposure (legacy, per-event)
-  //   - Phase-2 (player_points/rebounds/assists/threes/shots_on_goal):
-  //     playerExposure (per-(sport, player), cross-prop)
-  // Both fire when a parlay contains the matching leg type.
-  const hasKPropLeg = resolvedLegs.some(l => l.lineInfo.marketType === 'player_strikeouts');
-  const hasNewPropLeg = resolvedLegs.some(l =>
-    l.lineInfo.marketType
-    && /^player_/.test(l.lineInfo.marketType)
-    && l.lineInfo.marketType !== 'player_strikeouts'
+  // Unified check covers ALL player_<type> markets (Phase-2 NBA points/
+  // rebounds/assists/threes_made + NHL shots_on_goal + legacy MLB
+  // player_strikeouts). Caps come from MAX_EXPOSURE_PER_PLAYER_BY_SPORT
+  // (per-sport JSON map) with MAX_EXPOSURE_PER_PLAYER_DEFAULT fallback.
+  // Consolidated 2026-05-01 — previously K-props had a separate
+  // MAX_EXPOSURE_PER_PITCHER env var ($500 default) that operators kept
+  // forgetting to raise alongside the Phase-2 caps. The legacy
+  // pitcherExposure map is still populated for instrumentation but no
+  // longer drives gating.
+  const hasAnyPropLeg = resolvedLegs.some(l =>
+    l.lineInfo.marketType && /^player_/.test(l.lineInfo.marketType)
   );
-  const hasAnyPropLeg = hasKPropLeg || hasNewPropLeg;
   if (hasAnyPropLeg) {
     const propParlayCap = config.pricing.maxRiskPerParlayWithProp || 50;
-
-    if (hasKPropLeg) {
-      const pitcherCheck = orderTracker.checkPitcherExposure(
-        resolvedLegs, propParlayCap, config.pricing.maxExposurePerPitcher,
-      );
-      if (pitcherCheck && pitcherCheck.exceeded) {
-        const pendingTxt = pitcherCheck.pending ? ` + pending $${pitcherCheck.pending}` : '';
-        log.info('Pricing', `Pitcher exposure cap: ${pitcherCheck.pitcher} would be $${pitcherCheck.wouldBe} (max $${pitcherCheck.max})`);
-        try {
-          const push = require('./push');
-          push.notifyCapHit('player', { subject: pitcherCheck.pitcher, limit: pitcherCheck.max, current: pitcherCheck.wouldBe });
-        } catch (_) {}
-        return {
-          declined: true,
-          reason: 'pitcher_exposure_cap',
-          detail: `${pitcherCheck.pitcher}: current $${pitcherCheck.current}${pendingTxt} + this parlay $${propParlayCap} = $${pitcherCheck.wouldBe} > cap $${pitcherCheck.max}`,
-          violations: [{ team: pitcherCheck.pitcher, wouldBe: pitcherCheck.wouldBe, limit: pitcherCheck.max }],
-          estPayout: propParlayCap,
-        };
-      }
-    }
-
-    if (hasNewPropLeg) {
-      const playerCheck = orderTracker.checkPlayerExposure(
-        resolvedLegs,
-        propParlayCap,
-        config.pricing.maxExposurePerPlayerBySport || {},
-        config.pricing.maxExposurePerPlayerDefault,
-      );
-      if (playerCheck && playerCheck.exceeded) {
-        const pendingTxt = playerCheck.pending ? ` + pending $${playerCheck.pending}` : '';
-        log.info('Pricing', `Player exposure cap: ${playerCheck.player} (${playerCheck.sport}) would be $${playerCheck.wouldBe} (max $${playerCheck.max})`);
-        try {
-          const push = require('./push');
-          push.notifyCapHit('player', { subject: `${playerCheck.player} (${playerCheck.sport})`, limit: playerCheck.max, current: playerCheck.wouldBe });
-        } catch (_) {}
-        return {
-          declined: true,
-          reason: 'player_exposure_cap',
-          detail: `${playerCheck.player} (${playerCheck.sport}): current $${playerCheck.current}${pendingTxt} + this parlay $${propParlayCap} = $${playerCheck.wouldBe} > cap $${playerCheck.max}`,
-          violations: [{ team: playerCheck.player, wouldBe: playerCheck.wouldBe, limit: playerCheck.max }],
-          estPayout: propParlayCap,
-        };
-      }
+    const playerCheck = orderTracker.checkPlayerExposure(
+      resolvedLegs,
+      propParlayCap,
+      config.pricing.maxExposurePerPlayerBySport || {},
+      config.pricing.maxExposurePerPlayerDefault,
+    );
+    if (playerCheck && playerCheck.exceeded) {
+      const pendingTxt = playerCheck.pending ? ` + pending $${playerCheck.pending}` : '';
+      log.info('Pricing', `Player exposure cap: ${playerCheck.player} (${playerCheck.sport}) would be $${playerCheck.wouldBe} (max $${playerCheck.max})`);
+      try {
+        const push = require('./push');
+        push.notifyCapHit('player', { subject: `${playerCheck.player} (${playerCheck.sport})`, limit: playerCheck.max, current: playerCheck.wouldBe });
+      } catch (_) {}
+      return {
+        declined: true,
+        reason: 'player_exposure_cap',
+        detail: `${playerCheck.player} (${playerCheck.sport}): current $${playerCheck.current}${pendingTxt} + this parlay $${propParlayCap} = $${playerCheck.wouldBe} > cap $${playerCheck.max}`,
+        violations: [{ team: playerCheck.player, wouldBe: playerCheck.wouldBe, limit: playerCheck.max }],
+        estPayout: propParlayCap,
+      };
     }
   }
 
