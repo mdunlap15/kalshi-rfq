@@ -5737,64 +5737,95 @@ function getEventMarkets(sport, homeTeam, awayTeam, targetTime) {
   const sportCache = oddsCache[sport];
   if (!sportCache) return null;
   const key = normalizeEventKey(homeTeam, awayTeam);
-  const entry = sportCache.events[key];
-  if (!entry) return null;
+  const reverseKey = normalizeEventKey(awayTeam, homeTeam);
+  const fwdEntry = sportCache.events[key];
+  const revEntry = (reverseKey !== key) ? sportCache.events[reverseKey] : null;
+  const fwdEvents = fwdEntry ? (Array.isArray(fwdEntry) ? fwdEntry : [fwdEntry]) : [];
+  const revEvents = revEntry ? (Array.isArray(revEntry) ? revEntry : [revEntry]) : [];
+  if (fwdEvents.length === 0 && revEvents.length === 0) return null;
 
-  // Normalize: SharpAPI stores arrays, Odds API stores single objects
-  const events = Array.isArray(entry) ? entry : [entry];
-  if (events.length === 0) return null;
+  // Cross-orientation closest-by-time selection. SharpAPI's MLB feed
+  // periodically stores home/away reversed vs PX/TOA on the same matchup.
+  // Without considering both buckets when picking `closest`, a line
+  // registered with PX's orientation that has no forward-bucket match for
+  // the right time will silently fall back to whatever stale or future
+  // event happens to be in the forward bucket. Verified 2026-05-02 ATL @
+  // COL: forward bucket (COL|ATL) only contained Saturday's afternoon
+  // game; tonight's game was in the reverse bucket (ATL|COL), and every
+  // RFQ on tonight's game was priced against tomorrow's data.
+  //
+  // Each candidate is tagged with `flipped: true` when sourced from the
+  // reverse bucket so the final market block can be flipped back to the
+  // caller's orientation before returning.
+  const candidates = [
+    ...fwdEvents.map(ev => ({ ev, flipped: false })),
+    ...revEvents.map(ev => ({ ev, flipped: true })),
+  ];
 
-  // Pick closest-by-time as the base. Primary markets (h2h, spreads,
-  // totals) come from THIS entry — same-day doubleheaders and back-to-
-  // backs legitimately have different prices per event.
-  let closest;
-  if (events.length === 1 || !targetTime) {
-    closest = events[0];
-  } else {
+  let closestC = candidates[0];
+  if (candidates.length > 1 && targetTime) {
     const targetMs = new Date(targetTime).getTime();
-    closest = events[0];
-    let closestDiff = Infinity;
     if (!isNaN(targetMs)) {
-      for (const ev of events) {
-        const evMs = new Date(ev.commenceTime).getTime();
+      let closestDiff = Infinity;
+      for (const c of candidates) {
+        const evMs = new Date(c.ev.commenceTime).getTime();
         if (isNaN(evMs)) continue;
         const diff = Math.abs(evMs - targetMs);
-        if (diff < closestDiff) { closestDiff = diff; closest = ev; }
+        if (diff < closestDiff) { closestDiff = diff; closestC = c; }
       }
     }
   }
 
-  // Merge supplemented markets from same-key siblings (no orientation flip)
-  let merged = _mergeSameKeySiblings(events, closest);
+  const closest = closestC.ev;
+  const flippedBucket = closestC.flipped;
+  const sameBucket = flippedBucket ? revEvents : fwdEvents;
+  const oppositeBucket = flippedBucket ? fwdEvents : revEvents;
 
-  // Merge supplemented markets from REVERSE-key siblings (orientation
-  // flipped). SharpAPI's MLB feed periodically reverses home/away vs
-  // TOA on the same matchup. The supplement runs against TOA event-IDs
-  // and writes h2h_f5 / team_totals onto whichever cache entry it found
-  // — often the reverse-key one. PX matches the forward-key one.
-  // Without this merge, /lines/detail and pricing return null for the
-  // requested market even though its data is one cache key away.
-  const reverseKey = normalizeEventKey(awayTeam, homeTeam);
-  if (reverseKey !== key) {
-    const reverseEntry = sportCache.events[reverseKey];
-    if (reverseEntry) {
-      const reverseEvents = Array.isArray(reverseEntry) ? reverseEntry : [reverseEntry];
-      const baseMarkets = (merged && merged.markets) || (closest && closest.markets) || {};
-      for (const ev of reverseEvents) {
-        if (!ev || !ev.markets) continue;
-        for (const k of _MERGEABLE_SUPP_MARKETS) {
-          if (!ev.markets[k]) continue;
-          if (baseMarkets[k]) continue;
-          // First reverse-key sibling that has this market wins.
-          if (!merged) merged = { ...closest, markets: { ...(closest.markets || {}) } };
-          if (merged.markets[k]) continue;
-          merged.markets[k] = _flipMarketOrientation(k, ev.markets[k]);
-        }
+  // Same-bucket sibling merge (no orientation flip — siblings share the
+  // chosen bucket's orientation).
+  let merged = _mergeSameKeySiblings(sameBucket, closest);
+
+  // Opposite-bucket supplement merge (orientation flipped). These markets
+  // are in the OPPOSITE orientation from `closest`, so flip them once now
+  // to align with closest. If we end up flipping the entire result below
+  // (because closest came from the reverse bucket), they get flipped a
+  // second time — net zero, returning to their cache-native orientation,
+  // which equals the caller's orientation by definition.
+  if (oppositeBucket.length > 0) {
+    const baseMarkets = (merged && merged.markets) || (closest && closest.markets) || {};
+    for (const ev of oppositeBucket) {
+      if (!ev || !ev.markets) continue;
+      for (const k of _MERGEABLE_SUPP_MARKETS) {
+        if (!ev.markets[k]) continue;
+        if (baseMarkets[k]) continue;
+        if (!merged) merged = { ...closest, markets: { ...(closest.markets || {}) } };
+        if (merged.markets[k]) continue;
+        merged.markets[k] = _flipMarketOrientation(k, ev.markets[k]);
       }
     }
   }
 
-  return merged || closest;
+  let result = merged || closest;
+
+  // If `closest` came from the reverse bucket, flip every market block
+  // (primary + supplementals) so the caller receives data in the orientation
+  // they requested. Updates homeTeam/awayTeam labels to the caller's order
+  // and tags the event with _orientationFlipped for downstream debugging.
+  if (flippedBucket) {
+    const flippedMarkets = {};
+    for (const [mk, m] of Object.entries(result.markets || {})) {
+      flippedMarkets[mk] = _flipMarketOrientation(mk, m);
+    }
+    result = {
+      ...result,
+      homeTeam,
+      awayTeam,
+      markets: flippedMarkets,
+      _orientationFlipped: true,
+    };
+  }
+
+  return result;
 }
 
 // Build a merged event view: keep `closest` as the base, then union in
@@ -5819,27 +5850,31 @@ function _mergeSameKeySiblings(events, closest) {
 }
 
 // Flip a supplemented-market block when it was sourced from a reverse-
-// orientation cache entry. h2h_f5/h2h_h1: swap home<->away.
-// spreads_f5/spreads_h1: swap home<->away AND negate point/line on each
-// side (home -1.5 ↔ away +1.5). team_totals: swap home<->away (over/
-// under per side stay symmetric). totals_f5/totals_h1: over/under are
-// team-agnostic, no flip needed.
+// orientation cache entry. h2h/h2h_f5/h2h_h1: swap home<->away.
+// spreads/spreads_f5/spreads_h1: swap home<->away AND negate point/line
+// on each side (home -1.5 ↔ away +1.5). team_totals: swap home<->away
+// (over/under per side stay symmetric). totals/totals_f5/totals_h1:
+// over/under are team-agnostic, no flip needed.
+//
+// Primary h2h/spreads/totals were added 2026-05-02 alongside the cross-
+// orientation closest-by-time selection in getEventMarkets — without
+// these branches, the orientation flip on a reverse-bucket result would
+// leave the primary markets in the wrong orientation.
 function _flipMarketOrientation(marketType, market) {
   if (!market) return market;
-  if (marketType === 'totals_h1' || marketType === 'totals_f5') return market;
-  if (marketType === 'h2h_h1' || marketType === 'h2h_f5') {
+  if (marketType === 'totals' || marketType === 'totals_h1' || marketType === 'totals_f5') return market;
+  if (marketType === 'h2h' || marketType === 'h2h_h1' || marketType === 'h2h_f5') {
     return { ...market, home: market.away, away: market.home };
   }
-  if (marketType === 'spreads_h1' || marketType === 'spreads_f5') {
-    const flipSide = (s) => s == null ? null : {
-      ...s,
-      point: s.point != null ? -s.point : null,
-      line: s.line != null ? -s.line : null,
-    };
+  if (marketType === 'spreads' || marketType === 'spreads_h1' || marketType === 'spreads_f5') {
+    // Side `.point` is the spread for that specific team (Bruins +1.5,
+    // Rangers -1.5) — it travels with the team across orientation flips
+    // and must NOT be negated. Only `market.line` (canonical, from-home
+    // perspective) needs negation since the home team identity changes.
     return {
       ...market,
-      home: flipSide(market.away),
-      away: flipSide(market.home),
+      home: market.away,
+      away: market.home,
       line: market.line != null ? -market.line : null,
     };
   }
