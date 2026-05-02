@@ -345,7 +345,14 @@ function getGolfMatchupFairProb(lineInfo) {
   if (teamName) {
     try {
       const betonlineScraper = require('./betonline-scraper');
-      const boHit = betonlineScraper.lookupZurichMatchupFairProb(teamName, lineInfo.roundNum ?? null);
+      // Pass the opponent so a player who appears in multiple matchups
+      // in the same scope (Cadillac R3 had Castillo in two pairings) is
+      // priced from the correct matchup, not whichever was uploaded
+      // first. Opponent = the OTHER side of this lineInfo's pair.
+      const opponent = (lineInfo.teamName === lineInfo.homeTeam)
+        ? lineInfo.awayTeam
+        : lineInfo.homeTeam;
+      const boHit = betonlineScraper.lookupZurichMatchupFairProb(teamName, lineInfo.roundNum ?? null, opponent);
       if (boHit && boHit.fairProb != null) {
         const rawAm = boHit.americanOdds;
         let rawImplied = boHit.impliedProb;

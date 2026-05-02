@@ -343,8 +343,17 @@ function pairNameMatches(candidate, target) {
  * Look up a Zurich matchup fair prob. Matches both tournament-length
  * (roundNum=null) and per-round (roundNum=1..4) markets. Returns
  * { fairProb, americanOdds, source, scope } or null.
+ *
+ * `opponentName` is optional but strongly recommended in pair sports
+ * (golf): a single player can appear in multiple matchups in the same
+ * scope (e.g. Cadillac R3 had Castillo in BOTH Castillo/Kim and
+ * Greyserman/Castillo). When supplied, only matchups containing BOTH
+ * the team and the named opponent qualify, which prevents the wrong
+ * matchup's price bleeding into the lookup. When omitted, we fall back
+ * to first-team-match (legacy team events like Zurich where each
+ * player appears in exactly one pairing).
  */
-function lookupZurichMatchupFairProb(teamName, roundNum) {
+function lookupZurichMatchupFairProb(teamName, roundNum, opponentName) {
   const c = cache.zurich;
   if (!c || !c.data) return null;
   // De-vig every matchup lazily on first lookup (parser intentionally
@@ -355,22 +364,32 @@ function lookupZurichMatchupFairProb(teamName, roundNum) {
   }
   const target = normalizePairName(teamName);
   if (!target) return null;
+  const oppTarget = opponentName ? normalizePairName(opponentName) : null;
   const wantScope = roundNum == null ? 'tournament' : `round_${roundNum}`;
+  let fallbackHit = null; // first team-only match if no opponent-aware match found
   for (const m of (c.data.matchups || [])) {
     if (m.scope !== wantScope) continue;
+    let teamHit = null;
+    let oppPresent = false;
     for (const t of m.teams) {
       const cand = normalizePairName(t.team);
-      if (pairNameMatches(cand, target) && t.fairProb != null) {
-        return {
-          fairProb: t.fairProb,
-          americanOdds: t.odds,
-          source: 'betonline',
-          scope: m.scope,
-        };
-      }
+      if (pairNameMatches(cand, target) && t.fairProb != null) teamHit = t;
+      if (oppTarget && pairNameMatches(cand, oppTarget)) oppPresent = true;
     }
+    if (!teamHit) continue;
+    const built = {
+      fairProb: teamHit.fairProb,
+      americanOdds: teamHit.odds,
+      source: 'betonline',
+      scope: m.scope,
+    };
+    // Opponent-aware match wins immediately. Otherwise remember the
+    // first team-only hit and keep scanning in case a better
+    // opponent-aware match comes later in the list.
+    if (oppTarget && oppPresent) return built;
+    if (!fallbackHit) fallbackHit = built;
   }
-  return null;
+  return fallbackHit;
 }
 
 // ---------------------------------------------------------------------------
