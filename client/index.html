@@ -11832,8 +11832,19 @@
     let prob = 1;
     let allPresent = true;
     for (const l of legs) {
-      // Use DNB-adjusted implied when available (set at quote time for DNB legs)
-      if (l.isDNB && dnbField && l[dnbField] != null) {
+      // Use DNB-adjusted implied for soccer h2h legs OR explicitly-
+      // flagged DNB legs. PX soccer moneyline is 2-way (Draw No Bet)
+      // semantically, but isDNB only gets set when PX names the market
+      // explicitly "2 Way" / "Draw No Bet" — some events just say
+      // "Moneyline" and the flag stays false. Books in those cases
+      // returned raw 3-way (home-only) odds, compounding to a fraction
+      // of fair and producing bogus -90% edge tooltips on the
+      // Parlay-vs-Books chart. Treating any soccer h2h leg as DNB-
+      // equivalent for the compound keeps the comparison apples-to-
+      // apples when the DNB-renormalized prob is available.
+      const isSoccerH2h = (typeof l.sport === 'string' && l.sport.startsWith('soccer'))
+        && (l.market === 'moneyline' || l.marketType === 'moneyline' || l.oddsApiMarket === 'h2h');
+      if ((l.isDNB || isSoccerH2h) && dnbField && l[dnbField] != null) {
         prob *= l[dnbField];
         continue;
       }

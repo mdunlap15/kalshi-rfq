@@ -1016,7 +1016,21 @@ function priceParlay(legs, opts = {}) {
     let fanduelDNBProb = null;
     let kalshiDNBProb = null;
     let draftkingsDNBProb = null;
-    if (lineInfo.isDNB && lineInfo.oddsApiMarket === 'h2h') {
+    // Compute DNB-renormalized book probs for ANY soccer h2h leg, not
+    // just legs explicitly flagged isDNB. PX's soccer moneyline market
+    // is universally 2-way (Draw No Bet) on the bet semantics, but the
+    // line-manager's regex for setting isDNB only fires when PX names
+    // the market with explicit "2 Way" / "DNB" / "Draw No Bet" tokens.
+    // Some PX events label it just "Moneyline" — those legs end up
+    // unflagged, books return raw 3-way (home win only) probs, and the
+    // dashboard's parlay-vs-books compound becomes apples-to-oranges
+    // (DNB our offer vs 3-way book prices), inflating the
+    // pp-distance into bogus -90% edge values. By always renormalizing
+    // for soccer, we guarantee the comparison stays 2-way both sides.
+    const isSoccerH2h = lineInfo.oddsApiMarket === 'h2h'
+      && typeof lineInfo.oddsApiSport === 'string'
+      && lineInfo.oddsApiSport.startsWith('soccer');
+    if ((lineInfo.isDNB || isSoccerH2h) && lineInfo.oddsApiMarket === 'h2h') {
       const oppSel = lineInfo.oddsApiSelection === 'home' ? 'away' : 'home';
       function calcDNB(sameOdds, oppOdds) {
         if (sameOdds == null || oppOdds == null) return null;
