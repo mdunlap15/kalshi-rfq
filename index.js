@@ -451,6 +451,18 @@ async function startup() {
     }
   }, 60 * 1000);
 
+  // ESPN live-scores poller. Provides primary score / completion data
+  // across every sport we quote on, replacing TOA's /scores as the fast
+  // path. Drives leg.inferredResult ('won'/'lost'/'push') in
+  // order-tracker.checkLegResults via oddsFeed.getGameResult, which now
+  // tries the ESPN cache first.
+  try {
+    const espnScores = require('./services/espn-scores');
+    espnScores.startPoller();
+  } catch (err) {
+    log.warn('Startup', `ESPN scores poller failed to start (non-fatal): ${err.message}`);
+  }
+
   // Pre-warm DK series prices (NBA + NHL). Puppeteer takes ~15s per
   // sport — too slow to run inline when an RFQ arrives — so fetch at
   // boot and refresh every 10 min. Pricer's getSeriesFairProb() reads
@@ -2807,6 +2819,22 @@ function startStatusServer() {
       res.status(500).json({ ok: false, error: err.message });
     }
   });
+  // ESPN scoreboard cache snapshot — diagnostic. Shows every sport key,
+  // its game count, completed-game count, fetched timestamp, and the
+  // first 50 games' raw shape (homeTeam, awayTeam, completed, scores,
+  // status). Use to verify ESPN coverage matches expectations after
+  // deploy and confirm a specific fight / match was picked up.
+  app.get('/debug-espn-scores', (req, res) => {
+    try {
+      const espnScores = require('./services/espn-scores');
+      const sport = req.query.sport;
+      const dump = espnScores.__debugDump();
+      res.json({ ok: true, ...(sport ? { [sport]: dump[sport] } : { sports: dump }) });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Diagnostic-only mirror of the MMA scraper. Captures nav trail, final
   // URL, page title, visible event-row sample, every primaryMarkets XHR
   // URL with sport hints, and counts of MMA-vs-cross-sport XHR pollution.

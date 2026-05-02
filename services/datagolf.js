@@ -311,7 +311,180 @@ async function fetchGolfMatchupsCache() {
   return { events: parsed, fetchedAt: Date.now() };
 }
 
+// ---------------------------------------------------------------------------
+// LIVE IN-PLAY PROBABILITIES
+//
+// DataGolf's /preds/in-play returns per-player live tournament probabilities
+// (win, top-5, top-10, etc) computed from current scores + course context +
+// remaining holes. For matchup legs that are mid-round, the head-to-head
+// live probability isn't directly published, but we can derive a reasonable
+// estimate from per-player live scores using a simple stroke-difference
+// heuristic that's good enough for win-prob/risk-sim purposes. ESPN doesn't
+// compute golf WP at all, so this is the best signal we have for golf
+// matchups during live tournament play.
+//
+// Cached in memory; refreshed on demand by refreshLiveOdds (called every
+// 60s server-side). Returns sync from cache after that.
+// ---------------------------------------------------------------------------
+
+let _liveStatsCache = null; // { fetchedAt, players: { [normalized name]: { score, holesPlayed, winProb, top5, top10 } } }
+const LIVE_STATS_TTL_MS = 60 * 1000;
+
+async function _fetchDgLiveStats(tour) {
+  const apiKey = config.dataGolf.apiKey;
+  if (!apiKey) return null;
+  const url = `${config.dataGolf.baseUrl}/preds/in-play`
+    + `?tour=${tour}&dead_heat=no&odds_format=percent&file_format=json&key=${apiKey}`;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (!data || !Array.isArray(data.data)) return null;
+    return data.data; // [{ player_name, current_pos, current_score, thru, win, top_5, top_10, ... }]
+  } catch (err) {
+    log.debug('DataGolf', `Live stats fetch error (${tour}): ${err.message}`);
+    return null;
+  }
+}
+
+function _normalizePlayerKey(name) {
+  return normalizeDgPlayerName(name)
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9 ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Refresh DataGolf live in-play stats. Aggregates pga + euro + alt tours so
+ * any player on any active tour is in the cache. Called by order-tracker's
+ * refreshLiveOdds when a golf matchup leg is in-progress.
+ */
+async function refreshLiveStats() {
+  if (!config.dataGolf.apiKey) return null;
+  if (_liveStatsCache && Date.now() - _liveStatsCache.fetchedAt < LIVE_STATS_TTL_MS) {
+    return _liveStatsCache;
+  }
+  const tours = ['pga', 'euro', 'alt'];
+  const merged = {};
+  for (const tour of tours) {
+    const rows = await _fetchDgLiveStats(tour);
+    if (!rows) continue;
+    for (const r of rows) {
+      const key = _normalizePlayerKey(r.player_name || '');
+      if (!key) continue;
+      // First-tour-seen wins; same player rarely appears on two tours
+      // simultaneously but if so, pga > euro > alt by iteration order.
+      if (merged[key]) continue;
+      merged[key] = {
+        playerName: r.player_name,
+        currentPos: r.current_pos != null ? String(r.current_pos) : null,
+        currentScore: r.current_score != null ? Number(r.current_score) : null,
+        thru: r.thru != null ? Number(r.thru) : null, // holes played this round
+        winProb: typeof r.win === 'number' ? r.win / 100 : null, // DataGolf returns percent
+        top5Prob: typeof r.top_5 === 'number' ? r.top_5 / 100 : null,
+        top10Prob: typeof r.top_10 === 'number' ? r.top_10 / 100 : null,
+        tour,
+      };
+    }
+  }
+  if (Object.keys(merged).length === 0) {
+    log.debug('DataGolf', 'Live in-play returned no players (no tournaments active)');
+  } else {
+    log.debug('DataGolf', `Cached live in-play for ${Object.keys(merged).length} players across ${tours.length} tours`);
+  }
+  _liveStatsCache = { fetchedAt: Date.now(), players: merged };
+  return _liveStatsCache;
+}
+
+/**
+ * Compute live head-to-head probability for a golf matchup leg (Player A
+ * vs Player B). Returns the probability that the named `forPlayer` finishes
+ * ahead in the current matchup context.
+ *
+ * Method:
+ *   1. If matchupType === 'tournament': use DataGolf's per-player win prob
+ *      and renormalize 2-way: P(A) = winA / (winA + winB). This is the
+ *      conditional probability that A finishes higher than B given that
+ *      one of them wins, but works as a reasonable proxy for tournament-
+ *      length matchups where the matchup resolves to "best total score
+ *      across the field" semantics.
+ *   2. If matchupType === 'round' (single-round H2H): derive from current
+ *      scores + holes remaining via a simple stroke-difference heuristic.
+ *      DataGolf doesn't publish per-round H2H probs in the in-play feed.
+ *      Score-difference model: each remaining hole has stddev ~ 0.5 strokes
+ *      (per-pair, since both players play the same course). P(A wins) =
+ *      Phi(diff_in_strokes / sqrt(holes_remaining * 0.5)).
+ *
+ * Returns null when:
+ *   - either player isn't in the live cache (not on tour, hasn't teed off)
+ *   - both players are completed (round done, no probability needed)
+ *
+ * Caller can fall back to pre-game fairProb when null.
+ */
+function getGolfLiveMatchupProb(playerA, playerB, forPlayer, matchupType) {
+  const cache = _liveStatsCache;
+  if (!cache || !cache.players) return null;
+  const a = cache.players[_normalizePlayerKey(playerA)];
+  const b = cache.players[_normalizePlayerKey(playerB)];
+  if (!a || !b) return null;
+
+  // Tournament matchup: renormalize win probs to 2-way.
+  if (matchupType === 'tournament') {
+    if (a.winProb == null || b.winProb == null) return null;
+    const sum = a.winProb + b.winProb;
+    if (sum <= 0) return null;
+    const probA = a.winProb / sum;
+    const target = _normalizePlayerKey(forPlayer);
+    return target === _normalizePlayerKey(playerA) ? probA : (1 - probA);
+  }
+
+  // Round matchup: stroke-diff heuristic. A's lead = (B's score) - (A's score)
+  // (lower scores are better in golf). Positive lead → A is ahead.
+  if (a.currentScore == null || b.currentScore == null) return null;
+  const lead = (b.currentScore || 0) - (a.currentScore || 0); // strokes A is ahead
+  // Use the deeper-into-round player's `thru` to estimate remaining holes.
+  // If neither has teed off (thru=0 for both), probability is 50/50 — bail
+  // and let caller fall back to pre-game.
+  const maxThru = Math.max(a.thru || 0, b.thru || 0);
+  if (maxThru <= 0) return null;
+  const remaining = Math.max(0, 18 - maxThru);
+  if (remaining === 0) {
+    // Round complete — outcome should be known via score, but matchup may
+    // also turn on tiebreakers (extra holes / "ties are void"). Treat as
+    // strong signal: A wins iff ahead, ties resolve to 0.5.
+    const prob = lead > 0 ? 0.99 : lead < 0 ? 0.01 : 0.5;
+    const target = _normalizePlayerKey(forPlayer);
+    return target === _normalizePlayerKey(playerA) ? prob : (1 - prob);
+  }
+  // Approximate normal CDF: P(A wins) ≈ Phi(lead / sigma) where sigma scales
+  // with sqrt(remaining holes). 0.5 stroke per remaining hole is a
+  // reasonable proxy for pair-wise score variance based on PGA round-vs-round
+  // standard deviations after factoring out shared course conditions.
+  const sigma = Math.sqrt(remaining * 0.5);
+  // Inline normal CDF approximation (Abramowitz & Stegun 7.1.26)
+  function phi(x) {
+    const t = 1 / (1 + 0.2316419 * Math.abs(x));
+    const d = 0.3989422804 * Math.exp(-x * x / 2);
+    let p = d * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+    return x > 0 ? 1 - p : p;
+  }
+  const probA = phi(lead / sigma);
+  // Clamp to (0.01, 0.99) so a single bad hole doesn't price a leg at 0%.
+  const clampedA = Math.max(0.01, Math.min(0.99, probA));
+  const target = _normalizePlayerKey(forPlayer);
+  return target === _normalizePlayerKey(playerA) ? clampedA : (1 - clampedA);
+}
+
+function __debugLiveStats() {
+  return _liveStatsCache;
+}
+
 module.exports = {
   fetchGolfMatchupsCache,
   normalizeDgPlayerName,
+  refreshLiveStats,
+  getGolfLiveMatchupProb,
+  __debugLiveStats,
 };

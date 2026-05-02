@@ -3419,19 +3419,51 @@ async function refreshLiveOdds(oddsFeed) {
     }
   }
 
+  // Refresh DataGolf live in-play stats once per cycle if any golf legs
+  // are in-progress. Golf doesn't have an in-play book-odds source the way
+  // NBA/MLB/NHL/NFL do — DataGolf's per-player live win prob (renormalized
+  // 2-way for matchups) plus a stroke-diff heuristic for round matchups
+  // are the best available signals.
+  const hasGolfInProgress = inProgressLegsBySport['golf_matchups']
+    || inProgressLegsBySport['golf_pga_championship'];
+  if (hasGolfInProgress) {
+    try {
+      const datagolf = require('./datagolf');
+      await datagolf.refreshLiveStats();
+    } catch (err) {
+      log.debug('LiveOdds', `DataGolf live refresh failed: ${err.message}`);
+    }
+  }
+
   // Update liveFairProb on each in-progress leg
   let legsUpdated = 0;
   for (const [sport, legRecords] of Object.entries(inProgressLegsBySport)) {
     for (const { leg } of legRecords) {
-      const prob = oddsFeed.getLiveFairProb(
-        leg.oddsApiSport || sport,
-        leg.homeTeam,
-        leg.awayTeam,
-        leg.oddsApiMarket || leg.market || leg.marketType,
-        leg.oddsApiSelection || leg.selection,
-        leg.line != null ? Math.abs(leg.line) : null,
-        leg.startTime
-      );
+      let prob = null;
+      // Golf: DataGolf live in-play (renormalized 2-way for matchups)
+      if (sport === 'golf_matchups' || (leg.oddsApiSport || '').startsWith('golf')) {
+        try {
+          const datagolf = require('./datagolf');
+          prob = datagolf.getGolfLiveMatchupProb(
+            leg.homeTeam,
+            leg.awayTeam,
+            leg.teamName || leg.team,
+            leg.matchupType || 'round'
+          );
+        } catch (_) { /* fall through */ }
+      }
+      // All other sports: SharpAPI live + TOA in-play (existing path)
+      if (prob == null) {
+        prob = oddsFeed.getLiveFairProb(
+          leg.oddsApiSport || sport,
+          leg.homeTeam,
+          leg.awayTeam,
+          leg.oddsApiMarket || leg.market || leg.marketType,
+          leg.oddsApiSelection || leg.selection,
+          leg.line != null ? Math.abs(leg.line) : null,
+          leg.startTime
+        );
+      }
       if (prob != null && prob > 0 && prob < 1) {
         leg.liveFairProb = prob;
         leg.liveFairProbUpdatedAt = new Date().toISOString();

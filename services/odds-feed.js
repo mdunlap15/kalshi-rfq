@@ -6706,6 +6706,20 @@ async function fetchScores(sport) {
  * Returns { completed, homeScore, awayScore, winner: 'home'|'away'|'tie'|null } or null.
  */
 async function getGameResult(sport, homeTeam, awayTeam, startTime) {
+  // ESPN scoreboard is the primary score source — covers every supported
+  // sport, updates within ~30s of real-time, free, no quota burn. The TOA
+  // /scores fallback below catches any sport ESPN doesn't have a league
+  // path for (or any single missed game where ESPN's team names didn't
+  // match our normalization). Sync read against the in-memory cache the
+  // ESPN poller fills in the background — never makes a network call.
+  try {
+    const espnScores = require('./espn-scores');
+    const espnHit = espnScores.getEspnGameResult(sport, homeTeam, awayTeam);
+    if (espnHit && espnHit.completed) return espnHit;
+    // Hit but not completed yet — fall through to TOA in case TOA has
+    // a result ESPN hasn't marked completed yet.
+  } catch (_) { /* espn-scores unavailable — fall through */ }
+
   const games = await fetchScores(sport);
   if (games.length === 0) return null;
 
