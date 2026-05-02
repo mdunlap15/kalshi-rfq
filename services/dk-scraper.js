@@ -198,7 +198,12 @@ async function fetchMmaFightOdds({ force = false } = {}) {
       page.on('response', async (resp) => {
         const url = resp.url();
         if (!url.includes('sportsbook-nash.draftkings.com')) return;
-        if (!url.includes('primaryMarkets/v1/markets')) return;
+        // Accept any DK markets endpoint, not just primaryMarkets — alt
+        // Total Rounds lines (Over 1.5, Over 3.5 etc) ride on different
+        // sub-category endpoints and we'd miss them with the old strict
+        // filter. The shape check below (events/markets/selections) is
+        // structural so non-markets endpoints get rejected anyway.
+        if (!/markets|subcategory|eventgroup|prematch|inplay/i.test(url)) return;
         try {
           const ct = resp.headers()['content-type'] || '';
           if (!ct.includes('json')) return;
@@ -227,6 +232,19 @@ async function fetchMmaFightOdds({ force = false } = {}) {
               impliedProb: decimal && decimal > 0 ? 1 / decimal : null,
             };
           };
+          // Total-rounds market name match. PX offers 1.5 / 2.5 / 3.5 / 4.5
+          // depending on fight length, but DK exposes those as a mix of:
+          //   - "Total Rounds"            (the primary line, usually the median)
+          //   - "Alternate Total Rounds"  (additional Over/Under lines)
+          //   - "Total Rounds (Alt)"      (rarer variant)
+          //   - "Alt Rounds"
+          // Plus Moneyline. Match all variants so alt lines compound into
+          // the same totalsByLine map and downstream byLine fast-path can
+          // resolve any PX-requested line regardless of which one DK happens
+          // to label "primary".
+          const isTotalRoundsMarket = (n) => /^(?:alternate\s+|alt\s+)?total\s+rounds/i.test(n)
+            || /^total\s+rounds(?:\s*\(alt\))?$/i.test(n)
+            || /^alt(?:ernate)?\s+rounds$/i.test(n);
           for (const m of data.markets) {
             const name = m.marketType?.name || m.name || '';
             const ev = fightsById[m.eventId];
@@ -237,10 +255,13 @@ async function fetchMmaFightOdds({ force = false } = {}) {
                 const p = parseSel(sel);
                 ev.selections.push({ fighter: sel.label, ...p });
               }
-            } else if (name === 'Total Rounds' || /total\s*rounds/i.test(name)) {
+            } else if (isTotalRoundsMarket(name)) {
               // DK Total Rounds: each market line has Over/Under outcomes
               // with a `points` / `label` (e.g. "Over 2.5"). We group by
               // the rounds line and emit one {line, over, under} per.
+              // Multiple Total-Rounds markets may stream in across
+              // separate XHRs (primary + alts) — we MERGE into the same
+              // ev.totalsByLine map so all collected lines coexist.
               const byLine = {};
               for (const sel of data.selections) {
                 if (sel.marketId !== m.id) continue;
@@ -254,7 +275,11 @@ async function fetchMmaFightOdds({ force = false } = {}) {
               }
               if (!ev.totalsByLine) ev.totalsByLine = {};
               for (const [ln, pair] of Object.entries(byLine)) {
-                if (pair.over && pair.under) ev.totalsByLine[ln] = pair;
+                if (pair.over && pair.under) {
+                  // First-seen wins per line so a later alt-markets XHR
+                  // can't overwrite the primary's prices.
+                  if (!ev.totalsByLine[ln]) ev.totalsByLine[ln] = pair;
+                }
               }
             }
           }
