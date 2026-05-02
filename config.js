@@ -274,6 +274,24 @@ const config = {
     declineAnomalousTotalsEnabled:
       process.env.DECLINE_ANOMALOUS_TOTALS !== 'false' && process.env.DECLINE_ANOMALOUS_TOTALS !== '0',
     declineAnomalousTotalsThreshold: parseFloat(process.env.DECLINE_ANOMALOUS_TOTALS_THRESHOLD) || 0.10,
+    // Moneyline equivalent of the totals anomaly gate. Catches the
+    // staleness scenario where our cache age is within STALE_PRICE_MINUTES
+    // but the underlying SharpAPI feed is delayed against live DK / FD /
+    // Pin movements (especially on late lineup news in MLB / NBA /
+    // injury-driven NFL ML moves). When our fair implied prob deviates
+    // from the average of available book implied probs by more than
+    // threshold, decline rather than offer a stale price.
+    //
+    // Tighter default than totals (0.05 = 5pp vs 0.10 = 10pp) because
+    // moneyline implied probs cluster harder around fair than totals do
+    // — a 5pp deviation on ML is unambiguous staleness; for totals 10pp
+    // can still be legitimately within model variance.
+    //
+    // Set DECLINE_ANOMALOUS_MONEYLINE=false to disable; tune via
+    // DECLINE_ANOMALOUS_MONEYLINE_THRESHOLD env var.
+    declineAnomalousMoneylineEnabled:
+      process.env.DECLINE_ANOMALOUS_MONEYLINE !== 'false' && process.env.DECLINE_ANOMALOUS_MONEYLINE !== '0',
+    declineAnomalousMoneylineThreshold: parseFloat(process.env.DECLINE_ANOMALOUS_MONEYLINE_THRESHOLD) || 0.05,
     // Defensive decline on team_total legs. Original bug (2026-04-23
     // ATL Over 4.5 mispricing via buildConsensusTeamTotals pairing
     // mismatched Over/Under lines) was fixed at the root in commit
