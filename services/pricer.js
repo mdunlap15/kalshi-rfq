@@ -2408,9 +2408,9 @@ function shouldDecline(legs) {
       // (b) Min-books gate — branches by prop family.
       const both = lineInfo.booksWithBothSides || 0;
       const propBooks = lineInfo.propBooks || [];
+      const trustedSet = config.pricing.propTrustedSingleBooks || [];
+      const trustedAlone = both === 1 && propBooks.some(b => trustedSet.includes(String(b).toLowerCase()));
       if (isKProp) {
-        const trustedSet = config.pricing.propTrustedSingleBooks || [];
-        const trustedAlone = both === 1 && propBooks.some(b => trustedSet.includes(String(b).toLowerCase()));
         if (both < 2 && !trustedAlone) {
           return {
             declined: true,
@@ -2419,12 +2419,18 @@ function shouldDecline(legs) {
           };
         }
       } else {
-        // Phase-2 launch props: stricter ≥N-book floor.
-        if (both < propMinBooks) {
+        // Phase-2 launch props: ≥N-book floor with single-trusted-book
+        // carve-out. Originally Phase-2 was strictly ≥3 books with no
+        // exception (TOA was assumed to have broad coverage). Reality:
+        // TOA's NHL player_shots_on_goal coverage is thin and many
+        // legitimate props have only Pinnacle or only DK with both sides.
+        // The trustedAlone exception now applies here too — single-book
+        // props from a trusted source price normally instead of declining.
+        if (both < propMinBooks && !trustedAlone) {
           return {
             declined: true,
             reason: 'prop_low_confidence',
-            detail: `${playerLabel} ${propLabel} ${lineInfo.line}: books_with_both_sides=${both}, books=[${propBooks.join(',')}] — need ≥${propMinBooks}`,
+            detail: `${playerLabel} ${propLabel} ${lineInfo.line}: books_with_both_sides=${both}, books=[${propBooks.join(',')}] — need ≥${propMinBooks} OR one of [${trustedSet.join(',')}]`,
           };
         }
       }
