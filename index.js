@@ -2162,6 +2162,154 @@ function startStatusServer() {
     }
   });
 
+  // Competitiveness analytics. For every matched parlay where we ALSO
+  // offered (weQuoted=true) but didn't win, computes the gap between our
+  // offered odds and the winning SP's matched_odds. Surfaces how far
+  // off-market our pricing is on RFQs we lose, broken down by sport
+  // and parlay shape so we can dial vig at the right granularity.
+  //
+  // Query params:
+  //   windowMinutes=N    Look-back window (default 180 = last 3h, max 10080 = 7d)
+  //   sport=key          Filter by sport (any leg in that sport)
+  //   maxGapCents=N      Cap gap-cents tail in the histogram (default 200)
+  //
+  // Per-RFQ output: parlayId, ourOdds, winnerOdds, ourImplied, winnerImplied,
+  // gapPp (our_implied − winner_implied; positive = we were tighter),
+  // gapCents (payout per $100 stake difference at the winner's offer),
+  // legCount, sports.
+  //
+  // Aggregate output: count, avgGapCents, p50/p90 gap, withinFiveCents,
+  // withinTenCents, wayOutOfMarket (>50c gap), per-sport breakdown.
+  app.get('/competitiveness', async (req, res) => {
+    try {
+      const windowMinutes = Math.min(10080, Math.max(1, parseInt(req.query.windowMinutes) || 180));
+      const sportFilter = req.query.sport || null;
+      const maxGapCents = Math.min(1000, Math.max(20, parseInt(req.query.maxGapCents) || 200));
+
+      const matched = await db.loadMatchedParlays(5000);
+      const cutoff = Date.now() - windowMinutes * 60 * 1000;
+
+      // American odds → implied probability
+      function americanToImplied(am) {
+        if (am == null || !Number.isFinite(am) || am === 0) return null;
+        if (am > 0) return 100 / (am + 100);
+        return -am / (-am + 100);
+      }
+      // American payout per $100 stake (the cents the bettor wins on $100)
+      // pos +250: bettor wins $250 on $100 → 250
+      // neg -200: bettor wins $50 on $100 → 50
+      function americanToPayoutPer100(am) {
+        if (am == null || !Number.isFinite(am) || am === 0) return null;
+        if (am > 0) return am;
+        return Math.round(100 * (100 / Math.abs(am)));
+      }
+
+      const lostRfqs = [];
+      for (const m of matched) {
+        if (!m.weQuoted) continue;
+        if (m.ourAmericanOdds == null || m.matchedAmericanOdds == null) continue;
+        if (m.ourAmericanOdds === m.matchedAmericanOdds) continue; // tied / our quote won
+        const matchedAtMs = m.matchedAt ? new Date(m.matchedAt).getTime() : 0;
+        if (matchedAtMs < cutoff) continue;
+        if (sportFilter) {
+          const sports = (m.legs || []).map(l => l.sport).filter(Boolean);
+          if (!sports.includes(sportFilter)) continue;
+        }
+        const ourImpl = americanToImplied(m.ourAmericanOdds);
+        const winImpl = americanToImplied(m.matchedAmericanOdds);
+        if (ourImpl == null || winImpl == null) continue;
+        const gapPp = (ourImpl - winImpl) * 100; // our_implied − winner_implied; positive = we were tighter (bettor's offer worse from us)
+        const ourPayout = americanToPayoutPer100(m.ourAmericanOdds);
+        const winPayout = americanToPayoutPer100(m.matchedAmericanOdds);
+        const gapCents = (ourPayout != null && winPayout != null) ? (winPayout - ourPayout) : null;
+        const sports = [...new Set((m.legs || []).map(l => l.sport).filter(Boolean))];
+        lostRfqs.push({
+          parlayId: m.parlayId,
+          ourOdds: m.ourAmericanOdds,
+          winnerOdds: m.matchedAmericanOdds,
+          ourImpliedPct: Math.round(ourImpl * 10000) / 100,
+          winnerImpliedPct: Math.round(winImpl * 10000) / 100,
+          gapPp: Math.round(gapPp * 100) / 100,
+          gapCents,
+          legCount: (m.legs || []).length,
+          sports,
+          matchedAt: m.matchedAt,
+        });
+      }
+
+      // Aggregate
+      function p(arr, q) {
+        if (arr.length === 0) return null;
+        const sorted = [...arr].sort((a, b) => a - b);
+        return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(q * sorted.length)))];
+      }
+      const gaps = lostRfqs.map(r => r.gapCents).filter(g => g != null);
+      const gapsPp = lostRfqs.map(r => r.gapPp).filter(g => g != null);
+
+      // Per-sport summary
+      const bySport = {};
+      for (const r of lostRfqs) {
+        for (const s of r.sports) {
+          if (!bySport[s]) bySport[s] = { count: 0, gaps: [], gapsPp: [] };
+          bySport[s].count++;
+          if (r.gapCents != null) bySport[s].gaps.push(r.gapCents);
+          if (r.gapPp != null) bySport[s].gapsPp.push(r.gapPp);
+        }
+      }
+      const sportSummary = {};
+      for (const [s, v] of Object.entries(bySport)) {
+        sportSummary[s] = {
+          count: v.count,
+          avgGapCents: v.gaps.length ? Math.round(v.gaps.reduce((a, b) => a + b, 0) / v.gaps.length * 10) / 10 : null,
+          medianGapCents: p(v.gaps, 0.5),
+          p90GapCents: p(v.gaps, 0.9),
+          avgGapPp: v.gapsPp.length ? Math.round(v.gapsPp.reduce((a, b) => a + b, 0) / v.gapsPp.length * 100) / 100 : null,
+        };
+      }
+
+      // Closest losses — RFQs we lost by the smallest gap (highest signal
+      // for tuning: these are the ones we'd capture with a small dial-back).
+      const closest = lostRfqs
+        .filter(r => r.gapCents != null && r.gapCents > 0)
+        .sort((a, b) => a.gapCents - b.gapCents)
+        .slice(0, 25);
+
+      // Histogram buckets in 5-cent steps up to maxGapCents
+      const histo = {};
+      for (let b = 0; b < maxGapCents; b += 5) histo[`${b}-${b + 5}`] = 0;
+      histo[`${maxGapCents}+`] = 0;
+      for (const g of gaps) {
+        if (g < 0) continue; // we were wider (won't usually happen if we lost)
+        if (g >= maxGapCents) histo[`${maxGapCents}+`]++;
+        else histo[`${Math.floor(g / 5) * 5}-${Math.floor(g / 5) * 5 + 5}`]++;
+      }
+
+      res.json({
+        ok: true,
+        window: { minutes: windowMinutes, from: new Date(cutoff).toISOString(), to: new Date().toISOString() },
+        sportFilter,
+        summary: {
+          totalLost: lostRfqs.length,
+          avgGapCents: gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length * 10) / 10 : null,
+          medianGapCents: p(gaps, 0.5),
+          p90GapCents: p(gaps, 0.9),
+          p99GapCents: p(gaps, 0.99),
+          avgGapPp: gapsPp.length ? Math.round(gapsPp.reduce((a, b) => a + b, 0) / gapsPp.length * 100) / 100 : null,
+          medianGapPp: p(gapsPp, 0.5),
+          withinFiveCents: gaps.filter(g => g <= 5 && g >= 0).length,
+          withinTenCents: gaps.filter(g => g <= 10 && g >= 0).length,
+          withinTwentyCents: gaps.filter(g => g <= 20 && g >= 0).length,
+          wayOutOfMarket: gaps.filter(g => g > 50).length,
+        },
+        bySport: sportSummary,
+        closestLosses: closest,
+        histogram: histo,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Hour-of-week analytics. Buckets historical parlays by ET day-of-week
   // and ET hour to surface time-window-specific patterns the global
   // aggregates hide. Originally built for Saturday-morning vig tuning:
