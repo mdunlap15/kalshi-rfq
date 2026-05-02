@@ -267,6 +267,28 @@ async function fetchMmaFightOdds({ force = false } = {}) {
       // MMA pages fire many per-event XHRs in sequence; give more time.
       await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS + 5000));
 
+      // DK lazy-loads prelim/lower-card fights below the fold — only the
+      // top-of-page (main + co-main) markets fire XHRs on initial render.
+      // Without scrolling, prelims silently miss the scraper window and
+      // the rest of the card falls back to ML-only (no Total Rounds).
+      // Scroll to the bottom in steps so each batch of events triggers
+      // its lazy-loaded primaryMarkets/v1/markets XHR; the response
+      // listener already in place will pick them up.
+      try {
+        const SCROLL_STEPS = 12;
+        const SCROLL_PAUSE_MS = 600;
+        for (let i = 0; i < SCROLL_STEPS; i++) {
+          await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+          await new Promise(r => setTimeout(r, SCROLL_PAUSE_MS));
+        }
+        // Scroll back to top so any "above-the-fold rerender" XHRs fire too,
+        // then give the listener one more settle window for late XHRs.
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await new Promise(r => setTimeout(r, 4000));
+      } catch (err) {
+        log.debug('DKScraper', `MMA scroll loop error (non-fatal): ${err.message}`);
+      }
+
       const fights = [];
       for (const ev of Object.values(fightsById)) {
         if (ev.selections.length !== 2) continue;
