@@ -3131,6 +3131,12 @@ function checkGameExposure(legs, estPayout, maxPerGame) {
 
 /**
  * Check if adding a parlay would exceed per-team NET exposure limits.
+ *
+ * The `maxNetExposure` arg is the GLOBAL default cap. Per-team overrides
+ * (config.pricing.exposureOverridesPerTeam) are applied first when a
+ * leg's team name matches; only legs with no override use the global.
+ * Lets you tighten exposure on a few specific fighters/teams without
+ * lowering the cap for everyone else.
  */
 function checkExposureLimits(legs, payout, maxNetExposure) {
   if (!maxNetExposure || maxNetExposure <= 0) {
@@ -3139,10 +3145,19 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
   // Lazy-require config so this module stays decoupled from circular import
   // risk during bootstrap. Default to 1.0 (no discount) if config is missing.
   let discount = 1.0;
+  let overridesByKey = {};
   try {
     const { config } = require('../config');
     const d = config?.pricing?.pendingReservationDiscount;
     if (Number.isFinite(d) && d > 0 && d <= 1) discount = d;
+    // Pre-normalize override keys with the SAME function the exposure
+    // map uses — without this, "Islam Makhachev" in env wouldn't match
+    // legs that arrive with whitespace/case variations.
+    const ovs = config?.pricing?.exposureOverridesPerTeam || {};
+    for (const [name, cap] of Object.entries(ovs)) {
+      const k = normalizeExposureKey(name);
+      if (k && Number.isFinite(cap) && cap > 0) overridesByKey[k] = cap;
+    }
   } catch { /* ignore */ }
 
   const violations = [];
@@ -3168,6 +3183,12 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
       otherProb *= (legs[j].fairProb || legs[j].lineInfo?.fairProb || 0.5);
     }
 
+    // Resolve effective cap: per-team override wins over global default.
+    const effectiveLimit = overridesByKey[teamKey] != null
+      ? overridesByKey[teamKey]
+      : maxNetExposure;
+    const overrideApplied = overridesByKey[teamKey] != null;
+
     // Raw values (for logging + UI transparency) and effective values (the
     // ones actually compared to the limit). Discount applies only to
     // quote-time projections — confirmed exposure (currentNet) stays raw.
@@ -3181,7 +3202,10 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
     const pendingNetEff = pendingNetRaw * discount;
     const afterAdd = currentNet + pendingNetEff + newRiskEff;
 
-    if (afterAdd > maxNetExposure) {
+    if (afterAdd > effectiveLimit) {
+      if (overrideApplied) {
+        log.info('Exposure', `Per-team override BLOCKED ${name}: would-be $${Math.round(afterAdd*100)/100} > override $${effectiveLimit} (global $${maxNetExposure})`);
+      }
       violations.push({
         team: name,
         currentExposure: Math.round(currentNet * 100) / 100,
@@ -3190,14 +3214,19 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
         newRisk: Math.round(newRiskRaw * 100) / 100,
         newRiskEffective: Math.round(newRiskEff * 100) / 100,
         wouldBe: Math.round(afterAdd * 100) / 100,
-        limit: maxNetExposure,
+        limit: effectiveLimit,
+        globalLimit: maxNetExposure,
+        overrideApplied,
         reservationDiscount: discount,
       });
     }
   }
 
   if (violations.length > 0) {
-    const names = violations.map(v => `${v.team} ($${v.wouldBe}/$${v.limit})`).join(', ');
+    const names = violations.map(v => {
+      const tag = v.overrideApplied ? ' [override]' : '';
+      return `${v.team} ($${v.wouldBe}/$${v.limit}${tag})`;
+    }).join(', ');
     return {
       allowed: false,
       reason: `Net exposure limit exceeded: ${names}`,

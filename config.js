@@ -317,6 +317,40 @@ const config = {
     confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
     offerValidSeconds: parseInt(process.env.OFFER_VALID_SECONDS) || 60,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
+    // Per-team exposure overrides. JSON map of team/fighter name → cap dollars.
+    // Looked up FIRST during exposure checks; falls back to maxExposurePerTeam
+    // when a team has no entry. Use this to tighten exposure on specific
+    // teams/fighters (e.g. a few MMA chalk favorites already in multiple
+    // parlays) without lowering the global cap that protects every other
+    // team in every other sport.
+    //
+    // Lookup is case-insensitive after the same normalizeExposureKey
+    // canonicalization the exposure map itself uses, so spelling
+    // variations resolve consistently. Names not normalizable (empty
+    // strings) are ignored.
+    //
+    // Example:
+    //   EXPOSURE_OVERRIDES_PER_TEAM={"Islam Makhachev":500,"Alex Pereira":500}
+    //
+    // Set/edit on Railway without a code push.
+    exposureOverridesPerTeam: (() => {
+      const raw = process.env.EXPOSURE_OVERRIDES_PER_TEAM;
+      if (!raw || !raw.trim()) return {};
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return {};
+        const out = {};
+        for (const [name, cap] of Object.entries(parsed)) {
+          const num = parseFloat(cap);
+          if (Number.isFinite(num) && num > 0) out[name] = num;
+        }
+        return out;
+      } catch (e) {
+        // Bad JSON — log via console (logger not available at config-load time)
+        console.warn(`[config] EXPOSURE_OVERRIDES_PER_TEAM is not valid JSON: ${e.message}`);
+        return {};
+      }
+    })(),
     // Phase 2 prop quoting caps — applies to ANY parlay containing one
     // or more player_prop legs (NBA points/rebounds/assists/threes,
     // NHL shots_on_goal, MLB pitcher_strikeouts, etc.). Game-line-only
