@@ -2201,6 +2201,188 @@ function startStatusServer() {
     }
   });
 
+  // Coverage audit: for each PX event in the next N hours, compare PX-published
+  // markets against what we've registered + what's in our odds cache. Surfaces
+  // the kind of silent gap where lines exist on PX with full market data but
+  // we're not registering them (e.g. wrong sport-key match, late market
+  // publication, team-name mismatch, market-name allowlist miss).
+  //
+  // Response per event:
+  //   pxMarketTypes        — set of normalized market types PX returned
+  //   registeredCounts     — count of registered lines per market type
+  //   missingMarketTypes   — PX has it, we don't
+  //   cachePresence        — which oddsCache sport keys hold this event
+  //   registeredSportKey   — what sport key we stored lines under
+  //   gap                  — coarse boolean flag: any missing markets?
+  //
+  // Use ?windowHours=24 to control the look-ahead. Default 24h.
+  app.get('/coverage-audit', async (req, res) => {
+    try {
+      const windowHours = Math.min(168, Math.max(1, parseInt(req.query.windowHours) || 24));
+      const sportFilter = req.query.sport || null; // optional PX sport_name filter (e.g. "Soccer")
+      const onlyGaps = req.query.onlyGaps !== '0';
+
+      const allEvents = await px.fetchSportEvents();
+      const pxSportNames = Object.values(config.sportNameMap);
+      const nowMs = Date.now();
+      const windowEndMs = nowMs + windowHours * 3600 * 1000;
+
+      // Filter to supported, non-settled, in-window
+      const events = allEvents.filter(e => {
+        if (!pxSportNames.includes(e.sport_name)) return false;
+        if (e.status === 'settled') return false;
+        if (sportFilter && e.sport_name !== sportFilter) return false;
+        if (!e.scheduled) return true; // include events without scheduled
+        const t = new Date(e.scheduled).getTime();
+        return Number.isFinite(t) && t >= nowMs && t <= windowEndMs;
+      });
+
+      const idx = lineManager.__debugGetLineIndex();
+      // Group lineIndex by pxEventId for O(1) lookup
+      const linesByPxEventId = {};
+      for (const lineId of Object.keys(idx)) {
+        const info = idx[lineId];
+        const eid = info.pxEventId;
+        if (!eid) continue;
+        if (!linesByPxEventId[eid]) linesByPxEventId[eid] = [];
+        linesByPxEventId[eid].push(info);
+      }
+
+      // Map PX market.type → normalized base type we register under
+      const normalizeMarketType = (mtype, mname) => {
+        const t = (mtype || '').toLowerCase();
+        const n = (mname || '').toLowerCase();
+        // Sub-game markets we don't register on the full-game side
+        if (/first\s*5|1st.5|f5/.test(n)) return null;
+        if (/first\s*half|1st\s*half|h1\b/.test(n)) return null;
+        if (/quarter|period|inning/.test(n)) return null;
+        if (/player|prop|home runs|strikeouts|points|rebounds|assists/.test(n)) return null;
+        if (t === 'moneyline' || /\bmoneyline\b|\bdraw\s*no\s*bet\b|\bdnb\b/.test(n)) return 'moneyline';
+        if (t === 'spread' || /\bspread\b|run line|puck line|game spread|point spread/.test(n)) return 'spread';
+        if (t === 'total' || /\btotal\b/.test(n)) {
+          if (/team total/.test(n)) return 'team_total';
+          return 'total';
+        }
+        return null;
+      };
+
+      const oddsCacheKeys = Object.entries(config.sportNameMap)
+        .filter(([, v]) => true)
+        .map(([k]) => k);
+
+      const _isGenericKey = (k) => !k.includes('_') || k === 'mma_mixed_martial_arts' || k === 'boxing_boxing';
+
+      const results = [];
+      let processed = 0;
+      const maxToProbe = Math.min(events.length, 200); // cap to avoid runaway PX calls
+
+      for (const ev of events.slice(0, maxToProbe)) {
+        processed++;
+        // Fetch PX markets per event
+        let pxMarkets = [];
+        try {
+          pxMarkets = await px.fetchMarkets(ev.event_id);
+        } catch (err) {
+          results.push({
+            pxEventId: ev.event_id,
+            name: ev.name,
+            sportName: ev.sport_name,
+            scheduled: ev.scheduled,
+            error: `fetchMarkets: ${err.message}`,
+            gap: true,
+          });
+          continue;
+        }
+
+        const pxMarketTypes = new Set();
+        const pxMarketDetail = [];
+        for (const m of (pxMarkets || [])) {
+          const norm = normalizeMarketType(m.type, m.name);
+          pxMarketDetail.push({ type: m.type, name: m.name, normalized: norm });
+          if (norm) pxMarketTypes.add(norm);
+        }
+
+        // Registered lines (lineIndex)
+        const registered = linesByPxEventId[ev.event_id] || [];
+        const registeredCounts = {};
+        const registeredSportKeys = new Set();
+        for (const r of registered) {
+          const mt = r.marketType || 'unknown';
+          registeredCounts[mt] = (registeredCounts[mt] || 0) + 1;
+          if (r.sport) registeredSportKeys.add(r.sport);
+        }
+
+        const registeredMarketTypes = new Set(Object.keys(registeredCounts));
+        const missingMarketTypes = [...pxMarketTypes].filter(t => !registeredMarketTypes.has(t));
+
+        // Cache presence per candidate sport key (for the configured PX sport_name)
+        const possibleSportKeys = Object.entries(config.sportNameMap)
+          .filter(([, v]) => v === ev.sport_name)
+          .map(([k]) => k);
+        const homeComp = (ev.competitors || []).find(c => c.side === 'home') || (ev.competitors || [])[0];
+        const awayComp = (ev.competitors || []).find(c => c.side === 'away') || (ev.competitors || [])[1];
+        const cachePresence = [];
+        for (const sk of possibleSportKeys) {
+          const evt = oddsFeed.getEventMarkets(sk, homeComp?.name, awayComp?.name, ev.scheduled)
+            || oddsFeed.getEventMarkets(sk, awayComp?.name, homeComp?.name, ev.scheduled);
+          if (evt) {
+            cachePresence.push({
+              sportKey: sk,
+              isGeneric: _isGenericKey(sk),
+              cachedHome: evt.homeTeam,
+              cachedAway: evt.awayTeam,
+              commenceTime: evt.commenceTime,
+              markets: Object.keys(evt.markets || {}),
+            });
+          }
+        }
+
+        const gap = missingMarketTypes.length > 0
+          || (registered.length === 0 && pxMarketTypes.size > 0)
+          || ([...registeredSportKeys].some(_isGenericKey) && cachePresence.some(c => !c.isGeneric));
+
+        const entry = {
+          pxEventId: ev.event_id,
+          sportName: ev.sport_name,
+          name: ev.name,
+          scheduled: ev.scheduled,
+          hoursUntilStart: ev.scheduled
+            ? Math.round((new Date(ev.scheduled).getTime() - nowMs) / 36e5 * 10) / 10
+            : null,
+          pxMarketTypes: [...pxMarketTypes].sort(),
+          pxMarketDetail,
+          registeredCounts,
+          registeredSportKeys: [...registeredSportKeys].sort(),
+          missingMarketTypes,
+          cachePresence,
+          gap,
+        };
+        if (!onlyGaps || gap) results.push(entry);
+        // Light throttle so we don't burst PX
+        await new Promise(r => setTimeout(r, 50));
+      }
+
+      const summary = {
+        totalEventsInWindow: events.length,
+        eventsProbed: processed,
+        eventsWithGaps: results.filter(r => r.gap).length,
+        eventsClean: results.filter(r => !r.gap).length,
+      };
+
+      res.json({
+        ok: true,
+        windowHours,
+        sportFilter,
+        onlyGaps,
+        now: new Date(nowMs).toISOString(),
+        summary,
+        events: results,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Refresh live odds for in-progress games and update weighted exposure
   app.post('/refresh-live-odds', async (req, res) => {
     try {
