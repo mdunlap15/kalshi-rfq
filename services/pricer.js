@@ -1660,6 +1660,9 @@ function priceParlay(legs, opts = {}) {
   // Decline heavy favorite moneyline legs — PX sign-flip bug causes overpayment.
   // NBA: no moneyline favorites beyond -250 (fairProb > 0.7143)
   // Tennis: no moneyline favorites beyond -300 (fairProb > 0.75)
+  // MMA:    no moneyline favorites beyond -300 (fairProb > 0.75) — same low-
+  //         liquidity matchup-market profile as tennis; the PX overpay risk
+  //         outweighs trying to quote heavy MMA chalk.
   for (const leg of pricedLegs) {
     if (leg.lineInfo.marketType !== 'moneyline') continue;
     const impliedOdds = leg.fairProb >= 0.5 ? Math.round(-100 * leg.fairProb / (1 - leg.fairProb)) : Math.round(100 * (1 - leg.fairProb) / leg.fairProb);
@@ -1678,6 +1681,15 @@ function priceParlay(legs, opts = {}) {
         reason: 'tennis heavy favorite',
         detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -300 limit`,
         blockerLeg: { team: leg.lineInfo.teamName, sport: 'tennis', market: 'moneyline' },
+      };
+      return null;
+    }
+    if (leg.lineInfo.sport === 'mma_mixed_martial_arts' && leg.fairProb > 0.75) {
+      log.debug('Pricing', `Declined: MMA moneyline ${leg.lineInfo.teamName} is heavy favorite (${impliedOdds})`);
+      priceParlay._lastFailure = {
+        reason: 'MMA heavy favorite',
+        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -300 limit`,
+        blockerLeg: { team: leg.lineInfo.teamName, sport: 'mma_mixed_martial_arts', market: 'moneyline' },
       };
       return null;
     }
