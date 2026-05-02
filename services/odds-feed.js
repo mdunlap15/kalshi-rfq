@@ -3593,16 +3593,30 @@ async function mergeDkMmaFights() {
   // totals onto SharpAPI-seeded h2h entries (SharpAPI MMA feed is moneyline-
   // only, so without enrichment totals would silently 404).
   const lw = (n) => (n || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(Boolean).pop() || '';
-  const existingByPair = new Map(); // "a|b" → event object
+  // CRITICAL: a single fight pair can produce MULTIPLE cache entries when
+  // SharpAPI and DK disagree on home/away ordering — they end up as two
+  // events under different normalizeEventKey results (e.g. both
+  // "Gorimbo vs Micallef" AND "Micallef vs Gorimbo" present in
+  // cache.events at the same time). The line-manager binds to whichever
+  // the seed picked first — usually the SharpAPI h2h-only one. If we
+  // only enrich ONE entry, the other stays bare and getFairProb returns
+  // null on totals lookups against the line-manager's chosen orientation.
+  // So we collect ALL events per pair (array) and enrich every one.
+  const existingByPair = new Map(); // "a|b" → event[]
   for (const entry of Object.values(cache.events || {})) {
     const arr = Array.isArray(entry) ? entry : [entry];
     for (const ev of arr) {
       if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
       const a = lw(ev.homeTeam), b = lw(ev.awayTeam);
-      if (a && b) {
-        existingByPair.set(a + '|' + b, ev);
-        existingByPair.set(b + '|' + a, ev);
-      }
+      if (!a || !b) continue;
+      const key1 = a + '|' + b;
+      const key2 = b + '|' + a;
+      if (!existingByPair.has(key1)) existingByPair.set(key1, []);
+      if (!existingByPair.has(key2)) existingByPair.set(key2, []);
+      const list1 = existingByPair.get(key1);
+      const list2 = existingByPair.get(key2);
+      if (!list1.includes(ev)) list1.push(ev);
+      if (!list2.includes(ev)) list2.push(ev);
     }
   }
 
@@ -3656,20 +3670,24 @@ async function mergeDkMmaFights() {
     const [f1, f2] = fight.fighters;
     const p1 = lw(f1.fighter), p2 = lw(f2.fighter);
     if (!p1 || !p2) continue;
-    const existing = existingByPair.get(p1 + '|' + p2) || existingByPair.get(p2 + '|' + p1);
-    if (existing) {
-      // Fight already in cache (typically from SharpAPI h2h). Graft on
-      // DK's Total Rounds if the existing entry lacks totals.
-      if (!existing.markets) existing.markets = {};
-      if (!existing.markets.totals) {
-        const block = buildTotalsBlock(fight.totals);
-        if (block) {
+    // existingByPair returns an ARRAY of events for this pair — usually
+    // 1, but 2 when SharpAPI + DK ingest produced different home/away
+    // orderings (separate cache entries for the same fight). We need
+    // to enrich EVERY entry so whichever orientation the line-manager
+    // bound to also has totals.
+    const existingList = existingByPair.get(p1 + '|' + p2) || existingByPair.get(p2 + '|' + p1) || [];
+    if (existingList.length > 0) {
+      const block = buildTotalsBlock(fight.totals);
+      let didEnrich = false;
+      for (const existing of existingList) {
+        if (!existing.markets) existing.markets = {};
+        if (!existing.markets.totals && block) {
           existing.markets.totals = block;
-          enriched++;
-          continue;
+          didEnrich = true;
         }
       }
-      skipped++;
+      if (didEnrich) enriched++;
+      else skipped++;
       continue;
     }
     // DK doesn't label home/away for MMA (it's a neutral-site fight); use
