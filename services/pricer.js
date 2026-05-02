@@ -475,6 +475,18 @@ function computeSingleLegVig(fairProb, sport, marketType) {
  * Given a fair probability + leg metadata, return what we'd quote if this
  * were the ONLY leg of a 1-leg "parlay". Returns { vig, impliedProb,
  * americanOdds } or null if inputs are invalid.
+ *
+ * Mirrors priceParlay's two-stage pricing exactly so the /lines/detail
+ * dashboard display matches what a real RFQ would offer:
+ *   1. Compute payout-vig offered: fair → vigged-payout → impliedProb
+ *   2. If VIG_FAIR_MULTIPLIER > 0, take MAX of payout-vig offered and
+ *      fair × (1 + multiplier). This is the books-shaped curve that
+ *      bites at high fair_prob, reproducing Pinnacle-style markup on
+ *      chalky legs where the payout formula alone gives microscopic gaps.
+ *
+ * Without step 2, the dashboard MY ODDS column undersold our actual
+ * quote on chalky legs (e.g. soccer slight-favorite spreads showed
+ * -130 while the RFQ pipeline would have offered -135).
  */
 function computeSingleLegQuote(fairProb, sport, marketType) {
   const vig = computeSingleLegVig(fairProb, sport, marketType);
@@ -482,7 +494,16 @@ function computeSingleLegQuote(fairProb, sport, marketType) {
   const fairDecimal = 1 / fairProb;
   const payout = fairDecimal - 1;
   const viggedPayout = payout * (1 - vig);
-  const impliedProb = 1 / (1 + viggedPayout);
+  let impliedProb = 1 / (1 + viggedPayout);
+  // Apply VIG_FAIR_MULTIPLIER as a fair-shaped floor — same MAX gate
+  // priceParlay uses post-payout-vig.
+  const fairMult = config.pricing.vigFairMultiplier || 0;
+  if (fairMult > 0) {
+    const multImplied = fairProb * (1 + fairMult);
+    if (multImplied > impliedProb && multImplied < 0.99) {
+      impliedProb = multImplied;
+    }
+  }
   const decimalOdds = 1 / impliedProb;
   return {
     vig,
