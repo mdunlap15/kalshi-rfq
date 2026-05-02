@@ -5411,6 +5411,84 @@ function getAltLineFairProb(eventKey, marketType, selection, line) {
 }
 
 /**
+ * Tennis totals fallback: when the requested line isn't cached as an
+ * exact match, try to recover a fair prob from nearby cached lines.
+ *
+ * Two recovery modes (in priority order):
+ *   1. INTERPOLATE — bracketing cached lines exist within ±1.0 on both
+ *      sides. Linearly interpolates fair prob between them. No vig bump
+ *      because the math is sound (small offsets on a near-linear region).
+ *   2. SNAP — only one neighbor is available, within ±0.5. Use that
+ *      line's fair prob and signal a 3pp vig bump to compensate for
+ *      directional drift (true U 23.5 fair > U 23.0 fair, etc.).
+ *
+ * Returns { fairProb, vigBump } on success, null otherwise. Tennis-only;
+ * called by pricer.js as a last-resort fallback after the standard
+ * primary + alt-line + byLine paths all return null.
+ *
+ * Why tennis only: book coverage on tennis totals is unusually sparse
+ * (Pinnacle often posts integer totals only to avoid pushes; DK/FD post
+ * sporadic half-points). PX is more generous with line offerings than
+ * the underlying market is. Other sports have denser book coverage and
+ * don't benefit from this approximation.
+ */
+function getTennisTotalsFallback(homeTeam, awayTeam, selection, line) {
+  if (line == null || !Number.isFinite(line)) return null;
+  if (selection !== 'over' && selection !== 'under') return null;
+  const eventKey = normalizeEventKey(homeTeam, awayTeam);
+  const alt = altLinesCache[eventKey];
+  if (!alt || !alt.altTotals) return null;
+  const requested = Math.abs(line);
+  // Build sorted list of (lineValue, fair) pairs for this selection.
+  const points = [];
+  for (const [lk, ld] of Object.entries(alt.altTotals)) {
+    const lv = parseFloat(lk);
+    if (!Number.isFinite(lv)) continue;
+    const fair = selection === 'over' ? ld.over : ld.under;
+    if (fair == null || fair <= 0 || fair >= 1) continue;
+    points.push({ line: lv, fair });
+  }
+  if (points.length === 0) return null;
+  points.sort((a, b) => a.line - b.line);
+
+  // Bracket: largest cached line below requested, smallest above.
+  let lower = null, upper = null;
+  for (const p of points) {
+    if (p.line < requested) {
+      if (!lower || p.line > lower.line) lower = p;
+    } else if (p.line > requested) {
+      if (!upper || p.line < upper.line) upper = p;
+    } else {
+      // Exact match — caller's fast path should have hit, but be safe.
+      return { fairProb: p.fair, vigBump: 0 };
+    }
+  }
+
+  // INTERPOLATE: both neighbors within ±1.0 of requested.
+  if (lower && upper && (requested - lower.line) <= 1.0 && (upper.line - requested) <= 1.0) {
+    const t = (requested - lower.line) / (upper.line - lower.line);
+    const fair = lower.fair + t * (upper.fair - lower.fair);
+    if (fair > 0 && fair < 1) {
+      log.info('OddsFeed', `Tennis totals INTERP: ${selection} ${requested} ← ${lower.line}(${lower.fair.toFixed(4)})↔${upper.line}(${upper.fair.toFixed(4)}) → ${fair.toFixed(4)}`);
+      return { fairProb: fair, vigBump: 0 };
+    }
+  }
+
+  // SNAP: only one neighbor within ±0.5; bump vig to absorb the gap.
+  let snap = null;
+  if (lower && (requested - lower.line) <= 0.5) snap = lower;
+  if (upper && (upper.line - requested) <= 0.5) {
+    if (!snap || (upper.line - requested) < (requested - snap.line)) snap = upper;
+  }
+  if (snap) {
+    log.info('OddsFeed', `Tennis totals SNAP: ${selection} ${requested} ← ${snap.line}(${snap.fair.toFixed(4)}) +3% vig bump`);
+    return { fairProb: snap.fair, vigBump: 0.03 };
+  }
+
+  return null;
+}
+
+/**
  * Look up a specific book's raw American odds for a cached alt line.
  * Returns null if the alt line isn't cached, the book didn't post it,
  * or the requested selection wasn't covered. Used by getPinnacleOdds
@@ -7427,6 +7505,7 @@ module.exports = {
   __debugGetAltLinesCache: () => altLinesCache,
   normalizeEventKey,
   getAltLineCacheEntry,
+  getTennisTotalsFallback,
   // Phase 1 player-prop shadow pricing
   lookupPlayerStrikeoutProp,
   lookupPlayerStrikeoutPropFromTheOddsApi,

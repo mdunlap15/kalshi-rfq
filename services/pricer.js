@@ -903,13 +903,42 @@ function priceParlay(legs, opts = {}) {
   phase2EndMs = performance.now();
 
   // -------------------- PHASE 3: Post-process results per leg -------------------
+  // Per-leg vig bumps surfaced by sub-pricing fallbacks (e.g. tennis
+  // totals snap-to-nearest). Indexed by legIdx; defaults to 0 when no
+  // bump applies. Read by getEffectiveVig and the per-leg vig output
+  // fields below so the snap leak is bounded.
+  const legVigBumps = new Array(legStates.length).fill(0);
+
   for (let legIdx = 0; legIdx < legStates.length; legIdx++) {
     const { lineId, lineInfo, legLabel, legDescriptor, bookPriceOverride } = legStates[legIdx];
-    const fairProb = fairProbs[legIdx];
+    let fairProb = fairProbs[legIdx];
     const verifyResult = verifyResults[legIdx];
 
     if (lineInfo.isDNB && fairProb != null) {
       log.debug('Pricing', `DNB derived fair prob ${fairProb.toFixed(4)} for ${legLabel}`);
+    }
+
+    // LAST-RESORT FALLBACK: tennis totals where the exact line isn't
+    // cached but a nearby cached line exists. Books in our feed are
+    // sparse on tennis half-points (Pinnacle posts integer totals to
+    // avoid pushes; DK/FD post sporadically). Without this, PX's wider
+    // line offerings systematically decline as "no fair value." Snap
+    // path emits a 3% vig bump that getEffectiveVig honors below; the
+    // interpolation path emits 0 bump (math is sound across small gaps).
+    if ((fairProb == null || fairProb <= 0 || fairProb >= 1)
+        && lineInfo.oddsApiSport === 'tennis'
+        && lineInfo.oddsApiMarket === 'totals'
+        && (lineInfo.oddsApiSelection === 'over' || lineInfo.oddsApiSelection === 'under')
+        && lineInfo.line != null) {
+      const snap = oddsFeed.getTennisTotalsFallback(
+        lineInfo.homeTeam, lineInfo.awayTeam,
+        lineInfo.oddsApiSelection, lineInfo.line
+      );
+      if (snap && snap.fairProb != null && snap.fairProb > 0 && snap.fairProb < 1) {
+        fairProb = snap.fairProb;
+        fairProbs[legIdx] = snap.fairProb;
+        legVigBumps[legIdx] = snap.vigBump || 0;
+      }
     }
 
     if (fairProb == null || fairProb <= 0 || fairProb >= 1) {
@@ -1051,6 +1080,7 @@ function priceParlay(legs, opts = {}) {
       lineInfo,
       fairProb,
       bookPriceOverride: bookPriceOverride != null ? bookPriceOverride : null,
+      vigBump: legVigBumps[legIdx] || 0,
       displayFairProb,
       pinnacleOdds,
       fanduelOdds,
@@ -1240,7 +1270,7 @@ function priceParlay(legs, opts = {}) {
   const favSlope = config.pricing.vigFavoriteSlope;
   const favFloor = config.pricing.vigFavoriteFloor;
   const seriesMinVig = config.pricing.vigSeriesMin || 0;
-  function getEffectiveVig(fairProb, sport, marketType) {
+  function getEffectiveVig(fairProb, sport, marketType, vigBump = 0) {
     const baseVig = getBaseVigForSport(sport);
     // Player props (Phase-2 launch types + K-prop): flat per-leg vig at
     // the VIG_PROP_FLOOR floor (default 3%). Skips the favorite-slope
@@ -1250,10 +1280,11 @@ function priceParlay(legs, opts = {}) {
     // below so multi-prop parlays don't compound runaway vig.
     if (marketType && /^player_/.test(marketType)) {
       let vig = Math.max(config.pricing.vigPropFloor || 0, baseVig);
+      if (vigBump > 0) vig += vigBump;
       if (sgpVigMult > 1) {
         vig = Math.min(0.20, vig * sgpVigMult);
       }
-      return vig;
+      return Math.min(0.20, vig);
     }
     let vig;
     if (fairProb <= 0.5) {
@@ -1274,17 +1305,22 @@ function priceParlay(legs, opts = {}) {
     if (sport === 'mma_mixed_martial_arts' && mmaMinVig > 0) {
       vig = Math.max(vig, mmaMinVig);
     }
+    // Per-leg vigBump from sub-pricing fallbacks (e.g. tennis totals
+    // snap-to-nearest). Adds to the base vig BEFORE SGP multiplier so
+    // the bump is preserved through correlation amplification but
+    // capped at 20% with the rest.
+    if (vigBump > 0) vig += vigBump;
     // SGP amplifier — compensate for same-game correlation. Capped at
     // 20% to avoid runaway vig if favorite ramp + SGP multiplier stack
     // on an extreme favorite; PX could still reject at absurd vig.
     if (sgpVigMult > 1) {
       vig = Math.min(0.20, vig * sgpVigMult);
     }
-    return vig;
+    return Math.min(0.20, vig);
   }
 
-  function applyOddsVig(fairProb, sport, marketType) {
-    const vig = getEffectiveVig(fairProb, sport, marketType);
+  function applyOddsVig(fairProb, sport, marketType, vigBump = 0) {
+    const vig = getEffectiveVig(fairProb, sport, marketType, vigBump);
     const fairDecimal = 1 / fairProb;
     const payout = fairDecimal - 1; // the profit portion
     const viggedPayout = payout * (1 - vig); // reduce payout by vig %
@@ -1389,7 +1425,7 @@ function priceParlay(legs, opts = {}) {
 
   if (config.pricing.parlayLevelVig) {
     // Parlay-level: single vig application using max per-leg rate (over vig legs only).
-    const perLegVigs = vigLegs.map(l => getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType));
+    const perLegVigs = vigLegs.map(l => getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType, l.vigBump || 0));
     const maxVig = perLegVigs.length > 0 ? Math.max(...perLegVigs) : config.pricing.defaultVig;
     const effectiveVig = Math.min(0.20, maxVig + longshotAdd + templateRampAdd);
     if (vigLegs.length > 0) {
@@ -1406,7 +1442,7 @@ function priceParlay(legs, opts = {}) {
     // Per-leg: vig applied to each leg's odds then compounded (legacy).
     offeredImpliedProb = overrideProduct;
     for (const leg of vigLegs) {
-      offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType);
+      offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType, leg.vigBump || 0);
     }
     // Longshot widening + template ramp applied as a final parlay-level
     // haircut on the post-compounding offered prob so the sensitivity
@@ -1421,7 +1457,7 @@ function priceParlay(legs, opts = {}) {
     vigMode = 'per-leg';
     // For per-leg, expose the AVERAGE per-leg rate as the "used" value (vig legs only).
     const avgVig = vigLegs.length > 0
-      ? vigLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType), 0) / vigLegs.length
+      ? vigLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType, l.vigBump || 0), 0) / vigLegs.length
       : 0;
     vigRateUsed = Math.min(0.20, avgVig + longshotAdd + templateRampAdd);
   }
@@ -1712,7 +1748,7 @@ function priceParlay(legs, opts = {}) {
   const estimatedPrice = pricedLegs.map(leg => {
     const legImplied = leg.bookPriceOverride != null
       ? leg.bookPriceOverride
-      : applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType);
+      : applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType, leg.vigBump || 0);
     return { line_id: leg.lineId, odds: decimalToAmerican(1 / legImplied) };
   });
 
@@ -1877,7 +1913,7 @@ function priceParlay(legs, opts = {}) {
           selection: l.lineInfo.oddsApiSelection,
           line: l.lineInfo.line,
           fairProb: Math.round(l.fairProb * 10000) / 10000,
-          legVig: l.bookPriceOverride != null ? 0 : Math.round(getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType) * 10000) / 10000,
+          legVig: l.bookPriceOverride != null ? 0 : Math.round(getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType, l.vigBump || 0) * 10000) / 10000,
           bookPriceOverride: l.bookPriceOverride != null ? Math.round(l.bookPriceOverride * 10000) / 10000 : null,
           displayFairProb: l.displayFairProb ? Math.round(l.displayFairProb * 10000) / 10000 : null,
           pinnacleOdds: l.pinnacleOdds || null,
@@ -1907,7 +1943,7 @@ function priceParlay(legs, opts = {}) {
           roundNum: l.lineInfo.roundNum || null,
         };
       }),
-      vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType), 0) / pricedLegs.length * 10000) / 10000,
+      vig: Math.round(pricedLegs.reduce((s, l) => s + getEffectiveVig(l.fairProb, l.lineInfo.sport, l.lineInfo.marketType, l.vigBump || 0), 0) / pricedLegs.length * 10000) / 10000,
       // Which vig application mode was used for this quote. Recorded per-quote
       // so /market-intel can split win rate by mode for A/B analysis.
       vigMode,
