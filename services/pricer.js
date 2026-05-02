@@ -504,6 +504,18 @@ function computeSingleLegQuote(fairProb, sport, marketType) {
       impliedProb = multImplied;
     }
   }
+  // Heavy-favorite fair markup — same MAX gate priceParlay uses
+  // per-leg, so dashboard's single-leg display matches what an RFQ
+  // touching this leg would compound to. Chalk-stack surcharge is
+  // parlay-level and doesn't apply to single legs by definition.
+  const heavyFavMarkup = config.pricing.vigHeavyFavFairMarkup || 0;
+  const heavyFavThreshold = config.pricing.vigHeavyFavThreshold || 0.70;
+  if (heavyFavMarkup > 0 && fairProb > heavyFavThreshold) {
+    const heavyImplied = fairProb * (1 + heavyFavMarkup);
+    if (heavyImplied > impliedProb && heavyImplied < 0.99) {
+      impliedProb = heavyImplied;
+    }
+  }
   const decimalOdds = 1 / impliedProb;
   return {
     vig,
@@ -1498,6 +1510,57 @@ function priceParlay(legs, opts = {}) {
     const multiplierOffered = vigFair * (1 + fairMult) * overrideProduct;
     if (multiplierOffered > offeredImpliedProb) {
       offeredImpliedProb = Math.min(0.99, multiplierOffered);
+    }
+  }
+
+  // Heavy-favorite per-leg fair markup. For each leg with fair_prob >
+  // vigHeavyFavThreshold, override its leg-level offered with
+  // fair × (1 + markup). Below-threshold legs keep their normal
+  // payout-vig offered. Compounds across legs and MAX-gates against
+  // the current offeredImpliedProb so this never tightens — only
+  // widens chalky legs to DK-retail-shaped pricing where the payout
+  // formula's vig is too small to bite.
+  //
+  // Mode-agnostic: in per-leg vig mode the existing offeredImpliedProb
+  // is the per-leg compound; in parlay-level vig mode it's the single
+  // combined calc. Either way the MAX picks the wider of the two.
+  const heavyFavMarkup = config.pricing.vigHeavyFavFairMarkup || 0;
+  const heavyFavThreshold = config.pricing.vigHeavyFavThreshold || 0.70;
+  if (heavyFavMarkup > 0 && vigLegs.length > 0) {
+    let heavyCompound = overrideProduct;
+    for (const leg of vigLegs) {
+      const fp = leg.fairProb;
+      if (fp > heavyFavThreshold) {
+        heavyCompound *= Math.min(0.99, fp * (1 + heavyFavMarkup));
+      } else {
+        heavyCompound *= applyOddsVig(fp, leg.lineInfo.sport, leg.lineInfo.marketType, leg.vigBump || 0);
+      }
+    }
+    if (heavyCompound > offeredImpliedProb) {
+      offeredImpliedProb = Math.min(0.99, heavyCompound);
+    }
+  }
+
+  // Chalk-stack parlay surcharge. Punishes the multi-leg-of-favorites
+  // pattern specifically (where compounding heavy favs into one parlay
+  // produces a near-coinflip parlay shape that retail books like DK
+  // mark up far more aggressively than fair-driven pricing produces).
+  // Triggers when:
+  //   - parlay has 2+ legs
+  //   - parlay's combined fair > vigChalkStackParlayThreshold (parlay
+  //     isn't a longshot, otherwise the longshot ramp already widens)
+  //   - EVERY leg's fair > vigChalkStackLegThreshold (all favorites)
+  // Effect: parlay-level fair × (1 + surcharge), MAX against current.
+  const chalkSurcharge = config.pricing.vigChalkStackSurcharge || 0;
+  const chalkLegThresh = config.pricing.vigChalkStackLegThreshold || 0.60;
+  const chalkParlayThresh = config.pricing.vigChalkStackParlayThreshold || 0.25;
+  if (chalkSurcharge > 0
+      && vigLegs.length >= 2
+      && vigFair > chalkParlayThresh
+      && vigLegs.every(l => l.fairProb > chalkLegThresh)) {
+    const surchargeOffered = vigFair * (1 + chalkSurcharge) * overrideProduct;
+    if (surchargeOffered > offeredImpliedProb) {
+      offeredImpliedProb = Math.min(0.99, surchargeOffered);
     }
   }
 

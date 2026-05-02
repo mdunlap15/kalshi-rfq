@@ -132,6 +132,34 @@ const config = {
     // Default 0 = disabled (current behavior). Tunable via
     // VIG_FAIR_MULTIPLIER env var.
     vigFairMultiplier: parseFloat(process.env.VIG_FAIR_MULTIPLIER) || 0,
+    // Heavy-favorite fair markup. Per-leg fair-shaped widening that
+    // fires only when a leg's fair_prob exceeds vigHeavyFavThreshold.
+    // Applied as MAX(payout-vig offered, fair × (1 + markup)) on
+    // qualifying legs. Mirrors the VIG_FAIR_MULTIPLIER MAX gate but is
+    // per-leg and gated to chalk; gives DK-retail-like markup on
+    // -300+ favorite legs without affecting coinflip or longshot legs.
+    //
+    // Why exists: payout-vig markup on chalky legs is microscopic
+    // because payout is small (-400 fav has payout 0.25, so 5% vig
+    // = 1.25pp shift). Books apply markup as fraction of fair_prob
+    // instead, which scales properly. Default 0 = disabled.
+    vigHeavyFavFairMarkup: parseFloat(process.env.VIG_HEAVY_FAV_FAIR_MARKUP) || 0,
+    vigHeavyFavThreshold: parseFloat(process.env.VIG_HEAVY_FAV_THRESHOLD) || 0.70,
+    // Chalk-stack parlay surcharge. Parlay-level fair-shaped widening
+    // that fires only when EVERY leg of a multi-leg parlay is a
+    // favorite (fair_prob > vigChalkStackLegThreshold) AND the parlay's
+    // combined fair exceeds vigChalkStackParlayThreshold (parlay isn't
+    // a longshot). Applied via MAX gate after VIG_FAIR_MULTIPLIER.
+    //
+    // Why exists: stacking 3-4 heavy favorites compounds to a
+    // near-coinflip parlay; bettors love this shape and books charge
+    // an outsized chalk-stack premium (DK +101 where our fair-driven
+    // pricing produces +120). This knob lets us approach DK-style
+    // pricing on chalk stacks without touching single-leg quotes or
+    // mixed parlays. Default 0 = disabled.
+    vigChalkStackSurcharge: parseFloat(process.env.VIG_CHALK_STACK_SURCHARGE) || 0,
+    vigChalkStackLegThreshold: parseFloat(process.env.VIG_CHALK_STACK_LEG_THRESHOLD) || 0.60,
+    vigChalkStackParlayThreshold: parseFloat(process.env.VIG_CHALK_STACK_PARLAY_THRESHOLD) || 0.25,
     // Template-exposure ramp: penalizes bets whose canonical parlay signature
     // (sorted team+market+line tuple) has already confirmed N times inside a
     // rolling window. Catches the April 18 failure mode: multiple bettors
