@@ -1479,6 +1479,120 @@ async function probeDkPage({ url, subcategory = null, postWaitMs = 10000, eventD
   }
 }
 
+/**
+ * Diagnostic-only flow that mirrors fetchMmaFightOdds but additionally
+ * captures: every URL the page navigates through, every primaryMarkets
+ * XHR seen (with sport hints from the URL path), the final landed URL,
+ * the page title, and a sample of visible event-row labels. Goal is
+ * to see WHY an empty harvest happened — DK redirected? page is empty?
+ * XHR pollution from cross-sport featured panels?
+ *
+ * Bypasses cache and inFlight gates entirely. Always runs a fresh probe.
+ * Doesn't write to cacheBySport.mma so it can't taint live data.
+ */
+async function debugMmaScraperState({ url = 'https://sportsbook.draftkings.com/leagues/mma/ufc' } = {}) {
+  const browser = await puppeteer().launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+  });
+  const xhrs = []; // every primaryMarkets XHR we observed
+  const allXhrUrls = []; // every sportsbook-nash URL (broader, for cross-sport detection)
+  const navTrail = [];
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1400, height: 900 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) navTrail.push(frame.url());
+    });
+
+    page.on('response', async (resp) => {
+      const u = resp.url();
+      if (!u.includes('sportsbook-nash.draftkings.com')) return;
+      // Tag broader nash traffic for sanity (cross-sport pollution detection)
+      if (allXhrUrls.length < 200) allXhrUrls.push(u);
+      if (!u.includes('primaryMarkets/v1/markets')) return;
+      try {
+        const ct = resp.headers()['content-type'] || '';
+        if (!ct.includes('json')) return;
+        const data = await resp.json();
+        // Sport hint comes from event.eventCategory.sportName when present;
+        // fall back to scanning the URL path for common league markers.
+        const sportHints = new Set();
+        for (const ev of (data.events || [])) {
+          const sn = ev.eventCategory?.sportName || ev.competitionName || '';
+          if (sn) sportHints.add(String(sn));
+        }
+        const lower = u.toLowerCase();
+        for (const tag of ['mma', 'ufc', 'nba', 'nhl', 'mlb', 'nfl', 'soccer', 'tennis', 'golf']) {
+          if (lower.includes(tag)) sportHints.add('url:' + tag);
+        }
+        xhrs.push({
+          url: u,
+          eventCount: (data.events || []).length,
+          marketCount: (data.markets || []).length,
+          sportHints: [...sportHints],
+          sampleEventNames: (data.events || []).slice(0, 5).map(e => e.name),
+        });
+      } catch (err) { /* ignore */ }
+    });
+
+    let navError = null;
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    } catch (err) {
+      navError = err.message;
+    }
+    await new Promise(r => setTimeout(r, 8000));
+    // Brief scroll to mimic the production scraper, in case scrolling triggers
+    // additional XHRs whose origin we want to inspect.
+    try {
+      for (let i = 0; i < 6; i++) {
+        await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+        await new Promise(r => setTimeout(r, 600));
+      }
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await new Promise(r => setTimeout(r, 3000));
+    } catch { /* ignore */ }
+
+    const finalUrl = page.url();
+    let title = null, eventRowSample = [], h1Text = null;
+    try { title = await page.title(); } catch {}
+    try {
+      h1Text = await page.evaluate(() => (document.querySelector('h1')?.innerText || '').trim());
+    } catch {}
+    try {
+      eventRowSample = await page.evaluate(() => {
+        const rows = Array.from(document.querySelectorAll('a[href*="/event/"]'));
+        return rows.slice(0, 12).map(a => ({ text: (a.innerText || '').trim().substring(0, 100), href: a.getAttribute('href') }));
+      });
+    } catch {}
+
+    return {
+      requestedUrl: url,
+      finalUrl,
+      navTrail,
+      navError,
+      title,
+      h1Text,
+      eventRowSample,
+      xhrs,
+      xhrCount: xhrs.length,
+      crossSportPollution: xhrs.filter(x =>
+        x.sportHints.some(h => /url:nba|url:nhl|url:mlb|url:nfl|url:soccer|url:tennis|url:golf/i.test(h))
+      ).length,
+      mmaXhrs: xhrs.filter(x =>
+        x.sportHints.some(h => /url:mma|url:ufc/i.test(h))
+        || x.sampleEventNames.some(n => /\bvs\.?\b|@/i.test(n) && !/76ers|celtics|lakers|warriors|nuggets|suns/i.test(n))
+      ).length,
+      sampleNashUrls: allXhrUrls.slice(0, 30),
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
 module.exports = {
   fetchSeriesMarkets,
   fetchSeriesWinners,
@@ -1489,6 +1603,7 @@ module.exports = {
   fetchNbaSeriesTotals,
   fetchNhlSeriesTotals,
   fetchMmaFightOdds,
+  debugMmaScraperState,
   fetchGolfMatchups,
   fetchLiveMarkets,
   probeDkPage,

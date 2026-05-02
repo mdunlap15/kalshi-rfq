@@ -2807,6 +2807,20 @@ function startStatusServer() {
       res.status(500).json({ ok: false, error: err.message });
     }
   });
+  // Diagnostic-only mirror of the MMA scraper. Captures nav trail, final
+  // URL, page title, visible event-row sample, every primaryMarkets XHR
+  // URL with sport hints, and counts of MMA-vs-cross-sport XHR pollution.
+  // Use ?url=... to override the navigation target (e.g. probe a card-
+  // specific page like /event/UFC-Macao-2026).
+  app.get('/debug-dk-mma-state', async (req, res) => {
+    try {
+      const url = req.query.url || undefined;
+      const state = await dkScraper.debugMmaScraperState({ url });
+      res.json({ ok: true, ...state });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
   // DK golf matchups (PGA tour team + individual H2H). Covers Zurich
   // Classic team pairs and any PGA event DataGolf doesn't publish.
   // `?force=1` bypasses the 15-min scraper cache and hits DK fresh.
