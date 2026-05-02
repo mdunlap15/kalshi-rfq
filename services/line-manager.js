@@ -58,6 +58,14 @@ function getOrderTracker() {
 //               oddsApiSport, oddsApiMarket, oddsApiSelection } }
 const lineIndex = {};
 
+// Cold-start gate for Supabase hydration. Flipped true after the first
+// seedAllLines completes. Hydration only runs on cold boot (when
+// lineIndex hasn't been authoritatively seeded yet); periodic
+// refreshLines cycles skip it so the per-sport stale-event cutoff in
+// seed stays authoritative and finished games don't bleed back in
+// from line_cache.
+let _hasSeededOnce = false;
+
 // O(1) reverse index for getPrimarySpreadHomePoint / getPrimaryTotalLine.
 // Without this, those helpers do Object.values(lineIndex) which is O(N=~1200)
 // per call. Called per leg in shouldDecline → significant hot-path cost on
@@ -525,9 +533,15 @@ async function seedAllLines() {
   // until seed completes. Hydration takes <2s and immediately makes
   // every recent-event line in line_cache priceable. Seed then
   // overwrites stale entries with fresh data and adds new entries.
-  // Only runs if lineIndex is empty (i.e. fresh boot, not a manual
-  // /refresh-lines call mid-session).
-  if (Object.keys(lineIndex).length === 0) {
+  //
+  // Only runs on COLD START (the first seed of the process). On
+  // subsequent refreshLines() cycles, the seed is fast (warm odds caches)
+  // and there's no gap to bridge — re-hydrating would re-introduce
+  // entries from games that just finished but haven't aged out of
+  // Supabase yet (line_cache uses 6h cutoff vs the per-sport cutoff
+  // applied below in seed). Cold-start gating keeps the seed
+  // authoritative on every periodic refresh.
+  if (!_hasSeededOnce && Object.keys(lineIndex).length === 0) {
     try {
       const hydrated = await db.loadAllRecentLineCache(1);
       let count = 0;
@@ -537,7 +551,7 @@ async function seedAllLines() {
         count++;
       }
       if (count > 0) {
-        log.info('Lines', `Hydrated ${count} lines from Supabase line_cache before seed`);
+        log.info('Lines', `Hydrated ${count} lines from Supabase line_cache before seed (cold start)`);
       }
     } catch (err) {
       log.warn('Lines', `Line cache hydration failed (non-fatal): ${err.message}`);
@@ -571,13 +585,46 @@ async function seedAllLines() {
   }
   log.info('Lines', `Built indexes: ${Object.keys(tournamentIndex).length} tournaments, ${Object.keys(eventIndex).length} events`);
 
-  // 2. Filter to supported sports (accept any non-settled status)
-  const events = allEvents.filter(e =>
-    pxSportNames.includes(e.sport_name) &&
-    (!e.status || e.status !== 'settled') &&
-    e.competitors && e.competitors.length >= 2
-  );
-  log.info('Lines', `Found ${events.length} supported sport events (of ${allEvents.length} total)`);
+  // 2. Filter to supported sports (accept any non-settled status).
+  // Also drop events whose scheduled start is more than the per-sport
+  // post-game cutoff in the past. PX can take many hours to mark a
+  // finished game as 'settled', and during that window we'd otherwise
+  // keep yesterday's F5/spread/total lines in our index, polluting the
+  // dashboard and wasting the Supabase line-cache budget.
+  //
+  // Cutoffs sized to typical game length + buffer for OT / extras / late
+  // finishes. Golf is exempt (multi-day tournaments — Round 1 scheduled
+  // on Thursday is still relevant Sunday).
+  const POST_GAME_CUTOFF_HOURS_BY_SPORT = {
+    'Baseball':   5,   // MLB ~3.5hr typical; extras can push to 5+
+    'Basketball': 4,   // NBA/WNBA/NCAAB ~2.5hr typical; OT pushes
+    'Hockey':     4,   // NHL ~2.5hr; OT/SO buffer
+    'Tennis':     6,   // matches occasionally run long
+    'Soccer':     3,   // ~2hr typical
+    'MMA':        7,   // multi-fight cards
+    'Boxing':     7,   // same
+    'Football':   4,   // NFL/NCAAF ~3.5hr
+    'Golf':       9999, // multi-day tournaments — never filter on scheduled
+  };
+  const DEFAULT_CUTOFF_HOURS = 6;
+  const nowMs = Date.now();
+  let droppedAsStale = 0;
+  const events = allEvents.filter(e => {
+    if (!pxSportNames.includes(e.sport_name)) return false;
+    if (e.status && e.status === 'settled') return false;
+    if (!e.competitors || e.competitors.length < 2) return false;
+    if (e.scheduled) {
+      const startMs = new Date(e.scheduled).getTime();
+      const cutoffHours = POST_GAME_CUTOFF_HOURS_BY_SPORT[e.sport_name] ?? DEFAULT_CUTOFF_HOURS;
+      const cutoffMs = nowMs - cutoffHours * 3600 * 1000;
+      if (Number.isFinite(startMs) && startMs < cutoffMs) {
+        droppedAsStale++;
+        return false;
+      }
+    }
+    return true;
+  });
+  log.info('Lines', `Found ${events.length} supported sport events (of ${allEvents.length} total; dropped ${droppedAsStale} past per-sport stale cutoff)`);
 
   // Get all Odds API cached events for matching
   const oddsApiEvents = oddsFeed.getAllCachedEvents();
@@ -1238,6 +1285,11 @@ async function seedAllLines() {
   db.saveLineCache(lineIndex).catch(err => {
     log.warn('Lines', `saveLineCache failed: ${err.message}`);
   });
+
+  // Mark cold start complete — subsequent refreshLines cycles skip
+  // Supabase hydration so the per-sport stale-event cutoff in seed
+  // stays authoritative.
+  _hasSeededOnce = true;
 
   return lastSeedStats;
 }
