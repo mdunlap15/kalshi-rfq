@@ -6062,12 +6062,28 @@ async function fetchOddsDelta(sport) {
  * Run delta updates for all SharpAPI sports (not Odds API fallback sports).
  */
 async function refreshAllSportsDelta() {
+  let mmaTouched = false;
   for (const sport of Object.keys(LEAGUE_MAP)) {
     try {
       await fetchOddsDelta(sport);
+      if (sport === 'mma_mixed_martial_arts') mmaTouched = true;
     } catch (err) {
       log.warn('OddsFeed', `Delta refresh failed for ${sport}: ${err.message}`);
     }
+  }
+  // SharpAPI delta refresh can ADD MMA events under SharpAPI naming
+  // ("Steve Erceg vs Tim Elliott") even when the DK-merged variant
+  // ("Stephen Erceg vs Tim Elliott") already has totals. Without
+  // re-merging, the new SharpAPI-named entry stays h2h-only and the
+  // line-manager's lookup against that orientation returns null fair —
+  // operator caught Tim Elliott vs Steve Erceg O 2.5 declining as
+  // "no totals quote" minutes after the dashboard had shown valid
+  // odds. mergeDkMmaFights uses DK's own 15-min cache so re-running
+  // is cheap (cache hit, just iterates the events). Fire-and-forget.
+  if (mmaTouched) {
+    mergeDkMmaFights().catch(err => {
+      log.warn('OddsFeed', `Post-delta DK MMA merge failed: ${err.message}`);
+    });
   }
 }
 
