@@ -6976,12 +6976,14 @@
       return teamStr + ' ' + (line >= 0 ? '+' : '') + line;
     }
 
-    // Player strikeouts (and any prop where teamStr is the player name and
-    // selection holds 'over'/'under'). Render "<Player> Over 4.5" /
-    // "<Player> Under 4.5" so it's clear which side the bettor took.
-    // Without this, a K-prop leg shows just "Luis Castillo / 4.5" and the
-    // operator can't tell whether the bet is on the over or the under.
-    if (mkt === 'player_strikeouts' && selection) {
+    // Any player prop (player_strikeouts, player_points, player_rebounds,
+    // player_assists, player_threes_made, player_shots_on_goal, the
+    // player_hitter_* family, etc) — render "<Player> Over 4.5" /
+    // "<Player> Under 4.5" so the operator can tell which side the
+    // bettor took. Originally only K-prop got this treatment; expanded
+    // to all Phase-2 props after operator caught Payton Pritchard
+    // player_rebounds 3.5 displaying with no Over/Under indicator.
+    if (/^player_/.test(mkt) && selection) {
       const side = String(selection).charAt(0).toUpperCase() + String(selection).slice(1).toLowerCase();
       const lineStr = line != null ? ' ' + line : '';
       return teamStr + ' ' + side + lineStr;
