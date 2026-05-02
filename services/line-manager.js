@@ -656,14 +656,33 @@ async function seedAllLines() {
       if (!golfTrace.sampleEventName) golfTrace.sampleEventName = event.name;
     }
     // Determine sport key(s) — some PX sport names map to multiple keys
-    // (e.g., "Basketball" → basketball_nba AND basketball_ncaab)
+    // (e.g., "Basketball" → basketball_nba AND basketball_ncaab,
+    // "Soccer" → soccer + soccer_epl + soccer_germany_bundesliga + ...).
+    //
+    // ORDER MATTERS: the matching loop below breaks on the FIRST sport
+    // key whose cache contains a matching team-name pair, which means
+    // the generic catch-all key wins over league-specific keys when
+    // both have entries for the same match. That mis-registers
+    // today's EPL/Bundesliga/Serie A matches under sport='soccer' so
+    // they don't appear in the league-specific dashboard filter.
+    //
+    // Sort to put generic / catch-all keys LAST. Heuristic: keys whose
+    // name has no underscore-suffix (e.g. 'soccer', 'tennis') are
+    // generic; keys with a suffix ('soccer_epl', 'tennis_atp_madrid')
+    // are specific. Specific keys win the matching race.
+    const _isGenericKey = (k) => !k.includes('_') || k === 'mma_mixed_martial_arts' || k === 'boxing_boxing';
     const possibleSportKeys = Object.entries(config.sportNameMap)
       .filter(([k, v]) => v === event.sport_name)
-      .map(([k]) => k);
+      .map(([k]) => k)
+      .sort((a, b) => {
+        const aGen = _isGenericKey(a) ? 1 : 0;
+        const bGen = _isGenericKey(b) ? 1 : 0;
+        return aGen - bGen; // generic last
+      });
     if (possibleSportKeys.length === 0) continue;
 
     // We'll determine the actual sport key by which one has a matching Odds API event
-    let sportKey = possibleSportKeys[0]; // default to first match
+    let sportKey = possibleSportKeys[0]; // default to first match (now most-specific)
 
     // Store event metadata
     eventIndex[event.event_id] = {
@@ -1389,10 +1408,15 @@ async function resolveUnknownLine(rfqLeg) {
     return null;
   }
 
-  // Determine sport key
+  // Determine sport key. Generic catch-all keys (e.g. 'soccer') are
+  // sorted LAST so league-specific keys (soccer_epl, soccer_germany_*)
+  // win the matching race when both have an entry for the same event.
+  // See seedAllLines for the full rationale.
+  const _isGenericKey = (k) => !k.includes('_') || k === 'mma_mixed_martial_arts' || k === 'boxing_boxing';
   const possibleSportKeys = Object.entries(config.sportNameMap)
     .filter(([k, v]) => v === event.sportName)
-    .map(([k]) => k);
+    .map(([k]) => k)
+    .sort((a, b) => (_isGenericKey(a) ? 1 : 0) - (_isGenericKey(b) ? 1 : 0));
   if (possibleSportKeys.length === 0) return null;
 
   // Identify home/away teams (reuse same logic as seed)
