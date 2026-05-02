@@ -3325,7 +3325,7 @@
     el.innerHTML = html;
   }
 
-  const posState = { sortCol: 'time', sortDir: -1, search: '', statusFilter: '', typeFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', showHidden: false, _name: 'posState' };
+  const posState = { sortCol: 'time', sortDir: -1, search: '', statusFilter: '', typeFilter: '', sportFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', showHidden: false, _name: 'posState' };
   window.posRerender = () => renderPositions(window._lastPosData || { recentOrders: [] });
   window.togglePosSort = (col) => {
     if (posState.sortCol === col) posState.sortDir *= -1;
@@ -3487,6 +3487,11 @@
       return;
     }
 
+    // Available sports for the filter dropdown — any sport touched by at
+    // least one open position's legs. Recomputed each render so the
+    // dropdown updates as positions enter / settle out.
+    const posSports = [...new Set(positions.flatMap(o => (o.legs || o.meta?.legs || []).map(l => l.sport).filter(Boolean)))];
+
     // Search + date filter
     let filtered = positions.filter(o => {
       if (posState.search) {
@@ -3494,6 +3499,10 @@
         const legs = o.legs || o.meta?.legs || [];
         const teams = legs.map(l => (l.team || l.teamName || '')).join(' ').toLowerCase();
         if (!teams.includes(q) && !(o.parlayId || '').toLowerCase().includes(q)) return false;
+      }
+      if (posState.sportFilter) {
+        const legs = o.legs || o.meta?.legs || [];
+        if (!legs.some(l => l.sport === posState.sportFilter)) return false;
       }
       if (!passesDateFilter(o.confirmedAt, posState.dateFrom, posState.dateTo)) return false;
       // Advanced range filters
@@ -3619,6 +3628,10 @@
         <option value="sgp"${posState.typeFilter==='sgp'?' selected':''}>SGP only</option>
         <option value="prop"${posState.typeFilter==='prop'?' selected':''}>PROP only</option>
         <option value="both"${posState.typeFilter==='both'?' selected':''}>SGP + PROP</option>
+      </select>
+      <select onchange="posState.sportFilter=this.value; posRerender()" style="${pFSel}" title="Filter by sport (matches if any leg is in the chosen sport)">
+        <option value="">All sports</option>
+        ${posSports.map(s => `<option value="${s}"${posState.sportFilter===s?' selected':''}>${sportLabel(s)}</option>`).join('')}
       </select>
       ${dateFilterHtml(posState, 'posRerender', dStyle)}
       <button onclick="posState.showAdvanced=!posState.showAdvanced; posRerender()" style="${pFSel} cursor:pointer;">${posState.showAdvanced ? '&#9652;' : '&#9662;'} Advanced</button>
