@@ -6989,6 +6989,19 @@
       return teamStr + ' ' + side + lineStr;
     }
 
+    // team_total: selection arrives as compound "home_over" / "away_under" etc.
+    // Strip the side prefix and render "<Team> Over 103.5" so the operator can
+    // tell which side of the team total the bettor took.
+    if (mkt === 'team_total' && selection) {
+      const parts = String(selection).split('_');
+      const dir = parts[parts.length - 1];
+      if (dir === 'over' || dir === 'under') {
+        const side = dir.charAt(0).toUpperCase() + dir.slice(1);
+        const lineStr = line != null ? ' ' + line : '';
+        return teamStr + ' ' + side + lineStr;
+      }
+    }
+
     // Capitalize first letter
     return teamStr.charAt(0).toUpperCase() + teamStr.slice(1);
   }

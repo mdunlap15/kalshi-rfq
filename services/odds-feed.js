@@ -4688,8 +4688,24 @@ function getDisplayFairProb(sport, homeTeam, awayTeam, marketType, selection, li
     const parts = selection.split('_');
     const teamData = market[parts[0]];
     if (!teamData) return null;
-    if (parts[1] === 'over') return teamData.over?.displayFairProb || teamData.over?.fairProb || null;
-    if (parts[1] === 'under') return teamData.under?.displayFairProb || teamData.under?.fairProb || null;
+    const dir = parts[1];
+    // Line-match check parallels getFairProb (line 4619): if the requested
+    // line doesn't match the cached primary, fall back to byLine alts or
+    // return null. Without this, a leg with line 103.5 received the primary
+    // line's displayFairProb (e.g. 113.5) — wrong number on the FAIR column.
+    if (line == null) return null;
+    if (teamData.line != null && Math.abs(teamData.line - line) > 0.01) {
+      if (teamData.byLine) {
+        const altEntry = teamData.byLine[String(line)];
+        if (altEntry) {
+          if (dir === 'over') return altEntry.over?.displayFairProb || altEntry.over?.fairProb || null;
+          if (dir === 'under') return altEntry.under?.displayFairProb || altEntry.under?.fairProb || null;
+        }
+      }
+      return null;
+    }
+    if (dir === 'over') return teamData.over?.displayFairProb || teamData.over?.fairProb || null;
+    if (dir === 'under') return teamData.under?.displayFairProb || teamData.under?.fairProb || null;
   } else if (marketType === 'h2h_h1' || marketType === 'spreads_h1') {
     if (selection === 'home') return market.home?.displayFairProb || market.home?.fairProb || null;
     if (selection === 'away') return market.away?.displayFairProb || market.away?.fairProb || null;
