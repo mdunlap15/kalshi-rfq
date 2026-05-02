@@ -2186,8 +2186,34 @@ function startStatusServer() {
       const sportFilter = req.query.sport || null;
       const maxGapCents = Math.min(1000, Math.max(20, parseInt(req.query.maxGapCents) || 200));
 
-      const matched = await db.loadMatchedParlays(5000);
+      // Load both tables and join in JS. parlay_orders is the
+      // PERSISTENT source of our offered odds — survives every Railway
+      // restart. matched_parlays stores the winning SP's matched_odds.
+      // The previous read off matched_parlays.our_odds depended on the
+      // in-memory orders[] being populated at match time, which clears
+      // on every redeploy → weQuoted=false flooded the table whenever
+      // the operator was tuning env vars. Join-via-parlayId fixes that.
+      const fromIso = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString();
+      const toIso = new Date().toISOString();
+      const [matched, ourOrders] = await Promise.all([
+        db.loadMatchedParlays(10000),
+        db.loadOrdersInDateRange(fromIso, toIso, { groupBy: 'quoted_at', maxRows: 50000 }),
+      ]);
       const cutoff = Date.now() - windowMinutes * 60 * 1000;
+
+      // Index our orders by parlayId for fast lookup. Our offered_odds
+      // is bettor-side American (positive=longshot for bettor).
+      const ourByParlayId = {};
+      for (const r of ourOrders) {
+        if (!r.parlay_id) continue;
+        if (r.offered_odds == null) continue;
+        ourByParlayId[r.parlay_id] = {
+          ourOdds: Number(r.offered_odds),
+          legs: r.legs || (r.meta && r.meta.legs) || [],
+          quotedAt: r.quoted_at,
+          status: r.status,
+        };
+      }
 
       // American odds → implied probability
       function americanToImplied(am) {
@@ -2195,9 +2221,6 @@ function startStatusServer() {
         if (am > 0) return 100 / (am + 100);
         return -am / (-am + 100);
       }
-      // American payout per $100 stake (the cents the bettor wins on $100)
-      // pos +250: bettor wins $250 on $100 → 250
-      // neg -200: bettor wins $50 on $100 → 50
       function americanToPayoutPer100(am) {
         if (am == null || !Number.isFinite(am) || am === 0) return null;
         if (am > 0) return am;
@@ -2206,32 +2229,34 @@ function startStatusServer() {
 
       const lostRfqs = [];
       for (const m of matched) {
-        if (!m.weQuoted) continue;
-        if (m.ourAmericanOdds == null || m.matchedAmericanOdds == null) continue;
-        if (m.ourAmericanOdds === m.matchedAmericanOdds) continue; // tied / our quote won
+        if (!m.parlayId) continue;
+        if (m.matchedAmericanOdds == null) continue;
         const matchedAtMs = m.matchedAt ? new Date(m.matchedAt).getTime() : 0;
         if (matchedAtMs < cutoff) continue;
+        const our = ourByParlayId[m.parlayId];
+        if (!our) continue; // we didn't quote this parlay
+        if (our.ourOdds === m.matchedAmericanOdds) continue; // tied / our quote won
         if (sportFilter) {
-          const sports = (m.legs || []).map(l => l.sport).filter(Boolean);
+          const sports = (m.legs || our.legs || []).map(l => l.sport).filter(Boolean);
           if (!sports.includes(sportFilter)) continue;
         }
-        const ourImpl = americanToImplied(m.ourAmericanOdds);
+        const ourImpl = americanToImplied(our.ourOdds);
         const winImpl = americanToImplied(m.matchedAmericanOdds);
         if (ourImpl == null || winImpl == null) continue;
-        const gapPp = (ourImpl - winImpl) * 100; // our_implied − winner_implied; positive = we were tighter (bettor's offer worse from us)
-        const ourPayout = americanToPayoutPer100(m.ourAmericanOdds);
+        const gapPp = (ourImpl - winImpl) * 100;
+        const ourPayout = americanToPayoutPer100(our.ourOdds);
         const winPayout = americanToPayoutPer100(m.matchedAmericanOdds);
         const gapCents = (ourPayout != null && winPayout != null) ? (winPayout - ourPayout) : null;
-        const sports = [...new Set((m.legs || []).map(l => l.sport).filter(Boolean))];
+        const sports = [...new Set((m.legs || our.legs || []).map(l => l.sport).filter(Boolean))];
         lostRfqs.push({
           parlayId: m.parlayId,
-          ourOdds: m.ourAmericanOdds,
+          ourOdds: our.ourOdds,
           winnerOdds: m.matchedAmericanOdds,
           ourImpliedPct: Math.round(ourImpl * 10000) / 100,
           winnerImpliedPct: Math.round(winImpl * 10000) / 100,
           gapPp: Math.round(gapPp * 100) / 100,
           gapCents,
-          legCount: (m.legs || []).length,
+          legCount: (m.legs || our.legs || []).length,
           sports,
           matchedAt: m.matchedAt,
         });
