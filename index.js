@@ -2150,6 +2150,187 @@ function startStatusServer() {
     }
   });
 
+  // Hour-of-week analytics. Buckets historical parlays by ET day-of-week
+  // and ET hour to surface time-window-specific patterns the global
+  // aggregates hide. Originally built for Saturday-morning vig tuning:
+  // "what's our actual fill rate + realized margin in the 12am-9am ET
+  // Saturday window, broken down by sport, so we can pick a base vig
+  // that actually reflects that window's competitive landscape?"
+  //
+  // Query params:
+  //   days=N             Look-back window in days (default 60, max 365)
+  //   sport=key          Filter to parlays containing this sport (any leg)
+  //   dayOfWeek=N        Filter to one ET day-of-week (0=Sun ... 6=Sat).
+  //                      When set, returns 24 hour buckets (one row per
+  //                      ET hour 00-23). When omitted, returns 168
+  //                      hour-of-week buckets (full week, hour 0..167
+  //                      = Sun 00:00 ET .. Sat 23:00 ET).
+  //   includeSportBreakdown=1   Also report per-sport stats inside each
+  //                             bucket (only meaningful when no sport
+  //                             filter is set).
+  //
+  // Per bucket fields mirror /v2-ab-metrics summarize():
+  //   quotes, bidsWon, fills, bestBidderRate, fillRate, conversion,
+  //   avgStake, totalStake, settledN, pnl, evPerDollarWagered,
+  //   avgOfferedOdds, avgPairVigPct (estimated from fair vs offered)
+  app.get('/analytics/hour-of-week', async (req, res) => {
+    try {
+      const days = Math.min(365, Math.max(1, parseInt(req.query.days) || 60));
+      const sportFilter = req.query.sport || null;
+      const dayOfWeekFilter = req.query.dayOfWeek != null
+        ? Math.max(0, Math.min(6, parseInt(req.query.dayOfWeek)))
+        : null;
+      const includeSportBreakdown = req.query.includeSportBreakdown === '1' || req.query.includeSportBreakdown === 'true';
+
+      const now = Date.now();
+      const fromIso = new Date(now - days * 24 * 60 * 60 * 1000).toISOString();
+      const toIso = new Date(now).toISOString();
+
+      const rows = await db.loadOrdersInDateRange(fromIso, toIso, { groupBy: 'quoted_at', maxRows: 50000 });
+
+      // ET conversion. Intl.DateTimeFormat with timeZone='America/New_York'
+      // yields ET-local hour and weekday handling DST automatically — far
+      // safer than hardcoding a -5/-4 offset.
+      const dtf = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        weekday: 'short',
+        hour: 'numeric',
+        hour12: false,
+      });
+      const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+      function etDayHour(iso) {
+        if (!iso) return null;
+        const t = new Date(iso);
+        if (isNaN(t.getTime())) return null;
+        const parts = dtf.formatToParts(t);
+        const wd = parts.find(p => p.type === 'weekday')?.value;
+        const hr = parseInt(parts.find(p => p.type === 'hour')?.value);
+        if (wd == null || isNaN(hr)) return null;
+        const dow = weekdayMap[wd];
+        if (dow == null) return null;
+        // Intl returns 24 for midnight in some locales; normalize.
+        const hour = hr === 24 ? 0 : hr;
+        return { dow, hour };
+      }
+
+      const isRealFill = (r) =>
+        (r.status === 'confirmed' && r.order_uuid != null) ||
+        (typeof r.status === 'string' && r.status.startsWith('settled_'));
+      const isBestBidder = (r) =>
+        r.status === 'confirmed' ||
+        (typeof r.status === 'string' && r.status.startsWith('settled_'));
+
+      // Apply filters and bucket
+      // Bucket key: when dayOfWeekFilter is set, key = hour (0..23). Else
+      // key = dow*24 + hour (0..167).
+      const bucketCount = dayOfWeekFilter != null ? 24 : 168;
+      const buckets = new Array(bucketCount).fill(null).map(() => ({ rows: [], bySport: {} }));
+
+      let filtered = 0;
+      for (const r of rows) {
+        const dh = etDayHour(r.quoted_at);
+        if (!dh) continue;
+        if (dayOfWeekFilter != null && dh.dow !== dayOfWeekFilter) continue;
+        if (sportFilter) {
+          const legs = r.legs || (r.meta && r.meta.legs) || [];
+          if (!legs.some(l => l.sport === sportFilter)) continue;
+        }
+        const idx = dayOfWeekFilter != null ? dh.hour : (dh.dow * 24 + dh.hour);
+        buckets[idx].rows.push(r);
+        if (includeSportBreakdown) {
+          const legs = r.legs || (r.meta && r.meta.legs) || [];
+          const sports = new Set(legs.map(l => l.sport).filter(Boolean));
+          for (const s of sports) {
+            if (!buckets[idx].bySport[s]) buckets[idx].bySport[s] = [];
+            buckets[idx].bySport[s].push(r);
+          }
+        }
+        filtered++;
+      }
+
+      function summarize(list) {
+        if (list.length === 0) {
+          return { quotes: 0 };
+        }
+        const quotes = list.length;
+        const fills = list.filter(isRealFill).length;
+        const bidsWon = list.filter(isBestBidder).length;
+        const stakes = list.filter(r => r.confirmed_stake != null).map(r => Number(r.confirmed_stake));
+        const avgStake = stakes.length ? stakes.reduce((a, b) => a + b, 0) / stakes.length : null;
+        const totalStake = stakes.reduce((a, b) => a + b, 0);
+        const settled = list.filter(r => (r.status || '').startsWith('settled_'));
+        const pnl = settled.reduce((s, r) => s + (r.pnl != null ? Number(r.pnl) : 0), 0);
+        const totalStakeSettled = settled.reduce((s, r) => s + (r.confirmed_stake ? Number(r.confirmed_stake) : 0), 0);
+        const evPerDollar = totalStakeSettled > 0 ? pnl / totalStakeSettled : null;
+        const offeredOdds = list.filter(r => r.offered_odds != null).map(r => Number(r.offered_odds));
+        const avgOfferedOdds = offeredOdds.length ? offeredOdds.reduce((a, b) => a + b, 0) / offeredOdds.length : null;
+        // Estimated pair vig: 1 - fairProb × decimalOffered. Decimal from
+        // American: pos → 1+am/100; neg → 1+100/|am|.
+        const vigSamples = [];
+        for (const r of list) {
+          const fp = r.fair_parlay_prob != null ? Number(r.fair_parlay_prob)
+            : (r.meta && r.meta.fairParlayProb != null ? Number(r.meta.fairParlayProb) : null);
+          const am = r.offered_odds != null ? Number(r.offered_odds) : null;
+          if (fp == null || am == null || fp <= 0 || fp >= 1) continue;
+          const dec = am >= 0 ? 1 + am / 100 : 1 + 100 / Math.abs(am);
+          const v = 1 - fp * dec; // bettor disadvantage as decimal
+          if (Number.isFinite(v)) vigSamples.push(v);
+        }
+        const avgVig = vigSamples.length
+          ? vigSamples.reduce((a, b) => a + b, 0) / vigSamples.length
+          : null;
+        return {
+          quotes,
+          bidsWon,
+          fills,
+          bestBidderRate: quotes > 0 ? Math.round((bidsWon / quotes) * 10000) / 100 : null,
+          fillRate: quotes > 0 ? Math.round((fills / quotes) * 10000) / 100 : null,
+          conversion: bidsWon > 0 ? Math.round((fills / bidsWon) * 10000) / 100 : null,
+          avgStake: avgStake != null ? Math.round(avgStake * 100) / 100 : null,
+          totalStake: Math.round(totalStake * 100) / 100,
+          settledN: settled.length,
+          pnl: Math.round(pnl * 100) / 100,
+          evPerDollarWagered: evPerDollar != null ? Math.round(evPerDollar * 10000) / 10000 : null,
+          avgOfferedOdds: avgOfferedOdds != null ? Math.round(avgOfferedOdds) : null,
+          avgVigPct: avgVig != null ? Math.round(avgVig * 10000) / 100 : null, // % bettor disadvantage
+        };
+      }
+
+      const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const series = buckets.map((b, idx) => {
+        const dow = dayOfWeekFilter != null ? dayOfWeekFilter : Math.floor(idx / 24);
+        const hour = dayOfWeekFilter != null ? idx : (idx % 24);
+        const entry = {
+          bucketIndex: idx,
+          etDay: dayLabels[dow],
+          etHour: hour,
+          label: `${dayLabels[dow]} ${String(hour).padStart(2, '0')}:00 ET`,
+          ...summarize(b.rows),
+        };
+        if (includeSportBreakdown && b.rows.length > 0) {
+          entry.bySport = {};
+          for (const [sp, lst] of Object.entries(b.bySport)) {
+            entry.bySport[sp] = summarize(lst);
+          }
+        }
+        return entry;
+      });
+
+      res.json({
+        ok: true,
+        window: { from: fromIso, to: toIso, days },
+        sportFilter,
+        dayOfWeekFilter,
+        includeSportBreakdown,
+        totalRowsScanned: rows.length,
+        totalRowsBucketed: filtered,
+        series,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Freeze a baseline snapshot for before/after comparison.
   // POST /latency-baseline/capture → freeze current stats as baseline
   // GET  /latency-baseline         → return frozen baseline + current delta
