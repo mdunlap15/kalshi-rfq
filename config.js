@@ -341,23 +341,41 @@ const config = {
     // markets (MMA/boxing move on news; NFL moves on injury reports), looser
     // for slow Odds-API fallback sports that refresh less often.
     // Falls back to stalePriceMinutes if sport not listed.
-    stalePriceMinutesBySport: {
-      'mma_mixed_martial_arts': 3,
-      'boxing_boxing': 3,
-      'americanfootball_nfl': 4,
-      'americanfootball_ncaaf': 4,
-      'basketball_ncaab': 5,
-      'tennis': 4,
-      'basketball_wnba': 5,
-      'golf_pga_championship': 5,
-      // Golf matchups come from DataGolf and only refresh on the main 10-min
-      // cycle (not in the SharpAPI delta or Odds-API fast-refresh loops), so
-      // the effective worst-case cache age is ~10 min + fetch time. A 25-min
-      // threshold gives a 15-min buffer over the refresh interval — matchup
-      // lines between comparable golfers are stable enough that a somewhat
-      // older consensus is still tradeable.
-      'golf_matchups': 25,
-    },
+    // Mergeable via STALE_PRICE_MINUTES_BY_SPORT JSON env var so Mike can
+    // tune live without a redeploy.
+    stalePriceMinutesBySport: (() => {
+      const defaults = {
+        'mma_mixed_martial_arts': 3,
+        'boxing_boxing': 3,
+        'americanfootball_nfl': 4,
+        'americanfootball_ncaaf': 4,
+        'basketball_ncaab': 5,
+        'tennis': 4,
+        'basketball_wnba': 5,
+        'golf_pga_championship': 5,
+        // MLB game-line moves on lineup news / scratches / weather within the
+        // 10-min default. Verified 2026-05-02 ATL @ COL: cached Pin -168 while
+        // live had moved to -199 (~7pp implied jump) on lineup news. Tighten to
+        // 3 min so the next move triggers a re-fetch before the next RFQ.
+        'baseball_mlb': 3,
+        // Golf matchups come from DataGolf and only refresh on the main 10-min
+        // cycle (not in the SharpAPI delta or Odds-API fast-refresh loops), so
+        // the effective worst-case cache age is ~10 min + fetch time. A 25-min
+        // threshold gives a 15-min buffer over the refresh interval — matchup
+        // lines between comparable golfers are stable enough that a somewhat
+        // older consensus is still tradeable.
+        'golf_matchups': 25,
+      };
+      try {
+        const raw = process.env.STALE_PRICE_MINUTES_BY_SPORT;
+        if (!raw) return defaults;
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return { ...defaults, ...parsed };
+      } catch (e) {
+        // bad JSON — fall through to defaults
+      }
+      return defaults;
+    })(),
     // Confirmation-time re-price drift threshold. If current fair prob drifts
     // by more than this fraction from the original quote, reject the confirm.
     confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
