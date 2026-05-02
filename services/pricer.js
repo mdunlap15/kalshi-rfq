@@ -1216,26 +1216,38 @@ function priceParlay(legs, opts = {}) {
   // add per-combo tuning). If ml_total is re-enabled later, extend the
   // combo check here and consider a dedicated correlation factor.
   let sgpCorrelationFactor = 1;
-  const sgpCorrelationSign = (function() {
-    if (!isSGPParlay) return null;
-    if ((opts.sgpCombo || null) !== 'spread_total') return null;
-    if (pricedLegs.length !== 2) return null;
-    // Verify structure — both a spread leg and a total leg — before
-    // applying. If the combo key said spread_total but we can't find
-    // one of each, bail safely rather than mis-apply.
-    let spreadLeg = null, totalLeg = null;
+  let sgpCorrelationCombo = null; // 'spread_total' | 'ml_total' | null
+  if (isSGPParlay && pricedLegs.length === 2) {
+    // Detect the structural combo from the actual legs rather than
+    // relying solely on opts.sgpCombo. The upstream sgpCombo classifier
+    // historically only set 'spread_total'; auto-detect ml_total too so
+    // those SGPs ALSO get a correlation factor instead of paying full
+    // sgpVigMultiplier with zero offset.
+    let spreadLeg = null, totalLeg = null, mlLeg = null;
     for (const l of pricedLegs) {
       const mt = l.lineInfo.marketType;
       if (mt === 'spread') spreadLeg = l;
       else if (mt === 'total') totalLeg = l;
+      else if (mt === 'moneyline') mlLeg = l;
     }
-    if (!spreadLeg || !totalLeg) return null;
-    // Always positive — see comment block above.
-    return 'positive';
-  })();
-  if (sgpCorrelationSign === 'positive') {
-    sgpCorrelationFactor = config.pricing.sgpCorrelationPositive || 1;
+    if (spreadLeg && totalLeg) sgpCorrelationCombo = 'spread_total';
+    else if (mlLeg && totalLeg) sgpCorrelationCombo = 'ml_total';
   }
+  if (sgpCorrelationCombo) {
+    const byCombo = config.pricing.sgpCorrelationByCombo || {};
+    // Per-combo factor wins; legacy sgpCorrelationPositive is the
+    // fallback for spread_total to keep existing tuning behavior when
+    // the new map isn't configured.
+    if (byCombo[sgpCorrelationCombo] != null) {
+      sgpCorrelationFactor = byCombo[sgpCorrelationCombo];
+    } else if (sgpCorrelationCombo === 'spread_total') {
+      sgpCorrelationFactor = config.pricing.sgpCorrelationPositive || 1;
+    }
+  }
+  // Maintain the existing log/instrumentation interface for
+  // backward-compat with anything that reads sgpCorrelationSign.
+  const sgpCorrelationSign = sgpCorrelationFactor > 1 ? 'positive'
+    : sgpCorrelationFactor < 1 ? 'negative' : null;
 
   // K-prop + same-team ML SGP carve-out (M3 carve-out, operator-approved
   // 2026-04-27). When the parlay is exactly 2 legs (one player_strikeouts

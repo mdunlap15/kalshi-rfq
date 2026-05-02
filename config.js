@@ -509,6 +509,41 @@ const config = {
     // acceptance + ROI data. Set POSITIVE=1 and NEGATIVE=1 to disable.
     sgpCorrelationPositive: parseFloat(process.env.SGP_CORRELATION_POSITIVE) || 1.15,
     sgpCorrelationNegative: parseFloat(process.env.SGP_CORRELATION_NEGATIVE) || 0.90,
+    // Per-combo correlation factors. The legacy single sgpCorrelationPositive
+    // applied only to spread_total. Operator caught SGP fill rate at 0%
+    // across all combo types, including ml_total which gets sgpVigMultiplier
+    // applied on TOP of zero correlation discount — pricing every ml+total
+    // SGP looser than fair AND wider with vig, double-disadvantage.
+    //
+    // Map keys are sorted alphabetically: 'ml_total' (not 'total_ml').
+    // Defaults are conservative — calibrated below empirical book discounts
+    // so we don't over-boost fair on weak data. Tune up gradually with
+    // acceptance/ROI data via SGP_CORRELATION_BY_COMBO env JSON map.
+    //
+    //   spread_total : 1.15 (existing default — moderate, see comment above)
+    //   ml_total     : 1.10 (smaller — strongest when team wins AND scores;
+    //                        weaker when team wins low-scoring or blowout
+    //                        with under)
+    //   ml_spread    : not listed; correlation rules already block this
+    //                  combo (anti-arb) regardless of pricing
+    //   3+leg combos : not yet supported; use 1.0 (no boost) until calibrated
+    sgpCorrelationByCombo: (() => {
+      const defaults = { spread_total: 1.15, ml_total: 1.10 };
+      const raw = process.env.SGP_CORRELATION_BY_COMBO;
+      if (!raw || !raw.trim()) return defaults;
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const out = { ...defaults };
+          for (const [k, v] of Object.entries(parsed)) {
+            const num = parseFloat(v);
+            if (Number.isFinite(num) && num > 0) out[k] = num;
+          }
+          return out;
+        }
+      } catch (e) { /* fall through to defaults */ }
+      return defaults;
+    })(),
     // startingBankroll anchors the account-based P&L calculation
     // (balance − starting). If env var is NOT set, leave as null so the
     // dashboard falls back to the tracker's runningPnL (derived from
