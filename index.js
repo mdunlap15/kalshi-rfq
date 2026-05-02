@@ -1963,15 +1963,34 @@ function startStatusServer() {
         ? Number(req.query.redBoxThreshold)
         : 0.17;
 
+      // Parlay-shape filter — narrows results to a specific parlay
+      // structure for monitoring SGP / prop fill rates separately from
+      // game-only flow. Values: 'sgp', 'prop', 'game_only' (no value =
+      // no shape filter).
+      const parlayShape = req.query.parlayShape || null;
+      function classifyShape(legs) {
+        if (!Array.isArray(legs) || legs.length < 1) return 'game_only';
+        const hasProp = legs.some(l => /^player_/.test(l.market || l.marketType || ''));
+        if (hasProp) return 'prop';
+        // SGP: 2+ legs all on the same pxEventId
+        if (legs.length < 2) return 'game_only';
+        const eids = new Set(legs.map(l => l.pxEventId).filter(Boolean));
+        if (eids.size === 1) return 'sgp';
+        return 'game_only';
+      }
+
       const rows = await db.loadOrdersInDateRange(from, to, { groupBy: 'quoted_at', maxRows: 50000 });
 
       const buckets = { v1: [], v2: [], overall: [] };
       for (const r of rows) {
         const arm = (r.meta && r.meta.abArm) || 'v1';
+        const legs = r.legs || (r.meta && r.meta.legs) || [];
         if (sportFilter) {
-          const legs = r.legs || (r.meta && r.meta.legs) || [];
           const sports = new Set(legs.map(l => l.sport).filter(Boolean));
           if (!sports.has(sportFilter)) continue;
+        }
+        if (parlayShape) {
+          if (classifyShape(legs) !== parlayShape) continue;
         }
         buckets.overall.push(r);
         if (arm === 'v2') buckets.v2.push(r);
