@@ -1265,6 +1265,110 @@ async function seedAllLines() {
       }
     }
 
+    // ----- PRE-SEED PLAYER PROPS -----
+    // PX returns prop markets in fetchMarkets, but the mainMarkets filter
+    // above excludes them (gametype only). Without pre-seed, props only
+    // register via resolveUnknownLine when bettors RFQ specific players —
+    // and most RFQs decline as "unknown legs" before that bridge fires
+    // (we caught 106K such declines/day). Pre-seeding mirrors the
+    // on-demand bridge at seed time so all eligible props live in the
+    // index from boot, converting unknown-legs declines into real
+    // priced/declined-with-fair-prob outcomes.
+    //
+    // Cost: ~1 TOA per-event-per-market call per refresh cycle on top of
+    // the existing fetch — within Hobby quota at typical volume. Each
+    // call's response is cached so multi-player markets only fetch once.
+    try {
+      const propAllowlist = (config.pricing && config.pricing.propLaunchAllowlist) || new Set();
+      if (propAllowlist.size > 0 && (matchedHome && matchedAway)) {
+        const ws = _getWsModule();
+        const minBooks = (config.pricing && config.pricing.propMinBooksWithBothSides) || 3;
+        const trustedSet = (config.pricing && config.pricing.propTrustedSingleBooks) || [];
+        for (const market of markets) {
+          if (!market || !market.name) continue;
+          let propType = null;
+          let toaMarketKey = null;
+          if (ws) {
+            if (sportKey.includes('basketball')) {
+              propType = ws._classifyNbaProp(market.name);
+              toaMarketKey = _NBA_PROP_TO_TOA_MARKET[propType];
+            } else if (sportKey.includes('hockey')) {
+              propType = ws._classifyNhlProp(market.name);
+              toaMarketKey = _NHL_PROP_TO_TOA_MARKET[propType];
+            } else if (sportKey === 'baseball_mlb') {
+              propType = ws._classifyMlbProp(market.name);
+              toaMarketKey = _MLB_PROP_TO_TOA_MARKET[propType];
+            }
+          }
+          if (!propType || !toaMarketKey) continue;
+          if (!propAllowlist.has(sportKey + '.' + propType)) continue;
+          const playerName = ws ? ws._extractPlayerNameFromPropMarket(market.name) : null;
+          if (!playerName) continue;
+
+          // Parse PX selections (over + under for this player at the line).
+          let parsedProp = [];
+          try { parsedProp = px.parseMarketSelections(market) || []; } catch { continue; }
+          if (parsedProp.length === 0) continue;
+          // Use the first selection's line value for the TOA lookup; all
+          // sides on a given market share the same line.
+          const sampleLine = parsedProp.find(s => s.line != null)?.line ?? null;
+
+          let lookup = null;
+          try {
+            lookup = await oddsFeed.lookupTheOddsApiPlayerProp(
+              sportKey, toaMarketKey,
+              { homeTeam: matchedHome, awayTeam: matchedAway, startTime: event.scheduled || null },
+              playerName, sampleLine,
+            );
+          } catch (err) {
+            log.debug('Lines', `Pre-seed prop lookup error for ${playerName} ${propType}: ${err.message}`);
+            continue;
+          }
+          if (!lookup || lookup.fairProbOver == null || lookup.fairProbUnder == null) continue;
+          const both = lookup.booksWithBothSides || 0;
+          const trustedAlone = both === 1 && (lookup.books || []).some(b => trustedSet.includes(String(b).toLowerCase()));
+          if (both < minBooks && !trustedAlone) continue;
+
+          // Register BOTH sides — bettors will RFQ either over or under
+          // and both lineIds need to be in the index ahead of time.
+          for (const sel of parsedProp) {
+            if (!sel.lineId) continue;
+            if (sel.selection !== 'over' && sel.selection !== 'under') continue;
+            const fairProb = sel.selection === 'over' ? lookup.fairProbOver : lookup.fairProbUnder;
+            lineIndex[sel.lineId] = {
+              sport: sportKey,
+              pxEventId: event.event_id,
+              pxEventName: event.name,
+              marketType: 'player_' + propType,
+              marketName: market.name,
+              selection: sel.selection,
+              teamName: playerName,
+              line: sel.line,
+              homeTeam: matchedHome,
+              awayTeam: matchedAway,
+              oddsApiSport: sportKey,
+              oddsApiMarket: toaMarketKey,
+              oddsApiSelection: sel.selection,
+              startTime: event.scheduled || null,
+              playerName,
+              propType,
+              fairProb,
+              fairProbOver: lookup.fairProbOver,
+              fairProbUnder: lookup.fairProbUnder,
+              booksWithBothSides: lookup.booksWithBothSides,
+              propBooks: lookup.books,
+              propSource: 'theoddsapi',
+              propFetchedAt: lookup.fetchedAt || Date.now(),
+            };
+            totalLines++;
+            matchedLines++;
+          }
+        }
+      }
+    } catch (err) {
+      log.warn('Lines', `Pre-seed props pass error for ${event.name}: ${err.message}`);
+    }
+
     // Small delay to avoid hammering PX API
     await new Promise(r => setTimeout(r, 100));
   }
