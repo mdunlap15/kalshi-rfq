@@ -10776,8 +10776,22 @@
       const startDate = parseLegStart(l.startTime);
       const startMs = startDate ? startDate.getTime() : null;
       const isUpcoming = startMs && startMs > now;
-      // Games typically last: MLB ~3.5h, NBA ~2.5h, NHL ~2.5h, soccer ~2h, tennis ~3h
-      const isLikelyInProgress = startMs && !isUpcoming && (now - startMs) < 4 * 3600 * 1000;
+      // Per-sport typical game duration. Soccer wraps in ~2h; the prior
+      // universal 4h fallback was muting confirmed inferred losses on
+      // soccer legs that had already finished (operator caught BV
+      // Borussia Dortmund DNB ML showing a blue 'live' dot 3+ hours
+      // post-kickoff while the parlay was already 'Won - Awaiting
+      // Settle'). Use sport-aware caps so a confirmed inferred result
+      // surfaces as soon as the natural game length elapses.
+      const sportLower = (l.sport || l.oddsApiSport || '').toLowerCase();
+      let typicalDurationMs;
+      if (sportLower.startsWith('soccer'))                     typicalDurationMs = 2.5 * 3600 * 1000;
+      else if (sportLower.includes('basketball'))              typicalDurationMs = 3 * 3600 * 1000;
+      else if (sportLower.includes('hockey') || sportLower.includes('nhl')) typicalDurationMs = 3 * 3600 * 1000;
+      else if (sportLower === 'tennis')                        typicalDurationMs = 4 * 3600 * 1000;
+      else if (sportLower === 'mma_mixed_martial_arts')        typicalDurationMs = 1.5 * 3600 * 1000;
+      else                                                      typicalDurationMs = 4 * 3600 * 1000; // MLB/default
+      const isLikelyInProgress = startMs && !isUpcoming && (now - startMs) < typicalDurationMs;
       const hasPxSettlement = l.settlementStatus || l.settlement_status;
 
       let ls = getLegResult(l) || l.status || 'pending';
@@ -10787,7 +10801,16 @@
       if (isUpcoming && !hasPxSettlement) {
         ls = 'upcoming';
       } else if (isLikelyInProgress && isInferred && !hasPxSettlement) {
-        ls = 'live';
+        // Only override to 'live' if the inferred result is ambiguous
+        // (no clear win/loss yet). When the inference is a definitive
+        // 'won' or 'lost', trust it — ESPN's score poller only flags
+        // those when the game's actually final, so keeping it as 'live'
+        // would mask a real result. Verified 2026-05-03 BV Dortmund DNB:
+        // ESPN had inferredResult='lost' but dashboard showed 'live'
+        // because game was within 4h of kickoff.
+        if (l.inferredResult !== 'won' && l.inferredResult !== 'lost') {
+          ls = 'live';
+        }
       }
 
       let lIcon, lColor, lTitle;
