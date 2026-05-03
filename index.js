@@ -5448,6 +5448,26 @@ function startStatusServer() {
     res.json({ ok: true, paused: false });
   });
 
+  // Admin: send a Telegram message to the operator's chat. Useful for
+  // background agents to surface findings without polling the dashboard,
+  // or one-shot triage notifications. No-ops if TELEGRAM_BOT_TOKEN /
+  // TELEGRAM_CHAT_ID env vars aren't set.
+  // Body: { message: string, parseMode?: 'Markdown'|'HTML' }
+  app.post('/admin/notify', async (req, res) => {
+    try {
+      const telegram = require('./services/telegram');
+      const { message, parseMode } = req.body || {};
+      if (!message || typeof message !== 'string') {
+        return res.status(400).json({ ok: false, error: 'message (string) required' });
+      }
+      const out = await telegram.sendMessage(message, { parseMode });
+      res.status(out.ok ? 200 : 400).json(out);
+    } catch (err) {
+      log.error('API', `/admin/notify failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Admin: manually override a leg's inferredResult. For cases where the
   // automatic re-validation can't heal a wrongly-set leg (e.g. the score
   // source no longer carries the historical day's game).
