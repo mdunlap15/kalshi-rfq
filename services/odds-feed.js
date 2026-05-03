@@ -7171,7 +7171,11 @@ async function getGameResult(sport, homeTeam, awayTeam, startTime) {
   // ESPN poller fills in the background — never makes a network call.
   try {
     const espnScores = require('./espn-scores');
-    const espnHit = espnScores.getEspnGameResult(sport, homeTeam, awayTeam);
+    // Pass startTime so ESPN disambiguates same-team back-to-back days
+    // (e.g. Blue Jays played 5/2 + 5/3 — without time-match the cache
+    // would return whichever game it sees first, flipping a resolved
+    // leg's status).
+    const espnHit = espnScores.getEspnGameResult(sport, homeTeam, awayTeam, startTime);
     if (espnHit && espnHit.completed) return espnHit;
     // Hit but not completed yet — fall through to TOA in case TOA has
     // a result ESPN hasn't marked completed yet.

@@ -173,15 +173,21 @@ async function refreshAll() {
 //
 // Match by normalized team-pair, with displayName / shortDisplayName /
 // athlete alias fallbacks (tennis/golf use player names; UFC uses fighter
-// names). targetTime is unused for now — ESPN's scoreboard only carries
-// today + adjacent days, so doubleheader collisions are rare. If needed
-// we can disambiguate by closest-by-time later.
-function getEspnGameResult(sportKey, homeTeam, awayTeam) {
+// names). When startTime is provided AND multiple games match the same
+// team-pair (back-to-back days, doubleheader, mid-week + weekend matchups),
+// pick the one whose commenceTime is closest to startTime — otherwise
+// the cache may carry yesterday's win + today's loss for the same teams
+// and return whichever it sees first, flipping a resolved leg's status.
+function getEspnGameResult(sportKey, homeTeam, awayTeam, startTime) {
   const entry = cache[sportKey];
   if (!entry) return null;
   const nHome = _normalizeTeam(homeTeam);
   const nAway = _normalizeTeam(awayTeam);
   if (!nHome || !nAway) return null;
+  const targetMs = startTime ? new Date(startTime).getTime() : null;
+  let bestMatch = null;
+  let bestFlipped = false;
+  let bestDiffMs = Infinity;
   for (const g of entry.games) {
     const candidates = [
       [_normalizeTeam(g.homeTeam), _normalizeTeam(g.awayTeam)],
@@ -204,24 +210,47 @@ function getEspnGameResult(sportKey, homeTeam, awayTeam) {
       if (flip) { matched = true; flipped = true; break; }
     }
     if (!matched) continue;
-    let winner = null;
-    if (g.completed && g.homeScore != null && g.awayScore != null) {
-      if (g.homeScore > g.awayScore) winner = flipped ? 'away' : 'home';
-      else if (g.awayScore > g.homeScore) winner = flipped ? 'home' : 'away';
-      else winner = 'tie';
+    if (targetMs && g.commenceTime) {
+      const gMs = new Date(g.commenceTime).getTime();
+      if (Number.isFinite(gMs)) {
+        const diff = Math.abs(gMs - targetMs);
+        if (diff < bestDiffMs) {
+          bestDiffMs = diff;
+          bestMatch = g;
+          bestFlipped = flipped;
+        }
+        continue;
+      }
     }
-    return {
-      completed: g.completed,
-      homeScore: flipped ? g.awayScore : g.homeScore,
-      awayScore: flipped ? g.homeScore : g.awayScore,
-      winner,
-      state: g.state,
-      statusName: g.statusName,
-      league: g.league,
-      source: 'espn',
-    };
+    // No targetMs OR no commenceTime on this game — keep first match
+    // (preserves prior behavior) but only if nothing time-matched yet.
+    if (bestMatch === null) {
+      bestMatch = g;
+      bestFlipped = flipped;
+    }
   }
-  return null;
+  if (!bestMatch) return null;
+  // Refuse to use a far-off match when a startTime was provided. If the
+  // closest match is more than 24h away from the leg's startTime, we're
+  // almost certainly looking at the wrong day's game — return null and
+  // let the caller fall through to TOA, which has its own time match.
+  if (targetMs && bestDiffMs > 24 * 60 * 60 * 1000) return null;
+  let winner = null;
+  if (bestMatch.completed && bestMatch.homeScore != null && bestMatch.awayScore != null) {
+    if (bestMatch.homeScore > bestMatch.awayScore) winner = bestFlipped ? 'away' : 'home';
+    else if (bestMatch.awayScore > bestMatch.homeScore) winner = bestFlipped ? 'home' : 'away';
+    else winner = 'tie';
+  }
+  return {
+    completed: bestMatch.completed,
+    homeScore: bestFlipped ? bestMatch.awayScore : bestMatch.homeScore,
+    awayScore: bestFlipped ? bestMatch.homeScore : bestMatch.awayScore,
+    winner,
+    state: bestMatch.state,
+    statusName: bestMatch.statusName,
+    league: bestMatch.league,
+    source: 'espn',
+  };
 }
 
 // Periodic loop. Caller (index.js) starts this on boot.
