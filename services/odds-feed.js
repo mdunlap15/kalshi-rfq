@@ -6096,6 +6096,18 @@ async function fetchOddsDelta(sport) {
 
   try {
     lastDeltaTimestamp[sport] = new Date().toISOString();
+    // Bump fetchedAt on every successful delta poll, even when zero rows
+    // changed. Without this, staleness was measuring "time since last
+    // price move" instead of "time since last successful refresh check"
+    // — late at night when NBA/MLB lines stop moving for 7-8 minutes,
+    // the cache was being classified stale despite the 30s delta loop
+    // happily polling and confirming nothing had changed. Verified
+    // 2026-05-02: NBA Cavaliers ML and player_hitter_hits parlays
+    // declined as "stale 5m / 4m" while delta polls were succeeding
+    // every 30s with zero rows.
+    if (oddsCache[sport]) {
+      oddsCache[sport].fetchedAt = Date.now();
+    }
     if (rows.length === 0) {
       log.debug('OddsFeed', `No delta changes for ${sport}`);
       return null;
