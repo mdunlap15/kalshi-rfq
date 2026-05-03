@@ -6592,7 +6592,23 @@ const TEAM_ABBREV_TO_CANONICAL = {
   'San Antonio': 'San Antonio Spurs',
   'Philadelphia': 'Philadelphia 76ers',
   'Los Angeles L': 'Los Angeles Lakers',
-  // Extend here: add any "<3-char-caps> <mascot>" variants we find in logs
+
+  // Soccer short-vs-full club name variants. Verified 2026-05-03 via
+  // /odds-events scan: each pair created two cache entries for the
+  // same fixture, dropping fair-prob coverage to zero on whichever
+  // entry PX matched against the operator wasn't using.
+  //
+  // Italy (Serie A):
+  'Verona': 'Hellas Verona',
+  // Spain (La Liga / Segunda):
+  'Oviedo': 'Real Oviedo',
+  // Argentina (Primera Division):
+  'Rivadavia': 'Independiente Rivadavia',
+  'CA Aldosivi': 'Aldosivi',
+  'Racing Cordoba': 'Racing de Cordoba',
+  // Extend here: add any short-vs-full soccer variants we find in /odds-events
+  // duplicate-pair scans. Tennis last-name-only and MMA name-spelling drift
+  // need fuzzy matching, not canonicalization — separate effort.
 };
 
 /**
