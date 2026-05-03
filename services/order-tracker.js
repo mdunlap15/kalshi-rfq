@@ -4148,23 +4148,27 @@ async function checkLegResults() {
   for (const o of confirmed) {
     const legs = o.meta?.legs || o.legs || [];
     for (const l of legs) {
-      // Skip legs that are already resolved — BUT clear stale inferredResult
-      // for games that started recently (< 4h ago) since it may be from a
-      // previous day's game for the same teams
+      // Re-validation strategy:
+      //  1. If the game started <4h ago and inferredResult is set, clear it
+      //     and recompute — protects against yesterday's value lingering
+      //     when same-team teams play back-to-back days.
+      //  2. Otherwise keep the existing value, BUT still run the fresh
+      //     lookup. If the new score-based result definitively
+      //     contradicts the stored inferredResult, override + log. This
+      //     heals legs set wrong by an older buggy lookup (the ESPN
+      //     time-disambiguation fix in commit 3448105 — pre-fix, a 5/2
+      //     leg could be overwritten with 5/3's result for the same
+      //     team-pair).
+      //  3. If no existing inferredResult, run the lookup as usual.
       if (l.inferredResult) {
         const st = l.startTime || l.start_time;
         if (st) {
           const startMs = new Date(st).getTime();
           const now = Date.now();
           if (startMs > 0 && (now - startMs) < 4 * 3600 * 1000) {
-            // Game started < 4h ago — inferredResult may be stale from yesterday
             log.debug('Results', `Clearing stale inferredResult for ${l.team} (game started ${Math.round((now-startMs)/60000)}min ago)`);
             l.inferredResult = null;
-          } else {
-            continue; // truly resolved — old completed game
           }
-        } else {
-          continue;
         }
       }
       if (!l.sport || !l.homeTeam || !l.awayTeam) continue;
@@ -4177,45 +4181,45 @@ async function checkLegResults() {
       const market = l.market || l.marketType;
       const selection = l.selection || l.oddsApiSelection;
 
+      // Compute the fresh result from this score-based lookup.
+      let freshResult = null;
       if (market === 'moneyline') {
-        // Moneyline: did the selected team win?
         // Only set a result if we have a definitive winner. Unknown/missing winner
         // must NOT default to 'push' — moneylines in NBA/NHL/MLB can't push (OT,
         // shootout, extra innings). A silent push default caused us to record
         // pushed parlays as $0 P&L when they were actually losses.
         if (result.winner === 'home' || result.winner === 'away') {
-          if (selection === 'home') {
-            l.inferredResult = result.winner === 'home' ? 'won' : 'lost';
-          } else if (selection === 'away') {
-            l.inferredResult = result.winner === 'away' ? 'won' : 'lost';
-          }
+          if (selection === 'home') freshResult = result.winner === 'home' ? 'won' : 'lost';
+          else if (selection === 'away') freshResult = result.winner === 'away' ? 'won' : 'lost';
         }
       } else if (market === 'spread') {
-        // Spread: did the selected team cover?
         const line = l.line != null ? Number(l.line) : null;
         if (line != null) {
           const homeMargin = result.homeScore - result.awayScore;
           if (selection === 'home') {
             const adjusted = homeMargin + line;
-            l.inferredResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
+            freshResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
           } else {
             const awayMargin = result.awayScore - result.homeScore;
             const adjusted = awayMargin + Math.abs(line);
-            l.inferredResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
+            freshResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
           }
         }
       } else if (market === 'total') {
-        // Total: over/under the line
         const line = l.line != null ? Number(l.line) : null;
         if (line != null) {
           const total = result.homeScore + result.awayScore;
-          if (selection === 'over') {
-            l.inferredResult = total > line ? 'won' : total < line ? 'lost' : 'push';
-          } else if (selection === 'under') {
-            l.inferredResult = total < line ? 'won' : total > line ? 'lost' : 'push';
-          }
+          if (selection === 'over') freshResult = total > line ? 'won' : total < line ? 'lost' : 'push';
+          else if (selection === 'under') freshResult = total < line ? 'won' : total > line ? 'lost' : 'push';
         }
       }
+
+      // Decide whether to apply freshResult.
+      if (freshResult == null) continue; // inconclusive — leave whatever's there
+      if (l.inferredResult && l.inferredResult !== freshResult) {
+        log.warn('Results', `Overriding inferredResult for ${l.team} ${market}: stored=${l.inferredResult} → fresh=${freshResult} (${result.homeScore}-${result.awayScore}, startTime=${l.startTime})`);
+      }
+      l.inferredResult = freshResult;
 
       if (l.inferredResult) {
         resolved++;
