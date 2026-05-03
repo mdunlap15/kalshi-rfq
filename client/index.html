@@ -8162,10 +8162,14 @@
           + '</tr>';
         const rows = d.orders.filter(o => o.pnl != null).map(o => {
           const legs = o.legs || o.meta?.legs || [];
-          const selections = legs.map(l => {
-            const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
-            return name.length > 30 ? name.substring(0, 28) + '..' : name;
-          }).join(', ');
+          // formatParlaySelections handles bare Over/Under legs by appending
+          // the away/home matchup ("ATL @ COL Over 8.5") so the operator can
+          // see the matchup without expanding. Pre-fix: simple teamName
+          // truncate produced "Under, Under" with no game context.
+          const selectionsFull = formatParlaySelections(legs);
+          const selections = selectionsFull.length > 60
+            ? selectionsFull.substring(0, 58) + '..'
+            : selectionsFull;
           const timeStr = (o.confirmedAt || '').substring(11, 16) || '--:--';
           const oddsNum = o.confirmedOdds || o.offeredOdds || 0;
           const result = o.settlementResult || (o.status || '').replace('settled_', '') || '-';
@@ -8173,7 +8177,7 @@
             o, legs,
             time: timeStr,
             timeSort: o.settledAt || o.confirmedAt || '',
-            selections,
+            selections, selectionsFull,
             legCount: legs.length,
             oddsNum,
             oddsStr: oddsNum ? (oddsNum > 0 ? '+' + oddsNum : '' + oddsNum) : '-',
@@ -8199,15 +8203,29 @@
         for (const r of rows) {
           const pnlCls2 = r.pnl > 0 ? 'positive' : r.pnl < 0 ? 'negative' : 'neutral';
           const resultColor = r.result === 'won' ? 'var(--green)' : r.result === 'lost' ? 'var(--red)' : 'var(--text3)';
-          svg += '<tr style="border-top:1px solid var(--border);">';
+          // Parlay-level expand: clicking the row toggles a hidden sub-row
+          // showing the full leg breakdown (status, market, line, per-book
+          // odds, FAIR, MY ODDS) via the same buildLegTable used elsewhere.
+          // Namespace ID with 'dvp-' so it doesn't collide with the Orders
+          // tab's daily-volume table.
+          const pid = (r.o.parlayId || r.o.orderUuid || '').toString().replace(/[^a-z0-9]/gi, '');
+          const parlayDetailId = pid ? 'dvp-' + pid : '';
+          const expanded = parlayDetailId && expandedRows.has(parlayDetailId);
+          const click = parlayDetailId ? ' onclick="event.stopPropagation(); toggleDetailRow(\'' + parlayDetailId + '\')" style="cursor:pointer;border-top:1px solid var(--border);"' : ' style="border-top:1px solid var(--border);"';
+          svg += '<tr' + click + '>';
           svg += '<td style="padding:2px 6px;white-space:nowrap;">' + r.time + '</td>';
-          svg += '<td style="padding:2px 6px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + r.selections.replace(/"/g, '&quot;') + '">' + r.selections + '</td>';
+          svg += '<td style="padding:2px 6px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + r.selectionsFull.replace(/"/g, '&quot;') + '">' + r.selections + '</td>';
           svg += '<td style="padding:2px 6px;text-align:center;">' + r.legCount + '</td>';
           svg += '<td style="padding:2px 6px;text-align:right;">' + r.oddsStr + '</td>';
           svg += '<td style="padding:2px 6px;text-align:right;">' + fmtDollar(r.stake) + '</td>';
           svg += '<td style="padding:2px 6px;text-align:right;" class="' + pnlCls2 + '">' + fmtPnl(r.pnl) + '</td>';
           svg += '<td style="padding:2px 6px;text-align:center;color:' + resultColor + ';">' + r.result.charAt(0).toUpperCase() + r.result.slice(1) + '</td>';
           svg += '</tr>';
+          if (parlayDetailId) {
+            svg += '<tr id="' + parlayDetailId + '" style="display:' + (expanded ? 'table-row' : 'none') + ';"><td colspan="7" style="padding:6px 12px; background:var(--surface);">';
+            svg += buildLegTable(r.legs, { pad: '4px 8px', showStatus: true, showSport: true });
+            svg += '</td></tr>';
+          }
         }
         svg += '</table></td></tr>';
       }
@@ -8334,10 +8352,13 @@
           + '</tr>';
         const rows = d.orders.filter(o => o.pnl != null).map(o => {
           const legs = o.legs || o.meta?.legs || [];
-          const selections = legs.map(l => {
-            const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
-            return name.length > 30 ? name.substring(0, 28) + '..' : name;
-          }).join(', ');
+          // formatParlaySelections handles bare Over/Under legs by appending
+          // the away/home matchup ("ATL @ COL Over 8.5") so the operator can
+          // see the matchup without expanding.
+          const selectionsFull = formatParlaySelections(legs);
+          const selections = selectionsFull.length > 60
+            ? selectionsFull.substring(0, 58) + '..'
+            : selectionsFull;
           const timeStr = (o.confirmedAt || '').substring(11, 16) || '--:--';
           const oddsNum = o.confirmedOdds || o.offeredOdds || 0;
           const result = o.settlementResult || (o.status || '').replace('settled_', '') || '-';
@@ -8345,7 +8366,7 @@
             o, legs,
             time: timeStr,
             timeSort: o.settledAt || o.confirmedAt || '',
-            selections, legCount: legs.length, oddsNum,
+            selections, selectionsFull, legCount: legs.length, oddsNum,
             oddsStr: oddsNum ? (oddsNum > 0 ? '+' + oddsNum : '' + oddsNum) : '-',
             stake: o.confirmedStake || 0,
             pnl: o.pnl,
@@ -8369,15 +8390,28 @@
         for (const r of rows) {
           const pnlCls2 = r.pnl > 0 ? 'positive' : r.pnl < 0 ? 'negative' : 'neutral';
           const resultColor = r.result === 'won' ? 'var(--green)' : r.result === 'lost' ? 'var(--red)' : 'var(--text3)';
-          html += '<tr style="border-top:1px solid var(--border);">';
+          // Parlay-level expand: clicking the row toggles a hidden sub-row
+          // with the full leg breakdown via buildLegTable. Namespace ID
+          // with 'odvp-' (Orders-tab Daily Volume Parlay) so it doesn't
+          // collide with the Analytics tab's table.
+          const pid = (r.o.parlayId || r.o.orderUuid || '').toString().replace(/[^a-z0-9]/gi, '');
+          const parlayDetailId = pid ? 'odvp-' + pid : '';
+          const expanded = parlayDetailId && expandedRows.has(parlayDetailId);
+          const click = parlayDetailId ? ' onclick="event.stopPropagation(); toggleDetailRow(\'' + parlayDetailId + '\')" style="cursor:pointer;border-top:1px solid var(--border);"' : ' style="border-top:1px solid var(--border);"';
+          html += '<tr' + click + '>';
           html += '<td style="padding:2px 10px;white-space:nowrap;">' + r.time + '</td>';
-          html += '<td style="padding:2px 10px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + r.selections.replace(/"/g, '&quot;') + '">' + r.selections + '</td>';
+          html += '<td style="padding:2px 10px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + r.selectionsFull.replace(/"/g, '&quot;') + '">' + r.selections + '</td>';
           html += '<td style="padding:2px 10px;text-align:center;">' + r.legCount + '</td>';
           html += '<td style="padding:2px 10px;text-align:right;">' + r.oddsStr + '</td>';
           html += '<td style="padding:2px 10px;text-align:right;">' + fmtDollar(r.stake) + '</td>';
           html += '<td style="padding:2px 10px;text-align:right;" class="' + pnlCls2 + '">' + fmtPnl(r.pnl) + '</td>';
           html += '<td style="padding:2px 10px;text-align:center;color:' + resultColor + ';">' + r.result.charAt(0).toUpperCase() + r.result.slice(1) + '</td>';
           html += '</tr>';
+          if (parlayDetailId) {
+            html += '<tr id="' + parlayDetailId + '" style="display:' + (expanded ? 'table-row' : 'none') + ';"><td colspan="7" style="padding:6px 12px; background:var(--surface);">';
+            html += buildLegTable(r.legs, { pad: '4px 8px', showStatus: true, showSport: true });
+            html += '</td></tr>';
+          }
         }
         html += '</table></td></tr>';
       }
