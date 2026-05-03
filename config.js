@@ -160,6 +160,39 @@ const config = {
     vigChalkStackSurcharge: parseFloat(process.env.VIG_CHALK_STACK_SURCHARGE) || 0,
     vigChalkStackLegThreshold: parseFloat(process.env.VIG_CHALK_STACK_LEG_THRESHOLD) || 0.60,
     vigChalkStackParlayThreshold: parseFloat(process.env.VIG_CHALK_STACK_PARLAY_THRESHOLD) || 0.25,
+    // Per-leg-count vig multiplier. Applied parlay-level AFTER all per-leg
+    // and chalk-stack adds, multiplying the effective vig (offered/fair − 1)
+    // by a leg-count scaling factor. Closes the structural underpricing on
+    // 4+ leg parlays where variance scales nonlinearly with leg count: a
+    // single bad leg torches many wins, and Pinnacle's per-$ wagered edge
+    // grows visibly with leg count in the boxed low-fair-prob region of
+    // the Parlay Pricing chart. Verified 2026-05-02 7-day rolling P&L by
+    // leg count: 4-leg net −$398 (longshot bombs) and 6-leg net −$237
+    // (chalk stacks slipping past the no-stacking-surcharge default).
+    //
+    // Map keys are leg counts; missing keys default to 1.0 (no change).
+    // Defaults below are conservative starting values — Pinnacle's per-$
+    // edge in the boxed region scales roughly linearly with leg count, so
+    // the recommended multiplier path is 1.25/1.5/1.75/2.0/2.5 for legs
+    // 4/5/6/7/8+. Override live via VIG_BY_LEG_COUNT JSON env var.
+    vigByLegCount: (() => {
+      const defaults = { 4: 1.25, 5: 1.5, 6: 1.75, 7: 2.0, 8: 2.5 };
+      try {
+        const raw = process.env.VIG_BY_LEG_COUNT;
+        if (!raw) return defaults;
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const out = {};
+          for (const [k, v] of Object.entries(parsed)) {
+            const n = parseInt(k, 10);
+            const m = parseFloat(v);
+            if (Number.isFinite(n) && Number.isFinite(m) && m >= 0) out[n] = m;
+          }
+          return Object.keys(out).length ? out : defaults;
+        }
+      } catch (e) { /* bad JSON — fall through to defaults */ }
+      return defaults;
+    })(),
     // Template-exposure ramp: penalizes bets whose canonical parlay signature
     // (sorted team+market+line tuple) has already confirmed N times inside a
     // rolling window. Catches the April 18 failure mode: multiple bettors

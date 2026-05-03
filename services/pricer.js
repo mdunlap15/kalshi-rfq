@@ -1631,6 +1631,36 @@ function priceParlay(legs, opts = {}) {
   }
 
   // -------------------------------------------------------------------
+  // PER-LEG-COUNT VIG MULTIPLIER
+  //
+  // Variance on parlays scales nonlinearly with leg count: a single bad
+  // leg torches many wins, and adversarially-selected high-leg parlays
+  // (longshot bombs at 4-leg, chalk stacks at 6-leg) are exactly where
+  // bettor +EV concentrates. Pinnacle's per-$ wagered edge in the
+  // boxed low-fair-prob region of the Parlay Pricing chart grows
+  // visibly with leg count for this reason.
+  //
+  // We multiply the cumulative vig fraction (offeredImpliedProb / vigFair − 1)
+  // by config.pricing.vigByLegCount[legCount], so the surcharge scales
+  // with whatever vig is already accumulated (longshot ramp, template
+  // ramp, chalk-stack, etc) rather than adding a fixed pp. legCounts
+  // not in the map default to 1.0 (no change), so 2-leg / 3-leg parlays
+  // are unaffected by default.
+  //
+  // Bettor-favorable bookPriceOverride legs (where offered ≤ vigFair)
+  // are skipped — the multiplier would otherwise contract our edge.
+  // -------------------------------------------------------------------
+  const legCountMultMap = config.pricing.vigByLegCount || {};
+  const legCountMult = legCountMultMap[vigLegs.length] || 1.0;
+  if (legCountMult > 1.0 && offeredImpliedProb > vigFair && vigFair > 0) {
+    const currentVigFraction = offeredImpliedProb / vigFair - 1;
+    const scaledOffered = vigFair * (1 + currentVigFraction * legCountMult);
+    if (scaledOffered > offeredImpliedProb) {
+      offeredImpliedProb = Math.min(0.99, scaledOffered);
+    }
+  }
+
+  // -------------------------------------------------------------------
   // PRICING SAFETY NET: cross-check fair against Pinnacle raw compound.
   //
   // Sign-flip bugs on alt spreads have historically been the most dangerous
