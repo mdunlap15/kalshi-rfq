@@ -905,6 +905,122 @@ const GAME_LINE_CONFIGS = {
     altTotalName: /^alt(?:ernate)?\s+total(?:\s+games)?$/i,
     teamTotalName: null,  // tennis doesn't have team_total
   },
+
+  // Soccer leagues. DK posts moneyline as 3-way (home/draw/away) under
+  // "Match Result" or "Three Way Moneyline"; we capture all three sides
+  // and renormalize to 2-way DNB downstream (PX/our system uses DNB).
+  // Spreads are "Asian Handicap" (1.5/2.5/etc); totals are "Total Goals"
+  // or "Match Total Goals".
+  soccer_epl: {
+    leaguePath: 'soccer/england/premier-league',
+    label: 'EPL',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?|home\s+team\s+total|away\s+team\s+total)$/i,
+    threeWayMoneyline: true,
+  },
+  soccer_spain_la_liga: {
+    leaguePath: 'soccer/spain/la-liga',
+    label: 'La Liga',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?)$/i,
+    threeWayMoneyline: true,
+  },
+  soccer_italy_serie_a: {
+    leaguePath: 'soccer/italy/serie-a',
+    label: 'Serie A',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?)$/i,
+    threeWayMoneyline: true,
+  },
+  soccer_germany_bundesliga: {
+    leaguePath: 'soccer/germany/bundesliga',
+    label: 'Bundesliga',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?)$/i,
+    threeWayMoneyline: true,
+  },
+  soccer_france_ligue_one: {
+    leaguePath: 'soccer/france/ligue-1',
+    label: 'Ligue 1',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?)$/i,
+    threeWayMoneyline: true,
+  },
+  soccer_usa_mls: {
+    leaguePath: 'soccer/usa/mls',
+    label: 'MLS',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?)$/i,
+    threeWayMoneyline: true,
+  },
+  soccer_uefa_champs_league: {
+    leaguePath: 'soccer/europe/champions-league',
+    label: 'UCL',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?)$/i,
+    threeWayMoneyline: true,
+  },
+  soccer_uefa_europa_league: {
+    leaguePath: 'soccer/europe/europa-league',
+    label: 'UEL',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?)$/i,
+    threeWayMoneyline: true,
+  },
+  soccer_brazil_campeonato: {
+    leaguePath: 'soccer/brazil/brasileirao-serie-a',
+    label: 'Brasileirão',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?)$/i,
+    threeWayMoneyline: true,
+  },
+  soccer_mexico_ligamx: {
+    leaguePath: 'soccer/mexico/liga-mx',
+    label: 'Liga MX',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?)$/i,
+    threeWayMoneyline: true,
+  },
+  soccer_usa_nwsl: {
+    leaguePath: 'soccer/usa/nwsl',
+    label: 'NWSL',
+    spreadName: /^(?:asian\s+handicap|spread|three\s+way\s+spread)$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:asian\s+handicap|spread)$/i,
+    totalName: /^(?:total(?:\s+goals)?|over\/under)$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?)$/i,
+    threeWayMoneyline: true,
+  },
 };
 
 async function fetchDkGameLines(sport, { force = false } = {}) {
@@ -992,8 +1108,13 @@ async function fetchDkGameLines(sport, { force = false } = {}) {
             if (!ev) continue;
             const bucket = ensureBucket(eventId);
 
-            // Moneyline
-            if (/^moneyline$/i.test(name)) {
+            // Moneyline (2-way for major US sports; 3-way for soccer:
+            // "Three Way Moneyline" or "Match Result" with home/draw/away)
+            if (
+              cfg.threeWayMoneyline
+                ? /^(?:three\s+way\s+moneyline|match\s+result|match\s+winner|moneyline|1x2)$/i.test(name)
+                : /^moneyline$/i.test(name)
+            ) {
               for (const sel of data.selections) {
                 if (sel.marketId !== m.id) continue;
                 bucket.h2hSels.push({ team: sel.label, ...parseSel(sel) });
@@ -1074,19 +1195,36 @@ async function fetchDkGameLines(sport, { force = false } = {}) {
         const bucket = marketsByEvent[ev.eventId];
         if (!bucket) continue;
 
-        // h2h
+        // h2h — 2-way for major US sports; 3-way for soccer (renormalize to
+        // 2-way DNB by dropping draw and proportionally splitting home/away).
+        // Output shape stays { home, away, vig } in both cases so downstream
+        // code is identical.
         let h2h = null;
-        if (bucket.h2hSels.length === 2) {
-          const sumImplied = bucket.h2hSels.reduce((s, x) => s + (x.impliedProb || 0), 0);
-          if (sumImplied > 0) {
-            const findFor = (tn) => bucket.h2hSels.find(s => s.team && tn && (
-              s.team.toLowerCase() === tn.toLowerCase()
-              || s.team.toLowerCase().includes(tn.toLowerCase())
-              || tn.toLowerCase().includes(s.team.toLowerCase())
-            ));
-            const homeMl = ev.homeTeam ? findFor(ev.homeTeam) : null;
-            const awayMl = ev.awayTeam ? findFor(ev.awayTeam) : null;
-            if (homeMl && awayMl) {
+        if (bucket.h2hSels.length >= 2) {
+          const findFor = (tn) => bucket.h2hSels.find(s => s.team && tn && (
+            s.team.toLowerCase() === tn.toLowerCase()
+            || s.team.toLowerCase().includes(tn.toLowerCase())
+            || tn.toLowerCase().includes(s.team.toLowerCase())
+          ));
+          const homeMl = ev.homeTeam ? findFor(ev.homeTeam) : null;
+          const awayMl = ev.awayTeam ? findFor(ev.awayTeam) : null;
+
+          if (cfg.threeWayMoneyline && bucket.h2hSels.length >= 3 && homeMl && awayMl) {
+            const sumImplied3 = bucket.h2hSels.reduce((s, x) => s + (x.impliedProb || 0), 0);
+            const homeImp = homeMl.impliedProb || 0;
+            const awayImp = awayMl.impliedProb || 0;
+            const dnbDenom = homeImp + awayImp;
+            if (dnbDenom > 0) {
+              h2h = {
+                home: { ...homeMl, fairProb: homeImp / dnbDenom },
+                away: { ...awayMl, fairProb: awayImp / dnbDenom },
+                vig: round(sumImplied3 - 1, 5),
+                threeWaySource: true,
+              };
+            }
+          } else if (bucket.h2hSels.length === 2 && homeMl && awayMl) {
+            const sumImplied = (homeMl.impliedProb || 0) + (awayMl.impliedProb || 0);
+            if (sumImplied > 0) {
               h2h = {
                 home: { ...homeMl, fairProb: (homeMl.impliedProb || 0) / sumImplied },
                 away: { ...awayMl, fairProb: (awayMl.impliedProb || 0) / sumImplied },

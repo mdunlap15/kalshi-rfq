@@ -847,11 +847,16 @@ async function fetchOddsForSport(sport, opts) {
   // SharpAPI / TOA don't have lines for markets we typically have, the
   // scraper backstop fills the gap.
   //
-  // Sports covered today: NBA, MLB, NHL, WNBA, tennis. Each has a
+  // Sports covered: NBA, MLB, NHL, WNBA, tennis, plus 11 soccer leagues
+  // (3-way moneyline → DNB renormalized inside the scraper). Each has a
   // GAME_LINE_CONFIGS entry in dk-scraper.js. Easy to extend by adding
   // more sport keys to that map.
   const DK_GAME_LINE_SPORTS = new Set([
     'basketball_nba', 'baseball_mlb', 'icehockey_nhl', 'basketball_wnba', 'tennis',
+    'soccer_epl', 'soccer_spain_la_liga', 'soccer_italy_serie_a',
+    'soccer_germany_bundesliga', 'soccer_france_ligue_one', 'soccer_usa_mls',
+    'soccer_uefa_champs_league', 'soccer_uefa_europa_league',
+    'soccer_brazil_campeonato', 'soccer_mexico_ligamx', 'soccer_usa_nwsl',
   ]);
   if (!liveMode && DK_GAME_LINE_SPORTS.has(sport)) {
     try {
