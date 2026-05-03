@@ -3973,7 +3973,16 @@ async function warmAltLines(sport) {
   // noMatch'ing them every cycle.
   const conditionalPlayoffPattern =
     /(^|\s)game\s*\d+\s*:|\d{4}\s+\w+\s+round|\bseries\s*$/i;
-  const candidates = [];
+  // Dedupe by team-pair across sibling cache entries. SharpAPI's MLB feed
+  // commonly creates 2-3 entries per matchup (real start time + midnight
+  // UTC placeholder + Kalshi-stub). Without dedupe, warmAltLines calls
+  // resolveOddsApiEventId twice for the same pair, doubling the noMatch
+  // count when TOA doesn't have the matchup. Verified 2026-05-03 MLB:
+  // unmatchedSamples included Tampa/Toronto and Atlanta/Seattle each
+  // listed twice. Pick the candidate with the most reliable commenceTime
+  // (later/non-midnight-UTC if multiple available) so resolveOddsApiEventId
+  // can disambiguate doubleheaders correctly.
+  const candidatesByPair = {};
   for (const [key, entry] of Object.entries(cache.events)) {
     const events = Array.isArray(entry) ? entry : [entry];
     for (const ev of events) {
@@ -3988,13 +3997,23 @@ async function warmAltLines(sport) {
       const altKey = normalizeEventKey(ev.homeTeam, ev.awayTeam);
       const altCached = altLinesCache[altKey];
       if (altCached && (now - altCached.fetchedAt) < ALT_LINES_TTL_MS) continue;
-      candidates.push({
+      const candidate = {
         homeTeam: ev.homeTeam,
         awayTeam: ev.awayTeam,
         commenceTime: ev.commenceTime || null,
-      });
+      };
+      // Prefer non-midnight-UTC commenceTime when deduping (real start
+      // time disambiguates doubleheaders for resolveOddsApiEventId).
+      const isMidnightUtc = (s) => typeof s === 'string' && s.endsWith('T00:00:00Z');
+      const existing = candidatesByPair[altKey];
+      if (!existing) {
+        candidatesByPair[altKey] = candidate;
+      } else if (isMidnightUtc(existing.commenceTime) && !isMidnightUtc(candidate.commenceTime)) {
+        candidatesByPair[altKey] = candidate; // upgrade to real time
+      }
     }
   }
+  const candidates = Object.values(candidatesByPair);
 
   if (candidates.length === 0) {
     return { sport, candidates: 0, fetched: 0, noMatch: 0, errors: 0 };
