@@ -5448,6 +5448,21 @@ function startStatusServer() {
     res.json({ ok: true, paused: false });
   });
 
+  // Admin: manually override a leg's inferredResult. For cases where the
+  // automatic re-validation can't heal a wrongly-set leg (e.g. the score
+  // source no longer carries the historical day's game).
+  // Body: { parlayId, team, market?, inferredResult: 'won' | 'lost' | 'push' | null }
+  app.post('/admin/override-leg-result', async (req, res) => {
+    try {
+      const { parlayId, team, market, inferredResult } = req.body || {};
+      const out = await orderTracker.overrideLegResult(parlayId, team, market, inferredResult);
+      res.status(out.ok ? 200 : 400).json(out);
+    } catch (err) {
+      log.error('API', `/admin/override-leg-result failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // ---------------------------------------------------------------------------
   // VIG CONFIGURATION — per-sport vig overrides
   // ---------------------------------------------------------------------------

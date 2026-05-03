@@ -2104,6 +2104,54 @@ function findByParlayId(parlayId) {
 }
 
 /**
+ * Manually override a single leg's inferredResult on a confirmed order.
+ * Use case: a leg's inferredResult was set wrong by a buggy lookup and
+ * the natural re-validation can't heal it (e.g. ESPN cache no longer
+ * carries the historical day, TOA fallback returned no match). Updates
+ * both order.legs and order.meta.legs (frontend reads either), persists
+ * to Supabase, and triggers reconcileSettlements so any settled record
+ * tied to this parlay re-derives its won/lost status.
+ *
+ * Match strategy: case-insensitive substring on team name + exact
+ * market match. Returns { ok, before, after, matched } or { ok: false, error }.
+ */
+async function overrideLegResult(parlayId, teamQuery, market, newResult) {
+  if (!parlayId) return { ok: false, error: 'parlayId required' };
+  if (!teamQuery) return { ok: false, error: 'teamQuery required' };
+  const validResults = ['won', 'lost', 'push', null];
+  if (!validResults.includes(newResult)) return { ok: false, error: `inferredResult must be one of: won, lost, push, null` };
+  const order = orders[parlayId];
+  if (!order) return { ok: false, error: `order not found: ${parlayId}` };
+  const tq = String(teamQuery).toLowerCase();
+  const mq = market ? String(market).toLowerCase() : null;
+  const matchLeg = (l) => {
+    const tn = String(l.team || l.teamName || '').toLowerCase();
+    const mn = String(l.market || l.marketType || '').toLowerCase();
+    const teamOk = tn.includes(tq) || tq.includes(tn);
+    const marketOk = !mq || mn === mq;
+    return teamOk && marketOk;
+  };
+  const updated = [];
+  for (const list of [order.legs, order.meta?.legs]) {
+    if (!Array.isArray(list)) continue;
+    for (const l of list) {
+      if (!matchLeg(l)) continue;
+      const before = l.inferredResult;
+      l.inferredResult = newResult;
+      l.liveFairProb = null;
+      l.liveFairProbUpdatedAt = null;
+      updated.push({ team: l.team || l.teamName, market: l.market || l.marketType, before, after: newResult });
+    }
+  }
+  if (updated.length === 0) return { ok: false, error: `no leg matched team='${teamQuery}' market='${market || '(any)'}'` };
+  await db.saveOrder(order).catch((err) => log.warn('Override', `saveOrder failed: ${err.message}`));
+  log.warn('Override', `Manual leg override on parlay=${parlayId}: ${updated.map(u => `${u.team}/${u.market} ${u.before}→${u.after}`).join(', ')}`);
+  // Re-reconcile any settled record tied to this parlay
+  try { reconcileSettlements(); } catch (_) {}
+  return { ok: true, parlayId, updated };
+}
+
+/**
  * Returns true if all legs of an order have already started (game is
  * finished or in-progress). These orders are awaiting settlement from PX
  * but no longer represent live risk — the outcome is already determined.
@@ -5416,6 +5464,7 @@ module.exports = {
   deleteUnknownSettledOrders,
   findByParlayId,
   findByOrderUuid,
+  overrideLegResult,
   getTotalPortfolioRisk,
   getTotalToWin,
   // Exposed so /px-positions can apply the same stale/phantom filter
