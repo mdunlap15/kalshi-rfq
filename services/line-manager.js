@@ -1322,7 +1322,42 @@ async function seedAllLines() {
             );
           } catch (err) {
             log.debug('Lines', `Pre-seed prop lookup error for ${playerName} ${propType}: ${err.message}`);
-            continue;
+            // Fall through to DK scraper — don't continue here
+          }
+
+          // DK scraper fallback: when TOA returns no/insufficient data,
+          // hit the DK player-prop scraper cache. Operator directive
+          // 2026-05-03: every prop type in the allowlist must have a
+          // scraper backstop. Same pattern as the MLB F5 DK scraper —
+          // single-book DK is treated as authoritative for the prop
+          // since DK's player-prop coverage is the broadest in the
+          // industry. The DK scraper IS lazy-loaded the first time —
+          // first call per refresh cycle takes ~20-30s but every
+          // subsequent prop in the same cycle reuses the cached scrape.
+          const toaInsufficient = !lookup
+            || lookup.fairProbOver == null
+            || lookup.fairProbUnder == null
+            || ((lookup.booksWithBothSides || 0) < minBooks
+                && !((lookup.books || []).some(b => trustedSet.includes(String(b).toLowerCase()))));
+          if (toaInsufficient) {
+            try {
+              const dk = require('./dk-scraper');
+              // Trigger a scrape if no cache yet — only on first fallback per cycle
+              if (typeof dk.fetchDkPlayerProps === 'function') {
+                // Fire-and-await: we want the data this cycle. The 15-min
+                // cache TTL inside the scraper means subsequent calls
+                // reuse the same scrape result.
+                await dk.fetchDkPlayerProps(sportKey).catch((e) => {
+                  log.debug('Lines', `DK ${sportKey} player-prop scrape failed: ${e.message}`);
+                });
+              }
+              const dkHit = dk.lookupDkPlayerPropFairProb(sportKey, propType, playerName, sampleLine);
+              if (dkHit && dkHit.fairProbOver != null && dkHit.fairProbUnder != null) {
+                lookup = dkHit;
+              }
+            } catch (err) {
+              log.debug('Lines', `DK player-prop fallback error for ${playerName} ${propType}: ${err.message}`);
+            }
           }
           if (!lookup || lookup.fairProbOver == null || lookup.fairProbUnder == null) continue;
           const both = lookup.booksWithBothSides || 0;

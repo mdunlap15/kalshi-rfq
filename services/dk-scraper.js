@@ -614,6 +614,262 @@ async function fetchMlbF5Odds({ force = false } = {}) {
   return inFlightBySport.mlbF5;
 }
 
+// ---------------------------------------------------------------------------
+// DK PLAYER-PROP SCRAPER (generic across NBA / NHL / MLB)
+// ---------------------------------------------------------------------------
+// Scrapes DK's player-prop sub-categories for any sport. Used as the
+// final fallback when SharpAPI + TOA both lack a player prop. Operator
+// directive 2026-05-03: every prop type in PROP_LAUNCH_ALLOWLIST must
+// have a scraper backstop — no API gap should produce 0 prop lines.
+//
+// DK's market name conventions for player props:
+//   NBA:  "Points O/U", "Rebounds O/U", "Assists O/U", "Three Pointers Made"
+//   NHL:  "Shots on Goal"
+//   MLB:  "Hits", "Home Runs", "Total Bases", "RBIs", "Strikeouts Thrown"
+//
+// Returns shape:
+//   {
+//     fetchedAt: ISO,
+//     props: [{
+//       sport, propType, playerName, line,
+//       eventName, startTime,
+//       over: { fairProb, impliedProb, americanOdds },
+//       under: { fairProb, impliedProb, americanOdds },
+//       vig,
+//     }, ...]
+//   }
+const PLAYER_PROP_CONFIGS = {
+  basketball_nba: {
+    leaguePath: 'basketball/nba',
+    sportLabel: 'NBA',
+    propPatterns: [
+      { propType: 'points',       regex: /^points\s*(?:o\/u|over\/under)?$/i },
+      { propType: 'rebounds',     regex: /^rebounds\s*(?:o\/u|over\/under)?$/i },
+      { propType: 'assists',      regex: /^assists\s*(?:o\/u|over\/under)?$/i },
+      { propType: 'threes_made',  regex: /^(?:three\s+pointers\s+made|3\-?point(?:ers)?\s+made)\s*(?:o\/u)?$/i },
+    ],
+    subCategoryUrls: [
+      'https://sportsbook.draftkings.com/leagues/basketball/nba?category=player-points',
+      'https://sportsbook.draftkings.com/leagues/basketball/nba?category=player-rebounds',
+      'https://sportsbook.draftkings.com/leagues/basketball/nba?category=player-assists',
+      'https://sportsbook.draftkings.com/leagues/basketball/nba?category=player-threes',
+      'https://sportsbook.draftkings.com/leagues/basketball/nba?category=player-combos',
+    ],
+  },
+  icehockey_nhl: {
+    leaguePath: 'hockey/nhl',
+    sportLabel: 'NHL',
+    propPatterns: [
+      { propType: 'shots_on_goal', regex: /^(?:shots\s+on\s+goal|sog)\s*(?:o\/u)?$/i },
+    ],
+    subCategoryUrls: [
+      'https://sportsbook.draftkings.com/leagues/hockey/nhl?category=goal-scorer',
+      'https://sportsbook.draftkings.com/leagues/hockey/nhl?category=player-props',
+    ],
+  },
+  baseball_mlb: {
+    leaguePath: 'baseball/mlb',
+    sportLabel: 'MLB',
+    propPatterns: [
+      { propType: 'hitter_hits',         regex: /^hits\s*(?:o\/u)?$/i },
+      { propType: 'hitter_hr',           regex: /^home\s+runs\s*(?:o\/u)?$/i },
+      { propType: 'hitter_total_bases',  regex: /^total\s+bases\s*(?:o\/u)?$/i },
+      { propType: 'hitter_rbi_runs',     regex: /^rbis?\s*(?:o\/u)?$/i },
+    ],
+    subCategoryUrls: [
+      'https://sportsbook.draftkings.com/leagues/baseball/mlb?category=batter-props',
+      'https://sportsbook.draftkings.com/leagues/baseball/mlb?category=player-hits',
+      'https://sportsbook.draftkings.com/leagues/baseball/mlb?category=player-home-runs',
+    ],
+  },
+};
+
+async function fetchDkPlayerProps(sport, { force = false } = {}) {
+  const cfg = PLAYER_PROP_CONFIGS[sport];
+  if (!cfg) throw new Error(`Unknown sport for player props: ${sport}`);
+  const cacheKey = `playerProps_${sport}`;
+  if (!force && cacheBySport[cacheKey] && Date.now() - cacheBySport[cacheKey].at < CACHE_TTL_MS) {
+    return cacheBySport[cacheKey].data;
+  }
+  if (inFlightBySport[cacheKey]) return inFlightBySport[cacheKey];
+
+  inFlightBySport[cacheKey] = (async () => {
+    const startedAt = Date.now();
+    const browser = await puppeteer().launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1400, height: 900 });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+      // event metadata + raw selections collected across all sub-category URLs
+      const eventsById = {};
+      // raw prop selections grouped by (eventId, marketName, marketId)
+      const marketRawById = {};
+
+      page.on('response', async (resp) => {
+        const url = resp.url();
+        if (!url.includes('sportsbook-nash.draftkings.com')) return;
+        if (!/markets|subcategory|eventgroup|prematch|inplay/i.test(url)) return;
+        try {
+          const ct = resp.headers()['content-type'] || '';
+          if (!ct.includes('json')) return;
+          const data = await resp.json();
+          if (!data.events || !data.markets || !data.selections) return;
+
+          for (const ev of data.events) {
+            if (!eventsById[ev.id]) {
+              eventsById[ev.id] = {
+                eventId: ev.id,
+                eventName: ev.name,
+                startTime: ev.startEventDate || null,
+              };
+            }
+          }
+          for (const m of data.markets) {
+            const name = m.marketType?.name || m.name || '';
+            // Match against any pattern for this sport
+            const propMatch = cfg.propPatterns.find(p => p.regex.test(name));
+            if (!propMatch) continue;
+            if (!marketRawById[m.id]) {
+              marketRawById[m.id] = {
+                marketId: m.id,
+                eventId: m.eventId,
+                propType: propMatch.propType,
+                marketName: name,
+                selections: [],
+              };
+            }
+          }
+          for (const sel of data.selections) {
+            const market = marketRawById[sel.marketId];
+            if (!market) continue;
+            const trueDec = typeof sel.trueOdds === 'number' ? sel.trueOdds : null;
+            const decDisplay = parseFloat(sel.displayOdds?.decimal);
+            const decimal = trueDec || decDisplay || null;
+            const american = sel.displayOdds?.american
+              ? parseInt(String(sel.displayOdds.american).replace(/[−–—]/g, '-').replace(/[^\-0-9]/g, ''), 10)
+              : null;
+            const lineVal = sel.points ?? (typeof sel.label === 'string' ? parseFloat((sel.label.match(/[\d.]+/) || [''])[0]) : null);
+            const side = /\bover\b/i.test(sel.label || '') ? 'over' : /\bunder\b/i.test(sel.label || '') ? 'under' : null;
+            // playerName comes from sel.outcomeType or sel.player or first line of sel.label before "Over/Under"
+            const playerName = sel.participant || sel.player || sel.outcomeType
+              || (sel.label || '').replace(/\s*(over|under)\s+[\d.]+.*/i, '').trim() || null;
+            market.selections.push({
+              playerName,
+              line: lineVal,
+              side,
+              americanOdds: Number.isFinite(american) ? american : null,
+              decimalOdds: decimal,
+              impliedProb: decimal && decimal > 0 ? 1 / decimal : null,
+            });
+          }
+        } catch { /* ignore */ }
+      });
+
+      // Visit each sub-category URL in turn; scroll to trigger lazy loads
+      for (const url of cfg.subCategoryUrls) {
+        try {
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+          await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
+          for (let i = 0; i < 6; i++) {
+            await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+            await new Promise(r => setTimeout(r, 500));
+          }
+          await page.evaluate(() => window.scrollTo(0, 0));
+          await new Promise(r => setTimeout(r, 2500));
+        } catch (err) {
+          log.debug('DKScraper', `${cfg.sportLabel} player-prop nav (${url}) error: ${err.message}`);
+        }
+      }
+
+      // Build flat props list — pair Over+Under selections from each market
+      const props = [];
+      for (const market of Object.values(marketRawById)) {
+        // Group selections by (playerName, line) — DK markets can carry
+        // multiple players on a single market_id (e.g. all NBA points
+        // O/Us in one payload), each as a pair of Over/Under selections.
+        const byKey = {};
+        for (const sel of market.selections) {
+          if (!sel.playerName || sel.line == null || !sel.side) continue;
+          const k = `${sel.playerName}|${sel.line}`;
+          if (!byKey[k]) byKey[k] = { playerName: sel.playerName, line: sel.line };
+          byKey[k][sel.side] = sel;
+        }
+        for (const pair of Object.values(byKey)) {
+          if (!pair.over || !pair.under) continue;
+          const sumImplied = (pair.over.impliedProb || 0) + (pair.under.impliedProb || 0);
+          if (sumImplied <= 0) continue;
+          const ev = eventsById[market.eventId] || {};
+          props.push({
+            sport,
+            propType: market.propType,
+            playerName: pair.playerName,
+            line: pair.line,
+            eventId: market.eventId,
+            eventName: ev.eventName || null,
+            startTime: ev.startTime || null,
+            over: { ...pair.over, fairProb: (pair.over.impliedProb || 0) / sumImplied },
+            under: { ...pair.under, fairProb: (pair.under.impliedProb || 0) / sumImplied },
+            vig: round(sumImplied - 1, 5),
+          });
+        }
+      }
+
+      const payload = { fetchedAt: new Date().toISOString(), props };
+      cacheBySport[cacheKey] = { at: Date.now(), data: payload };
+      // Counts per propType for log visibility
+      const byType = {};
+      for (const p of props) byType[p.propType] = (byType[p.propType] || 0) + 1;
+      const summary = Object.entries(byType).map(([k, n]) => `${k}=${n}`).join(', ') || '(none)';
+      log.info('DkScraper', `${cfg.sportLabel} player props: ${props.length} captured (${Date.now() - startedAt}ms) [${summary}]`);
+      return payload;
+    } finally {
+      await browser.close();
+      delete inFlightBySport[cacheKey];
+    }
+  })().catch(err => { delete inFlightBySport[cacheKey]; throw err; });
+  return inFlightBySport[cacheKey];
+}
+
+/**
+ * Look up a player prop fair prob from the DK player-prop scraper cache.
+ * Returns { fairProbOver, fairProbUnder, books:['draftkings'], booksWithBothSides:1, ... }
+ * matching the lookupTheOddsApiPlayerProp shape so the prop-bridge caller
+ * can swap them transparently. Returns null if cache is cold or no match.
+ */
+function lookupDkPlayerPropFairProb(sport, propType, playerName, line) {
+  const cacheKey = `playerProps_${sport}`;
+  const cache = cacheBySport[cacheKey];
+  if (!cache || !cache.data) return null;
+  const targetPlayer = normalizeTeamName(playerName);
+  if (!targetPlayer) return null;
+  const targetLast = targetPlayer.split(' ').pop();
+  for (const p of cache.data.props) {
+    if (p.propType !== propType) continue;
+    if (line != null && Math.abs((p.line ?? -1e9) - line) > 0.01) continue;
+    const cand = normalizeTeamName(p.playerName || '');
+    const candLast = cand.split(' ').pop();
+    const playerOk = cand === targetPlayer
+      || cand.includes(targetPlayer)
+      || targetPlayer.includes(cand)
+      || (candLast && targetLast && candLast === targetLast && candLast.length >= 4);
+    if (!playerOk) continue;
+    return {
+      fairProbOver: p.over.fairProb,
+      fairProbUnder: p.under.fairProb,
+      books: ['draftkings'],
+      booksWithBothSides: 1,
+      resolvedEventId: p.eventId,
+      fetchedAt: cache.data.fetchedAt,
+      source: 'dk-scraper',
+    };
+  }
+  return null;
+}
+
 /**
  * Look up a fighter's de-vigged fair probability from the DK MMA cache.
  * Returns null if cache is cold or no match found. Uses the same
@@ -1885,6 +2141,8 @@ module.exports = {
   fetchNhlSeriesTotals,
   fetchMmaFightOdds,
   fetchMlbF5Odds,
+  fetchDkPlayerProps,
+  lookupDkPlayerPropFairProb,
   debugMmaScraperState,
   fetchGolfMatchups,
   fetchLiveMarkets,
