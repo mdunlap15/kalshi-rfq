@@ -4774,16 +4774,12 @@ function getPinnacleOdds(sport, homeTeam, awayTeam, marketType, selection, targe
     return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'pinnacle');
   }
   if (!market.pinnacle) return null;
-  if (marketType === 'h2h' || marketType === 'spreads') {
+  if (marketType === 'h2h' || marketType === 'spreads'
+      || marketType === 'h2h_h1' || marketType === 'spreads_h1'
+      || marketType === 'h2h_f5' || marketType === 'spreads_f5') {
     if (selection === 'home') return market.pinnacle.home || null;
     if (selection === 'away') return market.pinnacle.away || null;
-  } else if (marketType === 'totals') {
-    if (selection === 'over') return market.pinnacle.over || null;
-    if (selection === 'under') return market.pinnacle.under || null;
-  } else if (marketType === 'h2h_h1' || marketType === 'spreads_h1') {
-    if (selection === 'home') return market.pinnacle.home || null;
-    if (selection === 'away') return market.pinnacle.away || null;
-  } else if (marketType === 'totals_h1') {
+  } else if (marketType === 'totals' || marketType === 'totals_h1' || marketType === 'totals_f5') {
     if (selection === 'over') return market.pinnacle.over || null;
     if (selection === 'under') return market.pinnacle.under || null;
   }
@@ -4827,16 +4823,12 @@ function getFanDuelOdds(sport, homeTeam, awayTeam, marketType, selection, target
     return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'fanduel');
   }
   if (!market.fanduel) return null;
-  if (marketType === 'h2h' || marketType === 'spreads') {
+  if (marketType === 'h2h' || marketType === 'spreads'
+      || marketType === 'h2h_h1' || marketType === 'spreads_h1'
+      || marketType === 'h2h_f5' || marketType === 'spreads_f5') {
     if (selection === 'home') return market.fanduel.home || null;
     if (selection === 'away') return market.fanduel.away || null;
-  } else if (marketType === 'totals') {
-    if (selection === 'over') return market.fanduel.over || null;
-    if (selection === 'under') return market.fanduel.under || null;
-  } else if (marketType === 'h2h_h1' || marketType === 'spreads_h1') {
-    if (selection === 'home') return market.fanduel.home || null;
-    if (selection === 'away') return market.fanduel.away || null;
-  } else if (marketType === 'totals_h1') {
+  } else if (marketType === 'totals' || marketType === 'totals_h1' || marketType === 'totals_f5') {
     if (selection === 'over') return market.fanduel.over || null;
     if (selection === 'under') return market.fanduel.under || null;
   }
@@ -4856,10 +4848,12 @@ function getKalshiOdds(sport, homeTeam, awayTeam, marketType, selection, targetT
     return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'kalshi');
   }
   if (!market.kalshi) return null;
-  if (marketType === 'h2h' || marketType === 'spreads') {
+  if (marketType === 'h2h' || marketType === 'spreads'
+      || marketType === 'h2h_h1' || marketType === 'spreads_h1'
+      || marketType === 'h2h_f5' || marketType === 'spreads_f5') {
     if (selection === 'home') return market.kalshi.home || null;
     if (selection === 'away') return market.kalshi.away || null;
-  } else if (marketType === 'totals') {
+  } else if (marketType === 'totals' || marketType === 'totals_h1' || marketType === 'totals_f5') {
     if (selection === 'over') return market.kalshi.over || null;
     if (selection === 'under') return market.kalshi.under || null;
   }
@@ -4879,10 +4873,12 @@ function getDraftKingsOdds(sport, homeTeam, awayTeam, marketType, selection, tar
     return getAltLineBookOdds(homeTeam, awayTeam, marketType, selection, line, 'draftkings');
   }
   if (!market.draftkings) return null;
-  if (marketType === 'h2h' || marketType === 'spreads') {
+  if (marketType === 'h2h' || marketType === 'spreads'
+      || marketType === 'h2h_h1' || marketType === 'spreads_h1'
+      || marketType === 'h2h_f5' || marketType === 'spreads_f5') {
     if (selection === 'home') return market.draftkings.home || null;
     if (selection === 'away') return market.draftkings.away || null;
-  } else if (marketType === 'totals') {
+  } else if (marketType === 'totals' || marketType === 'totals_h1' || marketType === 'totals_f5') {
     if (selection === 'over') return market.draftkings.over || null;
     if (selection === 'under') return market.draftkings.under || null;
   }
