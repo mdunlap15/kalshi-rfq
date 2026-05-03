@@ -2601,6 +2601,109 @@ function startStatusServer() {
   //   gap                  — coarse boolean flag: any missing markets?
   //
   // Use ?windowHours=24 to control the look-ahead. Default 24h.
+  // Health-coverage matrix — compact sport × marketType summary suitable
+  // for dashboard alerting. Lightweight (no PX call): operates entirely
+  // on the in-memory line index. Returns a status flag per sport based
+  // on whether expected markets (per a static EXPECTED_MARKETS_BY_SPORT
+  // map) have at least one line registered. Intended as a structural
+  // backstop so coverage regressions surface without manual scanning.
+  app.get('/health/coverage', (req, res) => {
+    try {
+      const idx = lineManager.__debugGetLineIndex();
+      const sportMatrix = {};
+      const sportEvents = {};
+      for (const lineId of Object.keys(idx)) {
+        const info = idx[lineId];
+        const sport = info.sport || '?';
+        const mkt = info.marketType || '?';
+        if (!sportMatrix[sport]) sportMatrix[sport] = {};
+        sportMatrix[sport][mkt] = (sportMatrix[sport][mkt] || 0) + 1;
+        if (!sportEvents[sport]) sportEvents[sport] = new Set();
+        if (info.pxEventId) sportEvents[sport].add(info.pxEventId);
+      }
+
+      // Expected markets per sport (operator's coverage scope).
+      // Sport with zero events today is considered "no schedule"
+      // (status=idle), not a coverage gap. Sport with events but
+      // missing one or more expected markets is status=gap.
+      const EXPECTED_MARKETS_BY_SPORT = {
+        baseball_mlb: ['moneyline', 'spread', 'total', 'team_total',
+          'first_5_innings_moneyline', 'first_5_innings_run_line', 'first_5_innings_total',
+          'player_hitter_hits', 'player_hitter_hr', 'player_hitter_total_bases', 'player_hitter_rbi_runs'],
+        basketball_nba: ['moneyline', 'spread', 'total', 'team_total',
+          'first_half_moneyline', 'first_half_spread', 'first_half_total',
+          'player_points', 'player_rebounds', 'player_assists', 'player_threes_made'],
+        basketball_wnba: ['moneyline', 'spread', 'total'],
+        icehockey_nhl: ['moneyline', 'spread', 'total', 'team_total', 'player_shots_on_goal'],
+        tennis: ['moneyline'],
+        soccer_epl: ['moneyline', 'spread', 'total'],
+        soccer_uefa_champs_league: ['moneyline', 'spread', 'total'],
+        soccer_spain_la_liga: ['moneyline', 'spread', 'total'],
+        soccer_italy_serie_a: ['moneyline', 'spread', 'total'],
+        soccer_germany_bundesliga: ['moneyline', 'spread', 'total'],
+        soccer_france_ligue_one: ['moneyline', 'spread', 'total'],
+        soccer_usa_mls: ['moneyline', 'spread', 'total'],
+        soccer_brazil_campeonato: ['moneyline', 'spread', 'total'],
+        mma_mixed_martial_arts: ['moneyline', 'total'],
+        boxing_boxing: ['moneyline'],
+        golf_matchups: ['moneyline'],
+      };
+
+      const sports = [];
+      let totalGaps = 0;
+      for (const sport of Object.keys(EXPECTED_MARKETS_BY_SPORT)) {
+        const expected = EXPECTED_MARKETS_BY_SPORT[sport];
+        const matrix = sportMatrix[sport] || {};
+        const eventCount = (sportEvents[sport] && sportEvents[sport].size) || 0;
+        const totalLines = Object.values(matrix).reduce((s, n) => s + n, 0);
+        const missing = expected.filter(m => !(matrix[m] > 0));
+        let status;
+        if (eventCount === 0) status = 'idle';            // no schedule, not a gap
+        else if (missing.length === 0) status = 'ok';      // all expected markets registered
+        else status = 'gap';                               // events exist but expected markets missing
+        if (status === 'gap') totalGaps += missing.length;
+        sports.push({
+          sport,
+          status,
+          eventCount,
+          totalLines,
+          marketCounts: matrix,
+          missing,
+        });
+      }
+
+      // Surface any sports we have lines for but isn't in our expected map
+      // — discovered ad-hoc through PX RFQs. Worth knowing about so we
+      // can decide to add to the expected set.
+      for (const sport of Object.keys(sportMatrix)) {
+        if (EXPECTED_MARKETS_BY_SPORT[sport]) continue;
+        const matrix = sportMatrix[sport];
+        const eventCount = (sportEvents[sport] && sportEvents[sport].size) || 0;
+        const totalLines = Object.values(matrix).reduce((s, n) => s + n, 0);
+        sports.push({
+          sport, status: 'unexpected',
+          eventCount, totalLines, marketCounts: matrix, missing: [],
+        });
+      }
+
+      sports.sort((a, b) => a.sport.localeCompare(b.sport));
+      res.json({
+        ok: true,
+        timestamp: new Date().toISOString(),
+        summary: {
+          sportsTracked: Object.keys(EXPECTED_MARKETS_BY_SPORT).length,
+          sportsOk: sports.filter(s => s.status === 'ok').length,
+          sportsIdle: sports.filter(s => s.status === 'idle').length,
+          sportsWithGaps: sports.filter(s => s.status === 'gap').length,
+          totalMissingMarkets: totalGaps,
+        },
+        sports,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/coverage-audit', async (req, res) => {
     try {
       const windowHours = Math.min(168, Math.max(1, parseInt(req.query.windowHours) || 24));
