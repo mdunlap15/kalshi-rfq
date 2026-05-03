@@ -233,5 +233,91 @@
 TL;DR — pp is additive on probability; ROI is multiplicative on dollars. Divide pp by offered prob to convert. Fair value isn't a model — it's a multi-book de-vigged consensus, with Pinnacle as a floor on favorites.
 </div>
 
+<!-- ============================================================ -->
+<!-- Q4 — actual data                                             -->
+<!-- ============================================================ -->
+<h2>Q4: "What does this actually look like in your settled trades?"</h2>
+<div class="lede">Realized data on 2,223 settled parlays. Mid-range fair-prob is the strongest band; the longshot bucket sits near zero, not the model's predicted top.</div>
+
+<div class="answer">
+  <div class="head">Short Answer</div>
+  Theoretical edge says longshots have the most per-dollar room. Realized data says <strong>20-40% fair-prob is where the money is</strong>, and the 0-10% longshot bucket has come back negative on a meaningful sample. The variance on longshots is enormous — a few uncovered parlays swing the bucket P&L by thousands. This isn't a contradiction of Q1; it's variance + the longshot vig surcharge eating into the wider theoretical edge.
+</div>
+
+<table>
+  <thead><tr><th>Fair-Prob Bucket</th><th class="num">Settled n</th><th class="num">Total Stake</th><th class="num">Total P&L</th><th class="num">Realized SP Edge Per $</th></tr></thead>
+  <tbody>
+    <tr><td>0-10% (longshots)</td><td class="num">326</td><td class="num">$86,615</td><td class="num">-$1,385</td><td class="num"><span class="bignum" style="color:#f87171;">-1.60%</span></td></tr>
+    <tr><td>10-20%</td><td class="num">314</td><td class="num">$71,164</td><td class="num">+$304</td><td class="num">+0.43%</td></tr>
+    <tr><td>20-30%</td><td class="num">345</td><td class="num">$66,636</td><td class="num">+$9,034</td><td class="num"><span class="bignum">+13.56%</span></td></tr>
+    <tr><td>30-40%</td><td class="num">226</td><td class="num">$26,192</td><td class="num">+$3,438</td><td class="num"><span class="bignum">+13.13%</span></td></tr>
+    <tr><td>40-50%</td><td class="num">92</td><td class="num">$7,396</td><td class="num">+$677</td><td class="num">+9.15%</td></tr>
+  </tbody>
+</table>
+
+<div class="chart-wrap">
+<div class="chart-title">Realized SP Edge Per $ Wagered — Settled Parlays</div>
+<svg viewBox="0 0 380 260" style="width:100%; height:auto; max-width:420px; display:block; margin:0 auto;">
+  <g transform="translate(20,20)">
+    <!-- Axes -->
+    <line class="axis" x1="40" y1="200" x2="320" y2="200"/>
+    <line class="axis" x1="40" y1="20"  x2="40"  y2="200"/>
+    <!-- Zero line (white, emphasized) -->
+    <line class="zero" x1="40" y1="140" x2="320" y2="140"/>
+    <text class="label-sm" x="324" y="143" text-anchor="start">FAIR</text>
+    <!-- Y gridlines: +15%, +10%, +5%, 0%, -5% -->
+    <line class="grid" x1="40" y1="20"  x2="320" y2="20"/>
+    <line class="grid" x1="40" y1="60"  x2="320" y2="60"/>
+    <line class="grid" x1="40" y1="100" x2="320" y2="100"/>
+    <line class="grid" x1="40" y1="180" x2="320" y2="180"/>
+    <text class="axis" x="36" y="23"  text-anchor="end">+15%</text>
+    <text class="axis" x="36" y="63"  text-anchor="end">+10%</text>
+    <text class="axis" x="36" y="103" text-anchor="end">+5%</text>
+    <text class="axis" x="36" y="143" text-anchor="end">0%</text>
+    <text class="axis" x="36" y="183" text-anchor="end">-5%</text>
+    <!-- Connecting line through points -->
+    <polyline points="68,153 124,137 180,32 236,35 292,67"
+      fill="none" stroke="#3fb950" stroke-width="1" opacity="0.4"/>
+    <!-- Data points (+sample-size labels above) -->
+    <!-- 5%: -1.60% → y = 140 + 1.60*8 = 152.8 -->
+    <circle cx="68"  cy="153" r="5" fill="#f87171" opacity="0.9"/>
+    <text class="axis" x="68"  y="172" text-anchor="middle" fill="#f87171">-1.6%</text>
+    <text class="axis" x="68"  y="14"  text-anchor="middle" fill="#c9d1d9" font-size="9">n=326</text>
+    <!-- 15%: +0.43% → y = 140 - 0.43*8 = 136.6 -->
+    <circle cx="124" cy="137" r="5" fill="#3fb950" opacity="0.9"/>
+    <text class="axis" x="124" y="128" text-anchor="middle" fill="#3fb950">+0.4%</text>
+    <text class="axis" x="124" y="14"  text-anchor="middle" fill="#c9d1d9" font-size="9">n=314</text>
+    <!-- 25%: +13.56% → y = 140 - 13.56*8 = 31.5 -->
+    <circle cx="180" cy="32"  r="5" fill="#3fb950" opacity="0.9"/>
+    <text class="axis" x="180" y="48"  text-anchor="middle" fill="#3fb950">+13.6%</text>
+    <text class="axis" x="180" y="14"  text-anchor="middle" fill="#c9d1d9" font-size="9">n=345</text>
+    <!-- 35%: +13.13% → y = 140 - 13.13*8 = 35 -->
+    <circle cx="236" cy="35"  r="5" fill="#3fb950" opacity="0.9"/>
+    <text class="axis" x="236" y="51"  text-anchor="middle" fill="#3fb950">+13.1%</text>
+    <text class="axis" x="236" y="14"  text-anchor="middle" fill="#c9d1d9" font-size="9">n=226</text>
+    <!-- 45%: +9.15% → y = 140 - 9.15*8 = 66.8 -->
+    <circle cx="292" cy="67"  r="5" fill="#3fb950" opacity="0.9"/>
+    <text class="axis" x="292" y="83"  text-anchor="middle" fill="#3fb950">+9.2%</text>
+    <text class="axis" x="292" y="14"  text-anchor="middle" fill="#c9d1d9" font-size="9">n=92</text>
+    <!-- X-axis labels -->
+    <text class="axis" x="68"  y="215" text-anchor="middle">5%</text>
+    <text class="axis" x="124" y="215" text-anchor="middle">15%</text>
+    <text class="axis" x="180" y="215" text-anchor="middle">25%</text>
+    <text class="axis" x="236" y="215" text-anchor="middle">35%</text>
+    <text class="axis" x="292" y="215" text-anchor="middle">45%</text>
+    <text class="label-sm" x="180" y="232" text-anchor="middle">Fair Prob (bucket midpoint)</text>
+  </g>
+</svg>
+</div>
+
+<p style="font-size:12px; color:#c9d1d9;"><em>Each dot is one fair-prob bucket; label below is realized edge per $ wagered, label above is settled-parlay sample size. Bucket midpoints are 5%, 15%, etc.; widths are 10pp.</em></p>
+
+<p><strong>Why the longshot bucket isn't the steepest in realized data:</strong></p>
+<ul style="font-size:14px; padding-left:20px;">
+  <li><strong>Variance dominates short-term.</strong> A 5% true-fair parlay should hit ~5% of the time. With 326 settled parlays in this bucket, you'd expect ~16 hits — the actual number can swing by 20-30% just on luck. One extra hit (or one miss) at +1900 odds shifts the bucket P&L by ~$2K.</li>
+  <li><strong>Longshot vig surcharge eats some of the theoretical edge.</strong> Q1's "5% fair → 16.7% per-dollar edge" assumed the same 1pp markup across the curve. The pricer adds an extra additive vig on parlays whose fair-prob is below ~25% — the wider gap is partially priced back to bettors.</li>
+  <li><strong>Mid-range is the sweet spot.</strong> 20-40% fair-prob is large enough to converge on a few hundred parlays, but small enough that pp markups still translate to mid-single-digit per-dollar edge. Larger n + smaller per-trade variance = the bucket where realized edge most clearly tracks theoretical.</li>
+</ul>
+
 </body>
 </html>
