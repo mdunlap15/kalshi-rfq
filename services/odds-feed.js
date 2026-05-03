@@ -1090,6 +1090,98 @@ async function supplementMlbF5Markets(parsedEvents) {
   for (let i = 0; i < Math.min(CONCURRENCY, candidates.length); i++) workers.push(worker());
   await Promise.all(workers);
   log.info('OddsFeed', `MLB F5 supplement (per-event): ${calls}/${candidates.length} calls, h2h+${h2hCount} spread+${spreadCount} total+${totalCount}, matchFails=${matchFails} apiFails=${apiFails}`);
+
+  // DK scraper fallback: if any MLB events STILL lack h2h_f5 after the
+  // TOA per-event supplement, scrape DK directly. DK posts F5 markets
+  // on every MLB game hours before SharpAPI/TOA list them — verified
+  // 2026-05-03 with Sunday afternoon games (Tampa@Toronto, Detroit@Boston,
+  // SF@SD, Seattle@Atlanta) where SharpAPI returned only Kalshi-only
+  // h2h stubs and TOA's events list didn't include them yet, but DK had
+  // full F5 markets posted. Operator's directive: 100% F5 coverage on
+  // MLB regardless of upstream API gaps.
+  const stillMissingF5 = [];
+  for (const entry of Object.values(parsedEvents)) {
+    const arr = Array.isArray(entry) ? entry : [entry];
+    for (const ev of arr) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      if (ev.markets && ev.markets.h2h_f5) continue;
+      stillMissingF5.push(ev);
+    }
+  }
+  if (stillMissingF5.length === 0) return;
+
+  log.info('OddsFeed', `MLB F5: ${stillMissingF5.length} events still lack F5 after TOA supplement — invoking DK scraper`);
+  let dkScrape;
+  try {
+    const dk = require('./dk-scraper');
+    dkScrape = await dk.fetchMlbF5Odds();
+  } catch (err) {
+    log.warn('OddsFeed', `DK MLB F5 scrape failed: ${err.message}`);
+    return;
+  }
+  if (!dkScrape || !Array.isArray(dkScrape.games) || dkScrape.games.length === 0) {
+    log.warn('OddsFeed', 'DK MLB F5 scrape returned no games');
+    return;
+  }
+
+  // Index DK games by normalized team-pair for matching
+  const lwLast = (s) => (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').split(/\s+/).filter(Boolean).pop() || '';
+  const dkByPair = {};
+  for (const g of dkScrape.games) {
+    if (!g.homeTeam || !g.awayTeam) continue;
+    const k1 = `${lwLast(g.homeTeam)}|${lwLast(g.awayTeam)}`;
+    const k2 = `${lwLast(g.awayTeam)}|${lwLast(g.homeTeam)}`;
+    dkByPair[k1] = g;
+    dkByPair[k2] = { ...g, _flipped: true };
+  }
+
+  let dkApplied = 0;
+  for (const ev of stillMissingF5) {
+    const key = `${lwLast(ev.homeTeam)}|${lwLast(ev.awayTeam)}`;
+    const g = dkByPair[key];
+    if (!g) continue;
+
+    if (!ev.markets) ev.markets = {};
+    // h2h_f5 — flip home/away if DK orientation is opposite
+    const flipMl = !!g._flipped;
+    const dkHome = flipMl ? g.h2h.away : g.h2h.home;
+    const dkAway = flipMl ? g.h2h.home : g.h2h.away;
+    ev.markets.h2h_f5 = {
+      home: { rawOdds: dkHome.americanOdds, impliedProb: dkHome.impliedProb, fairProb: dkHome.fairProb, displayFairProb: dkHome.fairProb },
+      away: { rawOdds: dkAway.americanOdds, impliedProb: dkAway.impliedProb, fairProb: dkAway.fairProb, displayFairProb: dkAway.fairProb },
+      books: 1,
+      draftkings: { home: dkHome.americanOdds, away: dkAway.americanOdds },
+    };
+    if (g.spreads) {
+      const spHome = flipMl ? g.spreads.away : g.spreads.home;
+      const spAway = flipMl ? g.spreads.home : g.spreads.away;
+      ev.markets.spreads_f5 = {
+        home: { rawOdds: spHome.americanOdds, point: spHome.line, impliedProb: spHome.impliedProb, fairProb: spHome.fairProb, displayFairProb: spHome.fairProb },
+        away: { rawOdds: spAway.americanOdds, point: spAway.line, impliedProb: spAway.impliedProb, fairProb: spAway.fairProb, displayFairProb: spAway.fairProb },
+        line: spHome.line,
+        books: 1,
+        draftkings: { home: spHome.americanOdds, away: spAway.americanOdds },
+      };
+    }
+    const totalLines = Object.keys(g.totalsByLine || {});
+    if (totalLines.length > 0) {
+      // Pick the line closest to median as primary
+      const sorted = totalLines.map(parseFloat).sort((a, b) => a - b);
+      const primaryLine = sorted[Math.floor(sorted.length / 2)];
+      const primary = g.totalsByLine[String(primaryLine)] || g.totalsByLine[totalLines[0]];
+      if (primary) {
+        ev.markets.totals_f5 = {
+          over: { rawOdds: primary.over.americanOdds, point: primary.line, impliedProb: primary.over.impliedProb, fairProb: primary.over.fairProb, displayFairProb: primary.over.fairProb },
+          under: { rawOdds: primary.under.americanOdds, point: primary.line, impliedProb: primary.under.impliedProb, fairProb: primary.under.fairProb, displayFairProb: primary.under.fairProb },
+          line: primary.line,
+          books: 1,
+          draftkings: { over: primary.over.americanOdds, under: primary.under.americanOdds },
+        };
+      }
+    }
+    dkApplied++;
+  }
+  log.info('OddsFeed', `MLB F5 DK scrape applied: ${dkApplied} of ${stillMissingF5.length} missing events filled`);
 }
 
 /**

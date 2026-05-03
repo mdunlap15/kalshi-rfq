@@ -359,6 +359,262 @@ async function fetchMmaFightOdds({ force = false } = {}) {
 }
 
 /**
+ * Fetch DK's MLB First-5-Innings markets (moneyline, run line, total
+ * runs) for every MLB game DK has F5 lines posted on. Used as a third
+ * source for F5 markets when SharpAPI returns Kalshi-only stubs and
+ * TOA's events list doesn't yet include the game. Verified 2026-05-03:
+ * Sunday afternoon games like Tampa@Toronto, Seattle@Atlanta,
+ * Detroit@Boston had F5 lines on DK hours before SharpAPI/TOA had
+ * any F5 data — DK is the most reliable advance source for MLB F5.
+ *
+ * Returns shape parallel to fetchMmaFightOdds:
+ *   {
+ *     fetchedAt: ISO,
+ *     games: [{
+ *       eventId, eventName, startTime,
+ *       homeTeam, awayTeam,
+ *       h2h: { home: {fairProb,impliedProb,americanOdds}, away: {...}, vig },
+ *       spreads: { home: {fairProb,...,point}, away: {...}, line, vig },
+ *       totalsByLine: { "5.5": { line, over, under, vig }, ... }
+ *     }]
+ *   }
+ */
+async function fetchMlbF5Odds({ force = false } = {}) {
+  if (!force && cacheBySport.mlbF5 && Date.now() - cacheBySport.mlbF5.at < CACHE_TTL_MS) {
+    return cacheBySport.mlbF5.data;
+  }
+  if (inFlightBySport.mlbF5) return inFlightBySport.mlbF5;
+
+  inFlightBySport.mlbF5 = (async () => {
+    const startedAt = Date.now();
+    const browser = await puppeteer().launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1400, height: 900 });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+      const gamesById = {};
+
+      page.on('response', async (resp) => {
+        const url = resp.url();
+        if (!url.includes('sportsbook-nash.draftkings.com')) return;
+        if (!/markets|subcategory|eventgroup|prematch|inplay/i.test(url)) return;
+        try {
+          const ct = resp.headers()['content-type'] || '';
+          if (!ct.includes('json')) return;
+          const data = await resp.json();
+          if (!data.events || !data.markets || !data.selections) return;
+
+          for (const ev of data.events) {
+            if (!gamesById[ev.id]) {
+              const teams = (ev.teamShortName1 && ev.teamShortName2)
+                ? null  // we'll prefer eventName parsing below
+                : null;
+              gamesById[ev.id] = {
+                eventId: ev.id,
+                eventName: ev.name,
+                startTime: ev.startEventDate || null,
+                // DK event objects sometimes have teams[] with home/away order
+                homeTeam: ev.team1 || ev.homeTeam || null,
+                awayTeam: ev.team2 || ev.awayTeam || null,
+                rawSelections: [],
+              };
+              // Fallback: parse "Away @ Home" from eventName if structured fields missing
+              if ((!gamesById[ev.id].homeTeam || !gamesById[ev.id].awayTeam) && ev.name) {
+                const m = ev.name.match(/^(.+?)\s+@\s+(.+)$/);
+                if (m) {
+                  gamesById[ev.id].awayTeam = gamesById[ev.id].awayTeam || m[1].trim();
+                  gamesById[ev.id].homeTeam = gamesById[ev.id].homeTeam || m[2].trim();
+                }
+              }
+            }
+          }
+
+          const parseSel = (sel) => {
+            const trueDec = typeof sel.trueOdds === 'number' ? sel.trueOdds : null;
+            const decDisplay = parseFloat(sel.displayOdds?.decimal);
+            const decimal = trueDec || decDisplay || null;
+            const american = sel.displayOdds?.american
+              ? parseInt(String(sel.displayOdds.american).replace(/[−–—]/g, '-').replace(/[^\-0-9]/g, ''), 10)
+              : null;
+            return {
+              decimalOdds: decimal,
+              americanOdds: Number.isFinite(american) ? american : null,
+              impliedProb: decimal && decimal > 0 ? 1 / decimal : null,
+            };
+          };
+
+          // F5 market name variants that DK uses interchangeably:
+          //   - "1st 5 Innings" / "1st 5 Innings Moneyline" → h2h_f5
+          //   - "1st 5 Innings Run Line" / "1st 5 Innings Spread" → spreads_f5
+          //   - "1st 5 Innings Total Runs" / "1st 5 Innings Total" → totals_f5
+          const isF5MlMarket = (n) => /^1st\s+5\s+innings(?:\s+moneyline)?$/i.test(n)
+            || /^first\s+5\s+innings(?:\s+moneyline)?$/i.test(n);
+          const isF5RunLineMarket = (n) => /^1st\s+5\s+innings\s+(?:run\s+line|spread)$/i.test(n)
+            || /^first\s+5\s+innings\s+(?:run\s+line|spread)$/i.test(n);
+          const isF5TotalMarket = (n) => /^1st\s+5\s+innings\s+(?:total\s+runs?|total)$/i.test(n)
+            || /^first\s+5\s+innings\s+(?:total\s+runs?|total)$/i.test(n);
+
+          for (const m of data.markets) {
+            const ev = gamesById[m.eventId];
+            if (!ev) continue;
+            const name = m.marketType?.name || m.name || '';
+
+            if (isF5MlMarket(name)) {
+              for (const sel of data.selections) {
+                if (sel.marketId !== m.id) continue;
+                const p = parseSel(sel);
+                ev.rawSelections.push({ market: 'h2h_f5', team: sel.label, ...p });
+              }
+            } else if (isF5RunLineMarket(name)) {
+              for (const sel of data.selections) {
+                if (sel.marketId !== m.id) continue;
+                const p = parseSel(sel);
+                const lineVal = sel.points ?? null;
+                ev.rawSelections.push({ market: 'spreads_f5', team: sel.label, line: lineVal, ...p });
+              }
+            } else if (isF5TotalMarket(name)) {
+              for (const sel of data.selections) {
+                if (sel.marketId !== m.id) continue;
+                const p = parseSel(sel);
+                const lineVal = sel.points ?? (typeof sel.label === 'string' ? parseFloat(sel.label.replace(/[^0-9.]/g, '')) : null);
+                const side = /^over\b/i.test(sel.label || '') ? 'over' : /^under\b/i.test(sel.label || '') ? 'under' : null;
+                if (lineVal == null || !side) continue;
+                ev.rawSelections.push({ market: 'totals_f5', side, line: lineVal, ...p });
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      });
+
+      // Hit the MLB F5 sub-category URL directly. DK's URL pattern places
+      // sub-categories as path segments. We try the most common variants
+      // since DK has historically rotated between them.
+      const F5_URLS = [
+        'https://sportsbook.draftkings.com/leagues/baseball/mlb?category=1st-5-innings',
+        'https://sportsbook.draftkings.com/leagues/baseball/mlb',
+      ];
+
+      for (const url of F5_URLS) {
+        try {
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+          await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
+          // Scroll loop to trigger lazy-loaded XHRs for below-fold games
+          for (let i = 0; i < 8; i++) {
+            await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+            await new Promise(r => setTimeout(r, 500));
+          }
+          await page.evaluate(() => window.scrollTo(0, 0));
+          await new Promise(r => setTimeout(r, 3000));
+        } catch (err) {
+          log.debug('DKScraper', `MLB F5 nav error (${url}): ${err.message} — non-fatal`);
+        }
+      }
+
+      // Build per-game structured payload. Only include games where we
+      // captured BOTH sides of the moneyline (sumImplied > 0 sanity).
+      const games = [];
+      for (const ev of Object.values(gamesById)) {
+        const mlSels = ev.rawSelections.filter(s => s.market === 'h2h_f5');
+        if (mlSels.length !== 2) continue;
+        const sumImplied = mlSels.reduce((s, x) => s + (x.impliedProb || 0), 0);
+        if (sumImplied <= 0) continue;
+
+        // Map labels back to home/away based on event teams
+        const findFor = (teamName) => mlSels.find(s => {
+          if (!s.team || !teamName) return false;
+          const a = s.team.toLowerCase();
+          const b = teamName.toLowerCase();
+          return a === b || a.includes(b) || b.includes(a);
+        });
+        const homeMl = ev.homeTeam ? findFor(ev.homeTeam) : null;
+        const awayMl = ev.awayTeam ? findFor(ev.awayTeam) : null;
+        if (!homeMl || !awayMl) continue;
+
+        const h2h = {
+          home: { ...homeMl, fairProb: (homeMl.impliedProb || 0) / sumImplied },
+          away: { ...awayMl, fairProb: (awayMl.impliedProb || 0) / sumImplied },
+          vig: round(sumImplied - 1, 5),
+        };
+
+        // Spreads: pair home/away by line
+        const spreadSels = ev.rawSelections.filter(s => s.market === 'spreads_f5');
+        let spreads = null;
+        if (spreadSels.length === 2) {
+          const homeSp = ev.homeTeam ? findFor(ev.homeTeam) && spreadSels.find(s => {
+            const a = (s.team || '').toLowerCase();
+            const b = ev.homeTeam.toLowerCase();
+            return a === b || a.includes(b) || b.includes(a);
+          }) : null;
+          const awaySp = ev.awayTeam ? spreadSels.find(s => {
+            const a = (s.team || '').toLowerCase();
+            const b = ev.awayTeam.toLowerCase();
+            return a === b || a.includes(b) || b.includes(a);
+          }) : null;
+          if (homeSp && awaySp) {
+            const spSum = (homeSp.impliedProb || 0) + (awaySp.impliedProb || 0);
+            if (spSum > 0) {
+              spreads = {
+                home: { ...homeSp, fairProb: (homeSp.impliedProb || 0) / spSum },
+                away: { ...awaySp, fairProb: (awaySp.impliedProb || 0) / spSum },
+                line: homeSp.line,
+                vig: round(spSum - 1, 5),
+              };
+            }
+          }
+        }
+
+        // Totals: group by line
+        const totalSels = ev.rawSelections.filter(s => s.market === 'totals_f5');
+        const totalsByLine = {};
+        const byLine = {};
+        for (const s of totalSels) {
+          if (s.line == null || !s.side) continue;
+          if (!byLine[s.line]) byLine[s.line] = {};
+          byLine[s.line][s.side] = s;
+        }
+        for (const [ln, pair] of Object.entries(byLine)) {
+          if (pair.over && pair.under) {
+            const sum = (pair.over.impliedProb || 0) + (pair.under.impliedProb || 0);
+            if (sum > 0) {
+              totalsByLine[ln] = {
+                line: parseFloat(ln),
+                over: { ...pair.over, fairProb: (pair.over.impliedProb || 0) / sum },
+                under: { ...pair.under, fairProb: (pair.under.impliedProb || 0) / sum },
+                vig: round(sum - 1, 5),
+              };
+            }
+          }
+        }
+
+        games.push({
+          eventId: ev.eventId,
+          eventName: ev.eventName,
+          startTime: ev.startTime,
+          homeTeam: ev.homeTeam,
+          awayTeam: ev.awayTeam,
+          h2h,
+          spreads,
+          totalsByLine,
+        });
+      }
+
+      const payload = { fetchedAt: new Date().toISOString(), games };
+      cacheBySport.mlbF5 = { at: Date.now(), data: payload };
+      log.info('DkScraper', `MLB F5: ${games.length} games captured (${Date.now() - startedAt}ms)`);
+      return payload;
+    } finally {
+      await browser.close();
+      delete inFlightBySport.mlbF5;
+    }
+  })().catch(err => { delete inFlightBySport.mlbF5; throw err; });
+  return inFlightBySport.mlbF5;
+}
+
+/**
  * Look up a fighter's de-vigged fair probability from the DK MMA cache.
  * Returns null if cache is cold or no match found. Uses the same
  * last-word fallback strategy as series lookups to handle diacritics
@@ -1628,6 +1884,7 @@ module.exports = {
   fetchNbaSeriesTotals,
   fetchNhlSeriesTotals,
   fetchMmaFightOdds,
+  fetchMlbF5Odds,
   debugMmaScraperState,
   fetchGolfMatchups,
   fetchLiveMarkets,
