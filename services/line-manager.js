@@ -902,7 +902,18 @@ async function seedAllLines() {
       // supportedBase check; parseMarketSelections retags them to 'spread'
       // or 'total' so selection parsing works.
       const isSupSeries = m.type === 'sup_moneyline' && (isSeriesSpread || isSeriesTotal);
-      if (!isSupSeries && !supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type) && !FIRST_HALF_MARKET_TYPES.includes(m.type)) return false;
+      // Soccer asian-handicap spreads use type='sup_moneyline' with
+      // name "Spread (Regular Time)". Verified 2026-05-03: every EPL,
+      // UCL, La Liga, Serie A, Bundesliga, etc. spread market on PX
+      // rides this combo. Without this carve-out, supportedBase gate
+      // rejects every soccer spread → zero spread lines for sub-leagues
+      // like EPL/UCL despite ML/total working fine. parseMarketSelections
+      // retags marketType='spread' for these so downstream lookup works.
+      const isSoccerSupSpread = m.type === 'sup_moneyline'
+        && !isSeriesMarket
+        && /soccer|fifa/i.test(sportKey || '')
+        && /^spread\b/i.test(m.name || '');
+      if (!isSupSeries && !isSoccerSupSpread && !supportedBase.includes(m.type) && !F5_MARKET_TYPES.includes(m.type) && !FIRST_HALF_MARKET_TYPES.includes(m.type)) return false;
       // Series markets bypass the sub-game/prop filter and the name-
       // allowlist + bounds checks. Each variant must match one of:
       //   Series Winner      → type='moneyline'

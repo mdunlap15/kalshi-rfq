@@ -572,8 +572,18 @@ function parseMarketSelections(market) {
     && (/\bseries\s*total\s*games\b/i.test(marketName)
         || /\btotal\s*games\b/i.test(marketName)
         || /\bseries\b[^.]*\btotal\b/i.test(marketName));
+  // Soccer asian-handicap spreads: PX publishes them under type='sup_moneyline'
+  // with name "Spread (Regular Time)". Verified 2026-05-03 EPL Tottenham FC at
+  // Aston Villa FC and other EPL/UCL/sub-league games — all soccer spreads
+  // ride this type-name combo. Without retagging, line-manager's supportedBase
+  // gate rejects them and EPL/UCL/etc spread coverage drops to zero.
+  const isSupSoccerSpread = market.type === 'sup_moneyline'
+    && !isSupSeriesSpread
+    && !isSupSeriesTotal
+    && /^spread\b/i.test(marketName);
   if (isSupSeriesSpread) marketType = 'spread';      // retagged to 'series_spread' by line-manager
   else if (isSupSeriesTotal) marketType = 'total';   // retagged to 'series_total' by line-manager
+  else if (isSupSoccerSpread) marketType = 'spread'; // soccer asian-handicap spread
 
   if (isSupSeriesSpread && market.selections) {
     for (const selGroup of market.selections) {
