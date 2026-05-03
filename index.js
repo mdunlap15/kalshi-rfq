@@ -7189,6 +7189,28 @@ function startStatusServer() {
             fairProb = info.selection === 'over' ? info.fairProbOver : info.fairProbUnder;
           }
         }
+        // Series markets (series_winner / series_spread / series_total —
+        // NBA + NHL playoff series). These price through the DK scraper
+        // via pricer.getSeriesFairProb at RFQ time, but the generic
+        // oddsFeed.getFairProb path doesn't know about that source. Without
+        // this branch, every series line in /lines/detail surfaces with
+        // null fair even though the actual quote-time pricer fills them
+        // correctly. Verified 2026-05-03 NHL series_spread / series_total
+        // for COL/MIN, CAR/PHI, VEG/ANA — all fair=null in Lines tab,
+        // populated correctly via DK scraper at RFQ time.
+        if (fairProb == null && info.marketType
+            && (info.marketType.startsWith('series_')
+                || info.oddsApiMarket === 'series_winner'
+                || info.oddsApiMarket === 'series_spread'
+                || info.oddsApiMarket === 'series_total')) {
+          const seriesFair = pricer.getSeriesFairProb(info);
+          if (seriesFair != null && typeof seriesFair === 'object') {
+            fairProb = seriesFair.fairProb;
+            bookPriceOverride = seriesFair.bookPriceOverride;
+          } else if (seriesFair != null) {
+            fairProb = seriesFair;
+          }
+        }
         // Non-golf, OR golf matchup with no manual/scraper hit: fall
         // through to the generic oddsFeed.getFairProb. Pass the SIGNED
         // line — critical for spreads where home -1.5 and home +1.5
