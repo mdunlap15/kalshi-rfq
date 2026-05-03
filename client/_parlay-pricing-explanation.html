@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Parlay Pricing Explanation</title>
+<style>
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 36px 44px;
+    font-size: 15px;
+  }
+  h1 {
+    font-size: 22px;
+    margin: 0 0 24px 0;
+    color: #f0f6fc;
+    border-bottom: 1px solid #30363d;
+    padding-bottom: 12px;
+  }
+  h2 {
+    font-size: 17px;
+    margin: 28px 0 12px 0;
+    color: #f0f6fc;
+  }
+  p {
+    margin: 0 0 14px 0;
+    color: #c9d1d9;
+  }
+  code {
+    background: #1c2128;
+    color: #ffa657;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13.5px;
+  }
+  pre {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    margin: 14px 0;
+  }
+  pre code {
+    background: transparent;
+    color: #d2a8ff;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+  strong { color: #f0f6fc; }
+  blockquote {
+    border-left: 3px solid #58a6ff;
+    background: #1c2128;
+    margin: 16px 0;
+    padding: 12px 18px;
+    color: #c9d1d9;
+    border-radius: 0 6px 6px 0;
+  }
+  ul { padding-left: 24px; margin: 8px 0 14px 0; }
+  li { margin: 4px 0; color: #c9d1d9; }
+  .tldr-label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #58a6ff;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Why "fair × 1% vig per leg" doesn't reproduce the +2470 offer</h1>
+
+<p>Short version: the per-leg arithmetic is right, but two adjustments fire <strong>at the parlay level after the fair-prob multiplication</strong>, plus the per-leg vig isn't a flat 1% on every leg.</p>
+
+<h2>Per-leg "My Odds" — almost right, but Leg 2 isn't 1%</h2>
+
+<p>The assumption was <code>My Odds = fair × (1 + 1%)</code> per leg. That holds for legs under 50% fair, but <strong>Leg 2 (Boston Celtics, fair −209 / 67.6%) triggers a favorite ramp</strong>:</p>
+
+<pre><code>vig = baseVig + 0.075 × (fair − 0.50)
+    = 0.01   + 0.075 × 0.176
+    ≈ 2.3%</code></pre>
+
+<p>Heavy favorites pay more vig per leg to prevent leaks compounding across multi-leg parlays. Legs 1, 3, 4 are all under 50% so they get the flat 1% NBA base.</p>
+
+<h2>The bigger issue: vig is NOT compounded across legs</h2>
+
+<p>The pricer applies vig <strong>once at the parlay level</strong> on the raw fair-parlay-prob — not on each leg separately. So multiplying "My Odds" together to back into a parlay price will never reproduce what we offer.</p>
+
+<pre><code>fairParlay = product of fair leg probs            = 3.70% → +2602
+
+effectiveParlayVig = min(0.20,
+    max(per-leg vigs)         // ~2.3% here, driven by Boston ramp
+  + longshotAdd                // additive, grows as parlay fair shrinks
+  + templateRampAdd            // additive, fires on repeated templates
+)
+
+offeredImpliedProb = 1 / (1 + (1/fairParlay − 1) × (1 − effectiveParlayVig))</code></pre>
+
+<p>For the +2470 offer: implied ≈ 3.89%, so the effective parlay vig applied was about <strong>4.7%</strong>, not 1%.</p>
+
+<h2>Where the extra ~2.4pp beyond the favorite ramp comes from</h2>
+
+<p><strong>1. Longshot vig add</strong> — for parlay fair below a configured threshold (~25%), an additive vig increment scales as fair → 0. At fairParlay = 3.7% this is firing aggressively and is the dominant contributor. (Added to close a dog-parlay gap vs Pinnacle that was bleeding money before.)</p>
+
+<p><strong>2. Template-exposure ramp</strong> — if N identical 4-leg parlays (same teams + markets + lines) have already been confirmed in the rolling 24h window, an additive vig increment is layered on. If this template is popular tonight, that's another ~0.5–1pp.</p>
+
+<h2>The closest formula attempted (per-leg × 1.01) is the legacy mode</h2>
+
+<p>Multiplying each leg by 1.01 (the +2496 estimate) is the per-leg-compounding mode. <strong>That mode was turned off</strong> because it produced uncompetitive prices on long parlays. Current parlay-level mode is <em>less</em> vig on a 4-leg parlay than per-leg compounding would be — but the longshot ramp pushes it back up because parlay fair is small.</p>
+
+<blockquote>
+<div class="tldr-label">TL;DR</div>
+Vig is applied once at the parlay level on the fair-parlay-prob, not compounded per leg. The effective vig is <code>max(per-leg vig, including a favorite ramp on legs above 50%) + a longshot additive that grows as parlay fair shrinks + a template-repeat surcharge if applicable, capped at 20%</code>.
+</blockquote>
+
+<h2>Two side notes</h2>
+
+<ul>
+  <li>The <strong>"My Odds" column on the Lines page is a per-leg standalone number</strong> — what we'd quote if it were the only leg of a 1-leg parlay. It's not an input to parlay pricing; fair_prob is. Multiplying My Odds across legs will always be wrong.</li>
+  <li>The +2512 from multiplying My Odds is actually <em>less</em> offered (better for the bettor) than the real +2470 — not being short-changed by hidden math. The real price reflects longshot + template surcharges that make sense given the parlay-level economics.</li>
+</ul>
+
+</body>
+</html>
