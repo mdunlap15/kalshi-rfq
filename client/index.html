@@ -8627,10 +8627,35 @@
         }
         if (!hasFair || fairProb <= 0 || fairProb >= 1) continue;
 
-        // Compound book probs — null if any leg is missing that book
+        // Compound book probs — DNB-aware. For soccer 2-way moneyline legs
+        // (PX uses Draw No Bet semantics) the per-book stored *DNBProb is
+        // the renormalized 2-way prob; using raw 3-way Pin/DK/FD odds for
+        // the same leg compounds against our DNB-renormalized fairProb,
+        // producing dots that look 15-25pp below fair on every soccer
+        // parlay. Mirrors the DNB-aware path already in compoundParlayOdds().
+        // Returns null if any leg is missing that book or a needed DNB prob.
+        const dnbFieldOf = {
+          pinnacleOdds: 'pinnacleDNBProb',
+          fanduelOdds: 'fanduelDNBProb',
+          kalshiOdds: 'kalshiDNBProb',
+          draftkingsOdds: 'draftkingsDNBProb',
+        };
         function compound(field) {
+          const dnbField = dnbFieldOf[field];
           let p = 1;
           for (const l of legs) {
+            const isSoccerH2h = (typeof l.sport === 'string' && l.sport.startsWith('soccer'))
+              && (l.market === 'moneyline' || l.marketType === 'moneyline' || l.oddsApiMarket === 'h2h');
+            if ((l.isDNB || isSoccerH2h) && dnbField) {
+              const dnbP = l[dnbField];
+              // If the leg should be DNB-treated but the renormalized prob
+              // wasn't stored (older/legacy rows), drop the entire compound
+              // rather than fall back to raw 3-way (which produces the
+              // -15 to -20pp phantom dots in the chart's red box).
+              if (dnbP == null || dnbP <= 0 || dnbP >= 1) return null;
+              p *= dnbP;
+              continue;
+            }
             const v = l[field];
             if (v == null) return null;
             const lp = americanToProb(v);
