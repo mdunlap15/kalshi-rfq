@@ -636,6 +636,15 @@
         <div id="drift-banner-content" style="padding-right:22px;"></div>
       </div>
 
+      <!-- Coverage banner — shows when /health/coverage reports any sport with missing markets.
+           Click to expand the per-sport gap list. Dismiss makes it stay hidden until the gap
+           count changes. -->
+      <div id="coverage-banner" style="display:none; margin-bottom:12px; padding:10px 14px; background:rgba(210,153,34,0.08); border:1px solid var(--amber); border-left:4px solid var(--amber); border-radius:6px; font-size:13px; position:relative; cursor:pointer;" onclick="toggleCoverageDetail()">
+        <button onclick="event.stopPropagation(); dismissCoverageBanner()" title="Dismiss (reappears when gap count changes)" style="position:absolute; top:6px; right:8px; background:transparent; border:none; color:var(--text3); font-size:18px; cursor:pointer; padding:2px 6px; line-height:1;">&times;</button>
+        <div id="coverage-banner-summary" style="padding-right:22px;"></div>
+        <div id="coverage-banner-detail" style="display:none; margin-top:10px; padding-top:10px; border-top:1px solid var(--border); font-size:12px; color:var(--text2);"></div>
+      </div>
+
       <!-- ===================== SECTION: DASHBOARD ===================== -->
       <!-- ===================== SECTION: ORDERS ===================== -->
       <div id="section-orders" class="section">
@@ -1245,6 +1254,11 @@
       // Fetch settlement drift separately (don't block main refresh)
       fetchJSON('/drift-status').then(d => renderDriftBanner(d)).catch(() => {});
 
+      // Fetch coverage health separately — non-blocking. Banner only
+      // appears when /health/coverage reports actual gaps; otherwise stays
+      // hidden so it doesn't add noise on healthy days.
+      fetchJSON('/health/coverage').then(d => renderCoverageBanner(d)).catch(() => {});
+
       // Fetch PX-native P&L separately (slow; paginated PX fetch). When
       // present this becomes the authoritative source for P&L, ROI,
       // win/loss counts in the Portfolio Summary (the in-memory tracker
@@ -1471,6 +1485,77 @@
     }
     if (banner) banner.style.display = 'none';
   };
+
+  // Coverage banner — surfaces sport×marketType gaps from /health/coverage.
+  // Banner re-appears if total gap count rises above the dismissed snapshot
+  // or after 30 min, so a regression can't be silenced indefinitely.
+  window._dismissedCoverage = null;
+  window._lastCoverageData = null;
+  window.dismissCoverageBanner = function() {
+    const data = window._lastCoverageData;
+    if (data && data.summary) {
+      window._dismissedCoverage = {
+        gaps: data.summary.totalMissingMarkets || 0,
+        sportsWithGaps: data.summary.sportsWithGaps || 0,
+        dismissedAt: Date.now(),
+      };
+    }
+    const banner = document.getElementById('coverage-banner');
+    if (banner) banner.style.display = 'none';
+  };
+  window.toggleCoverageDetail = function() {
+    const detail = document.getElementById('coverage-banner-detail');
+    if (!detail) return;
+    detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
+  };
+
+  function renderCoverageBanner(data) {
+    window._lastCoverageData = data;
+    const banner = document.getElementById('coverage-banner');
+    const summaryEl = document.getElementById('coverage-banner-summary');
+    const detailEl = document.getElementById('coverage-banner-detail');
+    if (!banner || !summaryEl || !detailEl) return;
+    if (!data || !data.ok || !data.summary) {
+      banner.style.display = 'none';
+      return;
+    }
+    const s = data.summary;
+    const gapSports = (data.sports || []).filter(x => x.status === 'gap');
+    if (gapSports.length === 0 || s.totalMissingMarkets === 0) {
+      banner.style.display = 'none';
+      return;
+    }
+    // Dismissal logic: stay hidden if dismissed within 30 min AND gap count
+    // hasn't risen.
+    const d = window._dismissedCoverage;
+    if (d && (Date.now() - d.dismissedAt) < 30 * 60 * 1000
+        && s.totalMissingMarkets <= d.gaps) {
+      banner.style.display = 'none';
+      return;
+    }
+    summaryEl.innerHTML = '<strong style="color:var(--amber);">&#9888; Coverage gaps:</strong> '
+      + s.sportsWithGaps + ' sport' + (s.sportsWithGaps === 1 ? '' : 's') + ' missing '
+      + s.totalMissingMarkets + ' market' + (s.totalMissingMarkets === 1 ? '' : 's')
+      + ' &middot; <span style="color:var(--text3);">click for details</span>';
+    let html = '<table style="width:100%; font-size:12px;"><thead><tr style="color:var(--text3);">'
+      + '<th style="text-align:left; padding:4px 8px;">Sport</th>'
+      + '<th style="text-align:right; padding:4px 8px;">Events</th>'
+      + '<th style="text-align:right; padding:4px 8px;">Lines</th>'
+      + '<th style="text-align:left; padding:4px 8px;">Missing markets</th>'
+      + '</tr></thead><tbody>';
+    for (const x of gapSports) {
+      const missingStr = x.missing.join(', ');
+      html += '<tr style="border-top:1px solid var(--border);">'
+        + '<td style="padding:4px 8px;">' + x.sport + '</td>'
+        + '<td style="padding:4px 8px; text-align:right;">' + x.eventCount + '</td>'
+        + '<td style="padding:4px 8px; text-align:right;">' + x.totalLines + '</td>'
+        + '<td style="padding:4px 8px; color:var(--amber);">' + missingStr + '</td>'
+        + '</tr>';
+    }
+    html += '</tbody></table>';
+    detailEl.innerHTML = html;
+    banner.style.display = 'block';
+  }
 
   // Action handlers invoked from buttons inside the drift banner
   window.runPollSettlements = async function(btn) {
