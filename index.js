@@ -7330,6 +7330,20 @@ function startStatusServer() {
             info.startTime
           );
         }
+        // Final fallback: lineInfo carries a stored fairProb when registration
+        // resolved one at seed-time (player props pre-seed path, tennis
+        // on-demand registration via TOA per-event fetch, golf manual
+        // upload, series scraper hit cached on the line). Without this
+        // fallback, the Lines tab shows null fair for any line whose fair
+        // came from a source the synchronous accessors don't replay.
+        // Verified 2026-05-03 tennis Zverev/Sinner: registered via
+        // resolveUnknownLine but oddsFeed.getFairProb returns null since
+        // tennis cache holds only minor-tour matches; pricing-path RFQs
+        // worked because they re-fetched TOA per-event. Lines tab needs
+        // the seed-time-resolved value preserved on lineInfo.
+        if (fairProb == null && info.fairProb != null) {
+          fairProb = info.fairProb;
+        }
       } catch (_) { /* ignore */ }
       // If bookPriceOverride is set, quote at that raw implied
       // instead of fair + our vig. Mirrors the priceParlay behavior
