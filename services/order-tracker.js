@@ -2138,6 +2138,12 @@ async function overrideLegResult(parlayId, teamQuery, market, newResult) {
       if (!matchLeg(l)) continue;
       const before = l.inferredResult;
       l.inferredResult = newResult;
+      // Pin the manual override so the next score-based revalidation
+      // sweep doesn't clobber it. checkLegResults checks this flag and
+      // skips legs marked manually overridden. Clearing the override is
+      // an explicit second call with manuallyOverridden=null implied.
+      l.manuallyOverridden = newResult != null ? true : false;
+      l.manualOverrideAt = newResult != null ? new Date().toISOString() : null;
       l.liveFairProb = null;
       l.liveFairProbUpdatedAt = null;
       updated.push({ team: l.team || l.teamName, market: l.market || l.marketType, before, after: newResult });
@@ -4196,6 +4202,15 @@ async function checkLegResults() {
   for (const o of confirmed) {
     const legs = o.meta?.legs || o.legs || [];
     for (const l of legs) {
+      // Skip legs that have been manually overridden by an operator —
+      // /admin/override-leg-result sets manuallyOverridden=true. Use case:
+      // a leg whose score lookup keeps flipping it to the wrong value
+      // (e.g. when the team-pair substring match latches onto a
+      // different game and the upstream sources can't be reliably
+      // disambiguated). Manual override pins the value until explicitly
+      // cleared.
+      if (l.manuallyOverridden) continue;
+
       // Re-validation strategy:
       //  1. If the game started <4h ago and inferredResult is set, clear it
       //     and recompute — protects against yesterday's value lingering
