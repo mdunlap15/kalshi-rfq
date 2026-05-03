@@ -5955,6 +5955,67 @@ function _mergeSameKeySiblings(events, closest) {
       }
     }
   }
+
+  // Special case for team_totals: union byLine maps across all sibling
+  // entries even when the closest already has team_totals. NBA / MLB /
+  // NHL caches frequently hold multiple sibling entries for the same
+  // matchup at different commenceTime stamps (real time + midnight UTC
+  // placeholders), each with DIFFERENT primary lines (e.g. closest has
+  // Lakers 99.5, sibling has Lakers 98.5). Without this union, a line
+  // requested for the sibling's primary lands on the closest entry's
+  // byLine + primary check, returns null, and the operator's Lines tab
+  // shows fair=null even though the data exists one cache entry away.
+  // Verified 2026-05-03 NBA Lakers/OKC: team_total line=98.5 had
+  // fair=null because closest entry's primary was 99.5; the 98.5 data
+  // sat in a sibling commenceTime entry.
+  if (closest.markets && closest.markets.team_totals) {
+    const closestTT = closest.markets.team_totals;
+    let unionedTT = null;
+    for (const side of ['home', 'away']) {
+      const closestSide = closestTT[side];
+      if (!closestSide) continue;
+      // Build the union byLine map: start from closest's byLine, fold in
+      // closest's own primary as a byLine entry too, then union sibling
+      // entries' byLine + their primaries.
+      const unionByLine = { ...(closestSide.byLine || {}) };
+      if (closestSide.line != null && !unionByLine[String(closestSide.line)]) {
+        unionByLine[String(closestSide.line)] = {
+          line: closestSide.line,
+          over: closestSide.over,
+          under: closestSide.under,
+        };
+      }
+      for (const ev of events) {
+        if (ev === closest || !ev || !ev.markets || !ev.markets.team_totals) continue;
+        const sibSide = ev.markets.team_totals[side];
+        if (!sibSide) continue;
+        // Fold sibling's byLine entries
+        if (sibSide.byLine) {
+          for (const [lk, le] of Object.entries(sibSide.byLine)) {
+            if (!unionByLine[lk]) unionByLine[lk] = le;
+          }
+        }
+        // Fold sibling's primary line
+        if (sibSide.line != null && !unionByLine[String(sibSide.line)]) {
+          unionByLine[String(sibSide.line)] = {
+            line: sibSide.line,
+            over: sibSide.over,
+            under: sibSide.under,
+          };
+        }
+      }
+      // Only mutate if we actually expanded
+      if (Object.keys(unionByLine).length > Object.keys(closestSide.byLine || {}).length) {
+        if (!unionedTT) unionedTT = { ...closestTT };
+        unionedTT[side] = { ...closestSide, byLine: unionByLine };
+      }
+    }
+    if (unionedTT) {
+      if (!merged) merged = { ...closest, markets: { ...(closest.markets || {}) } };
+      merged.markets.team_totals = unionedTT;
+    }
+  }
+
   return merged;
 }
 
