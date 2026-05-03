@@ -466,7 +466,7 @@ async function fetchOddsForSport(sport, opts) {
   // comes via SharpAPI's own '1st_5_innings_*' market_type rows on the
   // proper event AND the TOA F5 supplement; phantom rows just corrupt
   // the cache and never carry useful data.
-  const SUB_GAME_TEAM_SUFFIX = /\b(first\s+5\s+innings|1st\s+5\s+innings|first\s+half|1st\s+half|first\s+quarter|1st\s+quarter|first\s+period|1st\s+period)\b/i;
+  const SUB_GAME_TEAM_SUFFIX = /\b(first\s+5\s+innings|1st\s+5\s+innings|first\s+half|1st\s+half|first\s+quarter|1st\s+quarter|first\s+period|1st\s+period|\d{4}\s+1st\s+round\s+series|\d{4}\s+2nd\s+round\s+series|\d{4}\s+conference\s+(?:semifinals?|finals?))\b/i;
   let phantomDropped = 0;
   for (const row of groupingRows) {
     if (SUB_GAME_TEAM_SUFFIX.test(row.home_team || '') || SUB_GAME_TEAM_SUFFIX.test(row.away_team || '')) {
@@ -6485,6 +6485,21 @@ const TEAM_ABBREV_TO_CANONICAL = {
   // NHL
   'VGK Golden Knights': 'Vegas Golden Knights',
   'LA Kings': 'Los Angeles Kings',
+  // NBA short-name variants. SharpAPI sometimes drops the mascot
+  // ("Minnesota" instead of "Minnesota Timberwolves") and sometimes
+  // truncates mid-word ("Los Angeles L" → Lakers). PX uses canonical
+  // full names. Without canonicalization, the cache holds two-three
+  // entries per game and supplements (H1, team_totals, series_*) land
+  // on whichever SharpAPI returned, while PX matches the full-name
+  // entry. Verified 2026-05-03 via /odds-events scan: Min/SAS,
+  // PHI/NYK, LAL/OKC pairs each had 2-3 duplicate cache entries.
+  // Only unambiguous cities included here — "Los Angeles" alone could
+  // mean Lakers or Clippers, so it's NOT mapped (kept as-is so the
+  // matcher uses substring/last-word logic to disambiguate).
+  'Minnesota': 'Minnesota Timberwolves',
+  'San Antonio': 'San Antonio Spurs',
+  'Philadelphia': 'Philadelphia 76ers',
+  'Los Angeles L': 'Los Angeles Lakers',
   // Extend here: add any "<3-char-caps> <mascot>" variants we find in logs
 };
 
