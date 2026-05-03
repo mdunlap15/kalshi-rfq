@@ -454,7 +454,25 @@ async function fetchOddsForSport(sport, opts) {
 
   // Group by event, then by market+selection to de-vig across books
   const eventMap = {};
+  // SharpAPI's MLB feed sometimes returns sub-game data as SEPARATE events
+  // with team names carrying a sub-game suffix ("Washington first 5
+  // innings"). These pollute the cache as phantom entries that don't
+  // merge with the proper full-game event, and their data lands in the
+  // wrong market slots (e.g. markets.totals instead of markets.totals_f5).
+  // Verified 2026-05-03 Milwaukee/Washington: a phantom entry under team
+  // name "Washington first 5 innings" carried a `totals` market with all
+  // rawOdds=null, while the proper Mil/Was game entry simply had no F5
+  // markets. Drop these phantom rows at ingestion — real F5 coverage
+  // comes via SharpAPI's own '1st_5_innings_*' market_type rows on the
+  // proper event AND the TOA F5 supplement; phantom rows just corrupt
+  // the cache and never carry useful data.
+  const SUB_GAME_TEAM_SUFFIX = /\b(first\s+5\s+innings|1st\s+5\s+innings|first\s+half|1st\s+half|first\s+quarter|1st\s+quarter|first\s+period|1st\s+period)\b/i;
+  let phantomDropped = 0;
   for (const row of groupingRows) {
+    if (SUB_GAME_TEAM_SUFFIX.test(row.home_team || '') || SUB_GAME_TEAM_SUFFIX.test(row.away_team || '')) {
+      phantomDropped++;
+      continue;
+    }
     const eventId = row.event_id;
     if (!eventMap[eventId]) {
       eventMap[eventId] = {
@@ -471,6 +489,9 @@ async function fetchOddsForSport(sport, opts) {
       };
     }
     eventMap[eventId].odds.push(row);
+  }
+  if (phantomDropped > 0) {
+    log.info('OddsFeed', `Dropped ${phantomDropped} phantom sub-game rows (team name carrying F5/H1/Q1/P1 suffix) for ${sport}`);
   }
 
   // Update lineup cache for MLB (pitchers) / NHL (goalies). Runs before
