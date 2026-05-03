@@ -9185,10 +9185,26 @@
             if (am > 0) return 100 / (am + 100);
             return -am / (-am + 100);
           };
-          const pinProb = bookProb(l.pinnacleOdds);
-          const dkProb  = bookProb(l.draftkingsOdds);
-          const fdProb  = bookProb(l.fanduelOdds);
-          const kProb   = bookProb(l.kalshiOdds);
+          // For soccer DNB legs (2-way ML on a 3-way market), prefer the
+          // stored per-book DNB-renormalized prob over the raw 3-way American
+          // odds → implied. Without this, the chart plots raw 3-way Pin/DK/FD
+          // implied (which includes draw probability, e.g. ~62% for a moderate
+          // home fav) against our DNB-renormalized fair (which excludes draw,
+          // e.g. ~77% for the same team) — producing a ~-15pp phantom gap that
+          // looks like books are quoting much worse than fair when actually
+          // both numbers measure different things. Verified 2026-05-03 EPL
+          // Bournemouth screenshot: Fair 76.56% / Pin dist -15.32pp ⇒ raw Pin
+          // 61.24%, but Pin's DNB-renorm implied was ~76% (matches our fair).
+          // pinnacleDNBProb / fanduelDNBProb / etc are populated at quote
+          // time by the pricer specifically for this apples-to-apples view.
+          const pickProb = (rawAm, dnbProb) => {
+            if (l.isDNB && dnbProb != null && dnbProb > 0 && dnbProb < 1) return dnbProb;
+            return bookProb(rawAm);
+          };
+          const pinProb = pickProb(l.pinnacleOdds,   l.pinnacleDNBProb);
+          const dkProb  = pickProb(l.draftkingsOdds, l.draftkingsDNBProb);
+          const fdProb  = pickProb(l.fanduelOdds,    l.fanduelDNBProb);
+          const kProb   = pickProb(l.kalshiOdds,     l.kalshiDNBProb);
           const distFromFair = (p) => p != null ? (p - fp) * 100 : null;
           // Match the Team/Selection column in the positions table — for bare
           // "Over"/"Under" totals, formatParlaySelections([l]) enriches with
