@@ -256,135 +256,45 @@ TL;DR — pp is additive on probability; ROI is multiplicative on dollars. Divid
 </table>
 
 <div class="chart-wrap">
-<div class="chart-title">Realized SP Edge Per $ Wagered — Settled Parlays</div>
-<svg viewBox="0 0 380 260" style="width:100%; height:auto; max-width:420px; display:block; margin:0 auto;">
-  <g transform="translate(20,20)">
-    <!-- Axes -->
-    <line class="axis" x1="40" y1="200" x2="320" y2="200"/>
-    <line class="axis" x1="40" y1="20"  x2="40"  y2="200"/>
-    <!-- Zero line (white, emphasized) -->
-    <line class="zero" x1="40" y1="140" x2="320" y2="140"/>
-    <text class="label-sm" x="324" y="143" text-anchor="start">FAIR</text>
-    <!-- Y gridlines: +15%, +10%, +5%, 0%, -5% -->
-    <line class="grid" x1="40" y1="20"  x2="320" y2="20"/>
-    <line class="grid" x1="40" y1="60"  x2="320" y2="60"/>
-    <line class="grid" x1="40" y1="100" x2="320" y2="100"/>
-    <line class="grid" x1="40" y1="180" x2="320" y2="180"/>
-    <text class="axis" x="36" y="23"  text-anchor="end">+15%</text>
-    <text class="axis" x="36" y="63"  text-anchor="end">+10%</text>
-    <text class="axis" x="36" y="103" text-anchor="end">+5%</text>
-    <text class="axis" x="36" y="143" text-anchor="end">0%</text>
-    <text class="axis" x="36" y="183" text-anchor="end">-5%</text>
-    <!-- Connecting line through points -->
-    <polyline points="68,153 124,137 180,32 236,35 292,67"
-      fill="none" stroke="#3fb950" stroke-width="1" opacity="0.4"/>
-    <!-- Data points (+sample-size labels above) -->
-    <!-- 5%: -1.60% → y = 140 + 1.60*8 = 152.8 -->
-    <circle cx="68"  cy="153" r="5" fill="#f87171" opacity="0.9"/>
-    <text class="axis" x="68"  y="172" text-anchor="middle" fill="#f87171">-1.6%</text>
-    <text class="axis" x="68"  y="14"  text-anchor="middle" fill="#c9d1d9" font-size="9">n=326</text>
-    <!-- 15%: +0.43% → y = 140 - 0.43*8 = 136.6 -->
-    <circle cx="124" cy="137" r="5" fill="#3fb950" opacity="0.9"/>
-    <text class="axis" x="124" y="128" text-anchor="middle" fill="#3fb950">+0.4%</text>
-    <text class="axis" x="124" y="14"  text-anchor="middle" fill="#c9d1d9" font-size="9">n=314</text>
-    <!-- 25%: +13.56% → y = 140 - 13.56*8 = 31.5 -->
-    <circle cx="180" cy="32"  r="5" fill="#3fb950" opacity="0.9"/>
-    <text class="axis" x="180" y="48"  text-anchor="middle" fill="#3fb950">+13.6%</text>
-    <text class="axis" x="180" y="14"  text-anchor="middle" fill="#c9d1d9" font-size="9">n=345</text>
-    <!-- 35%: +13.13% → y = 140 - 13.13*8 = 35 -->
-    <circle cx="236" cy="35"  r="5" fill="#3fb950" opacity="0.9"/>
-    <text class="axis" x="236" y="51"  text-anchor="middle" fill="#3fb950">+13.1%</text>
-    <text class="axis" x="236" y="14"  text-anchor="middle" fill="#c9d1d9" font-size="9">n=226</text>
-    <!-- 45%: +9.15% → y = 140 - 9.15*8 = 66.8 -->
-    <circle cx="292" cy="67"  r="5" fill="#3fb950" opacity="0.9"/>
-    <text class="axis" x="292" y="83"  text-anchor="middle" fill="#3fb950">+9.2%</text>
-    <text class="axis" x="292" y="14"  text-anchor="middle" fill="#c9d1d9" font-size="9">n=92</text>
-    <!-- X-axis labels -->
-    <text class="axis" x="68"  y="215" text-anchor="middle">5%</text>
-    <text class="axis" x="124" y="215" text-anchor="middle">15%</text>
-    <text class="axis" x="180" y="215" text-anchor="middle">25%</text>
-    <text class="axis" x="236" y="215" text-anchor="middle">35%</text>
-    <text class="axis" x="292" y="215" text-anchor="middle">45%</text>
-    <text class="label-sm" x="180" y="232" text-anchor="middle">Fair Prob (bucket midpoint)</text>
-  </g>
-</svg>
-</div>
-
-<p style="font-size:12px; color:#c9d1d9;"><em>Each dot is one fair-prob bucket; label below is realized edge per $ wagered, label above is settled-parlay sample size. Bucket midpoints are 5%, 15%, etc.; widths are 10pp.</em></p>
-
-<p><strong>Why the longshot bucket isn't the steepest in realized data:</strong></p>
-<ul style="font-size:14px; padding-left:20px;">
-  <li><strong>Variance dominates short-term.</strong> A 5% true-fair parlay should hit ~5% of the time. With 326 settled parlays in this bucket, you'd expect ~16 hits — the actual number can swing by 20-30% just on luck. One extra hit (or one miss) at +1900 odds shifts the bucket P&L by ~$2K.</li>
-  <li><strong>Longshot vig surcharge eats some of the theoretical edge.</strong> Q1's "5% fair → 16.7% per-dollar edge" assumed the same 1pp markup across the curve. The pricer adds an extra additive vig on parlays whose fair-prob is below ~25% — the wider gap is partially priced back to bettors.</li>
-  <li><strong>Mid-range is the sweet spot.</strong> 20-40% fair-prob is large enough to converge on a few hundred parlays, but small enough that pp markups still translate to mid-single-digit per-dollar edge. Larger n + smaller per-trade variance = the bucket where realized edge most clearly tracks theoretical.</li>
-</ul>
-
-<p><strong>Splitting the data by period</strong> — the second chart compares the first three weeks of trading (4/7-4/26, n=853) against the most recent week (4/27-5/3, n=380). Variance still dominates; both periods agree the 20-30% bucket is positive, but bucket-level edge swings 5-15pp week to week.</p>
-
-<table>
-  <thead>
-    <tr>
-      <th rowspan="2" style="vertical-align:bottom;">Bucket</th>
-      <th colspan="2" style="text-align:center; border-right:1px solid #30363d;">4/7-4/26 (n=853)</th>
-      <th colspan="2" style="text-align:center;">4/27-5/3 (n=380)</th>
-    </tr>
-    <tr>
-      <th class="num">Settled n</th>
-      <th class="num" style="border-right:1px solid #30363d;">Edge per $</th>
-      <th class="num">Settled n</th>
-      <th class="num">Edge per $</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr><td>0-10%</td><td class="num">245</td><td class="num" style="border-right:1px solid #30363d;color:#f87171;">-2.94%</td><td class="num">71</td><td class="num" style="color:#3fb950;">+2.09%</td></tr>
-    <tr><td>10-20%</td><td class="num">215</td><td class="num" style="border-right:1px solid #30363d;color:#f87171;">-6.15%</td><td class="num">81</td><td class="num" style="color:#3fb950;">+8.71%</td></tr>
-    <tr><td>20-30%</td><td class="num">233</td><td class="num" style="border-right:1px solid #30363d;color:#3fb950;">+8.93%</td><td class="num">91</td><td class="num" style="color:#3fb950;">+20.54%</td></tr>
-    <tr><td>30-40%</td><td class="num">120</td><td class="num" style="border-right:1px solid #30363d;color:#3fb950;">+11.27%</td><td class="num">93</td><td class="num" style="color:#3fb950;">+2.10%</td></tr>
-    <tr><td>40-50%</td><td class="num">40</td><td class="num" style="border-right:1px solid #30363d;color:#3fb950;">+21.12%</td><td class="num">44</td><td class="num" style="color:#3fb950;">+9.93%</td></tr>
-  </tbody>
-</table>
-
-<div class="chart-wrap">
-<div class="chart-title">Realized Edge Per $ Wagered — 4/7-4/26 vs 4/27-5/3</div>
+<div class="chart-title">Realized SP Edge Per $ Wagered — Overall vs Past Week</div>
 <svg viewBox="0 0 380 260" style="width:100%; height:auto; max-width:480px; display:block; margin:0 auto;">
   <g transform="translate(20,20)">
     <!-- Axes -->
     <line class="axis" x1="40" y1="200" x2="320" y2="200"/>
     <line class="axis" x1="40" y1="20"  x2="40"  y2="200"/>
-    <!-- Zero line -->
-    <line class="zero" x1="40" y1="149" x2="320" y2="149"/>
-    <text class="label-sm" x="324" y="152" text-anchor="start">FAIR</text>
-    <!-- Y gridlines: +25, +20, +15, +10, +5, -5, -10 -->
+    <!-- Zero line (white, emphasized) -->
+    <line class="zero" x1="40" y1="170" x2="320" y2="170"/>
+    <text class="label-sm" x="324" y="173" text-anchor="start">FAIR</text>
+    <!-- Y gridlines: +25, +20, +15, +10, +5, -5 -->
     <line class="grid" x1="40" y1="20"  x2="320" y2="20"/>
-    <line class="grid" x1="40" y1="46"  x2="320" y2="46"/>
-    <line class="grid" x1="40" y1="71"  x2="320" y2="71"/>
-    <line class="grid" x1="40" y1="97"  x2="320" y2="97"/>
-    <line class="grid" x1="40" y1="123" x2="320" y2="123"/>
-    <line class="grid" x1="40" y1="174" x2="320" y2="174"/>
+    <line class="grid" x1="40" y1="50"  x2="320" y2="50"/>
+    <line class="grid" x1="40" y1="80"  x2="320" y2="80"/>
+    <line class="grid" x1="40" y1="110" x2="320" y2="110"/>
+    <line class="grid" x1="40" y1="140" x2="320" y2="140"/>
+    <line class="grid" x1="40" y1="200" x2="320" y2="200"/>
     <text class="axis" x="36" y="23"  text-anchor="end">+25%</text>
-    <text class="axis" x="36" y="49"  text-anchor="end">+20%</text>
-    <text class="axis" x="36" y="74"  text-anchor="end">+15%</text>
-    <text class="axis" x="36" y="100" text-anchor="end">+10%</text>
-    <text class="axis" x="36" y="126" text-anchor="end">+5%</text>
-    <text class="axis" x="36" y="152" text-anchor="end">0%</text>
-    <text class="axis" x="36" y="177" text-anchor="end">-5%</text>
-    <text class="axis" x="36" y="203" text-anchor="end">-10%</text>
-    <!-- Period A line: 4/7-4/26 (purple, older) -->
-    <polyline points="68,164 124,180 180,103 236,91 292,40"
-      fill="none" stroke="#a78bfa" stroke-width="1.5" opacity="0.85"/>
-    <circle cx="68"  cy="164" r="4" fill="#a78bfa" opacity="0.95"/>
-    <circle cx="124" cy="180" r="4" fill="#a78bfa" opacity="0.95"/>
-    <circle cx="180" cy="103" r="4" fill="#a78bfa" opacity="0.95"/>
-    <circle cx="236" cy="91"  r="4" fill="#a78bfa" opacity="0.95"/>
-    <circle cx="292" cy="40"  r="4" fill="#a78bfa" opacity="0.95"/>
-    <!-- Period B line: 4/27-5/3 (green, recent) -->
-    <polyline points="68,138 124,104 180,43 236,138 292,98"
-      fill="none" stroke="#3fb950" stroke-width="1.5" opacity="0.85"/>
-    <circle cx="68"  cy="138" r="4" fill="#3fb950" opacity="0.95"/>
-    <circle cx="124" cy="104" r="4" fill="#3fb950" opacity="0.95"/>
-    <circle cx="180" cy="43"  r="4" fill="#3fb950" opacity="0.95"/>
-    <circle cx="236" cy="138" r="4" fill="#3fb950" opacity="0.95"/>
-    <circle cx="292" cy="98"  r="4" fill="#3fb950" opacity="0.95"/>
+    <text class="axis" x="36" y="53"  text-anchor="end">+20%</text>
+    <text class="axis" x="36" y="83"  text-anchor="end">+15%</text>
+    <text class="axis" x="36" y="113" text-anchor="end">+10%</text>
+    <text class="axis" x="36" y="143" text-anchor="end">+5%</text>
+    <text class="axis" x="36" y="173" text-anchor="end">0%</text>
+    <text class="axis" x="36" y="203" text-anchor="end">-5%</text>
+    <!-- Overall line (4/7-5/3, n=2,223): green -->
+    <polyline points="68,180 124,167 180,89 236,91 292,115"
+      fill="none" stroke="#3fb950" stroke-width="1.5" opacity="0.9"/>
+    <circle cx="68"  cy="180" r="4" fill="#3fb950" opacity="0.95"/>
+    <circle cx="124" cy="167" r="4" fill="#3fb950" opacity="0.95"/>
+    <circle cx="180" cy="89"  r="4" fill="#3fb950" opacity="0.95"/>
+    <circle cx="236" cy="91"  r="4" fill="#3fb950" opacity="0.95"/>
+    <circle cx="292" cy="115" r="4" fill="#3fb950" opacity="0.95"/>
+    <!-- Past-week line (4/27-5/3, n=380): purple, dashed -->
+    <polyline points="68,158 124,118 180,47 236,157 292,110"
+      fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.9"/>
+    <circle cx="68"  cy="158" r="4" fill="#a78bfa" opacity="0.95"/>
+    <circle cx="124" cy="118" r="4" fill="#a78bfa" opacity="0.95"/>
+    <circle cx="180" cy="47"  r="4" fill="#a78bfa" opacity="0.95"/>
+    <circle cx="236" cy="157" r="4" fill="#a78bfa" opacity="0.95"/>
+    <circle cx="292" cy="110" r="4" fill="#a78bfa" opacity="0.95"/>
     <!-- X-axis labels -->
     <text class="axis" x="68"  y="215" text-anchor="middle">5%</text>
     <text class="axis" x="124" y="215" text-anchor="middle">15%</text>
@@ -393,17 +303,28 @@ TL;DR — pp is additive on probability; ROI is multiplicative on dollars. Divid
     <text class="axis" x="292" y="215" text-anchor="middle">45%</text>
     <text class="label-sm" x="180" y="232" text-anchor="middle">Fair Prob (bucket midpoint)</text>
     <!-- Legend -->
-    <g transform="translate(50,5)">
-      <rect x="0" y="0" width="14" height="3" fill="#a78bfa"/>
-      <text class="axis" x="20" y="4" text-anchor="start">4/7-4/26 (n=853)</text>
-      <rect x="120" y="0" width="14" height="3" fill="#3fb950"/>
-      <text class="axis" x="140" y="4" text-anchor="start">4/27-5/3 (n=380)</text>
+    <g transform="translate(40,5)">
+      <line x1="0" y1="2" x2="18" y2="2" stroke="#3fb950" stroke-width="1.5"/>
+      <text class="axis" x="24" y="5" text-anchor="start">Overall (n=2,223)</text>
+      <line x1="130" y1="2" x2="148" y2="2" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="4,3"/>
+      <text class="axis" x="154" y="5" text-anchor="start">Past week (n=380)</text>
     </g>
   </g>
 </svg>
 </div>
 
-<p style="font-size:12px; color:#c9d1d9;"><em>Same buckets, two windows. The recent week's small per-bucket sample (n=44-93) makes its swings noisier than the older window's (n=40-245). The 30-40% bucket flipped from +11.3% to +2.1% — most likely small-sample noise rather than a regime change, but worth re-checking once another week of data is in.</em></p>
+<p style="font-size:12px; color:#c9d1d9;"><em>Solid green = full settled history (4/7-5/3). Dashed purple = just the last seven days (4/27-5/3). Bucket midpoints are 5%, 15%, etc.; widths are 10pp.</em></p>
+
+<p><strong>How the past week (4/27-5/3) differs from the overall line:</strong></p>
+<ul style="font-size:14px; padding-left:20px;">
+  <li><strong>0-10% longshots flipped from negative to positive.</strong> Overall sits at -1.6% (lots of expected misses); past week is +2.1%. With only 71 settled, that's one or two extra hits at long odds doing the work — well within longshot variance.</li>
+  <li><strong>10-20% jumped to its biggest gap from overall.</strong> Overall ~+0.4%, past week +8.7%. Same story: small sample (n=81), one big hit at +500 swings the bucket several percent.</li>
+  <li><strong>20-30% widened further.</strong> Already the strongest bucket overall (+13.6%) and past week is even stronger at +20.5%. Mid-range continues to be where pricing translates most cleanly into realized edge.</li>
+  <li><strong>30-40% pulled back hard.</strong> Overall +13.1% vs past week +2.1%. The most striking swing, but again small sample (n=93). One unfavorable parlay at moderate odds erases a lot of bucket P&L. Worth watching across another week to see if it's noise or a real shift.</li>
+  <li><strong>40-50% drifted closer to mid-range.</strong> Overall +9.2% vs past week +9.9% — basically unchanged. The smallest bucket overall (n=92), so most movement here would be variance regardless.</li>
+</ul>
+
+<p style="font-size:12px; color:#c9d1d9;"><em>Net: the past week's shape is consistent with overall on direction (longshots near zero, mid-range strongly positive), but bucket-level edges swing 5-10pp on samples this small. The 20-30% bucket continues to be the most reliable signal — large enough to escape pure variance, narrow enough that pp markups translate to meaningful per-dollar edge.</em></p>
 
 </body>
 </html>
