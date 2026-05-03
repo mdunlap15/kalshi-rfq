@@ -497,6 +497,21 @@ const config = {
     // bookmaker coverage in TOA's per-event response (most books
     // posting both sides → that's the line they all anchor on).
     propAltLineMaxDistance: parseFloat(process.env.PROP_ALT_LINE_MAX_DISTANCE) || 2.0,
+    // Heavy-favorite floor protection on prop fair probs. Proportional
+    // de-vig systematically underestimates the true prob on lopsided
+    // 2-way prop markets — books' vigged price already captures
+    // information the de-vig can't recover. When the de-vigged side prob
+    // exceeds propHeavyFavFloorThresh (heavy favorite), floor it at the
+    // average book vigged implied minus propHeavyFavFloorBuffer, so we
+    // never quote below the books' own implied estimates of the true
+    // probability. Verified 2026-05-03 hitter_hits leak: Heliot Ramos
+    // Over 0.5 priced at -194 (66% fair) while books had -200 (~67%
+    // vigged) — we were giving away 5+pp on every heavy-fav prop quote.
+    //
+    // Set propHeavyFavFloorBuffer high (e.g. 0.05) to disable the floor
+    // by making it always lower than the de-vig.
+    propHeavyFavFloorThresh: parseFloat(process.env.PROP_HEAVY_FAV_FLOOR_THRESH) || 0.60,
+    propHeavyFavFloorBuffer: parseFloat(process.env.PROP_HEAVY_FAV_FLOOR_BUFFER) || 0.005,
     // Master allowlist for live prop quoting. Comma-separated list of
     // "${sport}.${propType}" pairs. Only props in this allowlist are
     // resolved live and quoted; everything else falls into the existing

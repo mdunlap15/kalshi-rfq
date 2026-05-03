@@ -6967,6 +6967,8 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
   // NOTE: deVig2Way returns an ARRAY [fair1, fair2], not an object.
   const fairProbsOver = [];
   const fairProbsUnder = [];
+  const viggedProbsOver = [];
+  const viggedProbsUnder = [];
   for (const book of books) {
     const o = overRows.find(r => r.sportsbook === book);
     const u = underRows.find(r => r.sportsbook === book);
@@ -6974,6 +6976,8 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
     const oProb = americanToImpliedProb(o.odds_american);
     const uProb = americanToImpliedProb(u.odds_american);
     if (oProb == null || uProb == null) continue;
+    viggedProbsOver.push(oProb);
+    viggedProbsUnder.push(uProb);
     const dv = deVig2Way(oProb, uProb);
     if (Array.isArray(dv) && dv.length === 2 && Number.isFinite(dv[0]) && Number.isFinite(dv[1])) {
       fairProbsOver.push(dv[0]);
@@ -6981,18 +6985,51 @@ function lookupPlayerStrikeoutProp(sport, pxEventInfo, playerName, line) {
     }
   }
   const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  const { fairProbOver, fairProbUnder } = _applyPropHeavyFavFloor(
+    avg(fairProbsOver), avg(fairProbsUnder),
+    avg(viggedProbsOver), avg(viggedProbsUnder)
+  );
 
   return {
     matchedRows: lineRows,
     books,
     sides: { over: overRows, under: underRows },
-    fairProbOver: avg(fairProbsOver),
-    fairProbUnder: avg(fairProbsUnder),
+    fairProbOver,
+    fairProbUnder,
     booksWithBothSides: fairProbsOver.length, // count of books that had both Over+Under
     resolvedEventId,
     fetchedAt: sportCache.fetchedAt || null, // for downstream stale checks
     stages,
   };
+}
+
+// Heavy-favorite floor for prop fair probs. Proportional de-vig systematically
+// underestimates the true prob on lopsided 2-way prop markets (the books'
+// vigged price already captures information the proportional split can't
+// recover — e.g. hitter Over 0.5 hits at -200 / +160 vigged-implied
+// 67%/38%, summed 105% overround → naive de-vig over = 67/105 = 64%, but
+// the true prob is closer to the vigged 67% because the bookmaker's line
+// reflects player batting average, lineup spot, weather, etc. that the
+// de-vig can't see). Floor each side's fair at avg book vigged minus a
+// small buffer when the side is a heavy favorite (>threshold). Symmetric:
+// fires for either Over or Under, whichever side is the heavy fav.
+//
+// Returns { fairProbOver, fairProbUnder } with the floor applied (or
+// passes through unchanged on non-heavy-fav legs).
+function _applyPropHeavyFavFloor(devigOver, devigUnder, viggedOver, viggedUnder) {
+  const cfg = require('../config').config;
+  const thresh = (cfg && cfg.pricing && cfg.pricing.propHeavyFavFloorThresh) || 0.60;
+  const buffer = (cfg && cfg.pricing && cfg.pricing.propHeavyFavFloorBuffer) || 0.005;
+  let outOver = devigOver, outUnder = devigUnder;
+  if (devigOver != null && viggedOver != null && devigOver > thresh) {
+    const floor = viggedOver - buffer;
+    if (floor > devigOver) outOver = floor;
+  }
+  if (devigUnder != null && viggedUnder != null && devigUnder > thresh) {
+    const floor = viggedUnder - buffer;
+    if (floor > devigUnder) outUnder = floor;
+  }
+  return { fairProbOver: outOver, fairProbUnder: outUnder };
 }
 
 // ---------------------------------------------------------------------------
@@ -7089,6 +7126,8 @@ function lookupPlayerPointsProp(sport, pxEventInfo, playerName, line) {
 
   const fairProbsOver = [];
   const fairProbsUnder = [];
+  const viggedProbsOver = [];
+  const viggedProbsUnder = [];
   for (const book of books) {
     const o = overRows.find(r => r.sportsbook === book);
     const u = underRows.find(r => r.sportsbook === book);
@@ -7096,6 +7135,8 @@ function lookupPlayerPointsProp(sport, pxEventInfo, playerName, line) {
     const oProb = americanToImpliedProb(o.odds_american);
     const uProb = americanToImpliedProb(u.odds_american);
     if (oProb == null || uProb == null) continue;
+    viggedProbsOver.push(oProb);
+    viggedProbsUnder.push(uProb);
     const dv = deVig2Way(oProb, uProb);
     if (Array.isArray(dv) && dv.length === 2 && Number.isFinite(dv[0]) && Number.isFinite(dv[1])) {
       fairProbsOver.push(dv[0]);
@@ -7103,13 +7144,17 @@ function lookupPlayerPointsProp(sport, pxEventInfo, playerName, line) {
     }
   }
   const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  const { fairProbOver, fairProbUnder } = _applyPropHeavyFavFloor(
+    avg(fairProbsOver), avg(fairProbsUnder),
+    avg(viggedProbsOver), avg(viggedProbsUnder)
+  );
 
   return {
     matchedRows: lineRows,
     books,
     sides: { over: overRows, under: underRows },
-    fairProbOver: avg(fairProbsOver),
-    fairProbUnder: avg(fairProbsUnder),
+    fairProbOver,
+    fairProbUnder,
     booksWithBothSides: fairProbsOver.length,
     resolvedEventId,
     fetchedAt: sportCache.fetchedAt || null,
@@ -7396,6 +7441,8 @@ async function lookupTheOddsApiPlayerProp(sport, marketKey, pxEventInfo, playerN
 
   const fairProbsOver = [];
   const fairProbsUnder = [];
+  const viggedProbsOver = [];
+  const viggedProbsUnder = [];
   for (const book of books) {
     const o = overByBook[book];
     const u = underByBook[book];
@@ -7403,6 +7450,8 @@ async function lookupTheOddsApiPlayerProp(sport, marketKey, pxEventInfo, playerN
     const oProb = americanToImpliedProb(o.price);
     const uProb = americanToImpliedProb(u.price);
     if (oProb == null || uProb == null) continue;
+    viggedProbsOver.push(oProb);
+    viggedProbsUnder.push(uProb);
     const dv = deVig2Way(oProb, uProb);
     if (Array.isArray(dv) && dv.length === 2 && Number.isFinite(dv[0]) && Number.isFinite(dv[1])) {
       fairProbsOver.push(dv[0]);
@@ -7410,12 +7459,16 @@ async function lookupTheOddsApiPlayerProp(sport, marketKey, pxEventInfo, playerN
     }
   }
   const avg = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  const { fairProbOver, fairProbUnder } = _applyPropHeavyFavFloor(
+    avg(fairProbsOver), avg(fairProbsUnder),
+    avg(viggedProbsOver), avg(viggedProbsUnder)
+  );
 
   return {
     matchedRows: matched,
     books,
-    fairProbOver: avg(fairProbsOver),
-    fairProbUnder: avg(fairProbsUnder),
+    fairProbOver,
+    fairProbUnder,
     booksWithBothSides: fairProbsOver.length,
     resolvedEventId: event.id,
     fetchedAt: odds.fetchedAt || null,
