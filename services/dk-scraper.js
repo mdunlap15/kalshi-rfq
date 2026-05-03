@@ -834,6 +834,369 @@ async function fetchDkPlayerProps(sport, { force = false } = {}) {
   return inFlightBySport[cacheKey];
 }
 
+// ---------------------------------------------------------------------------
+// DK GAME-LINE SCRAPER (generic across all team sports)
+// ---------------------------------------------------------------------------
+// Catches the moneyline / spread / total / team_total markets DK posts on
+// every major team-sport league. Used as the third fallback when SharpAPI
+// returns Kalshi-only stubs and TOA's events list doesn't include the
+// matchup. Operator directive 2026-05-03: every primary-feed gap should
+// have a scraper backstop — no upstream API failure should produce 0 lines
+// for markets we typically have.
+//
+// Returns:
+//   {
+//     fetchedAt: ISO,
+//     games: [{
+//       eventId, eventName, startTime,
+//       homeTeam, awayTeam,
+//       h2h: { home: {fairProb,...}, away: {...}, vig },
+//       spreads: { home: {...,point}, away: {...}, line, vig },
+//       totalsByLine: { "5.5": { line, over, under, vig }, ... },
+//       teamTotalsByLine: {
+//         home: { "117.5": { line, over, under, vig }, ... },
+//         away: { ... },
+//       },
+//     }, ...]
+//   }
+const GAME_LINE_CONFIGS = {
+  basketball_nba: {
+    leaguePath: 'basketball/nba',
+    label: 'NBA',
+    spreadName: /^point\s+spread$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:point\s+)?spread$/i,
+    totalName: /^total(?:\s+points)?$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+points)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+points)?|home\s+team\s+total|away\s+team\s+total)$/i,
+  },
+  baseball_mlb: {
+    leaguePath: 'baseball/mlb',
+    label: 'MLB',
+    spreadName: /^run\s+line$/i,
+    altSpreadName: /^alt(?:ernate)?\s+run\s+line$/i,
+    totalName: /^total(?:\s+runs)?$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+runs)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+runs)?|home\s+team\s+total|away\s+team\s+total)$/i,
+  },
+  icehockey_nhl: {
+    leaguePath: 'hockey/nhl',
+    label: 'NHL',
+    spreadName: /^puck\s+line$/i,
+    altSpreadName: /^alt(?:ernate)?\s+puck\s+line$/i,
+    totalName: /^total(?:\s+goals)?$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+goals)?$/i,
+    teamTotalName: /^(?:team\s+total(?:\s+goals)?|home\s+team\s+total|away\s+team\s+total)$/i,
+  },
+  basketball_wnba: {
+    leaguePath: 'basketball/wnba',
+    label: 'WNBA',
+    spreadName: /^point\s+spread$/i,
+    altSpreadName: /^alt(?:ernate)?\s+(?:point\s+)?spread$/i,
+    totalName: /^total(?:\s+points)?$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+points)?$/i,
+    teamTotalName: /^team\s+total(?:\s+points)?$/i,
+  },
+  tennis: {
+    leaguePath: 'tennis',  // multi-tournament; we may need to adapt URL
+    label: 'Tennis',
+    spreadName: /^game\s+spread$/i,
+    altSpreadName: /^alt(?:ernate)?\s+game\s+spread$/i,
+    totalName: /^total(?:\s+games)?$/i,
+    altTotalName: /^alt(?:ernate)?\s+total(?:\s+games)?$/i,
+    teamTotalName: null,  // tennis doesn't have team_total
+  },
+};
+
+async function fetchDkGameLines(sport, { force = false } = {}) {
+  const cfg = GAME_LINE_CONFIGS[sport];
+  if (!cfg) throw new Error(`Unknown sport for game-line scrape: ${sport}`);
+  const cacheKey = `gameLines_${sport}`;
+  if (!force && cacheBySport[cacheKey] && Date.now() - cacheBySport[cacheKey].at < CACHE_TTL_MS) {
+    return cacheBySport[cacheKey].data;
+  }
+  if (inFlightBySport[cacheKey]) return inFlightBySport[cacheKey];
+
+  inFlightBySport[cacheKey] = (async () => {
+    const startedAt = Date.now();
+    const browser = await puppeteer().launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1400, height: 900 });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+      const eventsById = {};
+      const marketsByEvent = {}; // eventId → { h2hSels:[], spreadByLine:{}, totalByLine:{}, teamTotalByLine:{home:{}, away:{}} }
+
+      const ensureBucket = (eventId) => {
+        if (!marketsByEvent[eventId]) {
+          marketsByEvent[eventId] = {
+            h2hSels: [],
+            spreadByLine: {},
+            totalByLine: {},
+            teamTotalByLine: { home: {}, away: {} },
+          };
+        }
+        return marketsByEvent[eventId];
+      };
+
+      page.on('response', async (resp) => {
+        const url = resp.url();
+        if (!url.includes('sportsbook-nash.draftkings.com')) return;
+        if (!/markets|subcategory|eventgroup|prematch|inplay/i.test(url)) return;
+        try {
+          const ct = resp.headers()['content-type'] || '';
+          if (!ct.includes('json')) return;
+          const data = await resp.json();
+          if (!data.events || !data.markets || !data.selections) return;
+
+          for (const ev of data.events) {
+            if (!eventsById[ev.id]) {
+              eventsById[ev.id] = {
+                eventId: ev.id,
+                eventName: ev.name,
+                startTime: ev.startEventDate || null,
+                homeTeam: ev.team1 || ev.homeTeam || null,
+                awayTeam: ev.team2 || ev.awayTeam || null,
+              };
+              if ((!eventsById[ev.id].homeTeam || !eventsById[ev.id].awayTeam) && ev.name) {
+                const m = ev.name.match(/^(.+?)\s+@\s+(.+)$/);
+                if (m) {
+                  eventsById[ev.id].awayTeam = eventsById[ev.id].awayTeam || m[1].trim();
+                  eventsById[ev.id].homeTeam = eventsById[ev.id].homeTeam || m[2].trim();
+                }
+              }
+            }
+          }
+
+          const parseSel = (sel) => {
+            const trueDec = typeof sel.trueOdds === 'number' ? sel.trueOdds : null;
+            const decDisplay = parseFloat(sel.displayOdds?.decimal);
+            const decimal = trueDec || decDisplay || null;
+            const american = sel.displayOdds?.american
+              ? parseInt(String(sel.displayOdds.american).replace(/[−–—]/g, '-').replace(/[^\-0-9]/g, ''), 10)
+              : null;
+            return {
+              decimalOdds: decimal,
+              americanOdds: Number.isFinite(american) ? american : null,
+              impliedProb: decimal && decimal > 0 ? 1 / decimal : null,
+            };
+          };
+
+          for (const m of data.markets) {
+            const name = m.marketType?.name || m.name || '';
+            const eventId = m.eventId;
+            const ev = eventsById[eventId];
+            if (!ev) continue;
+            const bucket = ensureBucket(eventId);
+
+            // Moneyline
+            if (/^moneyline$/i.test(name)) {
+              for (const sel of data.selections) {
+                if (sel.marketId !== m.id) continue;
+                bucket.h2hSels.push({ team: sel.label, ...parseSel(sel) });
+              }
+            }
+            // Spread / alt spread
+            else if (cfg.spreadName.test(name) || (cfg.altSpreadName && cfg.altSpreadName.test(name))) {
+              for (const sel of data.selections) {
+                if (sel.marketId !== m.id) continue;
+                const lineVal = sel.points;
+                if (lineVal == null) continue;
+                const teamLabel = sel.label?.replace(/\s*[+\-]?\d+(?:\.\d+)?\s*$/, '').trim() || null;
+                if (!teamLabel) continue;
+                const lineKey = String(lineVal);
+                if (!bucket.spreadByLine[lineKey]) bucket.spreadByLine[lineKey] = {};
+                // Detect home vs away by matching team label
+                const isHome = ev.homeTeam && (teamLabel.toLowerCase().includes(ev.homeTeam.toLowerCase()) || ev.homeTeam.toLowerCase().includes(teamLabel.toLowerCase()));
+                const side = isHome ? 'home' : 'away';
+                bucket.spreadByLine[lineKey][side] = { team: teamLabel, line: lineVal, ...parseSel(sel) };
+              }
+            }
+            // Total / alt total
+            else if (cfg.totalName.test(name) || (cfg.altTotalName && cfg.altTotalName.test(name))) {
+              for (const sel of data.selections) {
+                if (sel.marketId !== m.id) continue;
+                const lineVal = sel.points ?? (typeof sel.label === 'string' ? parseFloat((sel.label.match(/[\d.]+/) || [''])[0]) : null);
+                const sideLabel = /\bover\b/i.test(sel.label || '') ? 'over' : /\bunder\b/i.test(sel.label || '') ? 'under' : null;
+                if (lineVal == null || !sideLabel) continue;
+                const lineKey = String(lineVal);
+                if (!bucket.totalByLine[lineKey]) bucket.totalByLine[lineKey] = { line: lineVal };
+                bucket.totalByLine[lineKey][sideLabel] = { line: lineVal, ...parseSel(sel) };
+              }
+            }
+            // Team total (per-team over/under)
+            else if (cfg.teamTotalName && cfg.teamTotalName.test(name)) {
+              for (const sel of data.selections) {
+                if (sel.marketId !== m.id) continue;
+                const label = sel.label || '';
+                const sideLabel = /\bover\b/i.test(label) ? 'over' : /\bunder\b/i.test(label) ? 'under' : null;
+                const lineVal = sel.points ?? (typeof label === 'string' ? parseFloat((label.match(/[\d.]+/) || [''])[0]) : null);
+                if (lineVal == null || !sideLabel) continue;
+                // Determine home or away by market name (DK often uses
+                // "Home Team Total" / "Away Team Total" or includes the
+                // team name in the market or selection)
+                const homeMatch = ev.homeTeam && (label.toLowerCase().includes(ev.homeTeam.toLowerCase()) || name.toLowerCase().includes(ev.homeTeam.toLowerCase()) || /\bhome\b/i.test(name));
+                const awayMatch = ev.awayTeam && (label.toLowerCase().includes(ev.awayTeam.toLowerCase()) || name.toLowerCase().includes(ev.awayTeam.toLowerCase()) || /\baway\b/i.test(name));
+                const teamSide = homeMatch ? 'home' : awayMatch ? 'away' : null;
+                if (!teamSide) continue;
+                const lineKey = String(lineVal);
+                if (!bucket.teamTotalByLine[teamSide][lineKey]) {
+                  bucket.teamTotalByLine[teamSide][lineKey] = { line: lineVal };
+                }
+                bucket.teamTotalByLine[teamSide][lineKey][sideLabel] = { line: lineVal, ...parseSel(sel) };
+              }
+            }
+          }
+        } catch { /* ignore */ }
+      });
+
+      // Navigate to the league page + scroll to trigger lazy XHRs
+      const url = `https://sportsbook.draftkings.com/leagues/${cfg.leaguePath}`;
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+        await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
+        for (let i = 0; i < 8; i++) {
+          await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+          await new Promise(r => setTimeout(r, 500));
+        }
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await new Promise(r => setTimeout(r, 3000));
+      } catch (err) {
+        log.debug('DKScraper', `${cfg.label} game-line nav error: ${err.message}`);
+      }
+
+      // Build per-game payload: de-vig moneyline pairs, spread pairs, total pairs, team-totals.
+      const games = [];
+      for (const ev of Object.values(eventsById)) {
+        const bucket = marketsByEvent[ev.eventId];
+        if (!bucket) continue;
+
+        // h2h
+        let h2h = null;
+        if (bucket.h2hSels.length === 2) {
+          const sumImplied = bucket.h2hSels.reduce((s, x) => s + (x.impliedProb || 0), 0);
+          if (sumImplied > 0) {
+            const findFor = (tn) => bucket.h2hSels.find(s => s.team && tn && (
+              s.team.toLowerCase() === tn.toLowerCase()
+              || s.team.toLowerCase().includes(tn.toLowerCase())
+              || tn.toLowerCase().includes(s.team.toLowerCase())
+            ));
+            const homeMl = ev.homeTeam ? findFor(ev.homeTeam) : null;
+            const awayMl = ev.awayTeam ? findFor(ev.awayTeam) : null;
+            if (homeMl && awayMl) {
+              h2h = {
+                home: { ...homeMl, fairProb: (homeMl.impliedProb || 0) / sumImplied },
+                away: { ...awayMl, fairProb: (awayMl.impliedProb || 0) / sumImplied },
+                vig: round(sumImplied - 1, 5),
+              };
+            }
+          }
+        }
+
+        // spreads (per-line; pair home/away by line)
+        const spreadsByLine = {};
+        for (const [lineKey, pair] of Object.entries(bucket.spreadByLine)) {
+          if (!pair.home || !pair.away) continue;
+          const sum = (pair.home.impliedProb || 0) + (pair.away.impliedProb || 0);
+          if (sum <= 0) continue;
+          spreadsByLine[lineKey] = {
+            line: parseFloat(lineKey),
+            home: { ...pair.home, fairProb: (pair.home.impliedProb || 0) / sum },
+            away: { ...pair.away, fairProb: (pair.away.impliedProb || 0) / sum },
+            vig: round(sum - 1, 5),
+          };
+        }
+
+        // totals (per-line)
+        const totalsByLine = {};
+        for (const [lineKey, pair] of Object.entries(bucket.totalByLine)) {
+          if (!pair.over || !pair.under) continue;
+          const sum = (pair.over.impliedProb || 0) + (pair.under.impliedProb || 0);
+          if (sum <= 0) continue;
+          totalsByLine[lineKey] = {
+            line: parseFloat(lineKey),
+            over: { ...pair.over, fairProb: (pair.over.impliedProb || 0) / sum },
+            under: { ...pair.under, fairProb: (pair.under.impliedProb || 0) / sum },
+            vig: round(sum - 1, 5),
+          };
+        }
+
+        // team totals (home + away separately per line)
+        const teamTotalsByLine = { home: {}, away: {} };
+        for (const sideKey of ['home', 'away']) {
+          for (const [lineKey, pair] of Object.entries(bucket.teamTotalByLine[sideKey] || {})) {
+            if (!pair.over || !pair.under) continue;
+            const sum = (pair.over.impliedProb || 0) + (pair.under.impliedProb || 0);
+            if (sum <= 0) continue;
+            teamTotalsByLine[sideKey][lineKey] = {
+              line: parseFloat(lineKey),
+              over: { ...pair.over, fairProb: (pair.over.impliedProb || 0) / sum },
+              under: { ...pair.under, fairProb: (pair.under.impliedProb || 0) / sum },
+              vig: round(sum - 1, 5),
+            };
+          }
+        }
+
+        games.push({
+          eventId: ev.eventId,
+          eventName: ev.eventName,
+          startTime: ev.startTime,
+          homeTeam: ev.homeTeam,
+          awayTeam: ev.awayTeam,
+          h2h, spreadsByLine, totalsByLine, teamTotalsByLine,
+        });
+      }
+
+      const payload = { fetchedAt: new Date().toISOString(), games };
+      cacheBySport[cacheKey] = { at: Date.now(), data: payload };
+      const summary = `h2h=${games.filter(g => g.h2h).length}, sp_lines=${games.reduce((s, g) => s + Object.keys(g.spreadsByLine || {}).length, 0)}, tot_lines=${games.reduce((s, g) => s + Object.keys(g.totalsByLine || {}).length, 0)}`;
+      log.info('DkScraper', `${cfg.label} game-lines: ${games.length} games captured (${Date.now() - startedAt}ms) [${summary}]`);
+      return payload;
+    } finally {
+      await browser.close();
+      delete inFlightBySport[cacheKey];
+    }
+  })().catch(err => { delete inFlightBySport[cacheKey]; throw err; });
+  return inFlightBySport[cacheKey];
+}
+
+/**
+ * Look up game-line data from the DK game-line scraper cache by team-pair.
+ * Returns the full game record { h2h, spreadsByLine, totalsByLine,
+ * teamTotalsByLine } or null if cache cold or no match. Caller decides
+ * which sub-market they need.
+ */
+function lookupDkGameLines(sport, homeTeam, awayTeam) {
+  const cacheKey = `gameLines_${sport}`;
+  const cache = cacheBySport[cacheKey];
+  if (!cache || !cache.data) return null;
+  const targetHome = normalizeTeamName(homeTeam || '');
+  const targetAway = normalizeTeamName(awayTeam || '');
+  if (!targetHome || !targetAway) return null;
+  const lastWord = (s) => (s || '').split(' ').pop();
+  for (const g of cache.data.games) {
+    if (!g.homeTeam || !g.awayTeam) continue;
+    const gHome = normalizeTeamName(g.homeTeam);
+    const gAway = normalizeTeamName(g.awayTeam);
+    const straight = (gHome === targetHome || gHome.includes(targetHome) || targetHome.includes(gHome))
+                  && (gAway === targetAway || gAway.includes(targetAway) || targetAway.includes(gAway));
+    const flipped = (gHome === targetAway || gHome.includes(targetAway) || targetAway.includes(gHome))
+                 && (gAway === targetHome || gAway.includes(targetHome) || targetHome.includes(gAway));
+    if (straight || flipped) {
+      return { ...g, _flipped: flipped };
+    }
+    // Last-word fallback
+    if (lastWord(gHome) === lastWord(targetHome) && lastWord(gAway) === lastWord(targetAway)
+        && lastWord(targetHome).length >= 4) return { ...g, _flipped: false };
+    if (lastWord(gHome) === lastWord(targetAway) && lastWord(gAway) === lastWord(targetHome)
+        && lastWord(targetHome).length >= 4) return { ...g, _flipped: true };
+  }
+  return null;
+}
+
 /**
  * Look up a player prop fair prob from the DK player-prop scraper cache.
  * Returns { fairProbOver, fairProbUnder, books:['draftkings'], booksWithBothSides:1, ... }
@@ -2143,6 +2506,8 @@ module.exports = {
   fetchMlbF5Odds,
   fetchDkPlayerProps,
   lookupDkPlayerPropFairProb,
+  fetchDkGameLines,
+  lookupDkGameLines,
   debugMmaScraperState,
   fetchGolfMatchups,
   fetchLiveMarkets,

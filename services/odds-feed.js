@@ -836,6 +836,31 @@ async function fetchOddsForSport(sport, opts) {
     _scheduleSupplementRetry(sport, 'MLB F5', supplementMlbF5Markets, parsed);
   }
 
+  // DK game-line scraper fallback for full-game markets (h2h / spreads /
+  // totals / team_totals). Triggers when the SharpAPI primary feed
+  // returns events that lack proper game-line markets — usually the
+  // Kalshi-only-stub pattern where h2h is the only market and per-book
+  // raw rows are empty. Verified 2026-05-03: tonight's MLB primetime
+  // games (Tampa/Toronto, Detroit/Boston, Seattle/Atlanta, SF/Padres)
+  // had only Kalshi-stub h2h with no spreads/totals while DK had full
+  // pre-game markets posted hours earlier. Operator directive: any time
+  // SharpAPI / TOA don't have lines for markets we typically have, the
+  // scraper backstop fills the gap.
+  //
+  // Sports covered today: NBA, MLB, NHL, WNBA, tennis. Each has a
+  // GAME_LINE_CONFIGS entry in dk-scraper.js. Easy to extend by adding
+  // more sport keys to that map.
+  const DK_GAME_LINE_SPORTS = new Set([
+    'basketball_nba', 'baseball_mlb', 'icehockey_nhl', 'basketball_wnba', 'tennis',
+  ]);
+  if (!liveMode && DK_GAME_LINE_SPORTS.has(sport)) {
+    try {
+      await _supplementDkGameLines(parsed, sport);
+    } catch (err) {
+      log.warn('OddsFeed', `${sport} DK game-line supplement failed: ${err.message}`);
+    }
+  }
+
   // Supplement with 1st-Half markets for NBA (separate from full-game)
   if (!liveMode && sport === 'basketball_nba') {
     try {
@@ -983,6 +1008,150 @@ function findParsedEntryFuzzy(parsedEvents, home, away) {
     }
   }
   return null;
+}
+
+// DK game-line scraper fallback. Identifies events in the parsed cache
+// that lack full game-line markets (no h2h, OR h2h is Kalshi-only stub
+// with no per-book raw rows) and fills them from DK's scraper. Strictly
+// additive — only writes markets that aren't already populated, so
+// SharpAPI's primary data takes precedence when available.
+async function _supplementDkGameLines(parsedEvents, sport) {
+  const candidates = [];
+  for (const entry of Object.values(parsedEvents)) {
+    const events = Array.isArray(entry) ? entry : [entry];
+    for (const ev of events) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      // Phantom / sub-game team-name suffix already filtered at ingestion.
+      // Skip events that have full coverage from primary
+      // (h2h with valid raw rows + spreads + totals).
+      const m = ev.markets || {};
+      const hasFullCoverage = m.h2h && m.h2h.home && (m.h2h.home.rawOdds != null || m.h2h.home.fairProb != null)
+                            && m.spreads && m.totals;
+      if (hasFullCoverage) continue;
+      // Skip far-future events to limit work
+      const startMs = ev.commenceTime ? new Date(ev.commenceTime).getTime() : null;
+      if (startMs != null && !isNaN(startMs)) {
+        const hoursUntil = (startMs - Date.now()) / 3600000;
+        if (hoursUntil > 36 || hoursUntil < -1) continue;
+      }
+      candidates.push(ev);
+    }
+  }
+  if (candidates.length === 0) return;
+
+  log.info('OddsFeed', `${sport} DK game-line supplement: ${candidates.length} events lack full coverage — invoking scraper`);
+  let scrape;
+  try {
+    const dk = require('./dk-scraper');
+    if (typeof dk.fetchDkGameLines !== 'function') return;
+    scrape = await dk.fetchDkGameLines(sport);
+  } catch (err) {
+    log.warn('OddsFeed', `DK ${sport} game-line scrape failed: ${err.message}`);
+    return;
+  }
+  if (!scrape || !Array.isArray(scrape.games) || scrape.games.length === 0) {
+    log.warn('OddsFeed', `DK ${sport} game-line scrape returned no games`);
+    return;
+  }
+
+  const dk = require('./dk-scraper');
+  let applied = 0;
+  for (const ev of candidates) {
+    const gMatch = dk.lookupDkGameLines(sport, ev.homeTeam, ev.awayTeam);
+    if (!gMatch) continue;
+    const flipped = !!gMatch._flipped;
+    if (!ev.markets) ev.markets = {};
+
+    // h2h
+    if (!ev.markets.h2h && gMatch.h2h) {
+      const dkHome = flipped ? gMatch.h2h.away : gMatch.h2h.home;
+      const dkAway = flipped ? gMatch.h2h.home : gMatch.h2h.away;
+      ev.markets.h2h = {
+        home: { rawOdds: dkHome.americanOdds, impliedProb: dkHome.impliedProb, fairProb: dkHome.fairProb, displayFairProb: dkHome.fairProb },
+        away: { rawOdds: dkAway.americanOdds, impliedProb: dkAway.impliedProb, fairProb: dkAway.fairProb, displayFairProb: dkAway.fairProb },
+        books: 1,
+        draftkings: { home: dkHome.americanOdds, away: dkAway.americanOdds },
+      };
+    }
+
+    // Spreads — pick primary (median line) + populate byLine for alts
+    const sLines = Object.keys(gMatch.spreadsByLine || {});
+    if (!ev.markets.spreads && sLines.length > 0) {
+      const sortedLines = sLines.map(parseFloat).sort((a, b) => Math.abs(a) - Math.abs(b));
+      const primaryLine = sortedLines[0];
+      const primary = gMatch.spreadsByLine[String(primaryLine)] || gMatch.spreadsByLine[sLines[0]];
+      const dkHome = flipped ? primary.away : primary.home;
+      const dkAway = flipped ? primary.home : primary.away;
+      const homeLine = flipped ? -primary.line : primary.line;
+      ev.markets.spreads = {
+        home: { rawOdds: dkHome.americanOdds, point: homeLine, impliedProb: dkHome.impliedProb, fairProb: dkHome.fairProb, displayFairProb: dkHome.fairProb },
+        away: { rawOdds: dkAway.americanOdds, point: -homeLine, impliedProb: dkAway.impliedProb, fairProb: dkAway.fairProb, displayFairProb: dkAway.fairProb },
+        line: homeLine,
+        books: 1,
+        byLine: {},
+        draftkings: { home: dkHome.americanOdds, away: dkAway.americanOdds },
+      };
+      // byLine for alts (signed-line keyed for spreads)
+      for (const [lk, ln] of Object.entries(gMatch.spreadsByLine)) {
+        const sH = flipped ? ln.away : ln.home;
+        const sA = flipped ? ln.home : ln.away;
+        const signedHome = flipped ? -ln.line : ln.line;
+        ev.markets.spreads.byLine['home|' + signedHome] = { fairProb: sH.fairProb };
+        ev.markets.spreads.byLine['away|' + (-signedHome)] = { fairProb: sA.fairProb };
+      }
+    }
+
+    // Totals — primary line + byLine for alts
+    const tLines = Object.keys(gMatch.totalsByLine || {});
+    if (!ev.markets.totals && tLines.length > 0) {
+      const sortedLines = tLines.map(parseFloat).sort((a, b) => a - b);
+      const primaryLine = sortedLines[Math.floor(sortedLines.length / 2)];
+      const primary = gMatch.totalsByLine[String(primaryLine)] || gMatch.totalsByLine[tLines[0]];
+      ev.markets.totals = {
+        over: { rawOdds: primary.over.americanOdds, point: primary.line, impliedProb: primary.over.impliedProb, fairProb: primary.over.fairProb, displayFairProb: primary.over.fairProb },
+        under: { rawOdds: primary.under.americanOdds, point: primary.line, impliedProb: primary.under.impliedProb, fairProb: primary.under.fairProb, displayFairProb: primary.under.fairProb },
+        line: primary.line,
+        books: 1,
+        byLine: {},
+        draftkings: { over: primary.over.americanOdds, under: primary.under.americanOdds },
+      };
+      for (const [lk, ln] of Object.entries(gMatch.totalsByLine)) {
+        ev.markets.totals.byLine[lk] = { line: ln.line, over: { fairProb: ln.over.fairProb }, under: { fairProb: ln.under.fairProb } };
+      }
+    }
+
+    // Team totals — per-team byLine
+    if (!ev.markets.team_totals && (Object.keys(gMatch.teamTotalsByLine?.home || {}).length > 0 || Object.keys(gMatch.teamTotalsByLine?.away || {}).length > 0)) {
+      const homeBucket = flipped ? gMatch.teamTotalsByLine.away : gMatch.teamTotalsByLine.home;
+      const awayBucket = flipped ? gMatch.teamTotalsByLine.home : gMatch.teamTotalsByLine.away;
+      const buildSide = (bucket) => {
+        const lines = Object.keys(bucket || {});
+        if (lines.length === 0) return null;
+        const sortedLines = lines.map(parseFloat).sort((a, b) => a - b);
+        const primaryLine = sortedLines[Math.floor(sortedLines.length / 2)];
+        const primary = bucket[String(primaryLine)] || bucket[lines[0]];
+        const byLine = {};
+        for (const [lk, ln] of Object.entries(bucket)) {
+          byLine[lk] = { line: ln.line, over: { fairProb: ln.over.fairProb }, under: { fairProb: ln.under.fairProb } };
+        }
+        return {
+          line: primary.line,
+          over: { rawOdds: primary.over.americanOdds, fairProb: primary.over.fairProb, displayFairProb: primary.over.fairProb },
+          under: { rawOdds: primary.under.americanOdds, fairProb: primary.under.fairProb, displayFairProb: primary.under.fairProb },
+          byLine,
+        };
+      };
+      const homeTT = buildSide(homeBucket);
+      const awayTT = buildSide(awayBucket);
+      if (homeTT || awayTT) {
+        ev.markets.team_totals = { books: 1 };
+        if (homeTT) ev.markets.team_totals.home = homeTT;
+        if (awayTT) ev.markets.team_totals.away = awayTT;
+      }
+    }
+    applied++;
+  }
+  log.info('OddsFeed', `${sport} DK game-line supplement applied: ${applied}/${candidates.length} events filled`);
 }
 
 async function supplementMlbF5Markets(parsedEvents) {
