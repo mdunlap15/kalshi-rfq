@@ -331,12 +331,23 @@ function getGolfMatchupFairProb(lineInfo) {
   const mt = lineInfo?.marketType || '';
   if (mt !== 'moneyline') return null; // golf matchups are h2h only
 
+  // Resolve roundNum with a parse-from-name fallback. Some golf matchup
+  // lines were registered with lineInfo.roundNum=null (older seed paths,
+  // or PX event.name fields without "Round N" populated at seed time);
+  // the round metadata still lives in pxEventName like "Adam Scott vs.
+  // Ryan Gerard (Round 4 Matchup)". Without this fallback, the manual
+  // upload lookup would query scope='tournament' and miss the round_N
+  // entry, even after the operator has uploaded R4.
+  let roundNum = lineInfo?.roundNum ?? null;
+  if (roundNum == null) {
+    const haystack = `${lineInfo?.pxEventName || ''} ${lineInfo?.marketName || ''}`;
+    const m = /\bR(?:ound\s*)?([1-4])\b/i.exec(haystack);
+    if (m) roundNum = parseInt(m[1], 10);
+  }
+
   // PRIORITY 1: Manual book upload (operator-supplied Bookmaker / BetOnline
   // odds via /betonline-zurich/upload). When present, this is the
-  // operator's authoritative quoting price — overrides DataGolf and DK
-  // even when those have coverage. Without this priority order, DataGolf's
-  // de-vigged fair would silently win on any regular-tour event where
-  // DataGolf has h2h coverage, and the manual upload would be a no-op.
+  // operator's authoritative quoting price.
   //
   // Return shape: { fairProb, bookPriceOverride } so priceParlay quotes
   // AT the raw odds (no de-vig + re-add vig). Mirrors the NBA series
@@ -352,7 +363,7 @@ function getGolfMatchupFairProb(lineInfo) {
       const opponent = (lineInfo.teamName === lineInfo.homeTeam)
         ? lineInfo.awayTeam
         : lineInfo.homeTeam;
-      const boHit = betonlineScraper.lookupZurichMatchupFairProb(teamName, lineInfo.roundNum ?? null, opponent);
+      const boHit = betonlineScraper.lookupZurichMatchupFairProb(teamName, roundNum, opponent);
       if (boHit && boHit.fairProb != null) {
         const rawAm = boHit.americanOdds;
         let rawImplied = boHit.impliedProb;
@@ -364,30 +375,22 @@ function getGolfMatchupFairProb(lineInfo) {
         }
         return boHit.fairProb;
       }
-    } catch (_) { /* scraper unavailable — fall through */ }
+    } catch (_) { /* scraper unavailable — fall through to strict-mode gate */ }
   }
 
-  // PRIORITY 2: DataGolf via oddsFeed.getGolfMatchupEvent. Covers
-  // individual 1v1 player matchups for regular tour events.
-  const event = oddsFeed.getGolfMatchupEvent(
-    lineInfo.homeTeam, lineInfo.awayTeam, lineInfo.roundNum ?? null
-  );
-  if (event) {
-    const h2h = event.markets?.h2h;
-    if (h2h) {
-      const sel = lineInfo.oddsApiSelection;
-      const side = sel === 'home' ? h2h.home : sel === 'away' ? h2h.away : null;
-      if (side && side.fairProb != null) return side.fairProb;
-    }
-  }
-
-  // PRIORITY 3: DK scraper. Last-resort fallback for matchups DataGolf
-  // happens to miss. Looked up by the full team-pair name so the
-  // pairing-name match works regardless of home/away orientation.
-  if (teamName) {
-    const dkHit = dkScraper.lookupGolfMatchupFairProb(teamName, lineInfo.roundNum ?? null);
-    if (dkHit && dkHit.fairProb != null) return dkHit.fairProb;
-  }
+  // STRICT MODE: golf matchups quote ONLY off operator-validated manual
+  // uploads. Verified 2026-05-02 Cadillac R4: PX was publishing 16 R4
+  // matchup markets that the system was happily quoting from DataGolf's
+  // /preds/in-play model probabilities — without operator review.
+  // Operator's intent for this market class is "I upload what I'm willing
+  // to trade; nothing else gets quoted." Returning null here causes
+  // priceParlay to decline with "no fair quote" rather than fall through
+  // to DataGolf or DK scraper.
+  //
+  // Pre-fix priorities 2 + 3 (DataGolf via getGolfMatchupEvent, DK
+  // scraper via lookupGolfMatchupFairProb) are intentionally removed
+  // for golf matchups. If we ever want to re-enable a per-round opt-in
+  // (DataGolf OK for R3 if R3 was uploaded), gate it on a config flag.
   return null;
 }
 
