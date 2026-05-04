@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pricing Health — Week-over-Week</title>
+<style>
+  body { background:#0d1117; color:#e6edf3; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; max-width:880px; margin:32px auto; padding:0 24px; line-height:1.55; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:#c9d1d9; font-size:13px; margin-bottom:32px; }
+  h2 { font-size:17px; margin:36px 0 6px; color:#e6edf3; }
+  .lede { color:#a78bfa; font-style:italic; font-size:14px; margin-bottom:14px; }
+  p { margin:10px 0; font-size:14px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; margin:14px 0; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid #30363d; }
+  th { color:#e6edf3; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .delta-pos { color:#3fb950; }
+  .delta-neg { color:#f87171; }
+  .strong { font-weight:700; color:#f5b942; }
+  .keyfmt { background:#21262d; padding:2px 6px; border-radius:3px; font-family:"SF Mono",Menlo,monospace; font-size:12px; color:#a78bfa; }
+  .callout { background:#161b22; border-left:3px solid #3fb950; padding:14px 18px; border-radius:0 6px 6px 0; margin:18px 0; font-size:14px; }
+  .callout .head { font-size:11px; color:#3fb950; text-transform:uppercase; letter-spacing:0.5px; font-weight:600; margin-bottom:6px; }
+  .footnote { color:#c9d1d9; font-size:12px; font-style:italic; margin-top:24px; padding-top:12px; border-top:1px solid #30363d; }
+  .calc { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:10px 14px; margin:8px 0; font-family:"SF Mono",Menlo,monospace; font-size:12px; color:#c9d1d9; }
+  ul { font-size:14px; padding-left:20px; }
+</style>
+</head>
+<body>
+
+<h1>Pricing Health: Theoretical Edge Week-over-Week</h1>
+<div class="sub">Stake-weighted theoretical edge on accepted parlays, computed at quote time. Compared to the same window seven days ago. Snapshot: 2026-05-04, ~21:35Z.</div>
+
+<h2>24-hour window</h2>
+<div class="lede">Trailing 24h vs same 24h last week. Sample large enough to interpret.</div>
+<table>
+  <thead>
+    <tr>
+      <th>Metric</th>
+      <th class="num">Current 24h</th>
+      <th class="num">Last wk 24h</th>
+      <th class="num">Δ</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Accepted parlays</td><td class="num">64</td><td class="num">26</td><td class="num delta-pos">+146%</td></tr>
+    <tr><td>Total accepted stake</td><td class="num">$11,709</td><td class="num">$4,875</td><td class="num delta-pos">+140%</td></tr>
+    <tr><td>Quotes (denominator)</td><td class="num">9,461</td><td class="num">7,608</td><td class="num delta-pos">+24%</td></tr>
+    <tr><td><strong>Fill rate</strong></td><td class="num"><strong>0.68%</strong></td><td class="num">0.33%</td><td class="num delta-pos"><strong>+0.35pp (2.1×)</strong></td></tr>
+    <tr><td><strong>Theoretical edge</strong></td><td class="num"><strong>4.17%</strong></td><td class="num">5.45%</td><td class="num delta-neg"><strong>−1.28pp</strong></td></tr>
+  </tbody>
+</table>
+
+<h2>1-hour window</h2>
+<div class="lede">Trailing 1h vs same hour last week. Too small to interpret on its own — included for reference.</div>
+<table>
+  <thead>
+    <tr>
+      <th>Metric</th>
+      <th class="num">Current 1h</th>
+      <th class="num">Last wk 1h</th>
+      <th class="num">Δ</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>Accepted parlays</td><td class="num">6</td><td class="num">8</td><td class="num">−2</td></tr>
+    <tr><td><strong>Theoretical edge</strong></td><td class="num"><strong>4.21%</strong></td><td class="num">3.79%</td><td class="num">+0.42pp (small sample)</td></tr>
+  </tbody>
+</table>
+
+<h2>Take</h2>
+
+<p>The 24-hour numbers tell a coherent story consistent with the recent vig change:</p>
+
+<ul>
+  <li><strong>Accepted theoretical edge dropped 1.28pp</strong> (5.45% → 4.17%) — exactly what's expected when you cut <span class="keyfmt">DEFAULT_VIG</span> and relax <span class="keyfmt">VIG_BY_LEG_COUNT</span>.</li>
+  <li>That edge cut produced <strong>2.1× fill rate and 2.4× accepted stake</strong> — bettors are accepting more offers because the prices are tighter.</li>
+  <li><strong>Net theoretical $ EV is up week-over-week</strong> because volume gain (+140% stake) more than offsets edge cut (−24% per-$):
+    <div class="calc">Last week:  26 parlays × $4,875 stake × 5.45% edge ≈ <strong>$266 expected weekly EV</strong></div>
+    <div class="calc">This week:  64 parlays × $11,709 × 4.17%       ≈ <strong>$488 expected weekly EV</strong></div>
+    <p style="margin-left:8px; color:#c9d1d9;">≈ 1.8× expected $ EV at the post-cut pricing.</p>
+  </li>
+</ul>
+
+<p>On the 1-hour delta: 6 vs 8 accepted is too few to interpret — random sampling noise.</p>
+
+<div class="callout">
+<div class="head">Methodology Correction</div>
+A prior version of this comparison reported "realized P&amp;L" and "EV per $ wagered" derived from settled-parlay outcomes. That was the wrong frame for pricing health — realized P&amp;L on 14–25 settled parlays is dominated by variance, not by pricing quality. Long-run realized vs theoretical divergence is interesting (it tells you the model is biased), but a one-week slice doesn't carry that signal.
+<br><br>
+The metric above is theoretical edge at quote time:
+<div class="calc">SP_edge_per_$ = 1 − (fair_parlay_prob / bettor_implied_prob)</div>
+stake-weighted across all accepted parlays in the window.
+</div>
+
+<div class="footnote">
+TL;DR — edge dropped, volume scaled more than enough to compensate, structural shape healthy. The vig change is doing what it was meant to do.
+</div>
+
+</body>
+</html>
