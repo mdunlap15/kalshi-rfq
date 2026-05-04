@@ -550,6 +550,49 @@
       cursor: pointer;
     }
 
+    /* Parlay table search bar — slim toolbar above the Open/Settled
+       tabs. Lives inside the parlay collapsible so it scrolls with
+       the table. Kept distinct from .toolbar (which has its own
+       margins) for layout flexibility. */
+    .parlay-search-bar {
+      padding: 6px 12px 4px;
+      display: flex; gap: 6px; align-items: center;
+    }
+    .parlay-search-bar input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 13px;
+    }
+    .parlay-search-bar input:focus { outline: none; border-color: var(--accent); }
+    .parlay-search-bar .clear-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text2);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    /* "Show more" pagination button beneath the parlay table. */
+    .show-more-btn {
+      width: calc(100% - 24px);
+      margin: 6px 12px 12px;
+      padding: 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .show-more-btn:active { background: var(--surface2); }
+
     /* Toggle switch (settings) */
     .toggle {
       position: relative;
@@ -646,19 +689,9 @@
       </div>
     </div>
 
-    <div class="sport-filter" id="sport-filter"></div>
-    <div class="tab-bar" id="tab-bar">
-      <button class="tab-btn active" data-tab="open" onclick="switchParlayTab('open')">
-        Open <span class="count" id="tab-count-open">0</span>
-      </button>
-      <button class="tab-btn" data-tab="settled" onclick="switchParlayTab('settled')">
-        Settled <span class="count" id="tab-count-settled">0</span>
-      </button>
-    </div>
-    <div class="parlay-table-wrap" id="parlay-table-wrap">
-      <div class="empty">Loading...</div>
-    </div>
-
+    <!-- Daily Volume & P&L moved ABOVE the Open/Settled table per
+         operator preference — Daily Volume is the at-a-glance view,
+         the parlay table is the drill-down beneath it. -->
     <div class="collapsible" id="daily-volume" data-collapsible-key="daily-volume">
       <div class="header" onclick="toggleCollapsible('daily-volume')">
         <span class="title"><span class="caret">&#9660;</span> Daily Volume &amp; P&amp;L</span>
@@ -668,6 +701,36 @@
         <div class="dv-card" id="daily-volume-card">
           <div class="empty">Loading...</div>
         </div>
+      </div>
+    </div>
+
+    <!-- Open / Settled parlay table is now collapsible. Search bar
+         + sport filter chips live inside the collapsible body so they
+         hide together with the table. Pagination shows 20 at a time
+         with a "Show 20 more" button beneath. -->
+    <div class="collapsible" id="parlay-section" data-collapsible-key="parlay-section">
+      <div class="header" onclick="toggleCollapsible('parlay-section')">
+        <span class="title"><span class="caret">&#9660;</span> Parlays</span>
+        <span class="badge" id="parlay-section-count">—</span>
+      </div>
+      <div class="body" style="padding:0;">
+        <div class="parlay-search-bar">
+          <input type="text" id="parlay-search" placeholder="Search team / event / player…" oninput="setParlaySearch(this.value)" />
+          <button class="clear-btn" id="parlay-search-clear" onclick="setParlaySearch('')" style="display:none;">×</button>
+        </div>
+        <div class="sport-filter" id="sport-filter"></div>
+        <div class="tab-bar" id="tab-bar" style="position:static;">
+          <button class="tab-btn active" data-tab="open" onclick="switchParlayTab('open')">
+            Open <span class="count" id="tab-count-open">0</span>
+          </button>
+          <button class="tab-btn" data-tab="settled" onclick="switchParlayTab('settled')">
+            Settled <span class="count" id="tab-count-settled">0</span>
+          </button>
+        </div>
+        <div class="parlay-table-wrap" id="parlay-table-wrap" style="margin:0 12px 0;border-radius:0 0 8px 8px;">
+          <div class="empty">Loading...</div>
+        </div>
+        <button class="show-more-btn" id="parlay-show-more" style="display:none;" onclick="parlayShowMore()">Show 20 more</button>
       </div>
     </div>
   </section>
@@ -1143,6 +1206,7 @@
     }
     window.setSportFilter = function(s) {
       _activeSportFilter = s;
+      _parlayLimit = PARLAY_PAGE_SIZE; // reset paging when sport filter changes
       renderSportFilter(_lastOrdersCache);
       renderParlays(_lastOrdersCache);
     };
@@ -1151,9 +1215,17 @@
     let _activeParlayTab = 'open';
     let _lastOrdersCache = [];
     const _expandedParlays = new Set();
+    // Pagination + search state. PAGE_SIZE = 20; user can hit "Show 20
+    // more" to grow the limit. State resets when switching tabs or
+    // changing the search/filter so the user always starts at the
+    // newest 20 of the current view.
+    const PARLAY_PAGE_SIZE = 20;
+    let _parlayLimit = PARLAY_PAGE_SIZE;
+    let _parlaySearch = '';
 
     window.switchParlayTab = function(tab) {
       _activeParlayTab = tab;
+      _parlayLimit = PARLAY_PAGE_SIZE; // reset paging on tab change
       document.querySelectorAll('.tab-btn').forEach(b => {
         b.classList.toggle('active', b.dataset.tab === tab);
       });
@@ -1165,6 +1237,34 @@
       else _expandedParlays.add(pid);
       renderParlays(_lastOrdersCache);
     };
+
+    window.setParlaySearch = function(q) {
+      _parlaySearch = (q || '').toLowerCase();
+      _parlayLimit = PARLAY_PAGE_SIZE; // reset paging on search change
+      // Sync the input value (when called from the clear button)
+      const input = document.getElementById('parlay-search');
+      if (input && input.value !== q) input.value = q;
+      const clearBtn = document.getElementById('parlay-search-clear');
+      if (clearBtn) clearBtn.style.display = _parlaySearch ? '' : 'none';
+      renderParlays(_lastOrdersCache);
+    };
+
+    window.parlayShowMore = function() {
+      _parlayLimit += PARLAY_PAGE_SIZE;
+      renderParlays(_lastOrdersCache);
+    };
+
+    function parlayMatchesSearch(o, q) {
+      if (!q) return true;
+      const legs = o.legs || (o.meta && o.meta.legs) || [];
+      // Match against any leg's teamName / playerName / pxEventName.
+      for (const l of legs) {
+        const hay = [l.teamName, l.team, l.playerName, l.pxEventName, l.homeTeam, l.awayTeam, l.selection]
+          .filter(Boolean).join(' ').toLowerCase();
+        if (hay.includes(q)) return true;
+      }
+      return false;
+    }
 
     function probToAmerican(p) {
       if (!p || p <= 0 || p >= 1) return '-';
@@ -1180,6 +1280,57 @@
       return stake * 100 / Math.abs(odds);
     }
 
+    // Short, mobile-friendly leg-label builder. Mirrors services/push.js
+    // _formatLeg so both the push-notification body and the in-app leg
+    // rows show the same "{name} {market} {selection} {line}" detail.
+    // Examples:
+    //   moneyline   → "Atlanta Braves ML"
+    //   spread      → "Atlanta Braves -3.5"
+    //   total       → "Over 8.5"
+    //   player prop → "Mookie Betts Hits Over 1.5"
+    const PROP_TYPE_LABEL_SHORT = {
+      player_hitter_hits: 'Hits',
+      player_hitter_hr: 'HR',
+      player_hitter_total_bases: 'TB',
+      player_hitter_rbi_runs: 'RBI',
+      player_strikeouts: 'Ks',
+      player_points: 'Pts',
+      player_rebounds: 'Reb',
+      player_assists: 'Ast',
+      player_threes_made: '3PM',
+      player_shots_on_goal: 'SOG',
+    };
+    function formatLegLabel(l) {
+      if (!l) return '?';
+      const team = l.teamName || l.team || l.playerName || '';
+      const market = (l.market || l.marketType || '').toLowerCase();
+      const selection = (l.selection || '').toLowerCase();
+      const line = l.line;
+      if (market.startsWith('player_')) {
+        const stat = PROP_TYPE_LABEL_SHORT[market] || market.replace(/^player_/, '').replace(/_/g, ' ');
+        const side = selection === 'over' ? 'Over' : selection === 'under' ? 'Under' : '';
+        const lineStr = line != null ? ' ' + line : '';
+        return (team + ' ' + stat + ' ' + side + lineStr).trim();
+      }
+      if (market === 'moneyline') {
+        return (team + ' ML').trim();
+      }
+      if (market === 'spread') {
+        if (line == null) return (team + ' spread').trim();
+        const signed = line > 0 ? '+' + line : String(line);
+        return (team + ' ' + signed).trim();
+      }
+      if (market === 'total' || market === 'team_total') {
+        const side = selection === 'over' ? 'Over' : selection === 'under' ? 'Under' : '';
+        const lineStr = line != null ? ' ' + line : '';
+        const teamPrefix = team ? team + ' ' : '';
+        return (teamPrefix + side + lineStr).trim();
+      }
+      // Fallback: keep prior team-only behaviour for unknown markets so
+      // we never produce an empty label.
+      return team || l.selection || l.pxEventName || '?';
+    }
+
     function parlayMatchesSport(o, sport) {
       if (sport === 'all') return true;
       const legs = o.legs || (o.meta && o.meta.legs) || [];
@@ -1189,12 +1340,14 @@
     function renderParlays(orders) {
       _lastOrdersCache = orders;
       const el = document.getElementById('parlay-table-wrap');
+      const showMoreBtn = document.getElementById('parlay-show-more');
 
       const all = orders
         .filter(o => o.status === 'confirmed' || (o.status && o.status.startsWith('settled_')))
         .filter(o => o.quotedAt || o.confirmedAt || (o.meta && o.meta.pxBackfill))
         .filter(o => !(o.meta && o.meta.phantom))
-        .filter(o => parlayMatchesSport(o, _activeSportFilter));
+        .filter(o => parlayMatchesSport(o, _activeSportFilter))
+        .filter(o => parlayMatchesSearch(o, _parlaySearch));
 
       const openList = all
         .filter(o => o.status === 'confirmed')
@@ -1207,11 +1360,30 @@
       document.getElementById('tab-count-open').textContent = openList.length;
       document.getElementById('tab-count-settled').textContent = settledList.length;
 
-      const list = _activeParlayTab === 'open' ? openList : settledList;
+      // Section header badge: "{open} open · {settled} settled"
+      const sectionBadge = document.getElementById('parlay-section-count');
+      if (sectionBadge) sectionBadge.textContent = `${openList.length} open · ${settledList.length} settled`;
 
-      if (list.length === 0) {
-        el.innerHTML = '<div class="empty">No ' + _activeParlayTab + ' parlays</div>';
+      const fullList = _activeParlayTab === 'open' ? openList : settledList;
+
+      if (fullList.length === 0) {
+        el.innerHTML = '<div class="empty">No ' + _activeParlayTab + ' parlays' + (_parlaySearch ? ' matching "' + _parlaySearch + '"' : '') + '</div>';
+        if (showMoreBtn) showMoreBtn.style.display = 'none';
         return;
+      }
+
+      // Apply pagination — render at most _parlayLimit rows.
+      const list = fullList.slice(0, _parlayLimit);
+      const hasMore = fullList.length > list.length;
+      if (showMoreBtn) {
+        if (hasMore) {
+          showMoreBtn.style.display = '';
+          const remaining = fullList.length - list.length;
+          const nextBatch = Math.min(PARLAY_PAGE_SIZE, remaining);
+          showMoreBtn.textContent = `Show ${nextBatch} more · ${remaining} hidden`;
+        } else {
+          showMoreBtn.style.display = 'none';
+        }
       }
 
       const dashboardUrl = BASE;
@@ -1228,8 +1400,8 @@
         const toWinAmt = calcToWin(stake, odds);
 
         const firstNames = legs.slice(0, 3).map(l => {
-          const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
-          return name.length > 22 ? name.substring(0, 20) + '..' : name;
+          const name = formatLegLabel(l);
+          return name.length > 28 ? name.substring(0, 26) + '..' : name;
         }).join(', ');
         const more = legs.length > 3 ? ` +${legs.length - 3}` : '';
         const selections = firstNames + more;
@@ -1271,8 +1443,8 @@
 
         if (expanded) {
           const legItems = legs.map(l => {
-            const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
-            const displayName = name.length > 40 ? name.substring(0, 38) + '..' : name;
+            const name = formatLegLabel(l);
+            const displayName = name.length > 50 ? name.substring(0, 48) + '..' : name;
             const lr = l.settlementStatus || l.settlement_status || l.inferredResult || '';
             const lrCls = lr === 'won' ? 'won' : lr === 'lost' ? 'lost' : '';
             const lrLabel = lr ? lr.charAt(0).toUpperCase() + lr.slice(1) : '';
@@ -1466,9 +1638,15 @@
           svg += `<rect x="${cx - pnlBarW / 2}" y="${yTop}" width="${pnlBarW}" height="${pnlH}" fill="${pnlColor}" rx="1"/>`;
         }
         // X label only — the per-day fill counts beneath bars were noisy,
-        // dropped per operator request. Day shown as MM-DD.
-        const dayLabel = chartDays[i].substring(5);
-        svg += `<text x="${cx}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--text2)">${dayLabel}</text>`;
+        // dropped per operator request. Day shown as MM-DD. Font shrunk
+        // to 8px and we skip every other label when the per-day slot is
+        // narrower than ~22px (i.e. when 14 days share the chart width)
+        // so labels don't collide / overlap.
+        const compact = slotW < 22;
+        if (!compact || i % 2 === 0) {
+          const dayLabel = chartDays[i].substring(5);
+          svg += `<text x="${cx}" y="${H - 8}" text-anchor="middle" font-size="8" fill="var(--text2)">${dayLabel}</text>`;
+        }
       }
       // Cumulative P&L line
       if (cumul.length >= 2) {
@@ -1560,8 +1738,8 @@
           const parlayRows = d.orders.filter(o => o.pnl != null).map(o => {
             const legs = o.legs || (o.meta && o.meta.legs) || [];
             const selections = legs.map(l => {
-              const name = l.teamName || l.team || l.selection || l.pxEventName || '?';
-              return name.length > 22 ? name.substring(0, 20) + '..' : name;
+              const name = formatLegLabel(l);
+              return name.length > 28 ? name.substring(0, 26) + '..' : name;
             }).join(', ');
             const timeStr = (o.confirmedAt || '').substring(11, 16) || '--:--';
             const oddsNum = o.confirmedOdds || o.offeredOdds || 0;
