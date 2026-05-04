@@ -11605,11 +11605,23 @@
           : 'var(--red)');
       const missing = r.fairProb == null;
       const expanded = linesState.expandedLineId === r.lineId;
-      const rowStyle = 'cursor:pointer;' + (expanded ? ' background:var(--surface2);' : '');
+      // Disabled-row styling: red left-border + strikethrough text +
+      // inline DISABLED badge prefixed to the team cell. Event-level
+      // disable shows EVT badge; line-level shows LINE badge.
+      const isDisabled = r.lineDisabled || r.eventDisabled;
+      const disabledBadge = r.eventDisabled
+        ? '<span style="background:#7c2d12; color:#fed7aa; font-size:10px; font-weight:700; padding:1px 5px; border-radius:3px; margin-right:6px;" title="Entire event manually disabled — all lines auto-declined">EVT DISABLED</span>'
+        : (r.lineDisabled
+          ? '<span style="background:#7c2d12; color:#fed7aa; font-size:10px; font-weight:700; padding:1px 5px; border-radius:3px; margin-right:6px;" title="This line manually disabled — auto-declined">DISABLED</span>'
+          : '');
+      const disabledRowStyle = isDisabled
+        ? ' border-left:3px solid var(--red); opacity:0.65; text-decoration:line-through;'
+        : '';
+      const rowStyle = 'cursor:pointer;' + (expanded ? ' background:var(--surface2);' : '') + disabledRowStyle;
       html += '<tr onclick="window.toggleLinesDrillDown(\'' + r.lineId + '\')" style="' + rowStyle + '">'
         + '<td style="padding:4px 8px;">' + escapeHtml(sportLbl) + '</td>'
         + '<td style="padding:4px 8px; font-family:monospace; color:var(--text2);">' + escapeHtml(r.marketType || '-') + '</td>'
-        + '<td style="padding:4px 8px;">' + escapeHtml(team) + '</td>'
+        + '<td style="padding:4px 8px; text-decoration:none;">' + disabledBadge + escapeHtml(team) + '</td>'
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace;">' + lineDisp + '</td>'
         + '<td style="padding:4px 8px; color:var(--text2);">' + escapeHtml(event) + '</td>'
         + '<td style="padding:4px 8px; color:var(--text3); font-size:11px;">' + starts + '</td>'
