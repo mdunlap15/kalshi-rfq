@@ -847,7 +847,7 @@ async function seedAllLines() {
     // props. Standalone prop keywords (strikeouts, pitching, milestones, etc.)
     // ensure we reject props even when "Total" appears in the name with
     // intervening words (e.g. "Total Pitching Strikeouts Milestones").
-    const excludePatterns = /first quarter|1st quarter|2nd half|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|overtime|player|milestones|strikeouts?|pitching|batting|hits|doubles\b|triples?|errors|walks|stolen bases?|rbis?|home runs?\b|outs recorded|innings pitched|at bats?|put outs?|fouls|cards|bookings|yellow cards?|red cards?|offsides?|crosses|clearances|throw.?ins?|tackles|shots|total earned|total block|total point[^s]|total rebound|total assist|total steal|total made|total rush|total recei|total passing/i;
+    const excludePatterns = /first quarter|1st quarter|2nd half|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|overtime|player|milestones|strikeouts?|pitching|batting|hits|doubles\b|triples?|errors|walks|stolen bases?|rbis?|home runs?\b|outs recorded|innings pitched|at bats?|put outs?|fouls|cards|bookings|yellow cards?|red cards?|offsides?|crosses|clearances|throw.?ins?|tackles|shots|total earned|total block|total point[^s]|total rebound|total assist|total steal|total made|total rush|total recei|total passing|1st set|first set|2nd set|second set|set winner|set spread|set total|set moneyline/i;
 
     const fullGameNames = {
       moneyline: ['Moneyline', 'Moneyline (2 Way)', 'Moneyline (2-Way)', 'Moneyline (Regulation)', 'Draw No Bet'],
