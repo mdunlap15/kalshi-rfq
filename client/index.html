@@ -809,8 +809,21 @@
           <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
             <span><span class="toggle-icon">&#9660;</span>Daily Volume & P&L</span>
           </div>
-          <div class="card-body" id="chart-daily-volume">
-            <div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>
+          <div class="card-body">
+            <!-- Date range filter — narrows both the chart and the per-day
+                 table to wagers confirmed within the selected dates. Empty
+                 date = unbounded on that side. Re-renders on change. -->
+            <div id="chart-dv-filter" style="padding:0 4px 8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border); margin-bottom:10px;">
+              <span>Confirmed between:</span>
+              <input type="date" id="dv-date-from" onchange="setDvDateFrom(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
+              <span>to</span>
+              <input type="date" id="dv-date-to" onchange="setDvDateTo(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
+              <button onclick="clearDvDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Clear</button>
+              <span id="dv-filter-summary" style="margin-left:4px; color:var(--text3);"></span>
+            </div>
+            <div id="chart-daily-volume">
+              <div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>
+            </div>
           </div>
         </div>
 
@@ -7987,8 +8000,30 @@
       return;
     }
 
+    // Date range filter — narrows to wagers confirmed within the selected
+    // dates. Use confirmedAt when present, fall back to quotedAt. Either
+    // bound being null means unconstrained on that side.
+    const dvFromMs = window._dvFromMs || null;
+    const dvToMs = window._dvToMs || null;
+    let confirmedFiltered = confirmed;
+    if (dvFromMs || dvToMs) {
+      confirmedFiltered = confirmed.filter(o => {
+        const ts = o.confirmedAt || o.quotedAt;
+        if (!ts) return false;
+        const ms = new Date(ts).getTime();
+        if (!Number.isFinite(ms)) return false;
+        if (dvFromMs && ms < dvFromMs) return false;
+        if (dvToMs && ms > dvToMs) return false;
+        return true;
+      });
+    }
+    if (confirmedFiltered.length < 1) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No confirmed orders in the selected date range</div></div>';
+      return;
+    }
+
     const byDay = {};
-    for (const o of confirmed) {
+    for (const o of confirmedFiltered) {
       const day = etDayKey(o.confirmedAt || o.quotedAt);
       if (!day) continue;
       if (!byDay[day]) byDay[day] = { volume: 0, risk: 0, toWin: 0, pnl: 0, count: 0, settled: 0, orders: [] };
@@ -9811,6 +9846,58 @@
     window._pnlChartFromMs = null;
     window._pnlChartToMs = null;
     _rerenderBothPnlCharts();
+  }
+
+  // Daily Volume & P&L date-range filter handlers. The filter narrows the
+  // dataset to wagers confirmed (or quoted, when confirmedAt is missing)
+  // within the selected ET-date range. Empty input on either side leaves
+  // that bound unconstrained. Re-renders the chart in place; the
+  // filter-bar div sits outside #chart-daily-volume so its inputs survive
+  // the chart's innerHTML rewrite.
+  function _rerenderDvChart() {
+    const orders = window._dvLastOrders || [];
+    renderChartDailyVolume(orders);
+    _syncDvFilterInputs();
+  }
+  function _syncDvFilterInputs() {
+    // Use the raw ISO date strings the user entered for display — converting
+    // back from ms via toISOString() risks shifting by a day when the user's
+    // local TZ converts end-of-day into next-day UTC.
+    const fromEl = document.getElementById('dv-date-from');
+    const toEl = document.getElementById('dv-date-to');
+    if (fromEl && window._dvFromIso) fromEl.value = window._dvFromIso;
+    if (toEl && window._dvToIso) toEl.value = window._dvToIso;
+    const sumEl = document.getElementById('dv-filter-summary');
+    if (sumEl) {
+      if (!window._dvFromMs && !window._dvToMs) {
+        sumEl.textContent = '';
+      } else {
+        const f = window._dvFromIso || '…';
+        const t = window._dvToIso || '…';
+        sumEl.textContent = `· filtered ${f} → ${t}`;
+      }
+    }
+  }
+  function setDvDateFrom(isoDate) {
+    window._dvFromIso = isoDate || null;
+    window._dvFromMs = isoDate ? new Date(isoDate + 'T00:00:00').getTime() : null;
+    _rerenderDvChart();
+  }
+  function setDvDateTo(isoDate) {
+    window._dvToIso = isoDate || null;
+    window._dvToMs = isoDate ? new Date(isoDate + 'T23:59:59.999').getTime() : null;
+    _rerenderDvChart();
+  }
+  function clearDvDateRange() {
+    window._dvFromIso = null;
+    window._dvToIso = null;
+    window._dvFromMs = null;
+    window._dvToMs = null;
+    const fromEl = document.getElementById('dv-date-from');
+    const toEl = document.getElementById('dv-date-to');
+    if (fromEl) fromEl.value = '';
+    if (toEl) toEl.value = '';
+    _rerenderDvChart();
   }
 
   // 2. P&L by Sport bar chart
