@@ -4236,13 +4236,85 @@ async function checkLegResults() {
       }
       if (!l.sport || !l.homeTeam || !l.awayTeam) continue;
 
+      const market = l.market || l.marketType;
+      const selection = l.selection || l.oddsApiSelection;
+
+      // First-5-Innings (F5) branch: needs per-inning runs from ESPN's
+      // linescore, not full-game score. Resolves as soon as both teams
+      // have batted 5+ times — usually 30-45 min after first pitch.
+      // Bypasses the full-game getGameResult call below since it would
+      // skip out on `!result.completed` for games still in progress.
+      if (market === 'first_5_innings_moneyline'
+          || market === 'first_5_innings_run_line'
+          || market === 'first_5_innings_total') {
+        let f5 = null;
+        try {
+          const espnScores = require('./espn-scores');
+          if (typeof espnScores.getEspnF5Result === 'function') {
+            f5 = espnScores.getEspnF5Result(l.sport, l.homeTeam, l.awayTeam, l.startTime);
+          }
+        } catch (_) { /* espn-scores unavailable — leg stays unresolved */ }
+        if (!f5 || !f5.completed) continue;
+        if (f5.homeRunsThru5 == null || f5.awayRunsThru5 == null) continue;
+        checked++;
+        let freshResult = null;
+        if (market === 'first_5_innings_moneyline') {
+          // F5 ML — push on tie (most books offer a 3-way market with
+          // draw refundable; PX's 2-way DNB typically pushes the leg).
+          if (f5.winner === 'home' || f5.winner === 'away') {
+            if (selection === 'home') freshResult = f5.winner === 'home' ? 'won' : 'lost';
+            else if (selection === 'away') freshResult = f5.winner === 'away' ? 'won' : 'lost';
+          } else if (f5.winner === 'tie') {
+            freshResult = 'push';
+          }
+        } else if (market === 'first_5_innings_run_line') {
+          const line = l.line != null ? Number(l.line) : null;
+          if (line != null) {
+            const homeMargin = f5.homeRunsThru5 - f5.awayRunsThru5;
+            if (selection === 'home') {
+              const adjusted = homeMargin + line;
+              freshResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
+            } else {
+              const awayMargin = f5.awayRunsThru5 - f5.homeRunsThru5;
+              const adjusted = awayMargin + Math.abs(line);
+              freshResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
+            }
+          }
+        } else if (market === 'first_5_innings_total') {
+          const line = l.line != null ? Number(l.line) : null;
+          if (line != null) {
+            const totalF5 = f5.homeRunsThru5 + f5.awayRunsThru5;
+            if (selection === 'over') freshResult = totalF5 > line ? 'won' : totalF5 < line ? 'lost' : 'push';
+            else if (selection === 'under') freshResult = totalF5 < line ? 'won' : totalF5 > line ? 'lost' : 'push';
+          }
+        }
+        if (freshResult == null) continue;
+        if (l.inferredResult && l.inferredResult !== freshResult) {
+          log.warn('Results', `Overriding inferredResult for ${l.team} ${market}: stored=${l.inferredResult} → fresh=${freshResult} (F5 ${f5.homeRunsThru5}-${f5.awayRunsThru5}, startTime=${l.startTime})`);
+        }
+        l.inferredResult = freshResult;
+        if (l.inferredResult) {
+          resolved++;
+          l.liveFairProb = null;
+          l.liveFairProbUpdatedAt = null;
+          if (o.legs) {
+            const matchingLeg = o.legs.find(ol => ol.lineId === l.lineId || ((ol.team || ol.teamName) === (l.team || l.teamName) && (ol.market || ol.marketType) === market));
+            if (matchingLeg) {
+              matchingLeg.inferredResult = l.inferredResult;
+              matchingLeg.liveFairProb = null;
+              matchingLeg.liveFairProbUpdatedAt = null;
+            }
+          }
+          log.info('Results', `F5 leg resolved: ${l.team} ${market} → ${l.inferredResult} (F5 ${f5.homeRunsThru5}-${f5.awayRunsThru5})`);
+        }
+        continue; // F5 branch handled this leg fully — skip full-game path
+      }
+
       const result = await oddsFeed.getGameResult(l.sport, l.homeTeam, l.awayTeam, l.startTime);
       if (!result || !result.completed) continue;
       if (result.homeScore == null || result.awayScore == null) continue;
 
       checked++;
-      const market = l.market || l.marketType;
-      const selection = l.selection || l.oddsApiSelection;
 
       // Compute the fresh result from this score-based lookup.
       let freshResult = null;

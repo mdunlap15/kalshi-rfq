@@ -102,6 +102,28 @@ function _parseGame(event, leagueLabel) {
     const completed = !!status?.completed && state === 'post';
     const homeScore = home.score != null ? Number(home.score) : null;
     const awayScore = away.score != null ? Number(away.score) : null;
+    // Linescores: per-period (per-inning for MLB) numeric values. ESPN
+    // returns these in `linescores: [{value: 2}, {value: 0}, ...]` on
+    // each competitor when the game has started. Used by the F5 leg
+    // resolver to compute first-5-innings totals — full-game score
+    // alone can't tell us where the F5 ended. May be empty/missing for
+    // pre-game events; downstream code handles null gracefully.
+    const homeLinescores = Array.isArray(home.linescores)
+      ? home.linescores.map(s => s && s.value != null ? Number(s.value) : null)
+      : null;
+    const awayLinescores = Array.isArray(away.linescores)
+      ? away.linescores.map(s => s && s.value != null ? Number(s.value) : null)
+      : null;
+    // F5 (top of 5th onwards): a game has "completed 5 innings" once both
+    // teams have batted 5 times. With ESPN's linescore array we treat
+    // 5+ entries with non-null values as the gate. If only 4 entries
+    // exist, the game is still in progress through the 4th inning and
+    // F5 hasn't resolved yet.
+    const homeRunsThru5 = (homeLinescores && homeLinescores.length >= 5)
+      ? homeLinescores.slice(0, 5).reduce((s, v) => s + (v || 0), 0) : null;
+    const awayRunsThru5 = (awayLinescores && awayLinescores.length >= 5)
+      ? awayLinescores.slice(0, 5).reduce((s, v) => s + (v || 0), 0) : null;
+    const f5Completed = homeRunsThru5 != null && awayRunsThru5 != null;
     return {
       homeTeam: home.team?.displayName || home.team?.name || '',
       awayTeam: away.team?.displayName || away.team?.name || '',
@@ -115,6 +137,13 @@ function _parseGame(event, leagueLabel) {
       statusName: status?.name || status?.shortDetail || null,
       homeScore,
       awayScore,
+      // Per-inning runs (MLB) and F5 (first-5-innings) summed runs.
+      // f5Completed=true when both teams have batted 5+ times.
+      homeLinescores,
+      awayLinescores,
+      homeRunsThru5,
+      awayRunsThru5,
+      f5Completed,
       league: leagueLabel,
     };
   } catch (_) {
@@ -253,6 +282,102 @@ function getEspnGameResult(sportKey, homeTeam, awayTeam, startTime) {
   };
 }
 
+/**
+ * Sync getter for first-5-innings (F5) result. Returns the same kind of
+ * object as getEspnGameResult but scoped to runs through the bottom of
+ * the 5th. Used by order-tracker to resolve first_5_innings_moneyline /
+ * first_5_innings_run_line / first_5_innings_total legs without waiting
+ * for the full game to finish.
+ *
+ * Returns:
+ *   {
+ *     completed:       boolean — both teams have batted 5+ times
+ *     homeRunsThru5:   number or null
+ *     awayRunsThru5:   number or null
+ *     winner:          'home' | 'away' | 'tie' | null   (F5 ML winner)
+ *     state, statusName, league, source: same as getEspnGameResult
+ *   }
+ *   or null if no team-pair match in cache.
+ */
+function getEspnF5Result(sportKey, homeTeam, awayTeam, startTime) {
+  const entry = cache[sportKey];
+  if (!entry) return null;
+  const nHome = _normalizeTeam(homeTeam);
+  const nAway = _normalizeTeam(awayTeam);
+  if (!nHome || !nAway) return null;
+  const targetMs = startTime ? new Date(startTime).getTime() : null;
+  let bestMatch = null;
+  let bestFlipped = false;
+  let bestDiffMs = Infinity;
+  for (const g of entry.games) {
+    const candidates = [
+      [_normalizeTeam(g.homeTeam), _normalizeTeam(g.awayTeam)],
+      [_normalizeTeam(g.awayTeam), _normalizeTeam(g.homeTeam)],
+    ];
+    if (g.homeAlt) candidates.push([_normalizeTeam(g.homeAlt), _normalizeTeam(g.awayTeam)]);
+    if (g.awayAlt) candidates.push([_normalizeTeam(g.homeTeam), _normalizeTeam(g.awayAlt)]);
+    let matched = false;
+    let flipped = false;
+    for (const [ch, ca] of candidates) {
+      const exact = (ch === nHome && ca === nAway) || (ch.includes(nHome) && ca.includes(nAway))
+        || (nHome.includes(ch) && nAway.includes(ca));
+      if (exact) { matched = true; break; }
+      const flip = (ch === nAway && ca === nHome) || (ch.includes(nAway) && ca.includes(nHome))
+        || (nAway.includes(ch) && nHome.includes(ca));
+      if (flip) { matched = true; flipped = true; break; }
+    }
+    if (!matched) continue;
+    if (targetMs && g.commenceTime) {
+      const gMs = new Date(g.commenceTime).getTime();
+      if (Number.isFinite(gMs)) {
+        const diff = Math.abs(gMs - targetMs);
+        if (diff < bestDiffMs) {
+          bestDiffMs = diff;
+          bestMatch = g;
+          bestFlipped = flipped;
+        }
+        continue;
+      }
+    }
+    if (bestMatch === null) {
+      bestMatch = g;
+      bestFlipped = flipped;
+    }
+  }
+  if (!bestMatch) return null;
+  if (targetMs && bestDiffMs > 24 * 60 * 60 * 1000) return null;
+  if (!bestMatch.f5Completed) {
+    // Game in progress but hasn't reached the bottom of the 5th yet.
+    return {
+      completed: false,
+      homeRunsThru5: bestMatch.homeRunsThru5,
+      awayRunsThru5: bestMatch.awayRunsThru5,
+      winner: null,
+      state: bestMatch.state,
+      statusName: bestMatch.statusName,
+      league: bestMatch.league,
+      source: 'espn-f5',
+    };
+  }
+  // Apply orientation flip if leg's home/away differs from ESPN's
+  const homeF5 = bestFlipped ? bestMatch.awayRunsThru5 : bestMatch.homeRunsThru5;
+  const awayF5 = bestFlipped ? bestMatch.homeRunsThru5 : bestMatch.awayRunsThru5;
+  let winner = null;
+  if (homeF5 > awayF5) winner = 'home';
+  else if (awayF5 > homeF5) winner = 'away';
+  else winner = 'tie';
+  return {
+    completed: true,
+    homeRunsThru5: homeF5,
+    awayRunsThru5: awayF5,
+    winner,
+    state: bestMatch.state,
+    statusName: bestMatch.statusName,
+    league: bestMatch.league,
+    source: 'espn-f5',
+  };
+}
+
 // Periodic loop. Caller (index.js) starts this on boot.
 function startPoller() {
   // Initial warm-up
@@ -294,6 +419,7 @@ module.exports = {
   refreshSport,
   refreshAll,
   getEspnGameResult,
+  getEspnF5Result,
   startPoller,
   __debugDump,
 };
