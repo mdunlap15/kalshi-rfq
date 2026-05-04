@@ -4,6 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Parlay SP Dashboard</title>
+  <!-- flatpickr — replaces native browser date/datetime pickers with a
+       custom calendar that has a confirm button. Click on a date no
+       longer immediately closes the popup; user must click "Apply" to
+       commit. Operator UX request. CDN load is small (~50KB total). -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/themes/dark.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/confirmDate/confirmDate.css">
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/plugins/confirmDate/confirmDate.js"></script>
   <style>
     :root {
       --bg: #0d1117;
@@ -12235,6 +12244,73 @@
     }, 10000);
   }
   startAutoRefresh();
+
+  // -----------------------------------------------------------------
+  // flatpickr wiring — replaces native browser date/datetime pickers
+  // with a custom calendar that has an "Apply" confirmation button.
+  // Operator UX request: clicking a date in the native popup
+  // immediately commits + closes the modal, which triggers premature
+  // filter applies on misclicks. With confirmDatePlugin, the popup
+  // stays open until the user clicks the green confirm button.
+  //
+  // Strategy: a MutationObserver watches the entire body for new
+  // <input type="date"> / <input type="datetime-local"> elements
+  // (filter bars are rendered via innerHTML so this catches them as
+  // they appear). Each input is initialized once (data-fp-init guard)
+  // and configured with the same dateFormat the existing onchange/
+  // oninput handlers expect (Y-m-d for date, Y-m-dTH:i for
+  // datetime-local), so no handler changes are needed.
+  function _initFlatpickrOn(input) {
+    if (input.dataset.fpInit === '1') return;
+    if (typeof window.flatpickr !== 'function') return;
+    const isDateTime = input.type === 'datetime-local';
+    input.dataset.fpInit = '1';
+    const opts = {
+      enableTime: isDateTime,
+      time_24hr: false,
+      // Keep value formats compatible with existing handlers:
+      //   - date inputs expect "YYYY-MM-DD"
+      //   - datetime-local inputs expect "YYYY-MM-DDTHH:MM"
+      dateFormat: isDateTime ? 'Y-m-d\\TH:i' : 'Y-m-d',
+      allowInput: true,
+      // Don't auto-close on date click — let the user adjust + confirm.
+      closeOnSelect: false,
+      // Match dashboard dark theme.
+      theme: 'dark',
+    };
+    if (typeof window.confirmDatePlugin === 'function') {
+      opts.plugins = [window.confirmDatePlugin({
+        confirmIcon: '✓ ',
+        confirmText: 'Apply',
+        showAlways: true,
+      })];
+    }
+    try {
+      window.flatpickr(input, opts);
+    } catch (err) {
+      console.warn('flatpickr init failed for input', input, err);
+    }
+  }
+  function _initFlatpickrAll(root) {
+    const scope = root || document;
+    if (typeof scope.querySelectorAll !== 'function') return;
+    scope.querySelectorAll('input[type="date"], input[type="datetime-local"]').forEach(_initFlatpickrOn);
+  }
+  // Initial pass for any inputs already in the DOM at load time.
+  _initFlatpickrAll();
+  // Watch for new date inputs added via innerHTML (filter bars,
+  // export drawer, market intel filter, etc.). debounced via
+  // requestAnimationFrame to coalesce bursts of mutations.
+  let _fpObserverScheduled = false;
+  const _fpObserver = new MutationObserver(() => {
+    if (_fpObserverScheduled) return;
+    _fpObserverScheduled = true;
+    requestAnimationFrame(() => {
+      _fpObserverScheduled = false;
+      _initFlatpickrAll();
+    });
+  });
+  try { _fpObserver.observe(document.body, { childList: true, subtree: true }); } catch (_) { /* ignore */ }
 </script>
 </body>
 </html>
