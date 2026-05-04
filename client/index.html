@@ -11187,6 +11187,44 @@
     linesState.expandedLineId = linesState.expandedLineId === lineId ? null : lineId;
     renderLinesTable();
   };
+  // Manual disable toggle handlers — POST to /admin/(en|dis)able-(line|event)
+  // then reload lines so the table reflects the new state. The buttons in
+  // the drill-down call these via window.toggleLineDisabled / window.toggleEventDisabled.
+  window.toggleLineDisabled = async (lineId, currentlyDisabled) => {
+    const path = currentlyDisabled ? '/admin/enable-line' : '/admin/disable-line';
+    try {
+      const resp = await fetch(path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineId }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        alert('Failed: ' + (err.error || resp.status));
+        return;
+      }
+      // Refresh lines so the row's disabled flag is current
+      await loadLines();
+    } catch (err) {
+      alert('Network error: ' + err.message);
+    }
+  };
+  window.toggleEventDisabled = async (pxEventId, currentlyDisabled) => {
+    const path = currentlyDisabled ? '/admin/enable-event' : '/admin/disable-event';
+    try {
+      const resp = await fetch(path, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pxEventId }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        alert('Failed: ' + (err.error || resp.status));
+        return;
+      }
+      await loadLines();
+    } catch (err) {
+      alert('Network error: ' + err.message);
+    }
+  };
   // Debounce text-input-driven refetches so every keystroke doesn't fire
   // an HTTP request. Dropdown changes call loadLines() directly (no need
   // to debounce those — user-intentional single actions).
@@ -11587,6 +11625,30 @@
       if (expanded) {
         // Drill-down detail row spanning all columns.
         html += '<tr style="background:var(--surface2);"><td colspan="14" style="padding:12px 16px; border-top:1px solid var(--border);">';
+        // Manual-disable controls — click to block this specific line or
+        // the entire event from being quoted on. Calls /admin/disable-*
+        // endpoints; line-manager's pricer.shouldDecline picks it up on
+        // the next RFQ. State is in-memory (clears on restart).
+        const lineDisBtnLabel = r.lineDisabled ? 'Enable This Line' : 'Disable This Line';
+        const evtDisBtnLabel = r.eventDisabled ? 'Enable Entire Event' : 'Disable Entire Event';
+        const lineDisColor = r.lineDisabled ? 'var(--green)' : 'var(--red)';
+        const evtDisColor = r.eventDisabled ? 'var(--green)' : 'var(--red)';
+        const escId = (s) => String(s || '').replace(/'/g, "\\'");
+        html += '<div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--border);">';
+        if (r.eventDisabled) {
+          html += '<span style="color:var(--red); font-size:12px; font-weight:600;">⚠ ENTIRE EVENT DISABLED</span>';
+        } else if (r.lineDisabled) {
+          html += '<span style="color:var(--red); font-size:12px; font-weight:600;">⚠ THIS LINE DISABLED</span>';
+        }
+        html += '<button onclick="event.stopPropagation(); window.toggleLineDisabled(\'' + escId(r.lineId) + '\', ' + (r.lineDisabled ? 'true' : 'false') + ')" '
+          + 'style="background:' + lineDisColor + '; color:white; border:none; padding:4px 10px; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer;">'
+          + lineDisBtnLabel + '</button>';
+        if (r.pxEventId != null) {
+          html += '<button onclick="event.stopPropagation(); window.toggleEventDisabled(\'' + escId(r.pxEventId) + '\', ' + (r.eventDisabled ? 'true' : 'false') + ')" '
+            + 'style="background:' + evtDisColor + '; color:white; border:none; padding:4px 10px; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer;">'
+            + evtDisBtnLabel + '</button>';
+        }
+        html += '</div>';
         html += '<div style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; font-size:12px;">';
         const kv = (k, v) => '<div style="color:var(--text3);">' + escapeHtml(k) + '</div><div style="color:var(--text); font-family:monospace;">' + (v == null ? '-' : escapeHtml(String(v))) + '</div>';
         html += kv('line_id', r.lineId);

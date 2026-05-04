@@ -2461,6 +2461,20 @@ function shouldDecline(legs) {
     const lineInfo = lineManager.lookupLine(lineId);
     if (!lineInfo) return { declined: true, reason: 'unknown legs', detail: null };
 
+    // Manual disable: operator can disable specific lines or whole
+    // events from the dashboard (Lines table → drill-down → Disable).
+    // Used when a sportsbook pulls lines on a delayed/uncertain game
+    // and we want to avoid getting picked off on stale prices.
+    if (lineManager.isLineDisabled(lineId)) {
+      const teamLabel = lineInfo.teamName || '?';
+      const eventLabel = lineInfo.pxEventName || '?';
+      return {
+        declined: true,
+        reason: 'manually_disabled',
+        detail: `${teamLabel} (${eventLabel}) — manually disabled by operator`,
+      };
+    }
+
     // Prop-specific decline rules. Applied per-leg as we iterate.
     // Cross-leg correlation rules checked separately above.
     //

@@ -1484,6 +1484,60 @@ function lookupLine(lineId) {
   return info;
 }
 
+// ===========================================================================
+// Manual disable: operator-controlled per-line and per-event blocklist.
+// Use case: a sportsbook pulls lines on a game (rain delay, late scratch,
+// etc) but our cache still shows stale prices. Pausing the entire service
+// is too heavy. Instead the operator clicks "Disable" in the Lines table
+// drill-down to make a specific line (or whole event) auto-decline at the
+// pricer level. Cleared on service restart — operator re-enables when the
+// game is back on the board.
+// ===========================================================================
+const disabledLineIds = new Set();
+const disabledPxEventIds = new Set();
+
+function isLineDisabled(lineId) {
+  if (!lineId) return false;
+  if (disabledLineIds.has(String(lineId))) return true;
+  // Event-level disable cascades to every line under that pxEventId
+  const info = lineIndex[lineId];
+  if (info && info.pxEventId != null && disabledPxEventIds.has(String(info.pxEventId))) return true;
+  return false;
+}
+
+function isPxEventDisabled(pxEventId) {
+  return pxEventId != null && disabledPxEventIds.has(String(pxEventId));
+}
+
+function disableLine(lineId) {
+  if (!lineId) return false;
+  disabledLineIds.add(String(lineId));
+  return true;
+}
+
+function enableLine(lineId) {
+  if (!lineId) return false;
+  return disabledLineIds.delete(String(lineId));
+}
+
+function disablePxEvent(pxEventId) {
+  if (pxEventId == null) return false;
+  disabledPxEventIds.add(String(pxEventId));
+  return true;
+}
+
+function enablePxEvent(pxEventId) {
+  if (pxEventId == null) return false;
+  return disabledPxEventIds.delete(String(pxEventId));
+}
+
+function getDisabledSnapshot() {
+  return {
+    disabledLineIds: Array.from(disabledLineIds),
+    disabledPxEventIds: Array.from(disabledPxEventIds),
+  };
+}
+
 /**
  * Async lookupLine that falls back to the persistent Supabase cache
  * when the in-memory lineIndex doesn't have the lineId.
@@ -2664,4 +2718,12 @@ module.exports = {
   getPrimarySpreadHomePoint,
   getPrimaryTotalLine,
   debugGolfMatching,
+  // Manual disable controls
+  isLineDisabled,
+  isPxEventDisabled,
+  disableLine,
+  enableLine,
+  disablePxEvent,
+  enablePxEvent,
+  getDisabledSnapshot,
 };

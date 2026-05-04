@@ -5468,6 +5468,44 @@ function startStatusServer() {
     }
   });
 
+  // Admin: manually disable / enable specific lines or whole events.
+  // When a sportsbook pulls lines on a delayed game and our cache shows
+  // stale prices, the operator clicks Disable in the Lines table to
+  // make this line/event auto-decline at the pricer level instead of
+  // pausing the whole service. State is in-memory and clears on restart.
+  // Body: { lineId } or { pxEventId }
+  app.post('/admin/disable-line', (req, res) => {
+    const { lineId } = req.body || {};
+    if (!lineId) return res.status(400).json({ ok: false, error: 'lineId required' });
+    lineManager.disableLine(String(lineId));
+    log.warn('AdminDisable', `Line ${lineId} disabled`);
+    res.json({ ok: true, lineId, disabled: true });
+  });
+  app.post('/admin/enable-line', (req, res) => {
+    const { lineId } = req.body || {};
+    if (!lineId) return res.status(400).json({ ok: false, error: 'lineId required' });
+    lineManager.enableLine(String(lineId));
+    log.warn('AdminDisable', `Line ${lineId} enabled`);
+    res.json({ ok: true, lineId, disabled: false });
+  });
+  app.post('/admin/disable-event', (req, res) => {
+    const { pxEventId } = req.body || {};
+    if (pxEventId == null) return res.status(400).json({ ok: false, error: 'pxEventId required' });
+    lineManager.disablePxEvent(String(pxEventId));
+    log.warn('AdminDisable', `Event ${pxEventId} disabled (all lines)`);
+    res.json({ ok: true, pxEventId, disabled: true });
+  });
+  app.post('/admin/enable-event', (req, res) => {
+    const { pxEventId } = req.body || {};
+    if (pxEventId == null) return res.status(400).json({ ok: false, error: 'pxEventId required' });
+    lineManager.enablePxEvent(String(pxEventId));
+    log.warn('AdminDisable', `Event ${pxEventId} enabled (all lines)`);
+    res.json({ ok: true, pxEventId, disabled: false });
+  });
+  app.get('/admin/disabled', (req, res) => {
+    res.json(lineManager.getDisabledSnapshot());
+  });
+
   // Admin: manually override a leg's inferredResult. For cases where the
   // automatic re-validation can't heal a wrongly-set leg (e.g. the score
   // source no longer carries the historical day's game).
@@ -7465,6 +7503,12 @@ function startStatusServer() {
         oddsApiMarket: info.oddsApiMarket || null,
         oddsApiSelection: info.oddsApiSelection || null,
         isDNB: !!info.isDNB,
+        // Operator-disabled flags. lineDisabled = this specific lineId is
+        // blocklisted; eventDisabled = the entire pxEventId is blocklisted
+        // (cascades to every line under it). The pricer treats either as
+        // a decline reason 'manually_disabled'.
+        lineDisabled: lineManager.isLineDisabled(lineId) && !(info.pxEventId != null && lineManager.isPxEventDisabled(info.pxEventId)),
+        eventDisabled: info.pxEventId != null && lineManager.isPxEventDisabled(info.pxEventId),
       });
       if (out.length >= limit) break;
     }
