@@ -171,6 +171,63 @@ function maybeSend(category, payload) {
 }
 
 /**
+ * Format a single leg as a short human-readable description.
+ * Examples:
+ *   moneyline   → "Atlanta Braves ML"
+ *   spread      → "Atlanta Braves -3.5"
+ *   total       → "Over 8.5"
+ *   player prop → "Mookie Betts Hits Over 1.5"
+ */
+const PROP_TYPE_LABEL = {
+  player_hitter_hits: 'Hits',
+  player_hitter_hr: 'HR',
+  player_hitter_total_bases: 'TB',
+  player_hitter_rbi_runs: 'RBI',
+  player_strikeouts: 'Ks',
+  player_points: 'Pts',
+  player_rebounds: 'Reb',
+  player_assists: 'Ast',
+  player_threes_made: '3PM',
+  player_shots_on_goal: 'SOG',
+};
+function _formatLeg(l) {
+  if (!l) return '?';
+  const team = l.teamName || l.team || '';
+  const market = l.market || l.marketType || '';
+  const selection = (l.selection || '').toLowerCase();
+  const line = l.line;
+  // Player props: team holds the player name; market like player_hitter_hits.
+  if (market.startsWith('player_')) {
+    const stat = PROP_TYPE_LABEL[market] || market.replace(/^player_/, '').replace(/_/g, ' ');
+    const side = selection === 'over' ? 'Over' : selection === 'under' ? 'Under' : '';
+    const lineStr = line != null ? ' ' + line : '';
+    return `${team} ${stat} ${side}${lineStr}`.trim();
+  }
+  // Moneyline (full match / DNB)
+  if (market === 'moneyline') {
+    return `${team} ML`.trim();
+  }
+  // Spread — selection determines sign of the displayed line. PX legs store
+  // the leg's line from the selection's perspective so usually `line` is
+  // already signed correctly. Show with explicit + or -.
+  if (market === 'spread') {
+    if (line == null) return `${team} spread`.trim();
+    const signed = line > 0 ? `+${line}` : `${line}`;
+    return `${team} ${signed}`.trim();
+  }
+  // Total — over/under + line. Team field is usually null; if it is set
+  // (team_total), include it.
+  if (market === 'total' || market === 'team_total') {
+    const side = selection === 'over' ? 'Over' : selection === 'under' ? 'Under' : '';
+    const lineStr = line != null ? ` ${line}` : '';
+    const teamPrefix = team ? `${team} ` : '';
+    return `${teamPrefix}${side}${lineStr}`.trim();
+  }
+  // Series winner / first-half / fallthrough — keep it simple.
+  return [team, market, selection, line].filter(x => x != null && x !== '').join(' ');
+}
+
+/**
  * Send notification for a confirmed parlay.
  */
 function notifyConfirmation(order) {
@@ -179,12 +236,16 @@ function notifyConfirmation(order) {
   const odds = order.confirmedOdds || order.offeredOdds;
   const oddsStr = odds ? (odds > 0 ? '+' + odds : '' + odds) : '';
   const stake = order.confirmedStake ? '$' + order.confirmedStake.toFixed(2) : '';
-  const teams = legs.map(l => l.teamName || l.team || '?').slice(0, 3).join(', ');
-  const more = legCount > 3 ? ` +${legCount - 3} more` : '';
+  // List every leg with full detail (player/team + market + selection + line).
+  // Long parlays get one leg per line so the operator can see what was
+  // taken without opening the dashboard. iOS/Android auto-truncate as
+  // needed; the full string is still attached to the notification.
+  const legLines = legs.map(_formatLeg);
+  const body = `${stake} stake\n` + legLines.map(s => '• ' + s).join('\n');
 
   sendNotification({
     title: `Parlay Confirmed: ${legCount}-leg ${oddsStr}`,
-    body: `${stake} stake | ${teams}${more}`,
+    body,
     tag: 'confirm-' + order.parlayId,
     parlayId: order.parlayId,
     category: 'confirmation',
