@@ -827,7 +827,7 @@
               <input type="date" id="dv-date-from" onchange="setDvDateFrom(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
               <span>to</span>
               <input type="date" id="dv-date-to" onchange="setDvDateTo(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
-              <button onclick="clearDvDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Clear</button>
+              <button onclick="clearDvDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Reset</button>
               <span id="dv-filter-summary" style="margin-left:4px; color:var(--text3);"></span>
             </div>
             <div id="chart-daily-volume">
@@ -895,7 +895,7 @@
               <input type="date" id="pnl-chart-date-from" onchange="setPnlChartDateFrom(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
               <span>to</span>
               <input type="date" id="pnl-chart-date-to" onchange="setPnlChartDateTo(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
-              <button onclick="clearPnlChartDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Clear</button>
+              <button onclick="clearPnlChartDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Reset</button>
               <span id="pnl-chart-filter-summary" style="margin-left:4px; color:var(--text3);"></span>
             </div>
             <div id="chart-pnl-sport">
@@ -921,7 +921,7 @@
               <input type="date" id="calib-chart-date-from" onchange="setCalibChartDateFrom(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
               <span>to</span>
               <input type="date" id="calib-chart-date-to" onchange="setCalibChartDateTo(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
-              <button onclick="clearCalibChartDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Clear</button>
+              <button onclick="clearCalibChartDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Reset</button>
               <span style="margin-left:12px;">Sport:</span>
               <select id="calib-chart-sport" onchange="setCalibChartSport(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px;">
                 <option value="">All sports</option>
@@ -2319,6 +2319,50 @@
     const sumEl = document.getElementById('intel-summary');
     if (!intel) return;
 
+    // Apply optional top-level date range filter — narrows the time-series
+    // arrays (recentMatched, decline events, near misses) and re-derives
+    // matchedBySport from the filtered set so all the Market Intel tables
+    // below reflect just the selected window. Stats bar at the top of the
+    // section stays server-aggregated; a banner indicates when the filter
+    // is active so the operator knows the tables are a subset.
+    const miFromMs = window._miFromMs || null;
+    const miToMs = window._miToMs || null;
+    if (miFromMs || miToMs) {
+      const inRange = (ts) => {
+        if (!ts) return false;
+        const ms = new Date(ts).getTime();
+        if (!Number.isFinite(ms)) return false;
+        if (miFromMs && ms < miFromMs) return false;
+        if (miToMs && ms > miToMs) return false;
+        return true;
+      };
+      const filteredMatched = (intel.recentMatched || []).filter(m => inRange(m.matchedAt));
+      // Re-derive matchedBySport from filtered set
+      const reBySport = {};
+      for (const m of filteredMatched) {
+        const sp = m.sport || 'unknown';
+        if (!reBySport[sp]) reBySport[sp] = { count: 0, weQuoted: 0, missed: 0, totalStake: 0 };
+        reBySport[sp].count++;
+        if (m.weQuoted) reBySport[sp].weQuoted++;
+        else reBySport[sp].missed++;
+        if (m.confirmedStake != null) reBySport[sp].totalStake += Number(m.confirmedStake) || 0;
+      }
+      for (const sp of Object.keys(reBySport)) {
+        const v = reBySport[sp];
+        v.avgStake = v.count > 0 ? v.totalStake / v.count : 0;
+      }
+      intel = {
+        ...intel,
+        recentMatched: filteredMatched,
+        matchedBySport: reBySport,
+        declines: {
+          ...(intel.declines || {}),
+          recentDeclineEvents: ((intel.declines || {}).recentDeclineEvents || []).filter(e => inRange(e.time)),
+          recentNearMisses: ((intel.declines || {}).recentNearMisses || []).filter(e => inRange(e.time)),
+        },
+      };
+    }
+
     const s = intel.stats || {};
     const d = intel.declines || {};
 
@@ -2342,6 +2386,24 @@
       <span><span style="color:var(--text3)" title="Another SP's quote was accepted instead of ours">Outbid:</span> <strong class="negative">${s.weLost || 0}</strong></span>
       <span><span style="color:var(--text3)" title="We didn't submit a quote for this RFQ">No Quote:</span> <strong>${s.missedNoQuote || 0}</strong></span>
     </div>`;
+
+    // Top-level date range filter — affects every Market Intel sub-table
+    // below (matched-by-sport, declines, near misses, recent matched).
+    // Empty input on either side leaves that bound unconstrained. The
+    // filter bar lives outside the inner sub-section divs so its inputs
+    // survive their innerHTML rewrites (filter rebuilds entire intel
+    // section but the inputs persist via flatpickr's wrapped element).
+    const miFilterActive = !!(window._miFromIso || window._miToIso);
+    html += '<div id="mi-date-filter" style="padding:0 4px 8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border); margin-bottom:14px;">'
+      + '<span>Filter all Market Intel tables by date:</span>'
+      + '<input type="datetime-local" id="mi-date-from" value="' + (window._miFromIso || '') + '" onchange="setMiDateFrom(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">'
+      + '<span>to</span>'
+      + '<input type="datetime-local" id="mi-date-to" value="' + (window._miToIso || '') + '" onchange="setMiDateTo(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">'
+      + '<button onclick="clearMiDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Reset</button>'
+      + (miFilterActive
+        ? '<span style="margin-left:6px; color:var(--amber);">⚠ Filter active — sub-tables show subset; top stats are unfiltered</span>'
+        : '')
+      + '</div>';
 
     // Helper for collapsible sub-sections with persistent state
     const subSection = (id, title, count, defaultOpen) => {
@@ -2919,6 +2981,14 @@
     }
 
     el.innerHTML = html || '<div class="empty-state"><div class="icon">-</div><div>Collecting data...</div></div>';
+
+    // Belt-and-suspenders: explicitly init flatpickr on any date inputs
+    // we just dumped via innerHTML. The MutationObserver covers this in
+    // most cases but its callback is deferred via requestAnimationFrame
+    // and can race with code paths that re-render right after the
+    // mutation. Direct call ensures the new mi-date-from / mi-date-to
+    // inputs (and any others) are wrapped immediately.
+    if (typeof _initFlatpickrAll === 'function') _initFlatpickrAll(el);
   }
 
   // Win-rate breakdown by sport × leg count. Promoted to a standalone card
@@ -9851,9 +9921,27 @@
     _rerenderBothPnlCharts();
   }
 
+  // Shared helper: reset one or more date/datetime inputs by id.
+  // Properly handles flatpickr-wrapped inputs (their internal state must
+  // be cleared via _flatpickr.clear() — direct .value='' leaves the
+  // calendar's selectedDates intact, so the next picker open shows the
+  // old date again).
+  function _resetDateInputs(...ids) {
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      if (el._flatpickr && typeof el._flatpickr.clear === 'function') {
+        el._flatpickr.clear();
+      } else {
+        el.value = '';
+      }
+    }
+  }
+
   function clearPnlChartDateRange() {
     window._pnlChartFromMs = null;
     window._pnlChartToMs = null;
+    _resetDateInputs('pnl-chart-date-from', 'pnl-chart-date-to');
     _rerenderBothPnlCharts();
   }
 
@@ -9902,10 +9990,7 @@
     window._dvToIso = null;
     window._dvFromMs = null;
     window._dvToMs = null;
-    const fromEl = document.getElementById('dv-date-from');
-    const toEl = document.getElementById('dv-date-to');
-    if (fromEl) fromEl.value = '';
-    if (toEl) toEl.value = '';
+    _resetDateInputs('dv-date-from', 'dv-date-to');
     _rerenderDvChart();
   }
 
@@ -10086,7 +10171,35 @@
   function clearCalibChartDateRange() {
     window._calibChartFromMs = null;
     window._calibChartToMs = null;
+    _resetDateInputs('calib-chart-date-from', 'calib-chart-date-to');
     _rerenderCalibChart();
+  }
+
+  // Market Intel top-level date filter handlers — narrows every Market
+  // Intel sub-table (matched-by-sport, declines, near misses, recent
+  // matched parlays). Inputs are datetime-local because intel events are
+  // timestamped and the operator may want sub-hour precision (e.g.
+  // "show only RFQs after the vig change went live at 14:30 UTC").
+  function _rerenderMarketIntel() {
+    if (window._lastIntelData != null) renderMarketIntel(window._lastIntelData);
+  }
+  function setMiDateFrom(isoLocal) {
+    window._miFromIso = isoLocal || null;
+    window._miFromMs = isoLocal ? new Date(isoLocal).getTime() : null;
+    _rerenderMarketIntel();
+  }
+  function setMiDateTo(isoLocal) {
+    window._miToIso = isoLocal || null;
+    window._miToMs = isoLocal ? new Date(isoLocal).getTime() : null;
+    _rerenderMarketIntel();
+  }
+  function clearMiDateRange() {
+    window._miFromIso = null;
+    window._miToIso = null;
+    window._miFromMs = null;
+    window._miToMs = null;
+    _resetDateInputs('mi-date-from', 'mi-date-to');
+    _rerenderMarketIntel();
   }
   function setCalibChartSport(sport) {
     window._calibChartSport = sport || '';
