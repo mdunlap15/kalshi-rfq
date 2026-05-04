@@ -559,6 +559,51 @@ async function startup() {
 function startStatusServer() {
   const app = express();
   app.use(express.json());
+
+  // ---------------------------------------------------------------------
+  // HTTP Basic Auth — gates the entire app behind a username/password.
+  // Enabled only when AUTH_PASSWORD env var is set (back-compat: an
+  // un-set password leaves the server publicly accessible just like
+  // before, with a loud warning in logs so the operator knows). Works
+  // for both the dashboard and the mobile PWA — modern browsers cache
+  // credentials for the session after the first prompt. /health remains
+  // public so Railway's deployment health probe keeps working.
+  //
+  // Username defaults to "mike" but can be overridden with AUTH_USERNAME.
+  // Multiple users can be supported by using a comma-separated
+  // user:pass list in AUTH_USERS_LIST (future).
+  const AUTH_USERNAME = process.env.AUTH_USERNAME || 'mike';
+  const AUTH_PASSWORD = process.env.AUTH_PASSWORD || '';
+  const AUTH_ENABLED = AUTH_PASSWORD.length > 0;
+  const AUTH_PUBLIC_PATHS = new Set(['/health']);
+  if (AUTH_ENABLED) {
+    log.info('Auth', `HTTP Basic Auth enabled (user: "${AUTH_USERNAME}", public paths: ${Array.from(AUTH_PUBLIC_PATHS).join(', ')})`);
+  } else {
+    log.warn('Auth', 'AUTH_PASSWORD env var not set — server is PUBLICLY ACCESSIBLE. Set AUTH_PASSWORD on Railway to lock down access.');
+  }
+  app.use((req, res, next) => {
+    if (!AUTH_ENABLED) return next();
+    if (AUTH_PUBLIC_PATHS.has(req.path)) return next();
+    const header = req.headers.authorization || '';
+    if (header.startsWith('Basic ')) {
+      try {
+        const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+        const idx = decoded.indexOf(':');
+        if (idx > -1) {
+          const user = decoded.slice(0, idx);
+          const pass = decoded.slice(idx + 1);
+          // Constant-time-ish comparison for the password (length-mismatch
+          // short-circuits before any byte compare, but keeps it simple).
+          if (user === AUTH_USERNAME && pass.length === AUTH_PASSWORD.length && pass === AUTH_PASSWORD) {
+            return next();
+          }
+        }
+      } catch (_) { /* fall through to 401 */ }
+    }
+    res.set('WWW-Authenticate', 'Basic realm="ProphetX SP", charset="UTF-8"');
+    return res.status(401).send('Authentication required');
+  });
+
   // No cache for HTML so deploys are picked up immediately
   app.use(express.static(path.join(__dirname, 'client'), {
     setHeaders: (res, filePath) => {
