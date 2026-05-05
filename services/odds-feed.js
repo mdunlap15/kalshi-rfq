@@ -2922,6 +2922,13 @@ async function resolveOddsApiEventId(sport, homeTeam, awayTeam, targetTime) {
     // 2026-05-05.
     'soccer_uefa_champs_league': 'soccer_uefa_champs_league',
     'soccer_uefa_europa_league': 'soccer_uefa_europa_league',
+    // MMA: SharpAPI is moneyline-only and the DK scraper occasionally
+    // misses Total Rounds for fights that aren't on /leagues/mma/ufc
+    // (Bellator/PFL/regional cards, or UFC fights that lazy-loaded
+    // poorly). Enabling event-ID resolution lets fetchAltLines pull
+    // totals from TOA's mma_mixed_martial_arts feed (Pinnacle+DK+FD)
+    // so getFairProbAsync can backstop Total Rounds quotes.
+    'mma_mixed_martial_arts': 'mma_mixed_martial_arts',
   };
   // Dynamic sports (e.g. tennis) use tournament-specific Odds API keys that
   // rotate over time. For these, we discover active tournaments and fetch
@@ -3151,10 +3158,20 @@ async function _doAltLinesFetch(sport, homeTeam, awayTeam, targetTime, key) {
   // not listed in alternate_totals — still land in the altTotals cache.
   // Books that skip integer totals in their alt list won't cover Over 8
   // otherwise.
+  //
+  // MMA: TOA's mma_mixed_martial_arts feed exposes Total Rounds via the
+  // standard `totals` market key but doesn't carry alternate_spreads /
+  // alternate_totals (MMA has no spreads, and total-rounds alts aren't
+  // a TOA market type). Requesting them returns 422 INVALID_MARKET, so
+  // we trim to just `totals` for MMA.
+  const isMma = sport === 'mma_mixed_martial_arts';
+  const marketsParam = isMma
+    ? 'totals'
+    : `totals,alternate_spreads,alternate_totals${mlbF5Markets}${nbaH1Markets}`;
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events/${eventId}/odds`
     + `?apiKey=${theOddsApiKey}`
     + `&regions=us,eu`
-    + `&markets=totals,alternate_spreads,alternate_totals${mlbF5Markets}${nbaH1Markets}`
+    + `&markets=${marketsParam}`
     + `&bookmakers=${ALT_LINES_BOOKMAKERS}`
     + `&oddsFormat=american`;
 
@@ -4018,7 +4035,40 @@ async function mergeDkMmaFights() {
   }
   cache.fetchedAt = Date.now();
   log.info('OddsFeed', `MMA DK merge: added ${added}, enriched-totals ${enriched}, skipped ${skipped} (total DK fights: ${fightData.fights.length})`);
-  return { added, enriched, skipped, total: fightData.fights.length };
+
+  // TOA backstop: any cache event still missing markets.totals after the
+  // DK enrichment pass gets a per-event TOA fetch into altLinesCache.
+  // Reasons a fight ends up here: SharpAPI seeded the h2h but DK's
+  // /leagues/mma/ufc page didn't surface it (Bellator/PFL/regional cards
+  // or a lazy-load miss), or DK got the fight but no Total Rounds
+  // markets fired XHRs. Without this, getFairProbAsync would call
+  // fetchAltLines per RFQ and resolveOddsApiEventId would have nothing
+  // (now fixed), but pre-warming here lets /lines/detail show coverage
+  // immediately and avoids a cold per-RFQ TOA fetch hop.
+  const toBackstop = [];
+  for (const entry of Object.values(cache.events || {})) {
+    const arr = Array.isArray(entry) ? entry : [entry];
+    for (const ev of arr) {
+      if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
+      if (ev.markets && ev.markets.totals) continue;
+      toBackstop.push(ev);
+    }
+  }
+  let backstopHits = 0, backstopAttempts = 0;
+  if (toBackstop.length > 0 && process.env.THE_ODDS_API_KEY) {
+    backstopAttempts = toBackstop.length;
+    await Promise.allSettled(toBackstop.map(async (ev) => {
+      try {
+        const r = await fetchAltLines(sport, ev.homeTeam, ev.awayTeam, ev.commenceTime);
+        if (r && r.altTotals && Object.keys(r.altTotals).length > 0) backstopHits++;
+      } catch (err) {
+        log.debug('OddsFeed', `MMA TOA backstop failed for ${ev.homeTeam} vs ${ev.awayTeam}: ${err.message}`);
+      }
+    }));
+    log.info('OddsFeed', `MMA TOA totals backstop: ${backstopHits}/${backstopAttempts} events backfilled into altLinesCache`);
+  }
+
+  return { added, enriched, skipped, backstopHits, backstopAttempts, total: fightData.fights.length };
 }
 
 async function backfillMissingH2h(sport) {

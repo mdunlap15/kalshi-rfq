@@ -7448,6 +7448,27 @@ function startStatusServer() {
             info.startTime
           );
         }
+        // Alt-line cache fallback. getFairProb returns null when the
+        // primary cache has no markets[marketType] for an event (typical
+        // for MMA totals: SharpAPI seeded h2h-only, DK didn't capture
+        // Total Rounds for that fight). The pricer's sync fast path
+        // already consults getAltLineFairProbSync — extending the same
+        // treatment here lets /lines/detail reflect quotability for
+        // lines whose fair prob lives in altLinesCache (warmed by
+        // mergeDkMmaFights TOA backstop or any prior RFQ).
+        if (fairProb == null) {
+          try {
+            fairProb = oddsFeed.getAltLineFairProbSync(
+              info.oddsApiSport || info.sport,
+              info.homeTeam,
+              info.awayTeam,
+              info.oddsApiMarket || info.marketType,
+              info.oddsApiSelection || info.selection,
+              info.line != null ? info.line : null,
+              info.startTime
+            );
+          } catch (_) { /* ignore */ }
+        }
         // Final fallback: lineInfo carries a stored fairProb when registration
         // resolved one at seed-time (player props pre-seed path, tennis
         // on-demand registration via TOA per-event fetch, golf manual
