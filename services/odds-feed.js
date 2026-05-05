@@ -866,6 +866,19 @@ async function fetchOddsForSport(sport, opts) {
     }
   }
 
+  // Warm the DK series-futures cache for NBA playoff series (winner /
+  // spread / total). SharpAPI + TOA don't carry these markets; the
+  // pricer reads them lazily from the DK scraper cache at RFQ time.
+  // Without warmup the cache stays cold between manual /nba-series-*
+  // hits and series RFQs decline as "no fair value".
+  if (!liveMode && sport === 'basketball_nba') {
+    try {
+      await _supplementDkNbaSeries(parsed);
+    } catch (err) {
+      log.warn('OddsFeed', `NBA DK series supplement failed: ${err.message}`);
+    }
+  }
+
   // Supplement with 1st-Half markets for NBA (separate from full-game)
   if (!liveMode && sport === 'basketball_nba') {
     try {
@@ -1157,6 +1170,51 @@ async function _supplementDkGameLines(parsedEvents, sport) {
     applied++;
   }
   log.info('OddsFeed', `${sport} DK game-line supplement applied: ${applied}/${candidates.length} events filled`);
+}
+
+// DK series-futures cache warmer (NBA playoff series). Series winner /
+// series spread / series total markets aren't carried by SharpAPI Hobby
+// or TOA's pre-match feeds, so the pricer reads them lazily from the DK
+// scraper cache (cacheBySport.nba) at RFQ time via
+// pricer.getSeriesFairProb → dkScraper.lookup{Series,SeriesSpread,
+// SeriesTotal}FairProb. Without this warmer the cache is only populated
+// when an operator hits /nba-series-prices manually; the first RFQ
+// post-expiry pays a 30s+ Puppeteer cold start and /lines/detail shows
+// fair_prob=null for every series leg in steady state.
+//
+// Strictly additive: this only triggers fetchSeriesMarkets('nba'), which
+// has its own 15-min TTL and in-flight de-dup. No mutation of parsedEvents
+// — series markets aren't represented in the SharpAPI per-game cache shape;
+// they're a separate DK-only futures cache that pricer reads directly.
+async function _supplementDkNbaSeries(parsedEvents) {
+  // Skip the Puppeteer spin-up if NBA isn't actively running — no parsed
+  // events => no series legs likely registered upstream either.
+  let nbaEventCount = 0;
+  for (const entry of Object.values(parsedEvents || {})) {
+    const arr = Array.isArray(entry) ? entry : [entry];
+    nbaEventCount += arr.length;
+    if (nbaEventCount > 0) break;
+  }
+  if (nbaEventCount === 0) return;
+
+  let dk;
+  try {
+    dk = require('./dk-scraper');
+    if (typeof dk.fetchSeriesMarkets !== 'function') return;
+  } catch (err) {
+    log.warn('OddsFeed', `DK NBA series supplement: scraper require failed: ${err.message}`);
+    return;
+  }
+
+  try {
+    const data = await dk.fetchSeriesMarkets('nba');
+    const w = (data && data.winners) ? data.winners.length : 0;
+    const s = (data && data.spreads) ? data.spreads.length : 0;
+    const t = (data && data.totals) ? data.totals.length : 0;
+    log.info('OddsFeed', `NBA DK series cache warmed: ${w} winners, ${s} spreads, ${t} totals`);
+  } catch (err) {
+    log.warn('OddsFeed', `DK NBA series supplement failed: ${err.message}`);
+  }
 }
 
 async function supplementMlbF5Markets(parsedEvents) {

@@ -1557,6 +1557,125 @@ function lookupSeriesTotalFairProb(sport, homeTeam, awayTeam, line, side) {
   return null;
 }
 
+/**
+ * Consolidated synchronous getter for an NBA playoff series matching a
+ * home/away team pair. Reads the DK series cache populated by
+ * fetchSeriesMarkets('nba'); returns null if the cache is cold or no
+ * series matches either team name.
+ *
+ * Shape:
+ *   {
+ *     eventName, startTime, source: 'dk',
+ *     h2h: { home: {fairProb, americanOdds, decimalOdds, impliedProb},
+ *            away: {...}, vig },
+ *     spreadsByLine: { '1.5': { line, home: {side, ...},
+ *                                away: {side, ...}, vig }, ... },
+ *     totalsByLine:  { '5.5': { line, over: {...}, under: {...}, vig }, ... }
+ *   }
+ *
+ * Any leg may be missing if DK hasn't posted that market type for the
+ * series yet (e.g. winner up but spread/total still pending).
+ */
+function lookupDkNbaSeriesOdds(homeTeam, awayTeam) {
+  const cache = cacheBySport.nba;
+  if (!cache || !cache.data) return null;
+
+  const candidates = [homeTeam, awayTeam].filter(Boolean).map(n => {
+    const norm = normalizeTeamName(n);
+    return { raw: n, norm, last: norm.split(' ').pop() };
+  });
+  if (candidates.length === 0) return null;
+
+  const matchesAny = (candidate) => {
+    const cand = normalizeTeamName(candidate);
+    if (!cand) return false;
+    return candidates.some(c => teamNameMatches(cand, c.norm, c.last));
+  };
+  const eventMatchesAny = (eventName) => {
+    const en = normalizeTeamName(eventName || '');
+    if (!en) return false;
+    return candidates.some(c => teamNameMatches(en, c.norm, c.last)
+      || en.includes(c.norm) || (c.last && en.includes(c.last)));
+  };
+
+  // Locate the matching series across winners. Winner shape carries the
+  // two team labels we can match against. We anchor the lookup off the
+  // winner; spreads/totals are then keyed by the same eventId. If no
+  // winner exists for the series yet, fall back to scanning spreads/totals
+  // by event name so we still surface partial coverage.
+  const winners = cache.data.winners || cache.data.series || [];
+  let series = null;
+  for (const s of winners) {
+    if (s.teams.some(t => matchesAny(t.name))) { series = s; break; }
+  }
+  let eventId = series ? series.eventId : null;
+  let eventName = series ? series.eventName : null;
+  let startTime = series ? series.startTime : null;
+
+  if (!eventId) {
+    for (const s of (cache.data.spreads || [])) {
+      if (s.teams.some(t => matchesAny(t.name)) || eventMatchesAny(s.eventName)) {
+        eventId = s.eventId; eventName = s.eventName; startTime = s.startTime; break;
+      }
+    }
+  }
+  if (!eventId) {
+    for (const s of (cache.data.totals || [])) {
+      if (eventMatchesAny(s.eventName)) {
+        eventId = s.eventId; eventName = s.eventName; startTime = s.startTime; break;
+      }
+    }
+  }
+  if (!eventId) return null;
+
+  const out = { eventName, startTime, source: 'dk' };
+
+  if (series && series.teams && series.teams.length === 2) {
+    const t0 = series.teams[0];
+    const t1 = series.teams[1];
+    const t0Match = candidates.find(c => teamNameMatches(normalizeTeamName(t0.name), c.norm, c.last));
+    // Heuristic: first candidate (homeTeam input) maps to home leg.
+    const homeIsT0 = t0Match && t0Match.raw === homeTeam;
+    const home = homeIsT0 ? t0 : t1;
+    const away = homeIsT0 ? t1 : t0;
+    out.h2h = {
+      home: { fairProb: home.fairProb, americanOdds: home.americanOdds, decimalOdds: home.decimalOdds, impliedProb: home.impliedProb },
+      away: { fairProb: away.fairProb, americanOdds: away.americanOdds, decimalOdds: away.decimalOdds, impliedProb: away.impliedProb },
+      vig: series.vig,
+    };
+  }
+
+  out.spreadsByLine = {};
+  for (const s of (cache.data.spreads || [])) {
+    if (s.eventId !== eventId) continue;
+    const t0 = s.teams[0];
+    const t1 = s.teams[1];
+    const t0Match = candidates.find(c => teamNameMatches(normalizeTeamName(t0.name), c.norm, c.last));
+    const homeIsT0 = t0Match && t0Match.raw === homeTeam;
+    const home = homeIsT0 ? t0 : t1;
+    const away = homeIsT0 ? t1 : t0;
+    out.spreadsByLine[String(s.line)] = {
+      line: s.line,
+      home: { side: home.side, line: home.line, fairProb: home.fairProb, americanOdds: home.americanOdds, decimalOdds: home.decimalOdds, impliedProb: home.impliedProb },
+      away: { side: away.side, line: away.line, fairProb: away.fairProb, americanOdds: away.americanOdds, decimalOdds: away.decimalOdds, impliedProb: away.impliedProb },
+      vig: s.vig,
+    };
+  }
+
+  out.totalsByLine = {};
+  for (const s of (cache.data.totals || [])) {
+    if (s.eventId !== eventId) continue;
+    out.totalsByLine[String(s.line)] = {
+      line: s.line,
+      over: { fairProb: s.over.fairProb, americanOdds: s.over.americanOdds, decimalOdds: s.over.decimalOdds, impliedProb: s.over.impliedProb },
+      under: { fairProb: s.under.fairProb, americanOdds: s.under.americanOdds, decimalOdds: s.under.decimalOdds, impliedProb: s.under.impliedProb },
+      vig: s.vig,
+    };
+  }
+
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // PARSERS — turn raw DK XHR payloads into canonical {winners|spreads|totals}
 // ---------------------------------------------------------------------------
@@ -2658,6 +2777,7 @@ module.exports = {
   lookupSeriesFairProb,
   lookupSeriesSpreadFairProb,
   lookupSeriesTotalFairProb,
+  lookupDkNbaSeriesOdds,
   lookupMmaFairProb,
   lookupGolfMatchupFairProb,
   normalizeTeamName,
