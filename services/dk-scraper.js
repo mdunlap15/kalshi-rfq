@@ -20,10 +20,10 @@ const POST_NAV_WAIT_MS = 10000;
 
 // DK sport-specific config. Both NBA and NHL playoffs use the same
 // series-props subcategory layout; only the URL league slug differs.
-// We navigate through three subcategories per sport (winner / spread /
-// total-games) in a single browser session and partition captured XHR
-// payloads by marketType.name — robust against DK rotating their
-// internal subcategoryIds in the request URL.
+// We navigate through subcategories per sport in a single browser
+// session and partition captured XHR payloads by marketType.name —
+// robust against DK rotating their internal subcategoryIds in the
+// request URL.
 const SPORT_CONFIGS = {
   nba: {
     league: 'basketball/nba',
@@ -35,14 +35,56 @@ const SPORT_CONFIGS = {
   },
 };
 
-// Subcategory slug → DK marketType.name present in the returned payload.
-// We filter captured XHRs by marketType.name (not URL) because DK's new
-// template-vars URL format no longer surfaces the subcategoryId.
-const SUBCATEGORIES = [
-  { slug: 'winner', marketName: 'Series Winner' },
-  { slug: 'spread', marketName: 'Series Spread' },
-  { slug: 'total-games', marketName: 'Series Total Games' },
+// Market categories we care about, identified by REGEX over
+// marketType.name (not exact-string match). DK has historically
+// renamed these — the canonical strings were "Series Winner" /
+// "Series Spread" / "Series Total Games", but the scraper went silent
+// when DK rotated to a new label. Each regex covers the historical
+// label PLUS likely rename variants so a small DK relabel doesn't
+// break the cache.
+//
+// `slugs` is the list of subcategory= URL slugs to try, in order, when
+// the canonical doesn't surface XHRs containing that market type. We
+// stop at the first slug that yields ≥1 matching market.
+//
+// If a future DK rename breaks ALL regexes, the scraper attaches the
+// `seenMarketNames` diagnostic to both the thrown error and the
+// payload returned by /nba-series-prices, so the operator can update
+// the regex from a single Railway log line.
+const MARKET_CATEGORIES = [
+  {
+    key: 'winner',
+    canonicalName: 'Series Winner',
+    re: /^(?:series\s+)?(?:winner|outright(?:\s+winner)?|to\s+win\s+series|series\s+price)$/i,
+    slugs: ['winner', 'series-winner', 'series-outright', 'outright-winner', 'to-win-series'],
+  },
+  {
+    key: 'spread',
+    canonicalName: 'Series Spread',
+    re: /^series\s+(?:spread|handicap|games\s+(?:handicap|spread)|margin)$/i,
+    slugs: ['spread', 'series-spread', 'handicap', 'series-handicap', 'series-games-handicap'],
+  },
+  {
+    key: 'total',
+    canonicalName: 'Series Total Games',
+    re: /^series\s+(?:total\s+games?|total|games\s+total|game\s+count(?:\s+over\/under)?)$/i,
+    slugs: ['total-games', 'series-total-games', 'series-total', 'total', 'games-total'],
+  },
 ];
+
+// URL category= values to try, in order. DK's playoff series markets
+// have historically lived under category=series-props; if that yields
+// nothing, fall back to category=futures (the older home for series
+// outright pricing) before giving up.
+const URL_CATEGORIES = ['series-props', 'futures'];
+
+function categorizeMarketName(name) {
+  if (!name) return null;
+  for (const c of MARKET_CATEGORIES) {
+    if (c.re.test(name)) return c.key;
+  }
+  return null;
+}
 
 // Per-sport cache & in-flight dedupe.
 const cacheBySport = {}; // sport -> { at, data }
@@ -91,14 +133,17 @@ async function fetchSeriesMarkets(sport, { force = false } = {}) {
       await page.setViewport({ width: 1400, height: 900 });
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-      // Captured XHR payloads grouped by marketType.name. DK fires
-      // multiple content XHRs per page load; we retain any payload that
-      // carries events/markets/selections AND contains at least one of
-      // our target market names. The same marketType may appear across
-      // multiple captures (e.g. DK re-sends on subscription resume);
-      // we keep them all and the parser dedupes by eventId/marketId.
-      const payloadsByMarketName = {};
-      for (const sc of SUBCATEGORIES) payloadsByMarketName[sc.marketName] = [];
+      // Captured XHR payloads grouped by category key (winner/spread/
+      // total). DK fires multiple content XHRs per page load; we retain
+      // any payload whose markets include at least one matching the
+      // category regex. The same market may appear across multiple
+      // captures (e.g. DK re-sends on subscription resume); the parser
+      // dedupes by eventId/marketId. `seenMarketNames` records EVERY
+      // distinct marketType.name observed across all DK XHRs — surfaced
+      // in the response payload + thrown error so a future DK rename
+      // is diagnosable from one Railway log line.
+      const payloadsByCategoryKey = { winner: [], spread: [], total: [] };
+      const seenMarketNames = new Set();
 
       page.on('response', async (resp) => {
         const url = resp.url();
@@ -108,29 +153,48 @@ async function fetchSeriesMarkets(sport, { force = false } = {}) {
           if (!ct.includes('json')) return;
           const data = await resp.json();
           if (!data || !data.selections || !data.events || !data.markets) return;
-          const names = new Set((data.markets || []).map(m => m.marketType?.name).filter(Boolean));
-          for (const sc of SUBCATEGORIES) {
-            if (names.has(sc.marketName)) payloadsByMarketName[sc.marketName].push(data);
+          const cats = new Set();
+          for (const m of data.markets) {
+            const name = m.marketType?.name;
+            if (!name) continue;
+            seenMarketNames.add(name);
+            const k = categorizeMarketName(name);
+            if (k) cats.add(k);
           }
+          for (const k of cats) payloadsByCategoryKey[k].push(data);
         } catch { /* ignore */ }
       });
 
-      // Navigate the 3 subcategories sequentially in ONE browser session.
-      // First navigation pays Akamai cold-start; subsequent ones reuse
-      // the already-challenged session and typically resolve in <3s.
-      for (const sc of SUBCATEGORIES) {
-        const url = `${cfg.baseUrl}?category=series-props&subcategory=${sc.slug}`;
-        try {
-          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
-          await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
-        } catch (err) {
-          log.warn('DkScraper', `${sport} ${sc.slug} navigation failed: ${err.message}`);
+      // Navigate sequentially in ONE browser session. First navigation
+      // pays Akamai cold-start; subsequent ones reuse the already-
+      // challenged session and typically resolve in <3s.
+      //
+      // For each market category we try (URL_CATEGORIES × cat.slugs) in
+      // order, but bail out of inner loops as soon as ≥1 matching
+      // payload is captured for that category. Happy path (DK
+      // unchanged): 3 navigations total, identical to the old behavior.
+      // Fallback path (DK renamed slug or category): a few extra
+      // navigations bounded to the same browser session.
+      for (const cat of MARKET_CATEGORIES) {
+        outer:
+        for (const urlCat of URL_CATEGORIES) {
+          for (const slug of cat.slugs) {
+            if (payloadsByCategoryKey[cat.key].length > 0) break outer;
+            const url = `${cfg.baseUrl}?category=${urlCat}&subcategory=${slug}`;
+            try {
+              await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+              await new Promise(r => setTimeout(r, POST_NAV_WAIT_MS));
+            } catch (err) {
+              log.warn('DkScraper', `${sport} ${urlCat}/${slug} navigation failed: ${err.message}`);
+            }
+          }
         }
       }
 
-      const winners = parseSeriesWinnerData(payloadsByMarketName['Series Winner']);
-      const spreads = parseSeriesSpreadData(payloadsByMarketName['Series Spread']);
-      const totals = parseSeriesTotalData(payloadsByMarketName['Series Total Games']);
+      const winners = parseSeriesWinnerData(payloadsByCategoryKey.winner);
+      const spreads = parseSeriesSpreadData(payloadsByCategoryKey.spread);
+      const totals = parseSeriesTotalData(payloadsByCategoryKey.total);
+      const seenList = [...seenMarketNames].sort();
 
       const payload = {
         fetchedAt: new Date().toISOString(),
@@ -139,12 +203,24 @@ async function fetchSeriesMarkets(sport, { force = false } = {}) {
         winners,
         spreads,
         totals,
+        // Empty-result diagnostic: lets the operator see WHICH
+        // marketType.name strings DK is actually returning, so a regex
+        // miss in MARKET_CATEGORIES is fixable without re-running
+        // Puppeteer in debug mode. Only attached when at least one
+        // category came up empty — keeps the happy-path response slim.
+        seenMarketNames: (winners.length === 0 || spreads.length === 0 || totals.length === 0)
+          ? seenList
+          : undefined,
       };
       cacheBySport[sport] = { at: Date.now(), data: payload };
       log.info('DkScraper', `${sport.toUpperCase()} series: ${winners.length} winners, ${spreads.length} spreads, ${totals.length} totals (${Date.now() - startedAt}ms)`);
 
       if (winners.length === 0 && spreads.length === 0 && totals.length === 0) {
-        throw new Error(`DK scraper: no ${sport.toUpperCase()} series payloads captured across winner/spread/total-games`);
+        const seenStr = seenList.length ? seenList.slice(0, 25).join(' | ') : '(none)';
+        throw new Error(
+          `DK scraper: no ${sport.toUpperCase()} series payloads captured across winner/spread/total-games. ` +
+          `seenMarketNames=${seenStr}`
+        );
       }
       return payload;
     } finally {
@@ -1610,20 +1686,27 @@ function parseSelectionOdds(sel) {
 
 /**
  * Shared ingest: partition events/markets from one OR more captured
- * payloads, filtered by marketType.name. Returns:
+ * payloads, filtered by marketType.name. The matcher accepts either
+ * a literal string (exact match) or a RegExp (test against the name).
+ * Returns:
  *   { eventsById, marketsById, selectionsByMarketId }
  * Markets and events are deduped by id across payloads; selections are
  * grouped by marketId and deduped by selection.id.
  */
-function indexPayloads(payloads, marketTypeName) {
+function indexPayloads(payloads, matcher) {
   const eventsById = {};
   const marketsById = {};
   const selectionsByMarketId = {};
   const seenSelIds = new Set();
+  const matches = (name) => {
+    if (!name) return false;
+    if (matcher instanceof RegExp) return matcher.test(name);
+    return name === matcher;
+  };
   for (const payload of (payloads || [])) {
     for (const e of (payload.events || [])) if (!eventsById[e.id]) eventsById[e.id] = e;
     for (const m of (payload.markets || [])) {
-      if (m.marketType?.name !== marketTypeName) continue;
+      if (!matches(m.marketType?.name)) continue;
       if (!marketsById[m.id]) marketsById[m.id] = m;
     }
     for (const sel of (payload.selections || [])) {
@@ -1642,7 +1725,8 @@ function indexPayloads(payloads, marketTypeName) {
  * Accepts an array of captured payloads; dedupes across captures.
  */
 function parseSeriesWinnerData(payloads) {
-  const { eventsById, marketsById, selectionsByMarketId } = indexPayloads(payloads, 'Series Winner');
+  const re = MARKET_CATEGORIES.find(c => c.key === 'winner').re;
+  const { eventsById, marketsById, selectionsByMarketId } = indexPayloads(payloads, re);
   const seriesByEvent = {};
   for (const marketId of Object.keys(selectionsByMarketId)) {
     const market = marketsById[marketId];
@@ -1678,7 +1762,8 @@ function parseSeriesWinnerData(payloads) {
  * the team name, sign, and numeric magnitude from the label.
  */
 function parseSeriesSpreadData(payloads) {
-  const { eventsById, marketsById, selectionsByMarketId } = indexPayloads(payloads, 'Series Spread');
+  const re = MARKET_CATEGORIES.find(c => c.key === 'spread').re;
+  const { eventsById, marketsById, selectionsByMarketId } = indexPayloads(payloads, re);
   const labelRe = /^(.+?)\s*([+\-−–—])\s*(\d+(?:\.\d+)?)\s*games?$/i;
   const spreads = [];
   for (const marketId of Object.keys(selectionsByMarketId)) {
@@ -1726,7 +1811,8 @@ function parseSeriesSpreadData(payloads) {
  * per market at the same line. Labels look like "Over 5.5" / "Under 5.5".
  */
 function parseSeriesTotalData(payloads) {
-  const { eventsById, marketsById, selectionsByMarketId } = indexPayloads(payloads, 'Series Total Games');
+  const re = MARKET_CATEGORIES.find(c => c.key === 'total').re;
+  const { eventsById, marketsById, selectionsByMarketId } = indexPayloads(payloads, re);
   const labelRe = /^(over|under)\s*(\d+(?:\.\d+)?)/i;
   const totals = [];
   for (const marketId of Object.keys(selectionsByMarketId)) {
