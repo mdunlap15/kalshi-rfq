@@ -569,17 +569,58 @@ function startStatusServer() {
   // credentials for the session after the first prompt. /health remains
   // public so Railway's deployment health probe keeps working.
   //
-  // Username defaults to "mike" but can be overridden with AUTH_USERNAME.
-  // Multiple users can be supported by using a comma-separated
-  // user:pass list in AUTH_USERS_LIST (future).
+  // Two roles:
+  //   admin:   AUTH_USERNAME / AUTH_PASSWORD — full dashboard access
+  //   viewer:  AUTH_VIEWERS=user1:pass1,user2:pass2 — restricted to
+  //            AUTH_VIEWER_PATHS only (default: /edge-vs-fair.html).
+  //            Lets the operator share a specific report page without
+  //            exposing orders, market intel, admin endpoints, etc.
   const AUTH_USERNAME = process.env.AUTH_USERNAME || 'mike';
   const AUTH_PASSWORD = process.env.AUTH_PASSWORD || '';
   const AUTH_ENABLED = AUTH_PASSWORD.length > 0;
   const AUTH_PUBLIC_PATHS = new Set(['/health']);
+  // Viewers: comma-separated user:pass list. A user with a colon in
+  // its name would break parsing; document this is intentional and
+  // disallow such names below.
+  const AUTH_VIEWERS = (() => {
+    const raw = process.env.AUTH_VIEWERS || '';
+    const map = new Map();
+    for (const pair of raw.split(',').map(s => s.trim()).filter(Boolean)) {
+      const idx = pair.indexOf(':');
+      if (idx <= 0 || idx === pair.length - 1) {
+        log.warn('Auth', `Skipping malformed AUTH_VIEWERS entry: "${pair}" (expected "user:pass")`);
+        continue;
+      }
+      const user = pair.slice(0, idx);
+      const pass = pair.slice(idx + 1);
+      if (user === AUTH_USERNAME) {
+        log.warn('Auth', `Skipping viewer entry that collides with AUTH_USERNAME: "${user}"`);
+        continue;
+      }
+      map.set(user, pass);
+    }
+    return map;
+  })();
+  // Paths a viewer is permitted to load. Default covers the shareable
+  // report and the static asset paths it implicitly resolves to. /health
+  // is already public via AUTH_PUBLIC_PATHS so viewers don't need it.
+  const AUTH_VIEWER_PATHS = new Set(
+    (process.env.AUTH_VIEWER_PATHS || '/edge-vs-fair.html')
+      .split(',').map(s => s.trim()).filter(Boolean)
+  );
   if (AUTH_ENABLED) {
-    log.info('Auth', `HTTP Basic Auth enabled (user: "${AUTH_USERNAME}", public paths: ${Array.from(AUTH_PUBLIC_PATHS).join(', ')})`);
+    log.info('Auth', `HTTP Basic Auth enabled (admin: "${AUTH_USERNAME}", viewers: ${AUTH_VIEWERS.size}, viewer paths: ${Array.from(AUTH_VIEWER_PATHS).join(', ')}, public paths: ${Array.from(AUTH_PUBLIC_PATHS).join(', ')})`);
   } else {
     log.warn('Auth', 'AUTH_PASSWORD env var not set — server is PUBLICLY ACCESSIBLE. Set AUTH_PASSWORD on Railway to lock down access.');
+  }
+  // Constant-time-ish string compare. Length-mismatch short-circuits
+  // before any byte compare; otherwise XORs all bytes so the running
+  // time depends on length only.
+  function safeEqual(a, b) {
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return diff === 0;
   }
   app.use((req, res, next) => {
     if (!AUTH_ENABLED) return next();
@@ -592,10 +633,18 @@ function startStatusServer() {
         if (idx > -1) {
           const user = decoded.slice(0, idx);
           const pass = decoded.slice(idx + 1);
-          // Constant-time-ish comparison for the password (length-mismatch
-          // short-circuits before any byte compare, but keeps it simple).
-          if (user === AUTH_USERNAME && pass.length === AUTH_PASSWORD.length && pass === AUTH_PASSWORD) {
+          // Admin: full access to every non-public path.
+          if (user === AUTH_USERNAME && safeEqual(pass, AUTH_PASSWORD)) {
             return next();
+          }
+          // Viewer: only the allowlisted paths.
+          if (AUTH_VIEWERS.has(user)) {
+            const expected = AUTH_VIEWERS.get(user);
+            if (safeEqual(pass, expected)) {
+              if (AUTH_VIEWER_PATHS.has(req.path)) return next();
+              // Authenticated as viewer but path is admin-only.
+              return res.status(403).send('Forbidden');
+            }
           }
         }
       } catch (_) { /* fall through to 401 */ }
