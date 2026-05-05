@@ -2916,7 +2916,11 @@ async function resolveOddsApiEventId(sport, homeTeam, awayTeam, targetTime) {
     'soccer_germany_bundesliga': 'soccer_germany_bundesliga',
     'soccer_italy_serie_a': 'soccer_italy_serie_a',
     'soccer_france_ligue_one': 'soccer_france_ligue_one',
-    'soccer_uefa_champs_league': 'soccer_uefa_champions',
+    // TOA renamed 'soccer_uefa_champions' → 'soccer_uefa_champs_league'
+    // at some point. The old key now returns "UNKNOWN_SPORT" 404,
+    // breaking event-ID resolution for every UCL candidate. Fixed
+    // 2026-05-05.
+    'soccer_uefa_champs_league': 'soccer_uefa_champs_league',
     'soccer_uefa_europa_league': 'soccer_uefa_europa_league',
   };
   // Dynamic sports (e.g. tennis) use tournament-specific Odds API keys that
