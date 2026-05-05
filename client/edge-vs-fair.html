@@ -235,6 +235,7 @@ function renderTooltipHtml(d) {
     '<div class="row"><span class="k">Sport(s)</span><span class="v">' + sportsTxt + '</span></div>' +
     '<div class="row"><span class="k">Offered odds</span><span class="v">' + offeredFmt + '</span></div>' +
     '<div class="row"><span class="k">Stake</span><span class="v">$' + d.stake.toFixed(2) + '</span></div>' +
+    '<div class="row"><span class="k">To Win</span><span class="v" style="color:#3fb950">$' + ((d.offered != null && Math.abs(d.offered) > 0) ? (d.stake * 100 / Math.abs(d.offered)).toFixed(2) : '—') + '</span></div>' +
     '<div class="row"><span class="k">Fair prob</span><span class="v">' + (d.x*100).toFixed(2) + '%</span></div>' +
     '<div class="row"><span class="k">Theoretical edge</span><span class="v" style="color:' + (d.y >= 0 ? '#3fb950' : '#f87171') + '">' + d.y.toFixed(2) + '%</span></div>' +
     '<div class="legs-head">Legs:</div>' + legsHtml +
