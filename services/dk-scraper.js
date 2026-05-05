@@ -1452,16 +1452,43 @@ function lookupDkPlayerPropFairProb(sport, propType, playerName, line) {
  * Returns null if cache is cold or no match found. Uses the same
  * last-word fallback strategy as series lookups to handle diacritics
  * and minor name variants ("Thiago Moisés" vs "Thiago Moises").
+ *
+ * When `opponentName` is provided, the lookup REQUIRES both fighters in
+ * the matched fight to match the (target, opponent) pair. This guards
+ * against cross-fight last-name collisions and within-fight orientation
+ * flips that produced inverted fair_prob values on the 5/9 UFC card
+ * (Stephens, Gomis, Carpenter, Rębecki, Buckley — all matched against
+ * the wrong fighter, returning the OPPONENT's fair_prob).
  */
-function lookupMmaFairProb(fighterName) {
+function lookupMmaFairProb(fighterName, opponentName) {
   const cache = cacheBySport.mma;
   if (!cache || !cache.data) return null;
   const target = normalizeTeamName(fighterName);
   if (!target) return null;
+  const opponent = opponentName ? normalizeTeamName(opponentName) : '';
   const targetLast = target.split(' ').pop();
+  const opponentLast = opponent ? opponent.split(' ').pop() : '';
+
+  // Local single-name matcher mirrors the original cascade so behavior
+  // is identical for callers that don't pass opponentName.
+  const matches = (cand, t, tLast) => {
+    if (!cand || !t) return false;
+    if (cand === t) return true;
+    if (cand.endsWith(' ' + t) || t.endsWith(' ' + cand)) return true;
+    if (cand.startsWith(t + ' ') || t.startsWith(cand + ' ')) return true;
+    const candLast = cand.split(' ').pop();
+    return !!(candLast && candLast === tLast);
+  };
+
+  let fallbackBase = null; // first single-name hit (legacy behavior) for callers without opponent
+
   for (const f of cache.data.fights) {
-    for (const fighter of f.fighters) {
+    if (!Array.isArray(f.fighters) || f.fighters.length < 2) continue;
+    // Try every (target-side, opponent-side) assignment within this fight.
+    for (let i = 0; i < f.fighters.length; i++) {
+      const fighter = f.fighters[i];
       const cand = normalizeTeamName(fighter.fighter);
+      if (!matches(cand, target, targetLast)) continue;
       const base = {
         fairProb: fighter.fairProb,
         decimalOdds: fighter.decimalOdds,
@@ -1470,18 +1497,22 @@ function lookupMmaFairProb(fighterName) {
         eventName: f.eventName,
         startTime: f.startTime,
       };
-      if (cand === target) return base;
-      if (cand.endsWith(' ' + target) || target.endsWith(' ' + cand)) return base;
-      // Prefix match — handles PX's "Robert Valentin" vs DK's full
-      // three-part "Robert Valentin Frey" (and symmetrically if DK
-      // dropped a middle name). Requires a space boundary so "John"
-      // doesn't match unrelated "Johnson".
-      if (cand.startsWith(target + ' ') || target.startsWith(cand + ' ')) return base;
-      const candLast = cand.split(' ').pop();
-      if (candLast && candLast === targetLast) return base;
+      if (!opponent) {
+        // Legacy single-name path — preserve original "first hit wins".
+        if (!fallbackBase) fallbackBase = base;
+        continue;
+      }
+      // Verify the OTHER fighter in this fight matches the opponent.
+      // Without this check, last-word collisions across different fights
+      // (or paired fighters with overlapping surnames) silently return
+      // the opponent's fair_prob, inverting the price.
+      const otherFighter = f.fighters.find((_, j) => j !== i);
+      if (!otherFighter) continue;
+      const otherCand = normalizeTeamName(otherFighter.fighter);
+      if (matches(otherCand, opponent, opponentLast)) return base;
     }
   }
-  return null;
+  return fallbackBase;
 }
 
 /**

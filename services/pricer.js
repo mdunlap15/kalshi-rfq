@@ -418,7 +418,22 @@ function getMmaFairProb(lineInfo) {
   if (mt !== 'moneyline' && am !== 'h2h') return null;
   const fighter = lineInfo?.teamName || '';
   if (!fighter) return null;
-  const hit = dkScraper.lookupMmaFairProb(fighter);
+  // Pass the opponent so the DK lookup can verify both fighters match
+  // the PX competitor pair. Opponent is the OTHER side of the matchup
+  // — derived from oddsApiSelection when present, else the team that
+  // isn't the leg's fighter.
+  const home = lineInfo?.homeTeam || '';
+  const away = lineInfo?.awayTeam || '';
+  let opponent = '';
+  const sel = lineInfo?.oddsApiSelection;
+  if (sel === 'home') opponent = away;
+  else if (sel === 'away') opponent = home;
+  else if (home && away) {
+    const f = String(fighter).toLowerCase();
+    const h = String(home).toLowerCase();
+    opponent = f.includes(h) || h.includes(f) ? away : home;
+  }
+  const hit = dkScraper.lookupMmaFairProb(fighter, opponent);
   if (!hit) return null;
   // In-play guard: decline if the fight has already started. DK's odds
   // are pre-fight and would give a bettor material edge mid-round.
