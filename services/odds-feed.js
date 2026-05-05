@@ -4129,11 +4129,65 @@ async function backfillMissingH2h(sport) {
   }
 }
 
+/**
+ * Fallback event-list discovery via The Odds API. Used by warmAltLines
+ * when the SharpAPI-populated oddsCache for a sport is empty (e.g.
+ * SharpAPI Hobby tier doesn't return UCL/UEL events at all but TOA
+ * does). Returns an array of { homeTeam, awayTeam, commenceTime } for
+ * upcoming events. Empty array on any failure — caller treats that as
+ * "nothing to warm" and bails gracefully.
+ */
+async function _listEventsFromToa(sport) {
+  const theOddsApiKey = process.env.THE_ODDS_API_KEY;
+  if (!theOddsApiKey) return [];
+  // Map our internal sport key → TOA sport key. Most are identical;
+  // the override map handles legacy mismatches.
+  const fallback = ODDS_API_FALLBACK[sport];
+  // Dynamic-tournament sports (tennis) handled by their existing path
+  // inside resolveOddsApiEventId — no static event list to query here.
+  if (fallback && fallback.dynamic) return [];
+  const oddsApiSport = (fallback && fallback.oddsApiSport)
+    || SCORES_API_KEY_OVERRIDES[sport]
+    || sport;
+  const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/events?apiKey=${theOddsApiKey}`;
+  try {
+    const resp = await fetch(url, { timeout: 10000 });
+    if (!resp.ok) {
+      log.debug('OddsFeed', `_listEventsFromToa ${sport}: HTTP ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    if (!Array.isArray(data)) return [];
+    return data.map(e => ({
+      homeTeam: e.home_team,
+      awayTeam: e.away_team,
+      commenceTime: e.commence_time,
+    })).filter(e => e.homeTeam && e.awayTeam);
+  } catch (err) {
+    log.debug('OddsFeed', `_listEventsFromToa ${sport} error: ${err.message}`);
+    return [];
+  }
+}
+
 async function warmAltLines(sport) {
   if (!SPORTS_WITH_ALT_MARKETS.has(sport)) return { skipped: 'no alt markets' };
 
+  // Fallback path: if SharpAPI's oddsCache has no events for this sport
+  // (e.g. UCL/UEL on Hobby tier), discover events directly from The
+  // Odds API. Without this fallback, warmAltLines silently bails for
+  // every sport SharpAPI doesn't cover — leaving alt-line cache empty
+  // and forcing every RFQ to pay on-demand-fetch latency or decline.
   const cache = oddsCache[sport];
-  if (!cache || !cache.events) return { skipped: 'no event cache' };
+  let toaDiscovered = false;
+  let toaEvents = null;
+  if (!cache || !cache.events || Object.keys(cache.events).length === 0) {
+    toaEvents = await _listEventsFromToa(sport);
+    if (toaEvents.length === 0) {
+      return { skipped: 'no event cache (SharpAPI empty + TOA returned 0 events)' };
+    }
+    toaDiscovered = true;
+    log.info('OddsFeed', `warmAltLines ${sport}: SharpAPI cache empty, discovered ${toaEvents.length} events via TOA`);
+  }
 
   const now = Date.now();
   const cutoffMs = now + WARM_EVENT_MAX_HOURS_AHEAD * 3600 * 1000;
@@ -4157,7 +4211,13 @@ async function warmAltLines(sport) {
   // (later/non-midnight-UTC if multiple available) so resolveOddsApiEventId
   // can disambiguate doubleheaders correctly.
   const candidatesByPair = {};
-  for (const [key, entry] of Object.entries(cache.events)) {
+  // Source list: either SharpAPI cache (normal path) or TOA event list
+  // (fallback when SharpAPI doesn't cover this sport). Same dedup +
+  // filtering downstream regardless of source.
+  const eventSourceList = toaDiscovered
+    ? toaEvents.map(e => [null, e])  // shape match for the iterator below
+    : Object.entries(cache.events);
+  for (const [, entry] of eventSourceList) {
     const events = Array.isArray(entry) ? entry : [entry];
     for (const ev of events) {
       if (!ev || !ev.homeTeam || !ev.awayTeam) continue;
