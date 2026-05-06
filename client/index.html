@@ -9982,12 +9982,16 @@
     el.innerHTML = svg;
   }
 
-  // Rolling 500-parlay window: sum theoretical EV, sum realized P&L
-  // (settled subset), stake-weighted average theoretical edge. X-axis is
-  // parlay index (chronological). Each plotted point at index N reflects
-  // the window from N-499 .. N inclusive. Lets the operator spot drift in
-  // pricing quality vs realized outcomes over a meaningful sample (Brier-
-  // style stability check at the unit-level rather than per-day).
+  // Last-500 parlays running totals. X-axis is the parlays in the
+  // trailing-500 window (oldest-first). At each point N within the
+  // window, plot the running cumulative-from-window-start of:
+  //   - Total EV ($)
+  //   - Total realized P&L ($, only settled subset)
+  //   - Stake-weighted average theoretical edge (%)
+  // The last point's value = the trailing-500 sum/avg as it stands now.
+  // Earlier interpretation walked every parlay in history with its own
+  // 500-window stat; this version is the snapshot view of just the
+  // current 500-window's progression.
   function renderChartRolling500(ownOrders) {
     const el = document.getElementById('chart-rolling500');
     const sumEl = document.getElementById('rolling500-summary');
@@ -10002,17 +10006,22 @@
       (a.confirmedAt || a.quotedAt || '').localeCompare(b.confirmedAt || b.quotedAt || '')
     );
     const WINDOW = 500;
-    if (sorted.length < WINDOW) {
-      el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>Need ' + WINDOW + '+ accepted parlays to chart rolling window — currently have ' + sorted.length + '</div></div>';
+    if (sorted.length < 1) {
+      el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>No accepted parlays yet</div></div>';
       if (sumEl) sumEl.textContent = '';
       return;
     }
+    // Slice the trailing-500 window (or fewer if total < 500). Show
+    // however many we have so the chart still functions during early
+    // ramp-up; just label the count honestly.
+    const window500 = sorted.slice(-WINDOW);
+    const totalAccepted = sorted.length;
 
-    // Pre-compute per-parlay derived numbers so the rolling sweep is O(N).
+    // Pre-compute per-parlay derived numbers so we can sweep cumulatively.
     // edge / evDollar from the same computeParlayEdge helper that powers
     // the table columns and the WoW analysis monitor — all share one
     // formula so this chart can't drift from the per-row reading.
-    const perParlay = sorted.map(o => {
+    const perParlay = window500.map(o => {
       const { edge, evDollar } = computeParlayEdge(o);
       const stake = (o.confirmedStake && o.offeredOdds)
         ? calcSpProfit(o.confirmedStake, o.offeredOdds)
@@ -10027,42 +10036,35 @@
       };
     });
 
-    // Rolling sums: maintain running totals incrementally over window slides.
-    let sumEv = 0, sumPnl = 0, sumStake = 0, sumEdgeStake = 0, settledCount = 0;
-    for (let i = 0; i < WINDOW; i++) {
-      sumEv += perParlay[i].ev;
-      if (perParlay[i].pnl != null) { sumPnl += perParlay[i].pnl; settledCount++; }
-      sumStake += perParlay[i].stake;
-      sumEdgeStake += perParlay[i].edgeStake;
-    }
+    // Cumulative sweep — at each parlay i, track running totals
+    // accumulated across the window so far.
     const points = [];
-    for (let i = WINDOW - 1; i < perParlay.length; i++) {
+    let sumEv = 0, sumPnl = 0, sumStake = 0, sumEdgeStake = 0, settledCount = 0;
+    // Window start parlay # in the global chronology — gives us a sensible
+    // x-axis label so the operator can map back to historical parlays.
+    const windowStartIdx = (totalAccepted - perParlay.length) + 1;
+    for (let i = 0; i < perParlay.length; i++) {
+      const p = perParlay[i];
+      sumEv += p.ev;
+      if (p.pnl != null) { sumPnl += p.pnl; settledCount++; }
+      sumStake += p.stake;
+      sumEdgeStake += p.edgeStake;
       points.push({
-        idx: i + 1,                                  // 1-based parlay number
+        idx: windowStartIdx + i,                          // global 1-based parlay #
         ev: sumEv,
-        pnl: settledCount > 0 ? sumPnl : null,       // null if no settled in window
+        pnl: settledCount > 0 ? sumPnl : null,
         edgePct: sumStake > 0 ? (sumEdgeStake / sumStake) * 100 : null,
         settledCount,
       });
-      // Slide window: drop element that just left, add the next one.
-      if (i + 1 < perParlay.length) {
-        const out = perParlay[i - WINDOW + 1];
-        const inn = perParlay[i + 1];
-        sumEv += inn.ev - out.ev;
-        sumStake += inn.stake - out.stake;
-        sumEdgeStake += inn.edgeStake - out.edgeStake;
-        if (inn.pnl != null) { sumPnl += inn.pnl; settledCount++; }
-        if (out.pnl != null) { sumPnl -= out.pnl; settledCount--; }
-      }
     }
 
-    // Latest-window summary in the header.
+    // Trailing-window totals in the header.
     const last = points[points.length - 1];
     if (sumEl) {
       const evCls = last.ev >= 0 ? 'positive' : 'negative';
       const pnlCls = (last.pnl ?? 0) >= 0 ? 'positive' : 'negative';
       const edgeCls = (last.edgePct ?? 0) >= 0 ? 'positive' : 'negative';
-      sumEl.innerHTML = ' &middot; latest window: '
+      sumEl.innerHTML = ' &middot; last ' + perParlay.length + ': '
         + 'EV <span class="' + evCls + '">' + (last.ev >= 0 ? '+$' : '-$') + Math.abs(last.ev).toFixed(0) + '</span> · '
         + 'P&amp;L <span class="' + pnlCls + '">' + ((last.pnl == null) ? '—' : ((last.pnl >= 0 ? '+$' : '-$') + Math.abs(last.pnl).toFixed(0))) + '</span> · '
         + 'Edge <span class="' + edgeCls + '">' + ((last.edgePct == null) ? '—' : ((last.edgePct >= 0 ? '+' : '') + last.edgePct.toFixed(2) + '%')) + '</span>';
@@ -10185,7 +10187,7 @@
 
     svg += '</svg>';
     svg += '<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">'
-      + perParlay.length + ' total accepted parlays &middot; each point = trailing-' + WINDOW + ' window ending at that parlay #</div>';
+      + 'showing trailing ' + perParlay.length + ' of ' + totalAccepted + ' total accepted parlays &middot; each point = running total accumulated from oldest in window through that parlay #</div>';
     el.innerHTML = svg;
   }
 
