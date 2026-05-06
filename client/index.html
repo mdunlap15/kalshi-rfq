@@ -3730,6 +3730,12 @@
           // To Win = calcSpProfit = stake × 100/|odds| = bettor's wager
           va = a.confirmedStake && a.offeredOdds ? calcSpProfit(a.confirmedStake, a.offeredOdds) : 0;
           vb = b.confirmedStake && b.offeredOdds ? calcSpProfit(b.confirmedStake, b.offeredOdds) : 0; break;
+        case 'edge':
+          va = computeParlayEdge(a).edge ?? -Infinity;
+          vb = computeParlayEdge(b).edge ?? -Infinity; break;
+        case 'ev':
+          va = computeParlayEdge(a).evDollar ?? -Infinity;
+          vb = computeParlayEdge(b).evDollar ?? -Infinity; break;
         case 'winprob':
           const wpCalcPos = (o) => {
             const ls2 = o.meta?.legs || o.legs || [];
@@ -3830,6 +3836,8 @@
         <th ${pSortClick('draftkings', 'right')} style="color:var(--green);">DK${pSortArrow('draftkings')}</th>
         <th ${pSortClick('stake', 'right')}>My Risk${pSortArrow('stake')}</th>
         <th ${pSortClick('towin', 'right')}>To Win${pSortArrow('towin')}</th>
+        <th ${pSortClick('edge', 'right')} title="Theoretical edge per $ wagered = 1 - (fair / bettor_implied)">Theo Edge${pSortArrow('edge')}</th>
+        <th ${pSortClick('ev', 'right')} title="Expected $ EV = bettor_wager × theoretical_edge">EV $${pSortArrow('ev')}</th>
         <th ${pSortClick('winprob', 'right')} title="Probability you win (at least one bettor leg fails)">Win Prob${pSortArrow('winprob')}</th>
         <th ${pSortClick('status')} title="Game status">Status${pSortArrow('status')}</th>
       </tr>`;
@@ -3852,6 +3860,10 @@
       const profitVal = order.confirmedStake && order.offeredOdds
         ? calcSpProfit(order.confirmedStake, order.offeredOdds) : null;
       const toWin = profitVal != null ? fmtDollar(profitVal) : '-';
+      const { edge: posEdge, evDollar: posEv } = computeParlayEdge(order);
+      const posEdgeStr = fmtEdge(posEdge);
+      const posEvStr = posEv != null ? fmtPnl(posEv) : '-';
+      const posEdgeCls = edgeColorClass(posEdge);
 
       // Calculate game status based on leg start times.
       // Normal game legs: assume ~3.5h from start. Series legs (playoff
@@ -3952,11 +3964,13 @@
         <td style="text-align:right; color:var(--green);">${posDkFmt}</td>
         <td style="text-align:right">${myRisk}</td>
         <td style="text-align:right; font-weight:600; color:var(--green);">${toWin}</td>
+        <td style="text-align:right" class="${posEdgeCls}">${posEdgeStr}</td>
+        <td style="text-align:right" class="${posEdgeCls}">${posEvStr}</td>
         <td style="text-align:right">${posWpLabel}</td>
         <td title="${gameStatus.title}"><span style="color:${gameStatus.color}; font-weight:600; font-size:11px;">${gameStatus.label}</span></td>
       </tr>
       <tr id="${rowKey}" style="display:${expanded ? 'table-row' : 'none'}; background: var(--surface3);">
-        <td colspan="12" style="padding: 12px 16px;">
+        <td colspan="14" style="padding: 12px 16px;">
           <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
           ${buildLegTable(legs, { vig: order.meta?.vig || order.vig || 0 })}
           <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
@@ -4031,6 +4045,12 @@
           vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
           case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
           case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+          case 'edge':
+            va = computeParlayEdge(a).edge ?? -Infinity;
+            vb = computeParlayEdge(b).edge ?? -Infinity; break;
+          case 'ev':
+            va = computeParlayEdge(a).evDollar ?? -Infinity;
+            vb = computeParlayEdge(b).evDollar ?? -Infinity; break;
           case 'result': {
             const rMap = { won: 0, lost: 1, push: 2, void: 3 };
             va = rMap[a.settlementResult || a.status?.replace('settled_', '') || ''] ?? 4;
@@ -4185,6 +4205,8 @@
     html += '<th style="text-align:right; color:var(--amber);">Kalshi</th>';
     html += '<th style="text-align:right; color:var(--green);">DK</th>';
     html += '<th ' + sSortClick('stake', 'right') + '>My Risk' + sSortArrow('stake') + '</th>';
+    html += '<th ' + sSortClick('edge', 'right') + ' title="Theoretical edge per $ wagered = 1 - (fair / bettor_implied)">Theo Edge' + sSortArrow('edge') + '</th>';
+    html += '<th ' + sSortClick('ev', 'right') + ' title="Expected $ EV at quote time = bettor_wager × theoretical_edge">EV $' + sSortArrow('ev') + '</th>';
     html += '<th ' + sSortClick('result') + ' title="Settlement outcome from our (SP) perspective">SP Result' + sSortArrow('result') + '</th>';
     html += '<th ' + sSortClick('pnl', 'right') + '>P&L' + sSortArrow('pnl') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
@@ -4233,6 +4255,10 @@
       }
       const cumul = cumulMap[order.parlayId];
       const cumulHtml = cumul != null ? '<span class="' + (cumul > 0 ? 'positive' : cumul < 0 ? 'negative' : 'neutral') + '">' + fmtPnl(cumul) + '</span>' : '-';
+      const { edge: stlEdge, evDollar: stlEv } = computeParlayEdge(order);
+      const stlEdgeStr = fmtEdge(stlEdge);
+      const stlEvStr = stlEv != null ? fmtPnl(stlEv) : '-';
+      const stlEdgeCls = edgeColorClass(stlEdge);
 
       const rowKey = 'stl-' + (order.parlayId || '');
       const expanded = expandedRows.has(rowKey);
@@ -4246,12 +4272,14 @@
       html += '<td style="text-align:right; color:var(--amber);">' + sKlFmt + '</td>';
       html += '<td style="text-align:right; color:var(--green);">' + sDkFmt + '</td>';
       html += '<td style="text-align:right">' + stake + '</td>';
+      html += '<td style="text-align:right" class="' + stlEdgeCls + '">' + stlEdgeStr + '</td>';
+      html += '<td style="text-align:right" class="' + stlEdgeCls + '">' + stlEvStr + '</td>';
       html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
       html += '<td style="text-align:right">' + cumulHtml + '</td>';
       html += '</tr>';
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="12" style="padding:12px 16px;">';
+      html += '<td colspan="14" style="padding:12px 16px;">';
       html += buildLegTable(sLegs.length > 0 ? sLegs : legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
@@ -5263,6 +5291,8 @@
           vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
         case 'status': va = a.status || ''; vb = b.status || ''; break;
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
+        case 'edge': va = computeParlayEdge(a).edge ?? -Infinity; vb = computeParlayEdge(b).edge ?? -Infinity; break;
+        case 'ev':   va = computeParlayEdge(a).evDollar ?? -Infinity; vb = computeParlayEdge(b).evDollar ?? -Infinity; break;
         case 'teams': va = getOrderTeams(a).join(','); vb = getOrderTeams(b).join(','); break;
         default: va = 0; vb = 0;
       }
@@ -5327,6 +5357,8 @@
         <th>Winner</th>
         <th ${sortClick('stake')} style="text-align:right">My Risk${sortArrow('stake')}</th>
         <th style="text-align:right">To Win</th>
+        <th ${sortClick('edge')} style="text-align:right" title="Theoretical edge per $ wagered = 1 - (fair / bettor_implied)">Theo Edge${sortArrow('edge')}</th>
+        <th ${sortClick('ev')} style="text-align:right" title="Expected $ EV = bettor_wager × theoretical_edge">EV $${sortArrow('ev')}</th>
         <th ${sortClick('status')}>Status${sortArrow('status')}</th>
         <th ${sortClick('pnl')} style="text-align:right">P&L${sortArrow('pnl')}</th>
       </tr>`;
@@ -5360,6 +5392,10 @@
       const myRiskStr = stakeVal ? fmtDollar(stakeVal) : '-';
       const toWinCalc = order.confirmedStake && order.offeredOdds ? calcSpProfit(order.confirmedStake, order.offeredOdds) : null;
       const toWinStr = toWinCalc != null ? fmtDollar(toWinCalc) : '-';
+      const { edge: orderEdge, evDollar: orderEv } = computeParlayEdge(order);
+      const edgeStr = fmtEdge(orderEdge);
+      const evStr = orderEv != null ? fmtPnl(orderEv) : '-';
+      const edgeCls = edgeColorClass(orderEdge);
       const { cls: statusClass, text: statusText } = orderStatusDisplay(order);
 
       let pnlHtml = '-';
@@ -5388,11 +5424,13 @@
           <td style="color:${order.status === 'lost' ? 'var(--amber)' : 'var(--text3)'};">${winnerOdds}</td>
           <td style="text-align:right">${myRiskStr}</td>
           <td style="text-align:right; color:var(--green);">${toWinStr}</td>
+          <td style="text-align:right" class="${edgeCls}">${edgeStr}</td>
+          <td style="text-align:right" class="${edgeCls}">${evStr}</td>
           <td><span class="${statusClass}">${statusText}</span></td>
           <td style="text-align:right">${pnlHtml}</td>
         </tr>
         <tr id="ord-${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-          <td colspan="13" style="padding: 12px 16px;">
+          <td colspan="15" style="padding: 12px 16px;">
             <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
             ${buildLegTable(legs, { vig: order.meta?.vig || order.vig || 0 })}
             <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
@@ -7869,6 +7907,44 @@
     if (!dec || dec <= 1) return '-';
     if (dec >= 2.0) return '+' + Math.round((dec - 1) * 100);
     return '' + Math.round(-100 / (dec - 1));
+  }
+
+  /**
+   * Compute theoretical edge + dollar EV for a parlay order. Mirrors the
+   * formula used in the WoW pricing analysis and the edge-vs-fair report:
+   *   bettor_implied = americanToImplied(-offered_odds)   // flip sign — DB stores SP-side
+   *   edge = 1 - (fair_parlay_prob / bettor_implied)      // per-$ to SP
+   *   $ EV = bettor's wager × edge
+   *        = calcSpProfit(stake, odds) × edge
+   *
+   * Returns { edge, evDollar } both possibly null when inputs aren't
+   * usable (no fair, no offered odds, no stake, etc).
+   */
+  function computeParlayEdge(order) {
+    if (!order) return { edge: null, evDollar: null };
+    const fair = Number(order.fairParlayProb);
+    const offered = Number(order.confirmedOdds || order.offeredOdds);
+    if (!Number.isFinite(fair) || fair <= 0 || fair >= 1) return { edge: null, evDollar: null };
+    if (!Number.isFinite(offered) || offered === 0) return { edge: null, evDollar: null };
+    // bettor sees -offered (SP -X = bettor +X). Convert to implied prob.
+    const a = -offered;
+    const bettorImplied = a > 0 ? 100 / (a + 100) : -a / (-a + 100);
+    if (!(bettorImplied > 0 && bettorImplied < 1)) return { edge: null, evDollar: null };
+    const edge = 1 - (fair / bettorImplied);
+    const stake = Number(order.confirmedStake) || 0;
+    const wager = stake > 0 ? calcSpProfit(stake, offered) : 0;
+    const evDollar = wager > 0 ? wager * edge : null;
+    return { edge, evDollar };
+  }
+  function fmtEdge(edge) {
+    if (edge == null || !Number.isFinite(edge)) return '-';
+    const pct = edge * 100;
+    const sign = pct >= 0 ? '+' : '';
+    return sign + pct.toFixed(2) + '%';
+  }
+  function edgeColorClass(edge) {
+    if (edge == null) return 'neutral';
+    return edge > 0 ? 'positive' : edge < 0 ? 'negative' : 'neutral';
   }
 
   /**
