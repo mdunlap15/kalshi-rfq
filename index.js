@@ -7386,9 +7386,13 @@ function startStatusServer() {
   //   ?market=series_              (prefix match if trailing underscore)
   //   ?team=Lakers                 (substring match on teamName/home/away)
   //   ?event=1500006697            (pxEventId exact)
-  //   ?limit=500                   (default 200, max 2000)
+  //   ?limit=500                   (default 200, max 10000)
   // Returns: [{ lineId, sport, pxEventId, pxEventName, marketType,
   //             teamName, selection, line, homeTeam, awayTeam, startTime }]
+  // Cap raised from 2000 → 10000 on 2026-05-05: with 4.7k+ lines registered,
+  // the prior cap silently dropped low-volume sports (MMA/Boxing/soccer
+  // sub-leagues) from the unfiltered Lines tab because Object.entries
+  // iterates in insertion order and high-volume sports come first.
   app.get('/lines/detail', (req, res) => {
     const idx = lineManager.__debugGetLineIndex();
     const q = req.query || {};
@@ -7397,7 +7401,7 @@ function startStatusServer() {
     const marketIsPrefix = marketFilter && marketFilter.endsWith('_');
     const teamFilter = q.team ? String(q.team).toLowerCase() : null;
     const eventFilter = q.event ? String(q.event) : null;
-    const limit = Math.min(parseInt(q.limit) || 200, 2000);
+    const limit = Math.min(parseInt(q.limit) || 200, 10000);
 
     const out = [];
     for (const [lineId, info] of Object.entries(idx)) {
