@@ -867,6 +867,17 @@
           </div>
         </div>
 
+        <!-- Rolling 500-parlay window: total EV, total realized P&L, stake-weighted edge — collapsed -->
+        <div class="card">
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Rolling 500: Total EV vs P&L vs Avg Edge</span>
+            <span id="rolling500-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body collapsed" id="chart-rolling500">
+            <div class="empty-state"><div class="icon">-</div><div>Need 500+ accepted parlays to chart rolling window</div></div>
+          </div>
+        </div>
+
         <!-- Pricing Edge vs Sportsbooks — collapsed -->
         <div class="card">
           <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
@@ -7991,6 +8002,7 @@
     renderChartParlayVsBooks(allQuoted);
     renderChartLegVsBooks(allQuoted);
     renderChartCumulPnlRoi(settled);
+    renderChartRolling500(ownOrders);
     renderChartPnlSport(settled);
     renderChartPnlLegs(settled);
     renderChartCalibration(settled);
@@ -9967,6 +9979,213 @@
 
     svg += '</svg>';
     svg += `<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">${points.length} settled parlays &middot; x-axis by settlement time</div>`;
+    el.innerHTML = svg;
+  }
+
+  // Rolling 500-parlay window: sum theoretical EV, sum realized P&L
+  // (settled subset), stake-weighted average theoretical edge. X-axis is
+  // parlay index (chronological). Each plotted point at index N reflects
+  // the window from N-499 .. N inclusive. Lets the operator spot drift in
+  // pricing quality vs realized outcomes over a meaningful sample (Brier-
+  // style stability check at the unit-level rather than per-day).
+  function renderChartRolling500(ownOrders) {
+    const el = document.getElementById('chart-rolling500');
+    const sumEl = document.getElementById('rolling500-summary');
+    if (!el) return;
+
+    // Use only "accepted" parlays (confirmed or settled) since EV/edge
+    // are only meaningful for tickets that actually transacted.
+    const accepted = (ownOrders || []).filter(o =>
+      o && (o.status === 'confirmed' || (typeof o.status === 'string' && o.status.startsWith('settled_')))
+    );
+    const sorted = [...accepted].sort((a, b) =>
+      (a.confirmedAt || a.quotedAt || '').localeCompare(b.confirmedAt || b.quotedAt || '')
+    );
+    const WINDOW = 500;
+    if (sorted.length < WINDOW) {
+      el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>Need ' + WINDOW + '+ accepted parlays to chart rolling window — currently have ' + sorted.length + '</div></div>';
+      if (sumEl) sumEl.textContent = '';
+      return;
+    }
+
+    // Pre-compute per-parlay derived numbers so the rolling sweep is O(N).
+    // edge / evDollar from the same computeParlayEdge helper that powers
+    // the table columns and the WoW analysis monitor — all share one
+    // formula so this chart can't drift from the per-row reading.
+    const perParlay = sorted.map(o => {
+      const { edge, evDollar } = computeParlayEdge(o);
+      const stake = (o.confirmedStake && o.offeredOdds)
+        ? calcSpProfit(o.confirmedStake, o.offeredOdds)
+        : 0;  // bettor wager
+      const pnl = Number.isFinite(o.pnl) ? Number(o.pnl) : null;
+      return {
+        ev: Number.isFinite(evDollar) ? evDollar : 0,
+        pnl,
+        edge: Number.isFinite(edge) ? edge : null,
+        stake: stake > 0 ? stake : 0,
+        edgeStake: (Number.isFinite(edge) && stake > 0) ? edge * stake : 0,
+      };
+    });
+
+    // Rolling sums: maintain running totals incrementally over window slides.
+    let sumEv = 0, sumPnl = 0, sumStake = 0, sumEdgeStake = 0, settledCount = 0;
+    for (let i = 0; i < WINDOW; i++) {
+      sumEv += perParlay[i].ev;
+      if (perParlay[i].pnl != null) { sumPnl += perParlay[i].pnl; settledCount++; }
+      sumStake += perParlay[i].stake;
+      sumEdgeStake += perParlay[i].edgeStake;
+    }
+    const points = [];
+    for (let i = WINDOW - 1; i < perParlay.length; i++) {
+      points.push({
+        idx: i + 1,                                  // 1-based parlay number
+        ev: sumEv,
+        pnl: settledCount > 0 ? sumPnl : null,       // null if no settled in window
+        edgePct: sumStake > 0 ? (sumEdgeStake / sumStake) * 100 : null,
+        settledCount,
+      });
+      // Slide window: drop element that just left, add the next one.
+      if (i + 1 < perParlay.length) {
+        const out = perParlay[i - WINDOW + 1];
+        const inn = perParlay[i + 1];
+        sumEv += inn.ev - out.ev;
+        sumStake += inn.stake - out.stake;
+        sumEdgeStake += inn.edgeStake - out.edgeStake;
+        if (inn.pnl != null) { sumPnl += inn.pnl; settledCount++; }
+        if (out.pnl != null) { sumPnl -= out.pnl; settledCount--; }
+      }
+    }
+
+    // Latest-window summary in the header.
+    const last = points[points.length - 1];
+    if (sumEl) {
+      const evCls = last.ev >= 0 ? 'positive' : 'negative';
+      const pnlCls = (last.pnl ?? 0) >= 0 ? 'positive' : 'negative';
+      const edgeCls = (last.edgePct ?? 0) >= 0 ? 'positive' : 'negative';
+      sumEl.innerHTML = ' &middot; latest window: '
+        + 'EV <span class="' + evCls + '">' + (last.ev >= 0 ? '+$' : '-$') + Math.abs(last.ev).toFixed(0) + '</span> · '
+        + 'P&amp;L <span class="' + pnlCls + '">' + ((last.pnl == null) ? '—' : ((last.pnl >= 0 ? '+$' : '-$') + Math.abs(last.pnl).toFixed(0))) + '</span> · '
+        + 'Edge <span class="' + edgeCls + '">' + ((last.edgePct == null) ? '—' : ((last.edgePct >= 0 ? '+' : '') + last.edgePct.toFixed(2) + '%')) + '</span>';
+    }
+
+    // Layout — match renderChartCumulPnlRoi's hand-rolled SVG style so
+    // the look feels consistent across charts.
+    const W = 720, H = 320, pad = { l: 70, r: 70, t: 28, b: 44 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+
+    // Left axis: $ amounts (EV + P&L share scale so they're directly comparable).
+    const dollarVals = points.flatMap(p => [p.ev, p.pnl].filter(v => v != null));
+    const rawMin$ = Math.min(0, ...dollarVals);
+    const rawMax$ = Math.max(0, ...dollarVals);
+    const dPad = (rawMax$ - rawMin$) * 0.1 || 1;
+    const dLo = rawMin$ - dPad, dHi = rawMax$ + dPad;
+
+    // Right axis: edge %.
+    const edgeVals = points.map(p => p.edgePct).filter(v => v != null);
+    const rawMinE = edgeVals.length ? Math.min(0, ...edgeVals) : 0;
+    const rawMaxE = edgeVals.length ? Math.max(0, ...edgeVals) : 1;
+    const ePad = (rawMaxE - rawMinE) * 0.1 || 0.5;
+    const eLo = rawMinE - ePad, eHi = rawMaxE + ePad;
+
+    const xMin = points[0].idx;
+    const xMax = points[points.length - 1].idx;
+    const xRange = Math.max(1, xMax - xMin);
+
+    const scaleX = (idx) => pad.l + ((idx - xMin) / xRange) * chartW;
+    const scaleYd = (v) => pad.t + chartH - ((v - dLo) / (dHi - dLo)) * chartH;
+    const scaleYe = (v) => pad.t + chartH - ((v - eLo) / (eHi - eLo)) * chartH;
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; height:auto; max-height:380px;">';
+
+    // Left-axis $ gridlines + ticks
+    const dStep = niceStep((dHi - dLo) / 5);
+    for (let v = Math.ceil(dLo / dStep) * dStep; v <= dHi; v += dStep) {
+      const y = scaleYd(v);
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.3);
+      const label = v >= 0 ? '+$' + v.toFixed(0) : '-$' + Math.abs(v).toFixed(0);
+      svg += svgText(pad.l - 8, y + 3, label, { anchor: 'end', size: 9, fill: 'var(--text3)' });
+    }
+    // $ zero line
+    svg += svgLine(pad.l, scaleYd(0), W - pad.r, scaleYd(0), 'var(--text3)', 0.8);
+
+    // Right-axis edge % ticks
+    const eStep = niceStep((eHi - eLo) / 5);
+    for (let v = Math.ceil(eLo / eStep) * eStep; v <= eHi; v += eStep) {
+      const y = scaleYe(v);
+      const label = (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+      svg += svgText(W - pad.r + 8, y + 3, label, { anchor: 'start', size: 9, fill: 'var(--blue)' });
+    }
+
+    // X-axis ticks (5 evenly spaced parlay-index ticks)
+    const xTicks = 5;
+    for (let i = 0; i <= xTicks; i++) {
+      const idx = Math.round(xMin + (xMax - xMin) * (i / xTicks));
+      const x = scaleX(idx);
+      svg += svgLine(x, pad.t + chartH, x, pad.t + chartH + 4, 'var(--text3)', 0.8);
+      svg += svgText(x, pad.t + chartH + 16, '#' + idx, { anchor: 'middle', size: 9, fill: 'var(--text3)' });
+    }
+    svg += svgText(pad.l + chartW / 2, H - 4, 'parlay # (chronological)', { anchor: 'middle', size: 10, fill: 'var(--text3)' });
+
+    // Polyline helper
+    const buildPath = (vals, scaleY) => {
+      const pts = [];
+      for (let i = 0; i < points.length; i++) {
+        const v = vals[i];
+        if (v == null) { pts.push(null); continue; }
+        pts.push(scaleX(points[i].idx).toFixed(1) + ',' + scaleY(v).toFixed(1));
+      }
+      // Break on null gaps so the line doesn't span them.
+      let d = '';
+      let inSegment = false;
+      for (const p of pts) {
+        if (p == null) { inSegment = false; continue; }
+        d += (inSegment ? ' L' : ' M') + p;
+        inSegment = true;
+      }
+      return d.trim();
+    };
+
+    const evColor = 'var(--green)';
+    const pnlColor = 'var(--amber)';
+    const edgeColor = 'var(--blue)';
+
+    // EV line (solid, left axis)
+    const evPath = buildPath(points.map(p => p.ev), scaleYd);
+    if (evPath) svg += '<path d="' + evPath + '" fill="none" stroke="' + evColor + '" stroke-width="2"/>';
+
+    // P&L line (solid, left axis)
+    const pnlPath = buildPath(points.map(p => p.pnl), scaleYd);
+    if (pnlPath) svg += '<path d="' + pnlPath + '" fill="none" stroke="' + pnlColor + '" stroke-width="2"/>';
+
+    // Edge % line (dashed, right axis)
+    const edgePath = buildPath(points.map(p => p.edgePct), scaleYe);
+    if (edgePath) svg += '<path d="' + edgePath + '" fill="none" stroke="' + edgeColor + '" stroke-width="2" stroke-dasharray="5,3"/>';
+
+    // Endpoint labels
+    const lastIdx = points.length - 1;
+    if (last.ev != null) svg += svgText(scaleX(last.idx) - 4, scaleYd(last.ev) - 4,
+      (last.ev >= 0 ? '+$' : '-$') + Math.abs(last.ev).toFixed(0) + ' EV',
+      { anchor: 'end', size: 10, fill: evColor });
+    if (last.pnl != null) svg += svgText(scaleX(last.idx) - 4, scaleYd(last.pnl) + 12,
+      (last.pnl >= 0 ? '+$' : '-$') + Math.abs(last.pnl).toFixed(0) + ' P&L',
+      { anchor: 'end', size: 10, fill: pnlColor });
+    if (last.edgePct != null) svg += svgText(scaleX(last.idx) - 4, scaleYe(last.edgePct) - 4,
+      ((last.edgePct >= 0 ? '+' : '') + last.edgePct.toFixed(2) + '% edge'),
+      { anchor: 'end', size: 10, fill: edgeColor });
+
+    // Legend
+    svg += '<g transform="translate(' + (pad.l + 10) + ',' + (pad.t + 12) + ')">';
+    svg += '<line x1="0" y1="0" x2="18" y2="0" stroke="' + evColor + '" stroke-width="2.2"/>';
+    svg += svgText(24, 4, 'Total EV ($, left)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
+    svg += '<line x1="135" y1="0" x2="153" y2="0" stroke="' + pnlColor + '" stroke-width="2.2"/>';
+    svg += svgText(159, 4, 'Realized P&L ($, left)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
+    svg += '<line x1="295" y1="0" x2="313" y2="0" stroke="' + edgeColor + '" stroke-width="2" stroke-dasharray="5,3"/>';
+    svg += svgText(319, 4, 'Avg Edge (%, right, stake-wtd)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
+    svg += '</g>';
+
+    svg += '</svg>';
+    svg += '<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">'
+      + perParlay.length + ' total accepted parlays &middot; each point = trailing-' + WINDOW + ' window ending at that parlay #</div>';
     el.innerHTML = svg;
   }
 
