@@ -11006,14 +11006,17 @@
       // Override inferred results for games that haven't started or are still in progress
       if (isUpcoming && !hasPxSettlement) {
         ls = 'upcoming';
-      } else if (isLikelyInProgress && isInferred && !hasPxSettlement) {
-        // Only override to 'live' if the inferred result is ambiguous
-        // (no clear win/loss yet). When the inference is a definitive
-        // 'won' or 'lost', trust it — ESPN's score poller only flags
-        // those when the game's actually final, so keeping it as 'live'
-        // would mask a real result. Verified 2026-05-03 BV Dortmund DNB:
-        // ESPN had inferredResult='lost' but dashboard showed 'live'
-        // because game was within 4h of kickoff.
+      } else if (isLikelyInProgress && !hasPxSettlement) {
+        // In-progress window. Show 'live' UNLESS ESPN has already
+        // returned a definitive 'won'/'lost' result (which it only does
+        // when the game is actually final — Verified 2026-05-03 BV
+        // Dortmund DNB: ESPN had inferredResult='lost' but dashboard
+        // showed 'live' because game was within 4h of kickoff). Critical:
+        // do NOT require isInferred here. For tennis (and any sport
+        // where ESPN takes time to surface a completed result), the leg
+        // should show 'live' from kickoff onward, not gray-pending.
+        // Operator caught 2026-05-06: 3 tennis legs that had clearly
+        // started were all still gray with no live indicator.
         if (l.inferredResult !== 'won' && l.inferredResult !== 'lost') {
           ls = 'live';
         }
