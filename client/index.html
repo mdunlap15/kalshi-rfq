@@ -11044,15 +11044,29 @@
         }
         return rawOdds != null ? (rawOdds >= 0 ? '+' : '') + rawOdds : '-';
       }
-      const pinOdds = _bookOddsCell(l.pinnacleOdds, l.pinnacleDNBProb);
-      const fdOdds  = _bookOddsCell(l.fanduelOdds,  l.fanduelDNBProb);
-      const klOdds  = _bookOddsCell(l.kalshiOdds,   l.kalshiDNBProb);
-      const dkOdds  = _bookOddsCell(l.draftkingsOdds, l.draftkingsDNBProb);
+      // YES/NO prop legs (PX-tagged moneyline with teamName=YES/NO) were
+      // mis-registered against the full-match h2h cache by the substring-
+      // match bug fixed in 3bf4a8a. Their cached pinnacle/fd/dk/kalshi
+      // values reflect that wrong h2h, NOT the actual yes/no market —
+      // showing them is misleading. Suppress every numeric column so the
+      // operator can't accidentally trust the cached numbers as a price
+      // reference (operator caught 5/6: showed DK +250 for NO when actual
+      // DK NO was -125).
+      const _ynRawTeam = (l.team || l.teamName || l.selection || '').toString().trim();
+      const _isYesNoMisreg = /^(yes|no)$/i.test(_ynRawTeam);
+      const pinOdds = _isYesNoMisreg ? '—' : _bookOddsCell(l.pinnacleOdds, l.pinnacleDNBProb);
+      const fdOdds  = _isYesNoMisreg ? '—' : _bookOddsCell(l.fanduelOdds,  l.fanduelDNBProb);
+      const klOdds  = _isYesNoMisreg ? '—' : _bookOddsCell(l.kalshiOdds,   l.kalshiDNBProb);
+      const dkOdds  = _isYesNoMisreg ? '—' : _bookOddsCell(l.draftkingsOdds, l.draftkingsDNBProb);
       const fairProbDisplay = l.displayFairProb || l.fairProb;
-      const fairOdds = fairProbDisplay ? decimalToAmerican(1 / fairProbDisplay) : '-';
+      const fairOdds = _isYesNoMisreg ? '—' : (fairProbDisplay ? decimalToAmerican(1 / fairProbDisplay) : '-');
       // bookPriceOverride legs (e.g. NBA series heavy favs past -500 FV)
       // skip vig on the server — quote DK's book price directly. Display
       // the actual quoted number here, not the ramp-vig recompute.
+      // For YES/NO mis-registered legs: show what we ACTUALLY quoted (from
+      // the wrong h2h). It's the only price we have for the bet on this
+      // ticket — useful as a reference for the operator, but the per-book
+      // columns above are suppressed so it can't be compared against junk.
       const myOdds = l.bookPriceOverride != null
         ? decimalToAmerican(1 / l.bookPriceOverride)
         : ((l.fairProb && vig) ? decimalToAmerican(1 / applyOddsVig(l.fairProb, vig)) : fairOdds);
