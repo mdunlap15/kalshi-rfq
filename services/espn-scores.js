@@ -151,6 +151,65 @@ function _parseGame(event, leagueLabel) {
   }
 }
 
+// Tennis matches live in event.groupings[].competitions[] (one grouping per
+// draw — singles winners side, singles losers side, doubles, etc.) — NOT
+// in the standard event.competitions[] that other sports use. Each match's
+// competitor is an athlete (no team), and the score comes from sets won
+// (count of linescores[].winner === true) rather than a single score field.
+function _parseTennisMatches(event, leagueLabel) {
+  const out = [];
+  const groupings = Array.isArray(event?.groupings) ? event.groupings : [];
+  for (const grouping of groupings) {
+    const comps = Array.isArray(grouping?.competitions) ? grouping.competitions : [];
+    for (const comp of comps) {
+      try {
+        const home = (comp.competitors || []).find(c => c.homeAway === 'home');
+        const away = (comp.competitors || []).find(c => c.homeAway === 'away');
+        if (!home || !away) continue;
+        const homeName = home.athlete?.displayName || home.team?.displayName || '';
+        const awayName = away.athlete?.displayName || away.team?.displayName || '';
+        // Skip TBD slots (future matches in the bracket where the bettor's
+        // opponent hasn't been determined yet — competitor name is "TBD").
+        if (!homeName || !awayName || homeName === 'TBD' || awayName === 'TBD') continue;
+        const status = comp.status?.type;
+        const state = status?.state || 'pre';
+        const completed = !!status?.completed && state === 'post';
+        // Tennis "score" is sets won, not a single number. Count
+        // linescores[].winner=true. linescores may be missing pre-match.
+        const homeLinescores = Array.isArray(home.linescores) ? home.linescores : [];
+        const awayLinescores = Array.isArray(away.linescores) ? away.linescores : [];
+        const homeSetsWon = homeLinescores.filter(s => s && s.winner === true).length;
+        const awaySetsWon = awayLinescores.filter(s => s && s.winner === true).length;
+        out.push({
+          homeTeam: homeName,
+          awayTeam: awayName,
+          // Alt slots — homeAlt set so the matcher's secondary lookup works
+          // even if the SharpAPI / TOA name varies (accents, hyphenated last
+          // names). For tennis we don't have a separate shortName, so leave
+          // both null — the primary athlete.displayName matches PX directly.
+          homeAlt: null,
+          awayAlt: null,
+          commenceTime: comp.date || comp.startDate || null,
+          completed,
+          state,
+          statusName: status?.name || status?.shortDetail || null,
+          homeScore: homeSetsWon,
+          awayScore: awaySetsWon,
+          // Tennis has no innings/halves — leave linescores fields null so
+          // the F5 / H1 paths short-circuit cleanly.
+          homeLinescores: null,
+          awayLinescores: null,
+          homeRunsThru5: null,
+          awayRunsThru5: null,
+          f5Completed: false,
+          league: leagueLabel,
+        });
+      } catch (_) { /* per-match isolation — keep parsing remaining matches */ }
+    }
+  }
+  return out;
+}
+
 async function _fetchOneLeague(sport, league) {
   const url = `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard`;
   try {
@@ -163,8 +222,15 @@ async function _fetchOneLeague(sport, league) {
     const events = Array.isArray(data?.events) ? data.events : [];
     const out = [];
     for (const e of events) {
-      const g = _parseGame(e, `${sport}/${league}`);
-      if (g) out.push(g);
+      // Tennis: walk event.groupings[].competitions[] for individual
+      // matches. Other sports use the standard event.competitions[] root.
+      if (sport === 'tennis') {
+        const matches = _parseTennisMatches(e, `${sport}/${league}`);
+        for (const m of matches) out.push(m);
+      } else {
+        const g = _parseGame(e, `${sport}/${league}`);
+        if (g) out.push(g);
+      }
     }
     return out;
   } catch (err) {
