@@ -6411,23 +6411,49 @@ function _mergeSameKeySiblings(events, closest) {
 function _flipMarketOrientation(marketType, market) {
   if (!market) return market;
   if (marketType === 'totals' || marketType === 'totals_h1' || marketType === 'totals_f5') return market;
+
+  // Per-book sub-blocks (pinnacle/fanduel/draftkings/kalshi) carry their
+  // own {home, away} structure. When the consensus (m.home/m.away) is
+  // flipped, these sub-blocks MUST flip too — otherwise getPinnacleOdds /
+  // getFanDuelOdds / etc. read the wrong side after the orientation swap
+  // and the dashboard's PIN/FD/DK columns show the OPPOSITE fighter's
+  // raw price (operator-confirmed 2026-05-06 on UFC card: Carpenter fair
+  // 37%, MY ODDS +154 correct, but PIN −178 / DK −180 were Ochoa's
+  // prices). For h2h: simple home↔away swap. For spreads: also need to
+  // think about what's stored — per-book sub-blocks for spreads typically
+  // carry American odds at the canonical home line, so a home/away swap
+  // alone aligns them; the per-side .line/.point lives in m.home/m.away
+  // (already flipped above).
+  function flipSideMap(b) {
+    if (!b || typeof b !== 'object') return b;
+    return { ...b, home: b.away, away: b.home };
+  }
+  function flipBooks(m) {
+    const out = { ...m };
+    if (m.pinnacle)    out.pinnacle    = flipSideMap(m.pinnacle);
+    if (m.fanduel)     out.fanduel     = flipSideMap(m.fanduel);
+    if (m.draftkings)  out.draftkings  = flipSideMap(m.draftkings);
+    if (m.kalshi)      out.kalshi      = flipSideMap(m.kalshi);
+    return out;
+  }
+
   if (marketType === 'h2h' || marketType === 'h2h_h1' || marketType === 'h2h_f5') {
-    return { ...market, home: market.away, away: market.home };
+    return flipBooks({ ...market, home: market.away, away: market.home });
   }
   if (marketType === 'spreads' || marketType === 'spreads_h1' || marketType === 'spreads_f5') {
     // Side `.point` is the spread for that specific team (Bruins +1.5,
     // Rangers -1.5) — it travels with the team across orientation flips
     // and must NOT be negated. Only `market.line` (canonical, from-home
     // perspective) needs negation since the home team identity changes.
-    return {
+    return flipBooks({
       ...market,
       home: market.away,
       away: market.home,
       line: market.line != null ? -market.line : null,
-    };
+    });
   }
   if (marketType === 'team_totals') {
-    return { ...market, home: market.away, away: market.home };
+    return flipBooks({ ...market, home: market.away, away: market.home });
   }
   return market;
 }
