@@ -494,6 +494,58 @@ async function fetchOddsForSport(sport, opts) {
     log.info('OddsFeed', `Dropped ${phantomDropped} phantom sub-game rows (team name carrying F5/H1/Q1/P1 suffix) for ${sport}`);
   }
 
+  // Cross-book home/away normalization. Different books occasionally disagree
+  // on which team is home — most common in MMA (neutral-site fights, no real
+  // home), but seen sporadically in MLB doubleheaders / international games
+  // too. eventMap[eid].homeTeam is locked from the FIRST row's home_team, so
+  // any subsequent row whose home_team matches eventMap.awayTeam is in the
+  // OPPOSITE orientation and its selection_type is mislabeled relative to
+  // our authoritative event sides. Without normalization, getBookPairs keys
+  // by selection_type and averages the wrong sides together — visible
+  // 2026-05-05 on UFC Fight Night card: Stephens (true ~77% fav at -340)
+  // priced with fair=27% because half the books labeled King Green as home
+  // and their "home" rows got averaged into our home (Stephens) bucket.
+  //
+  // Flip selection_type per swapped row (home↔away, home_over↔away_over,
+  // etc.) AND negate signed line/point on spread rows so a "home -1.5" row
+  // arriving in opposite-orientation correctly becomes "away +1.5" relative
+  // to our event sides.
+  const SELECTION_FLIP_MAP = {
+    home: 'away', away: 'home',
+    home_over: 'away_over', home_under: 'away_under',
+    away_over: 'home_over', away_under: 'home_under',
+  };
+  const SPREAD_TYPES = new Set(['run_line', 'puck_line', 'point_spread']);
+  let flippedRows = 0;
+  for (const ev of Object.values(eventMap)) {
+    const evHome = cleanTeamName(ev.homeTeam || '');
+    const evAway = cleanTeamName(ev.awayTeam || '');
+    if (!evHome || !evAway) continue;
+    for (const row of ev.odds) {
+      const rowHome = cleanTeamName(row.home_team || '');
+      const rowAway = cleanTeamName(row.away_team || '');
+      if (!rowHome || !rowAway) continue;
+      if (rowHome === evHome && rowAway === evAway) continue; // already aligned
+      if (rowHome === evAway && rowAway === evHome) {
+        // Row is in opposite orientation — flip its labels in-place.
+        if (row.selection_type && SELECTION_FLIP_MAP[row.selection_type]) {
+          row.selection_type = SELECTION_FLIP_MAP[row.selection_type];
+        }
+        if (SPREAD_TYPES.has(row.market_type) && row.point != null) {
+          row.point = -row.point;
+        }
+        // Realign the row's home_team / away_team for downstream code that
+        // may key off either field (e.g., team_total selection construction).
+        row.home_team = ev.homeTeam;
+        row.away_team = ev.awayTeam;
+        flippedRows++;
+      }
+    }
+  }
+  if (flippedRows > 0) {
+    log.info('OddsFeed', `Cross-book home/away normalization: flipped ${flippedRows} row(s) for ${sport} (books disagreed on home assignment)`);
+  }
+
   // Update lineup cache for MLB (pitchers) / NHL (goalies). Runs before
   // consensus building so downstream log output includes any detected change.
   if (!liveMode && (sport === 'baseball_mlb' || sport === 'icehockey_nhl')) {
