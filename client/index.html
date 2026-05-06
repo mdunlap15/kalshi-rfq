@@ -1091,9 +1091,11 @@
               <label style="font-size:12px; color:var(--text2);">Limit:
                 <select id="lines-limit" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px; margin-left:4px;" onchange="linesState.limit=parseInt(this.value); loadLines()">
                   <option value="200">200</option>
-                  <option value="500" selected>500</option>
+                  <option value="500">500</option>
                   <option value="1000">1000</option>
                   <option value="2000">2000</option>
+                  <option value="5000">5000</option>
+                  <option value="10000" selected>All (10000)</option>
                 </select>
               </label>
               <button class="btn" onclick="toggleLinesAdvanced()" style="font-size:12px; padding:4px 10px;" title="Show/hide numeric range filters">&#9662; Advanced</button>
@@ -11282,7 +11284,7 @@
     market: '',
     team: '',
     event: '',
-    limit: 500,
+    limit: 10000,
     loaded: false,
     inFlight: false,
     // Sort + UI state
