@@ -7197,6 +7197,16 @@
         const name = resolveName(l) || '?';
         const mkt = l.market || l.marketType || '';
         const line = l.line;
+        // YES/NO prop legs (e.g. "Adrian Mannarino To Win At Least One
+        // Set: NO"). PX tags these as marketType='moneyline' but the
+        // selection's teamName is literally 'YES' or 'NO' — without
+        // surfacing the market name, the operator just sees an
+        // uninterpretable "No" / "Yes" in the leg row. Prefix with the
+        // market name so the bet is identifiable.
+        if (/^(yes|no)$/i.test(String(name).trim()) && l.marketName) {
+          const yn = String(name).trim().toUpperCase();
+          return l.marketName + ': ' + yn;
+        }
         // F5 / H1 period indicator — prepend to the leg label so it's
         // obvious this isn't a full-game leg. Matches any variant of
         // 'first_5_innings_*' / '*_f5' / 'first_half_*' / '*_h1'.

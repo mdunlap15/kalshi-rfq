@@ -1306,6 +1306,11 @@
       const market = (l.market || l.marketType || '').toLowerCase();
       const selection = (l.selection || '').toLowerCase();
       const line = l.line;
+      // YES/NO prop legs (PX-tagged moneyline with teamName=YES/NO).
+      // Without surfacing marketName the leg renders as bare "Yes"/"No".
+      if (/^(yes|no)$/i.test(String(team).trim()) && l.marketName) {
+        return l.marketName + ': ' + String(team).trim().toUpperCase();
+      }
       if (market.startsWith('player_')) {
         const stat = PROP_TYPE_LABEL_SHORT[market] || market.replace(/^player_/, '').replace(/_/g, ' ');
         const side = selection === 'over' ? 'Over' : selection === 'under' ? 'Under' : '';

@@ -847,7 +847,7 @@ async function seedAllLines() {
     // props. Standalone prop keywords (strikeouts, pitching, milestones, etc.)
     // ensure we reject props even when "Total" appears in the name with
     // intervening words (e.g. "Total Pitching Strikeouts Milestones").
-    const excludePatterns = /first quarter|1st quarter|2nd half|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|overtime|player|milestones|strikeouts?|pitching|batting|hits|doubles\b|triples?|errors|walks|stolen bases?|rbis?|home runs?\b|outs recorded|innings pitched|at bats?|put outs?|fouls|cards|bookings|yellow cards?|red cards?|offsides?|crosses|clearances|throw.?ins?|tackles|shots|total earned|total block|total point[^s]|total rebound|total assist|total steal|total made|total rush|total recei|total passing|1st set|first set|2nd set|second set|set winner|set spread|set total|set moneyline/i;
+    const excludePatterns = /first quarter|1st quarter|2nd half|2nd quarter|3rd quarter|4th quarter|1st period|2nd period|3rd period|1st inning|overtime|player|milestones|strikeouts?|pitching|batting|hits|doubles\b|triples?|errors|walks|stolen bases?|rbis?|home runs?\b|outs recorded|innings pitched|at bats?|put outs?|fouls|cards|bookings|yellow cards?|red cards?|offsides?|crosses|clearances|throw.?ins?|tackles|shots|total earned|total block|total point[^s]|total rebound|total assist|total steal|total made|total rush|total recei|total passing|1st set|first set|2nd set|second set|set winner|set spread|set total|set moneyline|to win at least|to win without|to win in straight|to win first set|to win the first set|winning margin|will there be a tiebreak|set betting|correct score|race to \d/i;
 
     const fullGameNames = {
       moneyline: ['Moneyline', 'Moneyline (2 Way)', 'Moneyline (2-Way)', 'Moneyline (Regulation)', 'Draw No Bet'],
@@ -1144,6 +1144,13 @@ async function seedAllLines() {
           oddsApiSelection = sel.selection; // 'over' or 'under'
           oddsApiMarket = 'series_total';
         } else if (sel.marketType === 'moneyline') {
+          // Reject YES/NO selections — these are PX-tagged 'moneyline' but
+          // are actually yes/no prop markets ("Player To Win At Least One
+          // Set", etc.). matchTeamName's substring fallback would treat
+          // 'NO' as a partial match for any opponent containing 'no' in
+          // their name (Mannarino, Brunson, Hovland, etc.), silently
+          // registering a worthless YES/NO prop as a moneyline leg.
+          if (/^(yes|no)$/i.test((sel.teamName || '').trim())) continue;
           // Match team to home/away
           if (matchTeamName(sel.teamName, [matchedHome])) {
             oddsApiSelection = 'home';
@@ -2107,6 +2114,16 @@ async function resolveUnknownLine(rfqLeg) {
             oddsApiSelection = sel.selection; // 'over' or 'under'
             oddsApiMarket = 'series_total';
           } else if (sel.marketType === 'moneyline') {
+            // Reject YES/NO selections (see seed-path comment ~line 1148).
+            if (/^(yes|no)$/i.test((sel.teamName || '').trim())) {
+              lineFoundInPxMarket = true;
+              resolveUnknownLine._lastFailure = {
+                lineId, reason: 'yes_no_prop_misclassified_as_moneyline',
+                marketType: market.type, marketName: market.name,
+                sport: sportKey, eventName: event.name,
+              };
+              continue;
+            }
             if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
             else if (matchTeamName(sel.teamName, [matchedAway])) oddsApiSelection = 'away';
           } else if (sel.marketType === 'spread') {
