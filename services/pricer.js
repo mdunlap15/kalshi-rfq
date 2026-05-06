@@ -1473,7 +1473,20 @@ function priceParlay(legs, opts = {}) {
 
   // Parlay fair prob over vig legs — reused by both modes and by the
   // longshot ramp below.
-  const vigFair = vigLegs.reduce((p, l) => p * l.fairProb, 1);
+  //
+  // SGP-CORRELATION ALIGNMENT: when an SGP correlation boost was applied
+  // to fairParlayProb above (sgpCorrelationFactor for ml_total/spread_total,
+  // or sgpPropMlCorrBoost for K-prop+ML same-team), vigFair MUST mirror
+  // that same boost. Otherwise vig is charged against the raw per-leg
+  // product while the displayed Fair reflects the boosted joint —
+  // producing offered odds LONGER than Fair (bettor-favorable, negative
+  // SP edge per ticket). Verified against MTL ML + MTL@BUF U5.5 SGP on
+  // 2026-05-06: pre-fix our offered came out +370 vs Fair +332 (-8% theo
+  // edge); post-fix offered tracks Fair × (1 - vig).
+  const sgpFairMultiplier =
+    (isKpropMlSameTeamSGP ? (1 + (config.pricing.sgpPropMlCorrBoost || 0)) : 1) *
+    sgpCorrelationFactor;
+  const vigFair = vigLegs.reduce((p, l) => p * l.fairProb, 1) * sgpFairMultiplier;
 
   // ---------------------------------------------------------------------
   // LONGSHOT VIG WIDENING (parlay-level)
@@ -1557,6 +1570,15 @@ function priceParlay(legs, opts = {}) {
     offeredImpliedProb = overrideProduct;
     for (const leg of vigLegs) {
       offeredImpliedProb *= applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType, leg.vigBump || 0);
+    }
+    // SGP-CORRELATION ALIGNMENT (per-leg mode): mirror the same boost that
+    // was applied to fairParlayProb. Per-leg compounding works on raw
+    // leg.fairProb values and otherwise leaves offered un-boosted relative
+    // to the displayed Fair, producing the same -EV bug fixed in
+    // parlay-level mode via vigFair. See vigFair comment above for the
+    // empirical justification.
+    if (sgpFairMultiplier !== 1 && offeredImpliedProb > 0) {
+      offeredImpliedProb = Math.min(0.99, offeredImpliedProb * sgpFairMultiplier);
     }
     // Longshot widening + template ramp applied as a final parlay-level
     // haircut on the post-compounding offered prob so the sensitivity
