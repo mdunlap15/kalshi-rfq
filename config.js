@@ -213,6 +213,13 @@ const config = {
     templateRampTier3Add: parseFloat(process.env.TEMPLATE_RAMP_TIER3_ADD) || 0.010,   // +1.00pp on 3rd
     templateRampTier4Add: parseFloat(process.env.TEMPLATE_RAMP_TIER4_ADD) || 0.030,   // +3.00pp on 4th
     templateRampDeclineAt: parseInt(process.env.TEMPLATE_RAMP_DECLINE_AT) || 4,       // decline 5th+ bet (priorCount >= 4)
+    // Short-window cooldown: decline any RFQ on a signature whose most
+    // recent confirmation landed within the last N seconds, regardless of
+    // counterparty. Layers on top of the 24h decline-at-N tier — closes
+    // the timing race where multiple bettors copy the same parlay seconds
+    // apart, before the per-template ramp's confirm-feedback can catch up.
+    // Set to 0 to disable.
+    templateRampCooldownSeconds: parseInt(process.env.TEMPLATE_RAMP_COOLDOWN_SECONDS) || 60,
     // Block alt-spread quoting on listed sports. An "alt spread" is any
     // spread leg whose line value differs from the primary line:
     //   - MLB:  primary run line is always ±1.5 → anything else is alt

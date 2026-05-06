@@ -75,7 +75,7 @@ let _stats = {
   releasedPending: 0,
   signaturesActive: 0,
   lastPrunedAt: null,
-  rampHits: { tier2: 0, tier3: 0, tier4: 0, decline: 0 },
+  rampHits: { tier2: 0, tier3: 0, tier4: 0, decline: 0, cooldown: 0 },
 };
 
 // --------------------------------------------------------------------
@@ -314,6 +314,41 @@ function getRampDecision(legs, opts = {}) {
   const tier2Add  = config.pricing.templateRampTier2Add;       // added for 2nd bet (priorCount==1)
   const tier3Add  = config.pricing.templateRampTier3Add;       // added for 3rd bet (priorCount==2)
   const tier4Add  = config.pricing.templateRampTier4Add;       // added for 4th bet (priorCount==3)
+  const cooldownSec = config.pricing.templateRampCooldownSeconds;
+
+  // Short-window cooldown: any RFQ on a signature whose most recent
+  // CONFIRMED bet landed within the cooldown window declines, regardless
+  // of count or counterparty. Closes the timing race where multiple
+  // bettors copy the same parlay before the per-template confirm
+  // feedback can register through the longer 24h ramp tiers. Operator-
+  // requested 2026-05-06 after watching same-template clusters slip
+  // through within seconds. Pending reservations are NOT considered
+  // here — only confirmed bets — because pending RFQs can still be
+  // rejected by PX downstream (e.g. confirmation drift) and we don't
+  // want to reject a bettor's first attempt because their own RFQ is
+  // sitting in-flight.
+  if (cooldownSec > 0 && exp.confirmedCount > 0) {
+    const sig = exp.signature;
+    const entry = _exposure[sig];
+    if (entry && entry.confirmations && entry.confirmations.length > 0) {
+      const lastConfirmedMs = Math.max(...entry.confirmations.map(c => c.confirmedAt));
+      const sinceMs = Date.now() - lastConfirmedMs;
+      if (sinceMs < cooldownSec * 1000) {
+        _stats.rampHits.cooldown = (_stats.rampHits.cooldown || 0) + 1;
+        const remainSec = Math.ceil((cooldownSec * 1000 - sinceMs) / 1000);
+        return {
+          extraVig: 0, decline: true,
+          reason: `template_cooldown: same parlay confirmed ${Math.round(sinceMs / 1000)}s ago — cooldown is ${cooldownSec}s, ${remainSec}s remaining`,
+          count: priorCount,
+          confirmedCount: exp.confirmedCount,
+          pendingCount: exp.pendingCount,
+          totalStake: exp.totalStake,
+          cooldownActive: true,
+          cooldownRemainingSec: remainSec,
+        };
+      }
+    }
+  }
 
   if (declineAt > 0 && priorCount >= declineAt) {
     _stats.rampHits.decline++;
@@ -448,6 +483,7 @@ function getStats() {
       tier3Add: config.pricing.templateRampTier3Add,
       tier4Add: config.pricing.templateRampTier4Add,
       declineAt: config.pricing.templateRampDeclineAt,
+      cooldownSeconds: config.pricing.templateRampCooldownSeconds,
     },
     topActive: top,
   };
