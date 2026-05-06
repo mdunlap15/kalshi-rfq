@@ -11074,7 +11074,17 @@
       const mkt = l.market || l.marketType || '';
       // Same broad fallback as formatParlaySelections — PX-backfilled legs
       // carry selection/pxEventName but lack team/teamName.
-      let teamLabel = formatSelection(l.team || l.teamName || l.selection || l.pxEventName || '?', mkt, l.line, l.selection);
+      const _rawTeamForLabel = (l.team || l.teamName || l.selection || l.pxEventName || '?').toString();
+      let teamLabel;
+      if (/^(yes|no)$/i.test(_rawTeamForLabel.trim()) && l.marketName) {
+        // YES/NO prop legs (PX-tagged moneyline with teamName=YES/NO).
+        // Surface the marketName so the operator sees the actual bet
+        // ("Adrian Mannarino To Win At Least One Set: NO") instead of
+        // bare "No".
+        teamLabel = l.marketName + ': ' + _rawTeamForLabel.trim().toUpperCase();
+      } else {
+        teamLabel = formatSelection(_rawTeamForLabel, mkt, l.line, l.selection);
+      }
       // For bare Over/Under selections (including first-half / first-5
       // variants), append the game context so "Under 4.5" becomes
       // "Over 4.5 · ARI @ TOR". Without this, a multi-leg near-miss
