@@ -579,12 +579,12 @@
       <div id="paused-badge" style="display:none; color:var(--red); font-size:11px; font-weight:600;">Quoting OFF</div>
     </div>
     <nav class="sidebar-nav">
-      <a class="nav-item active" onclick="switchSection('portfolio', this)">
+      <a class="nav-item active" onclick="switchSection('portfolio', this)" id="nav-portfolio">
         <span class="nav-icon">&#9733;</span> Portfolio
+        <span id="portfolio-badge" style="display:none; background:var(--red); color:#fff; font-size:10px; font-weight:700; border-radius:10px; padding:1px 6px; margin-left:6px;"></span>
       </a>
       <a class="nav-item" onclick="switchSection('orders', this)" id="nav-orders">
         <span class="nav-icon">&#9998;</span> Orders
-        <span id="orders-badge" style="display:none; background:var(--red); color:#fff; font-size:10px; font-weight:700; border-radius:10px; padding:1px 6px; margin-left:6px;"></span>
       </a>
       <a class="nav-item" onclick="switchSection('exposure', this)">
         <span class="nav-icon">&#9888;</span> Exposure
@@ -1361,7 +1361,7 @@
     } else {
       for (const id of confirmedIds) {
         if (!seenConfirmedParlayIds.has(id)) {
-          if (activeSection === 'orders') {
+          if (activeSection === 'portfolio') {
             seenConfirmedParlayIds.add(id); // viewing → auto-mark seen
           } else {
             unseenConfirmations++;
@@ -1370,13 +1370,13 @@
         }
       }
     }
-    const ordersBadge = document.getElementById('orders-badge');
-    if (ordersBadge) {
-      if (unseenConfirmations > 0 && activeSection !== 'orders') {
-        ordersBadge.textContent = unseenConfirmations;
-        ordersBadge.style.display = 'inline';
+    const portfolioBadge = document.getElementById('portfolio-badge');
+    if (portfolioBadge) {
+      if (unseenConfirmations > 0 && activeSection !== 'portfolio') {
+        portfolioBadge.textContent = unseenConfirmations;
+        portfolioBadge.style.display = 'inline';
       } else {
-        ordersBadge.style.display = 'none';
+        portfolioBadge.style.display = 'none';
         unseenConfirmations = 0;
       }
     }
@@ -11607,10 +11607,12 @@
     if (navEl) navEl.classList.add('active');
     const titleEl = document.getElementById('section-title');
     if (titleEl) titleEl.textContent = sectionNames[section] || section;
-    // Clear Orders notification badge when switching to Orders
-    if (section === 'orders') {
+    // Clear Portfolio notification badge when switching to Portfolio
+    // (badge tracks newly-confirmed parlays = new open positions, which
+    // is what the Portfolio tab surfaces)
+    if (section === 'portfolio') {
       unseenConfirmations = 0;
-      const badge = document.getElementById('orders-badge');
+      const badge = document.getElementById('portfolio-badge');
       if (badge) badge.style.display = 'none';
       document.title = 'PARLAY SP';
     }
