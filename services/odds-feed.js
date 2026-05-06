@@ -5011,8 +5011,27 @@ function getFairProb(sport, homeTeam, awayTeam, marketType, selection, line, tar
   }
 
   if (marketType === 'h2h') {
-    if (selection === 'home') return market.home?.fairProb || null;
-    if (selection === 'away') return market.away?.fairProb || null;
+    // Sanity check: fair must be within 25pp of the side's rawOdds-implied
+    // probability. Vig only displaces implied from fair by ~3-10pp; a 25pp+
+    // gap means the cache has the WRONG side's fair attached to this side
+    // (orientation flip / consensus-build sides mixed). Symptom that
+    // triggered this guard: 5/5/2026 MMA card showed Jeremy Stephens fair
+    // 26.6% while books had him at -340 (~77% implied) — would've quoted
+    // him at +254 instead of -340. Returning null here forces the line to
+    // decline at quote time and surfaces as fair=null in the Lines tab.
+    const sideData = selection === 'home' ? market.home : selection === 'away' ? market.away : null;
+    const fp = sideData?.fairProb || null;
+    if (fp == null) return null;
+    const am = sideData?.rawOdds;
+    if (am != null && Number.isFinite(Number(am)) && Number(am) !== 0) {
+      const a = Number(am);
+      const impliedFromBooks = a > 0 ? 100 / (a + 100) : -a / (-a + 100);
+      if (Math.abs(impliedFromBooks - fp) > 0.25) {
+        log.warn('OddsFeed', `h2h fair-vs-rawOdds mismatch: ${homeTeam} vs ${awayTeam} ${selection} fairProb=${fp.toFixed(3)} but rawOdds=${a} implies ${impliedFromBooks.toFixed(3)} — returning null (likely orientation/consensus inversion)`);
+        return null;
+      }
+    }
+    return fp;
   } else if (marketType === 'spreads') {
     if (selection === 'home') return market.home?.fairProb || null;
     if (selection === 'away') return market.away?.fairProb || null;
