@@ -8526,8 +8526,8 @@
         const arrow = (col) => sortState.col === col ? (sortState.dir > 0 ? ' &#9650;' : ' &#9660;') : '';
         const hClick = (col) => 'onclick="event.stopPropagation(); window._odvSortClick(\'' + dayId + '\',\'' + col + '\')" style="cursor:pointer;"';
         html += '<tr style="color:var(--text3);">'
-          + '<th ' + hClick('time') + ' style="padding:2px 10px;">Time' + arrow('time') + '</th>'
-          + '<th ' + hClick('selections') + ' style="padding:2px 10px;">Selections' + arrow('selections') + '</th>'
+          + '<th ' + hClick('time') + ' style="padding:2px 10px;text-align:left;">Time' + arrow('time') + '</th>'
+          + '<th ' + hClick('selections') + ' style="padding:2px 10px;text-align:left;">Selections' + arrow('selections') + '</th>'
           + '<th ' + hClick('legs') + ' style="padding:2px 10px;text-align:center;">Legs' + arrow('legs') + '</th>'
           + '<th ' + hClick('odds') + ' style="padding:2px 10px;text-align:right;">Odds' + arrow('odds') + '</th>'
           + '<th ' + hClick('stake') + ' style="padding:2px 10px;text-align:right;">Stake' + arrow('stake') + '</th>'
