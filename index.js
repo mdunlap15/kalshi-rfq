@@ -2723,7 +2723,7 @@ function startStatusServer() {
       const EXPECTED_MARKETS_BY_SPORT = {
         baseball_mlb: ['moneyline', 'spread', 'total', 'team_total',
           'first_5_innings_moneyline', 'first_5_innings_run_line', 'first_5_innings_total',
-          'player_hitter_hits', 'player_hitter_hr', 'player_hitter_total_bases', 'player_hitter_rbi_runs'],
+          'player_hitter_hits', 'player_hitter_total_bases', 'player_hitter_rbi_runs'],
         basketball_nba: ['moneyline', 'spread', 'total', 'team_total',
           'first_half_moneyline', 'first_half_spread', 'first_half_total',
           'player_points', 'player_rebounds', 'player_assists', 'player_threes_made'],
