@@ -6612,6 +6612,12 @@
           vb = b.confirmedStake && b.offeredOdds ? calcBettorWager(b.confirmedStake, b.offeredOdds) : (b.confirmedStake || 0); break;
         case 'pnl': va = a.pnl || 0; vb = b.pnl || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
+        case 'edge':
+          va = computeParlayEdge(a).edge ?? -Infinity;
+          vb = computeParlayEdge(b).edge ?? -Infinity; break;
+        case 'ev':
+          va = computeParlayEdge(a).evDollar ?? -Infinity;
+          vb = computeParlayEdge(b).evDollar ?? -Infinity; break;
         case 'fair': {
           const fairCalc2 = (o) => {
             const ls = o.meta?.legs || o.legs || [];
@@ -6732,6 +6738,8 @@
     html += '<th ' + pSortClick('kalshi', 'right') + ' style="color:var(--amber);">Kalshi' + pSortArrow('kalshi') + '</th>';
     html += '<th ' + pSortClick('draftkings', 'right') + ' style="color:var(--green);">DK' + pSortArrow('draftkings') + '</th>';
     html += '<th ' + pSortClick('stake', 'right') + '>My Risk' + pSortArrow('stake') + '</th>';
+    html += '<th ' + pSortClick('edge', 'right') + ' title="Theoretical edge per $ wagered = 1 - (fair / bettor_implied)">Theo Edge' + pSortArrow('edge') + '</th>';
+    html += '<th ' + pSortClick('ev', 'right') + ' title="Expected $ EV at quote time = bettor_wager × theoretical_edge">EV $' + pSortArrow('ev') + '</th>';
     html += '<th ' + pSortClick('result') + ' title="Settlement outcome from our (SP) perspective">SP Result' + pSortArrow('result') + '</th>';
     html += '<th ' + pSortClick('pnl', 'right') + '>P&L' + pSortArrow('pnl') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
@@ -6780,6 +6788,10 @@
       }
       const cumul = cumulMap[order.parlayId];
       const cumulHtml = cumul != null ? '<span class="' + (cumul > 0 ? 'positive' : cumul < 0 ? 'negative' : 'neutral') + '">' + fmtPnl(cumul) + '</span>' : '-';
+      const { edge: psEdge, evDollar: psEv } = computeParlayEdge(order);
+      const psEdgeStr = fmtEdge(psEdge);
+      const psEvStr = psEv != null ? fmtPnl(psEv) : '-';
+      const psEdgeCls = edgeColorClass(psEdge);
 
       const rowKey = 'pstl-' + (order.parlayId || '');
       const expanded = expandedRows.has(rowKey);
@@ -6794,6 +6806,8 @@
       html += '<td style="text-align:right; color:var(--amber);">' + psKlFmt + '</td>';
       html += '<td style="text-align:right; color:var(--green);">' + psDkFmt + '</td>';
       html += '<td style="text-align:right">' + stake + '</td>';
+      html += '<td style="text-align:right" class="' + psEdgeCls + '">' + psEdgeStr + '</td>';
+      html += '<td style="text-align:right" class="' + psEdgeCls + '">' + psEvStr + '</td>';
       html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
       html += '<td style="text-align:right">' + cumulHtml + '</td>';
@@ -6801,7 +6815,7 @@
 
       // Expandable leg detail row
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="13" style="padding:12px 16px;">';
+      html += '<td colspan="15" style="padding:12px 16px;">';
       html += buildLegTable(psLegs.length > 0 ? psLegs : legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
