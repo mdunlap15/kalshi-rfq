@@ -3500,7 +3500,7 @@
     el.innerHTML = html;
   }
 
-  const posState = { sortCol: 'time', sortDir: -1, search: '', statusFilter: '', typeFilter: '', sportFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', showHidden: false, _name: 'posState' };
+  const posState = { sortCol: 'time', sortDir: -1, search: '', statusFilter: '', typeFilters: { sgp: false, prop: false }, sportFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', towinMin: '', towinMax: '', showAdvanced: false, pageSize: 15, showAll: false, dateFrom: '', dateTo: '', showHidden: false, _name: 'posState' };
   window.posRerender = () => renderPositions(window._lastPosData || { recentOrders: [] });
   window.togglePosSort = (col) => {
     if (posState.sortCol === col) posState.sortDir *= -1;
@@ -3706,14 +3706,10 @@
         else if (now >= latest + GAME_DUR && starts.length > 0) st = 'awaiting';
         if (st !== posState.statusFilter) return false;
       }
-      // Type filter — SGP / PROP / both
-      if (posState.typeFilter) {
+      // Type filter — multi-select (SGP and/or PROP, union semantic)
+      if (posState.typeFilters && (posState.typeFilters.sgp || posState.typeFilters.prop)) {
         const tLegs = o.legs || o.meta?.legs || [];
-        const isSgp = isSameGameParlay(tLegs);
-        const hasProp = containsPlayerProp(tLegs);
-        if (posState.typeFilter === 'sgp' && !isSgp) return false;
-        if (posState.typeFilter === 'prop' && !hasProp) return false;
-        if (posState.typeFilter === 'both' && !(isSgp && hasProp)) return false;
+        if (!passesTypeFilter(posState.typeFilters, isSameGameParlay(tLegs), containsPlayerProp(tLegs))) return false;
       }
       return true;
     });
@@ -3804,12 +3800,7 @@
         <option value="upcoming"${posState.statusFilter==='upcoming'?' selected':''}>Upcoming</option>
         <option value="awaiting"${posState.statusFilter==='awaiting'?' selected':''}>Awaiting Settle</option>
       </select>
-      <select onchange="posState.typeFilter=this.value; posRerender()" style="${pFSel}" title="Filter by parlay type — SGP (multiple legs on same event), PROP (contains a player prop leg), or both.">
-        <option value="">All types</option>
-        <option value="sgp"${posState.typeFilter==='sgp'?' selected':''}>SGP only</option>
-        <option value="prop"${posState.typeFilter==='prop'?' selected':''}>PROP only</option>
-        <option value="both"${posState.typeFilter==='both'?' selected':''}>SGP + PROP</option>
-      </select>
+      ${renderTypeFilterCheckboxes(posState, 'posState', 'posRerender()')}
       <select onchange="posState.sportFilter=this.value; posRerender()" style="${pFSel}" title="Filter by sport (matches if any leg is in the chosen sport)">
         <option value="">All sports</option>
         ${posSports.map(s => `<option value="${s}"${posState.sportFilter===s?' selected':''}>${sportLabel(s)}</option>`).join('')}
@@ -4012,7 +4003,7 @@
     sportFilter: '',
     resultFilter: '',
     legsFilter: '',
-    typeFilter: '', // '' (all) | 'sgp' | 'prop' | 'both'
+    typeFilters: { sgp: false, prop: false }, // multi-select; union semantic when both checked
     legsMin: '', legsMax: '',
     oddsMin: '', oddsMax: '',
     riskMin: '', riskMax: '',
@@ -4102,14 +4093,10 @@
         const n = (o.legs||o.meta?.legs||[]).length;
         if (String(n) !== settledState.legsFilter) return false;
       }
-      // Type filter — SGP / PROP / both
-      if (settledState.typeFilter) {
+      // Type filter — multi-select (SGP and/or PROP, union semantic)
+      if (settledState.typeFilters && (settledState.typeFilters.sgp || settledState.typeFilters.prop)) {
         const tLegs = o.legs || o.meta?.legs || [];
-        const isSgp = isSameGameParlay(tLegs);
-        const hasProp = containsPlayerProp(tLegs);
-        if (settledState.typeFilter === 'sgp' && !isSgp) return false;
-        if (settledState.typeFilter === 'prop' && !hasProp) return false;
-        if (settledState.typeFilter === 'both' && !(isSgp && hasProp)) return false;
+        if (!passesTypeFilter(settledState.typeFilters, isSameGameParlay(tLegs), containsPlayerProp(tLegs))) return false;
       }
       // Advanced range filters
       const legsCount = (o.legs||o.meta?.legs||[]).length;
@@ -4166,12 +4153,7 @@
       + '<select onchange="settledState.legsFilter=this.value; ' + rerend + '" style="' + sFSel + '"><option value="">All legs</option>'
       + [2,3,4,5,6,7,8].map(n => '<option value="' + n + '"' + (settledState.legsFilter === String(n) ? ' selected' : '') + '>' + n + '-leg</option>').join('')
       + '</select>'
-      + '<select onchange="settledState.typeFilter=this.value; ' + rerend + '" style="' + sFSel + '" title="Filter by parlay type — SGP (multiple legs on same event), PROP (contains a player prop leg), or both.">'
-      + '<option value="">All types</option>'
-      + '<option value="sgp"' + (settledState.typeFilter === 'sgp' ? ' selected' : '') + '>SGP only</option>'
-      + '<option value="prop"' + (settledState.typeFilter === 'prop' ? ' selected' : '') + '>PROP only</option>'
-      + '<option value="both"' + (settledState.typeFilter === 'both' ? ' selected' : '') + '>SGP + PROP</option>'
-      + '</select>'
+      + renderTypeFilterCheckboxes(settledState, 'settledState', rerend)
       + dateFilterHtml(settledState, 'function(){' + rerend + '}', sDStyle)
       + '<button onclick="settledState.showAdvanced=!settledState.showAdvanced; ' + rerend + '" style="' + sFSel + ' cursor:pointer;">' + (settledState.showAdvanced ? '&#9652;' : '&#9662;') + ' Advanced</button>'
       + '<span style="font-size:11px; color:var(--text3); margin-left:auto;">' + filtered.length + ' of ' + settled.length + ((() => { const r = formatDateRange(filtered, 'settledAt') || formatDateRange(filtered, 'quotedAt'); return r ? ' · ' + r : ''; })()) + '</span>'
@@ -5205,7 +5187,7 @@
     search: '',
     statusFilter: [],
     legsFilter: [],
-    typeFilter: '', // '' (all) | 'sgp' | 'prop' | 'both'
+    typeFilters: { sgp: false, prop: false }, // multi-select; union semantic when both checked
     // Default: hide rejected. Rejected orders were confusing operators —
     // they'd appear in the All Quotes table mixed with live positions with
     // no visual distinction, making it look like the SP took on bets that
@@ -5274,14 +5256,10 @@
         const teams = getOrderTeams(o);
         if (!orderState.legsFilter.some(t => teams.includes(t))) return false;
       }
-      // Type filter — SGP / PROP / both
-      if (orderState.typeFilter) {
+      // Type filter — multi-select (SGP and/or PROP, union semantic)
+      if (orderState.typeFilters && (orderState.typeFilters.sgp || orderState.typeFilters.prop)) {
         const legs = o.legs || o.meta?.legs || [];
-        const isSgp = isSameGameParlay(legs);
-        const hasProp = containsPlayerProp(legs);
-        if (orderState.typeFilter === 'sgp' && !isSgp) return false;
-        if (orderState.typeFilter === 'prop' && !hasProp) return false;
-        if (orderState.typeFilter === 'both' && !(isSgp && hasProp)) return false;
+        if (!passesTypeFilter(orderState.typeFilters, isSameGameParlay(legs), containsPlayerProp(legs))) return false;
       }
       return true;
     });
@@ -5324,14 +5302,7 @@
         <option value="">All statuses</option>
         ${allStatuses.map(s => `<option value="${s}" ${orderState.statusFilter.includes(s)?'selected':''}>${s}</option>`).join('')}
       </select>
-      <select onchange="orderState.typeFilter=this.value; orderRerender()"
-        style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;"
-        title="Filter by parlay type — SGP (multiple legs on same event), PROP (contains a player prop leg), or both.">
-        <option value="">All types</option>
-        <option value="sgp" ${orderState.typeFilter==='sgp'?'selected':''}>SGP only</option>
-        <option value="prop" ${orderState.typeFilter==='prop'?'selected':''}>PROP only</option>
-        <option value="both" ${orderState.typeFilter==='both'?'selected':''}>SGP + PROP</option>
-      </select>
+      ${renderTypeFilterCheckboxes(orderState, 'orderState', 'orderRerender()')}
       ${orderState.legsFilter.length > 0 ? `<button class="btn" style="font-size:11px; padding:3px 8px;" onclick="orderState.legsFilter=[]; orderRerender()">Clear team filter</button>` : ''}
       ${(() => {
         const rejectedCount = allOrders.filter(o => o.status === 'rejected').length;
@@ -5665,7 +5636,7 @@
   // PORTFOLIO TAB
   // -----------------------------------------------------------------------
 
-  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '', typeFilter: '', legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', pnlMin: '', pnlMax: '', roiMin: '', roiMax: '', showAdvanced: false, pageSize: 20, showAll: false, dateFrom: '', dateTo: '', _name: 'portfolioState' };
+  const portfolioState = { sortCol: 'settled', sortDir: -1, search: '', sportFilter: '', resultFilter: '', typeFilters: { sgp: false, prop: false }, legsMin: '', legsMax: '', oddsMin: '', oddsMax: '', riskMin: '', riskMax: '', pnlMin: '', pnlMax: '', roiMin: '', roiMax: '', showAdvanced: false, pageSize: 20, showAll: false, dateFrom: '', dateTo: '', _name: 'portfolioState' };
   window.portfolioRerender = () => renderPortfolio(window._lastPortfolioData || { recentOrders: [], stats: {}, pnlBySport: {} });
   window.togglePortfolioSort = (col) => {
     if (portfolioState.sortCol === col) portfolioState.sortDir *= -1;
@@ -6582,15 +6553,10 @@
         return true;
       });
     }
-    if (portfolioState.typeFilter) {
+    if (portfolioState.typeFilters && (portfolioState.typeFilters.sgp || portfolioState.typeFilters.prop)) {
       filtered = filtered.filter(o => {
         const tLegs = o.legs || o.meta?.legs || [];
-        const isSgp = isSameGameParlay(tLegs);
-        const hasProp = containsPlayerProp(tLegs);
-        if (portfolioState.typeFilter === 'sgp' && !isSgp) return false;
-        if (portfolioState.typeFilter === 'prop' && !hasProp) return false;
-        if (portfolioState.typeFilter === 'both' && !(isSgp && hasProp)) return false;
-        return true;
+        return passesTypeFilter(portfolioState.typeFilters, isSameGameParlay(tLegs), containsPlayerProp(tLegs));
       });
     }
     if (portfolioState.dateFrom || portfolioState.dateTo) {
@@ -6687,12 +6653,7 @@
     html += '<option value="">All sports</option>';
     for (const s of sports) html += '<option value="' + s + '"' + (portfolioState.sportFilter === s ? ' selected' : '') + '>' + sportLabel(s) + '</option>';
     html += '</select>';
-    html += '<select onchange="portfolioState.typeFilter=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;" title="Filter by parlay type — SGP (multiple legs on same event), PROP (contains a player prop leg), or both.">';
-    html += '<option value="">All types</option>';
-    html += '<option value="sgp"' + (portfolioState.typeFilter === 'sgp' ? ' selected' : '') + '>SGP only</option>';
-    html += '<option value="prop"' + (portfolioState.typeFilter === 'prop' ? ' selected' : '') + '>PROP only</option>';
-    html += '<option value="both"' + (portfolioState.typeFilter === 'both' ? ' selected' : '') + '>SGP + PROP</option>';
-    html += '</select>';
+    html += renderTypeFilterCheckboxes(portfolioState, 'portfolioState', 'portfolioRerender()');
     html += '<select onchange="portfolioState.resultFilter=this.value; portfolioRerender()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
     html += '<option value="">All settlements</option>';
     html += '<option value="won"' + (portfolioState.resultFilter === 'won' ? ' selected' : '') + '>Won (parlay lost)</option>';
@@ -7355,6 +7316,36 @@
     'steals_blocks', 'pra_combo', 'double_double', 'triple_double',
     'turnovers', 'first_basket', 'nba_prop_ambiguous', 'other_nba_prop',
   ]);
+  // Multi-select type filter — checkboxes for SGP and PROP. When neither
+  // is checked, all parlays pass. When one is checked, only that type
+  // passes. When both are checked, parlays that are EITHER SGP or PROP
+  // pass (union semantic). Replaces the prior single-select dropdown
+  // whose "SGP + PROP" option was an intersection (AND) — operator
+  // wanted to filter SGP and PROP wagers individually-or-combined.
+  function passesTypeFilter(filters, isSgp, hasProp) {
+    if (!filters || (!filters.sgp && !filters.prop)) return true;
+    return (filters.sgp && isSgp) || (filters.prop && hasProp);
+  }
+  // Render the two-checkbox UI inline. Caller supplies the state object
+  // (must have a `typeFilters` { sgp, prop } field), the global state
+  // variable name (for the inline onchange handler), and a rerender
+  // expression appended after the state mutation. The expression should
+  // be a valid JS statement (e.g. `posRerender()` or
+  // `rerenderWithFocus(function(){renderSettled({recentOrders:[]})})`).
+  function renderTypeFilterCheckboxes(state, stateName, rerenderExpr) {
+    const onSgp = stateName + '.typeFilters.sgp=this.checked; ' + rerenderExpr;
+    const onProp = stateName + '.typeFilters.prop=this.checked; ' + rerenderExpr;
+    const checkedSgp = (state && state.typeFilters && state.typeFilters.sgp) ? ' checked' : '';
+    const checkedProp = (state && state.typeFilters && state.typeFilters.prop) ? ' checked' : '';
+    return '<span style="display:inline-flex; align-items:center; gap:8px; padding:4px 8px; background:var(--surface3); border:1px solid var(--border); border-radius:4px; font-size:12px;" title="Multi-select. Both unchecked = all types. One = only that type. Both = SGP or PROP (union).">'
+      + '<label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer; user-select:none;">'
+      +   '<input type="checkbox" onchange="' + onSgp + '"' + checkedSgp + ' style="margin:0;"> SGP'
+      + '</label>'
+      + '<label style="display:inline-flex; align-items:center; gap:3px; cursor:pointer; user-select:none;">'
+      +   '<input type="checkbox" onchange="' + onProp + '"' + checkedProp + ' style="margin:0;"> PROP'
+      + '</label>'
+      + '</span>';
+  }
   function containsPlayerProp(legs) {
     if (!Array.isArray(legs)) return false;
     for (const l of legs) {
@@ -7848,7 +7839,7 @@
     const rows = getFilteredExportRows();
     if (rows.length === 0) return;
 
-    const headers = ['Type','Parlay ID','Date','Legs','Selections','Sports',
+    const headers = ['Type','Parlay ID','Date','Legs','SGP','PROP','Selections','Sports',
       'Offered Odds','Pinnacle Odds','FanDuel Odds','Kalshi Odds','DraftKings Odds','My Risk','To Win',
       'Status','P&L','ROI %'];
 
@@ -7860,6 +7851,8 @@
       const date = (isSettled ? o.settledAt : o.confirmedAt) || o.quotedAt || '';
       const selections = formatParlaySelections(legs);
       const sports = [...new Set(legs.map(l => sportLabel(l.sport)).filter(Boolean))].join(' / ');
+      const sgpFlag = isSameGameParlay(legs) ? 'Y' : '';
+      const propFlag = containsPlayerProp(legs) ? 'Y' : '';
       const pinOdds = compoundParlayOdds(legs, 'pinnacleOdds') || '';
       const fdOdds = compoundParlayOdds(legs, 'fanduelOdds') || '';
       const klOdds = compoundParlayOdds(legs, 'kalshiOdds') || '';
@@ -7880,6 +7873,7 @@
 
       csvRows.push([
         type, o.parlayId || '', csvEscape(date), legs.length,
+        sgpFlag, propFlag,
         csvEscape(selections), csvEscape(sports),
         o.offeredOdds || '', pinOdds, fdOdds, klOdds, dkOdds,
         risk ? Number(risk).toFixed(2) : '', toWin,
