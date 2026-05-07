@@ -4234,6 +4234,33 @@ async function checkLegResults() {
           }
         }
       }
+      // FUTURE-GAME GUARD — refuse to resolve a leg whose game hasn't started.
+      // Cross-day team-pair contamination: oddsFeed.getGameResult / espn-scores
+      // return yesterday's completed game when called with today's team-pair if
+      // time-disambiguation falls through (e.g. cache keyed on team-pair only).
+      // That writes yesterday's result onto today's future leg, which then
+      // trips the dashboard's posDead → "Won - Awaiting Settle" path even
+      // though no leg has actually played. Verified on parlay 019e02bf-…
+      // 2026-05-07: 3 of 4 future-game legs had stale inferredResult from
+      // matching same-team-pair games one day prior. Make this structurally
+      // impossible by skipping result resolution entirely for any leg whose
+      // startTime is still in the future.
+      const _legStartMs = (l.startTime || l.start_time) ? new Date(l.startTime || l.start_time).getTime() : 0;
+      if (_legStartMs > 0 && _legStartMs > Date.now()) {
+        // Also clear any previously-stamped inferredResult on this leg —
+        // it's necessarily contaminated since the game hasn't started.
+        if (l.inferredResult) {
+          log.warn('Results', `Clearing future-game inferredResult contamination on ${l.team} ${l.market || l.marketType} (startTime=${l.startTime}, was=${l.inferredResult})`);
+          l.inferredResult = null;
+          if (o.legs) {
+            const matchingLeg = o.legs.find(ol => ol.lineId === l.lineId
+              || ((ol.team || ol.teamName) === (l.team || l.teamName)
+                  && (ol.market || ol.marketType) === (l.market || l.marketType)));
+            if (matchingLeg) matchingLeg.inferredResult = null;
+          }
+        }
+        continue;
+      }
       if (!l.sport || !l.homeTeam || !l.awayTeam) continue;
 
       const market = l.market || l.marketType;
