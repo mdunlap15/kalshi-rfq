@@ -10063,6 +10063,7 @@
       ev: sumEv,
       pnl: settledCount > 0 ? sumPnl : null,
       edgePct: sumStake > 0 ? (sumEdgeStake / sumStake) * 100 : null,
+      stake: sumStake,
       settledCount,
     }];
 
@@ -10081,12 +10082,21 @@
         ev: sumEv,
         pnl: settledCount > 0 ? sumPnl : null,
         edgePct: sumStake > 0 ? (sumEdgeStake / sumStake) * 100 : null,
+        stake: sumStake,
         settledCount,
       });
     }
 
     // Trailing-window totals in the header.
     const last = points[points.length - 1];
+    function fmtKShort(n) {
+      // Compact $ display for the header — e.g. $312.4k, $1.05M.
+      if (!Number.isFinite(n)) return '—';
+      const abs = Math.abs(n);
+      if (abs >= 1e6) return '$' + (n / 1e6).toFixed(2) + 'M';
+      if (abs >= 1e4) return '$' + (n / 1e3).toFixed(1) + 'k';
+      return '$' + n.toFixed(0);
+    }
     if (sumEl) {
       const evCls = last.ev >= 0 ? 'positive' : 'negative';
       const pnlCls = (last.pnl ?? 0) >= 0 ? 'positive' : 'negative';
@@ -10094,12 +10104,15 @@
       sumEl.innerHTML = ' &middot; last ' + WINDOW + ': '
         + 'EV <span class="' + evCls + '">' + (last.ev >= 0 ? '+$' : '-$') + Math.abs(last.ev).toFixed(0) + '</span> · '
         + 'P&amp;L <span class="' + pnlCls + '">' + ((last.pnl == null) ? '—' : ((last.pnl >= 0 ? '+$' : '-$') + Math.abs(last.pnl).toFixed(0))) + '</span> · '
-        + 'Edge <span class="' + edgeCls + '">' + ((last.edgePct == null) ? '—' : ((last.edgePct >= 0 ? '+' : '') + last.edgePct.toFixed(2) + '%')) + '</span>';
+        + 'Edge <span class="' + edgeCls + '">' + ((last.edgePct == null) ? '—' : ((last.edgePct >= 0 ? '+' : '') + last.edgePct.toFixed(2) + '%')) + '</span> · '
+        + 'Stake <span style="color:var(--text2);">' + fmtKShort(last.stake) + '</span>';
     }
 
     // Layout — match renderChartCumulPnlRoi's hand-rolled SVG style so
-    // the look feels consistent across charts.
-    const W = 720, H = 320, pad = { l: 70, r: 70, t: 28, b: 44 };
+    // the look feels consistent across charts. Right padding bumped to
+    // accommodate a second right-side axis (stake $) outside the inner
+    // edge-% axis.
+    const W = 760, H = 320, pad = { l: 70, r: 110, t: 28, b: 44 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
 
     // Left axis: $ amounts (EV + P&L share scale so they're directly comparable).
@@ -10109,12 +10122,19 @@
     const dPad = (rawMax$ - rawMin$) * 0.1 || 1;
     const dLo = rawMin$ - dPad, dHi = rawMax$ + dPad;
 
-    // Right axis: edge %.
+    // Right axis (inner): edge %.
     const edgeVals = points.map(p => p.edgePct).filter(v => v != null);
     const rawMinE = edgeVals.length ? Math.min(0, ...edgeVals) : 0;
     const rawMaxE = edgeVals.length ? Math.max(0, ...edgeVals) : 1;
     const ePad = (rawMaxE - rawMinE) * 0.1 || 0.5;
     const eLo = rawMinE - ePad, eHi = rawMaxE + ePad;
+
+    // Right axis (outer): stake $. Zero-anchored since cumulative stake
+    // is always non-negative. Pads max by 10% so the line never hugs
+    // the top edge.
+    const stakeVals = points.map(p => p.stake).filter(v => Number.isFinite(v));
+    const rawMaxS = stakeVals.length ? Math.max(...stakeVals) : 1;
+    const sLo = 0, sHi = rawMaxS * 1.1 || 1;
 
     const xMin = points[0].idx;
     const xMax = points[points.length - 1].idx;
@@ -10123,6 +10143,7 @@
     const scaleX = (idx) => pad.l + ((idx - xMin) / xRange) * chartW;
     const scaleYd = (v) => pad.t + chartH - ((v - dLo) / (dHi - dLo)) * chartH;
     const scaleYe = (v) => pad.t + chartH - ((v - eLo) / (eHi - eLo)) * chartH;
+    const scaleYs = (v) => pad.t + chartH - ((v - sLo) / (sHi - sLo)) * chartH;
 
     let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; height:auto; max-height:380px;">';
 
@@ -10137,12 +10158,24 @@
     // $ zero line
     svg += svgLine(pad.l, scaleYd(0), W - pad.r, scaleYd(0), 'var(--text3)', 0.8);
 
-    // Right-axis edge % ticks
+    // Right-axis edge % ticks (inner)
     const eStep = niceStep((eHi - eLo) / 5);
     for (let v = Math.ceil(eLo / eStep) * eStep; v <= eHi; v += eStep) {
       const y = scaleYe(v);
       const label = (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
       svg += svgText(W - pad.r + 8, y + 3, label, { anchor: 'start', size: 9, fill: 'var(--blue)' });
+    }
+
+    // Right-axis stake $ ticks (outer)
+    function fmtKaxis(n) {
+      if (Math.abs(n) >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+      if (Math.abs(n) >= 1e3) return '$' + Math.round(n / 1e3) + 'k';
+      return '$' + Math.round(n);
+    }
+    const sStep = niceStep((sHi - sLo) / 5);
+    for (let v = 0; v <= sHi; v += sStep) {
+      const y = scaleYs(v);
+      svg += svgText(W - pad.r + 50, y + 3, fmtKaxis(v), { anchor: 'start', size: 9, fill: 'var(--purple)' });
     }
 
     // X-axis ticks (5 evenly spaced parlay-index ticks)
@@ -10177,6 +10210,7 @@
     const evColor = 'var(--green)';
     const pnlColor = 'var(--amber)';
     const edgeColor = 'var(--blue)';
+    const stakeColor = 'var(--purple)';
 
     // EV line (solid, left axis)
     const evPath = buildPath(points.map(p => p.ev), scaleYd);
@@ -10186,9 +10220,13 @@
     const pnlPath = buildPath(points.map(p => p.pnl), scaleYd);
     if (pnlPath) svg += '<path d="' + pnlPath + '" fill="none" stroke="' + pnlColor + '" stroke-width="2"/>';
 
-    // Edge % line (dashed, right axis)
+    // Edge % line (dashed, right axis inner)
     const edgePath = buildPath(points.map(p => p.edgePct), scaleYe);
     if (edgePath) svg += '<path d="' + edgePath + '" fill="none" stroke="' + edgeColor + '" stroke-width="2" stroke-dasharray="5,3"/>';
+
+    // Stake $ line (dotted, right axis outer)
+    const stakePath = buildPath(points.map(p => p.stake), scaleYs);
+    if (stakePath) svg += '<path d="' + stakePath + '" fill="none" stroke="' + stakeColor + '" stroke-width="2" stroke-dasharray="2,3"/>';
 
     // Endpoint labels
     const lastIdx = points.length - 1;
@@ -10201,15 +10239,20 @@
     if (last.edgePct != null) svg += svgText(scaleX(last.idx) - 4, scaleYe(last.edgePct) - 4,
       ((last.edgePct >= 0 ? '+' : '') + last.edgePct.toFixed(2) + '% edge'),
       { anchor: 'end', size: 10, fill: edgeColor });
+    if (Number.isFinite(last.stake)) svg += svgText(scaleX(last.idx) - 4, scaleYs(last.stake) - 4,
+      fmtKShort(last.stake) + ' stake',
+      { anchor: 'end', size: 10, fill: stakeColor });
 
     // Legend
     svg += '<g transform="translate(' + (pad.l + 10) + ',' + (pad.t + 12) + ')">';
     svg += '<line x1="0" y1="0" x2="18" y2="0" stroke="' + evColor + '" stroke-width="2.2"/>';
     svg += svgText(24, 4, 'Total EV ($, left)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
-    svg += '<line x1="135" y1="0" x2="153" y2="0" stroke="' + pnlColor + '" stroke-width="2.2"/>';
-    svg += svgText(159, 4, 'Realized P&L ($, left)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
-    svg += '<line x1="295" y1="0" x2="313" y2="0" stroke="' + edgeColor + '" stroke-width="2" stroke-dasharray="5,3"/>';
-    svg += svgText(319, 4, 'Avg Edge (%, right, stake-wtd)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
+    svg += '<line x1="125" y1="0" x2="143" y2="0" stroke="' + pnlColor + '" stroke-width="2.2"/>';
+    svg += svgText(149, 4, 'Realized P&L ($, left)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
+    svg += '<line x1="265" y1="0" x2="283" y2="0" stroke="' + edgeColor + '" stroke-width="2" stroke-dasharray="5,3"/>';
+    svg += svgText(289, 4, 'Avg Edge (%, R inner)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
+    svg += '<line x1="420" y1="0" x2="438" y2="0" stroke="' + stakeColor + '" stroke-width="2" stroke-dasharray="2,3"/>';
+    svg += svgText(444, 4, 'Total Stake ($, R outer)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
     svg += '</g>';
 
     svg += '</svg>';
