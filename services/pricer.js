@@ -1272,32 +1272,53 @@ function priceParlay(legs, opts = {}) {
   // combo check here and consider a dedicated correlation factor.
   let sgpCorrelationFactor = 1;
   let sgpCorrelationCombo = null; // 'spread_total' | 'ml_total' | null
-  if (isSGPParlay && pricedLegs.length === 2) {
-    // Detect the structural combo from the actual legs rather than
-    // relying solely on opts.sgpCombo. The upstream sgpCombo classifier
-    // historically only set 'spread_total'; auto-detect ml_total too so
-    // those SGPs ALSO get a correlation factor instead of paying full
-    // sgpVigMultiplier with zero offset.
-    let spreadLeg = null, totalLeg = null, mlLeg = null;
+  // Detect SGP components (events with exactly 2 legs that form a known
+  // correlated combo). Previously gated to `pricedLegs.length === 2`,
+  // which excluded any multi-leg parlay that contained a 2-leg SGP
+  // component on a single event (e.g. a 5-leg parlay with Cavs ML +
+  // CLE@DET Over 216 sharing pxEventId 20023799). For those, the
+  // correlation factor never applied, so fairParlayProb was the naive
+  // product — overstating displayed Theo Edge by ~9pp on the example
+  // parlay 019e0334-… (2026-05-07) and the EV $ by ~6×.
+  //
+  // New policy: detect SGP components in any-length parlay. Apply the
+  // per-combo correlation factor MULTIPLICATIVELY across all detected
+  // components (independent SGPs on different events compound).
+  if (isSGPParlay) {
+    const eventLegs = {};
     for (const l of pricedLegs) {
-      const mt = l.lineInfo.marketType;
-      if (mt === 'spread') spreadLeg = l;
-      else if (mt === 'total') totalLeg = l;
-      else if (mt === 'moneyline') mlLeg = l;
+      const eid = l.lineInfo.pxEventId;
+      if (!eid) continue;
+      if (!eventLegs[eid]) eventLegs[eid] = [];
+      eventLegs[eid].push(l);
     }
-    if (spreadLeg && totalLeg) sgpCorrelationCombo = 'spread_total';
-    else if (mlLeg && totalLeg) sgpCorrelationCombo = 'ml_total';
-  }
-  if (sgpCorrelationCombo) {
     const byCombo = config.pricing.sgpCorrelationByCombo || {};
-    // Per-combo factor wins; legacy sgpCorrelationPositive is the
-    // fallback for spread_total to keep existing tuning behavior when
-    // the new map isn't configured.
-    if (byCombo[sgpCorrelationCombo] != null) {
-      sgpCorrelationFactor = byCombo[sgpCorrelationCombo];
-    } else if (sgpCorrelationCombo === 'spread_total') {
-      sgpCorrelationFactor = config.pricing.sgpCorrelationPositive || 1;
+    const detectedCombos = [];
+    for (const legs of Object.values(eventLegs)) {
+      if (legs.length !== 2) continue;
+      let spreadLeg = null, totalLeg = null, mlLeg = null;
+      for (const l of legs) {
+        const mt = l.lineInfo.marketType;
+        if (mt === 'spread') spreadLeg = l;
+        else if (mt === 'total') totalLeg = l;
+        else if (mt === 'moneyline') mlLeg = l;
+      }
+      let combo = null;
+      if (spreadLeg && totalLeg) combo = 'spread_total';
+      else if (mlLeg && totalLeg) combo = 'ml_total';
+      if (!combo) continue;
+      detectedCombos.push(combo);
+      // Per-combo factor wins; legacy sgpCorrelationPositive is the
+      // fallback for spread_total when the new map isn't configured.
+      let factor = 1;
+      if (byCombo[combo] != null) factor = byCombo[combo];
+      else if (combo === 'spread_total') factor = config.pricing.sgpCorrelationPositive || 1;
+      sgpCorrelationFactor *= factor;
     }
+    // Metadata: first detected combo for back-compat with consumers that
+    // expect a single string. (Multi-component SGPs are rare; the factor
+    // already compounds them correctly.)
+    if (detectedCombos.length > 0) sgpCorrelationCombo = detectedCombos[0];
   }
   // Maintain the existing log/instrumentation interface for
   // backward-compat with anything that reads sgpCorrelationSign.

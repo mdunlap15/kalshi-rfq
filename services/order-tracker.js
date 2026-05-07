@@ -5634,7 +5634,133 @@ module.exports = {
     return pid ? orders[pid] : null;
   },
   backfillGolfMetadata,
+  backfillSgpCorrelation,
 };
+
+/**
+ * Backfill SGP correlation factor on legacy parlays.
+ *
+ * Pre-fix (pricer.js commit before 2026-05-07), the SGP correlation factor
+ * block was gated to `pricedLegs.length === 2`. Multi-leg parlays containing
+ * a 2-leg SGP component (e.g. 5-leg parlay with Cavs ML + CLE@DET Over 216
+ * sharing pxEventId) skipped the boost, so fairParlayProb was the un-boosted
+ * naive product. Dashboard Theo Edge / EV columns then overstated by ~9pp /
+ * ~6× respectively (verified on parlay 019e0334-… 2026-05-07).
+ *
+ * This walk recomputes the correlation factor per the new pricer logic
+ * (any-length parlay, multiplicative across SGP components) and applies it
+ * to fairParlayProb on any order where it would be > 1 and isn't already
+ * baked in. Idempotent — orders with meta.sgpBackfilledAt are skipped.
+ *
+ * Returns { scanned, eligible, updated, errors }.
+ */
+async function backfillSgpCorrelation({ dryRun = false } = {}) {
+  const { config } = require('../config');
+  const byCombo = config.pricing.sgpCorrelationByCombo || {};
+  const sgpPosLegacy = config.pricing.sgpCorrelationPositive || 1;
+
+  function detectFactor(legs) {
+    // Mirrors the pricer.js any-length detection. Returns
+    // { factor, combos } where factor is the multiplicative correlation
+    // factor (1 if no SGP components detected).
+    const eventLegs = {};
+    for (const l of legs) {
+      const eid = l.pxEventId || l.lineInfo?.pxEventId;
+      if (!eid) continue;
+      if (!eventLegs[eid]) eventLegs[eid] = [];
+      eventLegs[eid].push(l);
+    }
+    let factor = 1;
+    const combos = [];
+    for (const evLegs of Object.values(eventLegs)) {
+      if (evLegs.length !== 2) continue;
+      let s = null, t = null, m = null;
+      for (const l of evLegs) {
+        const mt = l.market || l.marketType;
+        if (mt === 'spread') s = l;
+        else if (mt === 'total') t = l;
+        else if (mt === 'moneyline') m = l;
+      }
+      let combo = null;
+      if (s && t) combo = 'spread_total';
+      else if (m && t) combo = 'ml_total';
+      if (!combo) continue;
+      combos.push(combo);
+      let f = 1;
+      if (byCombo[combo] != null) f = byCombo[combo];
+      else if (combo === 'spread_total') f = sgpPosLegacy;
+      factor *= f;
+    }
+    return { factor, combos };
+  }
+
+  let scanned = 0, eligible = 0, updated = 0, errors = 0;
+  const sample = [];
+  const pending = [];
+  for (const [parlayId, order] of Object.entries(orders)) {
+    scanned++;
+    const meta = order.meta || {};
+    if (meta.sgpBackfilledAt) continue;       // already backfilled
+    if (!meta.isSGP) continue;                 // non-SGP parlays unaffected
+    const legs = order.legs || meta.legs || [];
+    if (!Array.isArray(legs) || legs.length < 2) continue;
+
+    const { factor, combos } = detectFactor(legs);
+    if (factor === 1) continue;                // no detectable SGP component
+
+    // If existing meta.sgpCorrelationFactor matches the new factor, the
+    // boost is already baked in — skip (e.g. 2-leg SGPs priced under the
+    // old gate that already got the right factor).
+    const existing = Number(meta.sgpCorrelationFactor);
+    if (Number.isFinite(existing) && Math.abs(existing - factor) < 1e-6) continue;
+
+    eligible++;
+    const before = Number(order.fairParlayProb);
+    if (!Number.isFinite(before) || before <= 0 || before >= 1) continue;
+
+    // If existing factor is some OTHER non-1 value (rare — e.g., a
+    // pre-existing K-prop boost), we'd be double-applying. The
+    // K-prop+ML carve-out already lives on a separate flag
+    // (isKpropMlSameTeamSGP / sgpPropMlCorrBoost), but its factor is
+    // baked into fairParlayProb without being reflected in
+    // sgpCorrelationFactor. Detect it to avoid double-apply: if existing
+    // is 1 (or undefined) we're safe; otherwise skip and log.
+    if (Number.isFinite(existing) && existing !== 1) {
+      log.warn('SgpBackfill', `Skipping ${parlayId} — existing sgpCorrelationFactor=${existing} (new would be ${factor}); manual review needed`);
+      continue;
+    }
+
+    const after = Math.max(0.001, Math.min(0.99, before * factor));
+    if (sample.length < 8) {
+      sample.push({
+        parlayId, combos,
+        fairBefore: Number(before.toFixed(6)),
+        fairAfter: Number(after.toFixed(6)),
+        factor: Number(factor.toFixed(4)),
+        legs: legs.length,
+      });
+    }
+
+    if (!dryRun) {
+      order.fairParlayProb = after;
+      order.meta = order.meta || {};
+      order.meta.fairParlayProb = after;
+      order.meta.sgpCorrelationFactor = factor;
+      order.meta.sgpCorrelationCombo = combos[0] || meta.sgpCorrelationCombo || null;
+      order.meta.sgpBackfilledAt = new Date().toISOString();
+      order.meta.sgpBackfillBefore = before;
+      pending.push(db.saveOrder(order).then(() => { updated++; }).catch(err => {
+        errors++;
+        log.warn('SgpBackfill', `saveOrder failed for ${parlayId}: ${err.message}`);
+      }));
+    } else {
+      updated++;
+    }
+  }
+  if (pending.length) await Promise.all(pending);
+
+  return { scanned, eligible, updated, errors, dryRun, sample };
+}
 
 /**
  * Walk all in-memory orders, find ones flagged meta.reconstructed=true with

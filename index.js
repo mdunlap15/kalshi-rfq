@@ -5582,6 +5582,22 @@ function startStatusServer() {
     log.warn('AdminDisable', `Line ${lineId} enabled`);
     res.json({ ok: true, lineId, disabled: false });
   });
+
+  // One-shot backfill of SGP correlation factor on legacy parlays. Walks
+  // all in-memory orders, recomputes the multi-leg-aware correlation
+  // factor, and applies it to fairParlayProb (top-level + meta) on any
+  // SGP parlay where it wasn't baked in. Idempotent — replays are safe.
+  // Pass ?dryRun=1 to preview without writing.
+  app.post('/admin/backfill-sgp-correlation', async (req, res) => {
+    try {
+      const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true' || req.body?.dryRun === true;
+      const result = await orderTracker.backfillSgpCorrelation({ dryRun });
+      log.warn('SgpBackfill', `${dryRun ? '[DRY-RUN] ' : ''}scanned=${result.scanned} eligible=${result.eligible} updated=${result.updated} errors=${result.errors}`);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
   app.post('/admin/disable-event', (req, res) => {
     const { pxEventId } = req.body || {};
     if (pxEventId == null) return res.status(400).json({ ok: false, error: 'pxEventId required' });
