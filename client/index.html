@@ -8453,9 +8453,9 @@
           + '<th ' + hClick('time') + ' style="padding:2px 6px;text-align:left; cursor:pointer;">Time' + arrow('time') + '</th>'
           + '<th ' + hClick('selections') + ' style="padding:2px 6px;text-align:left; cursor:pointer;">Selections' + arrow('selections') + '</th>'
           + '<th ' + hClick('legs') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Legs' + arrow('legs') + '</th>'
-          + '<th ' + hClick('odds') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">Odds' + arrow('odds') + '</th>'
-          + '<th ' + hClick('stake') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">Stake' + arrow('stake') + '</th>'
-          + '<th ' + hClick('pnl') + ' style="padding:2px 6px;text-align:right; cursor:pointer;">P&L' + arrow('pnl') + '</th>'
+          + '<th ' + hClick('odds') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Odds' + arrow('odds') + '</th>'
+          + '<th ' + hClick('stake') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Stake' + arrow('stake') + '</th>'
+          + '<th ' + hClick('pnl') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">P&L' + arrow('pnl') + '</th>'
           + '<th ' + hClick('result') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Result' + arrow('result') + '</th>'
           + '</tr>';
         const rows = d.orders.filter(o => o.pnl != null).map(o => {
@@ -8514,9 +8514,9 @@
           svg += '<td style="padding:2px 6px;white-space:nowrap;">' + r.time + '</td>';
           svg += '<td style="padding:2px 6px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + r.selectionsFull.replace(/"/g, '&quot;') + '">' + r.selections + '</td>';
           svg += '<td style="padding:2px 6px;text-align:center;">' + r.legCount + '</td>';
-          svg += '<td style="padding:2px 6px;text-align:right;">' + r.oddsStr + '</td>';
-          svg += '<td style="padding:2px 6px;text-align:right;">' + fmtDollar(r.stake) + '</td>';
-          svg += '<td style="padding:2px 6px;text-align:right;" class="' + pnlCls2 + '">' + fmtPnl(r.pnl) + '</td>';
+          svg += '<td style="padding:2px 6px;text-align:center;">' + r.oddsStr + '</td>';
+          svg += '<td style="padding:2px 6px;text-align:center;">' + fmtDollar(r.stake) + '</td>';
+          svg += '<td style="padding:2px 6px;text-align:center;" class="' + pnlCls2 + '">' + fmtPnl(r.pnl) + '</td>';
           svg += '<td style="padding:2px 6px;text-align:center;color:' + resultColor + ';">' + r.result.charAt(0).toUpperCase() + r.result.slice(1) + '</td>';
           svg += '</tr>';
           if (parlayDetailId) {
