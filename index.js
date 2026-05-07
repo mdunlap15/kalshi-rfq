@@ -6114,8 +6114,9 @@ function startStatusServer() {
     const postWaitMs = parseInt(req.query.waitMs) || 10000;
     const eventDetailNav = req.query.eventDetail === '1' || req.query.eventDetail === 'true';
     const maxEventDetails = parseInt(req.query.maxDetails) || 3;
+    const captureAllDkHosts = req.query.allHosts === '1' || req.query.allHosts === 'true';
     try {
-      const capture = await dkScraper.probeDkPage({ url, subcategory, postWaitMs, eventDetailNav, maxEventDetails });
+      const capture = await dkScraper.probeDkPage({ url, subcategory, postWaitMs, eventDetailNav, maxEventDetails, captureAllDkHosts });
       res.json({ ok: true, ...capture });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message, stack: err.stack });

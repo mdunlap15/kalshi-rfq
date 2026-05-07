@@ -2498,7 +2498,7 @@ function lookupGolfMatchupFairProb(teamName, roundNum) {
  *   ?url=https://sportsbook.draftkings.com/leagues/basketball/nba&sub=team-totals
  *   ?url=https://sportsbook.draftkings.com/event/<slug>/<id>&sub=1st-half
  */
-async function probeDkPage({ url, subcategory = null, postWaitMs = 10000, eventDetailNav = false, maxEventDetails = 3 }) {
+async function probeDkPage({ url, subcategory = null, postWaitMs = 10000, eventDetailNav = false, maxEventDetails = 3, captureAllDkHosts = false }) {
   const startedAt = Date.now();
   const browser = await puppeteer().launch({
     headless: true,
@@ -2508,6 +2508,9 @@ async function probeDkPage({ url, subcategory = null, postWaitMs = 10000, eventD
     navigatedUrl: null,
     elapsedMs: 0,
     xhrCount: 0,
+    xhrHostCounts: {},      // when captureAllDkHosts: host → count
+    xhrSampleUrls: [],      // when captureAllDkHosts: first N XHR URLs for diagnostics
+    payloadShapes: [],      // when captureAllDkHosts: first N payload top-level keys (for shape discovery)
     marketTypesSeen: {},   // marketType.name -> count
     sampleEvents: [],       // first N events for matching reference
     sampleSelections: {},   // marketType.name -> up to 3 sample selections
@@ -2522,7 +2525,14 @@ async function probeDkPage({ url, subcategory = null, postWaitMs = 10000, eventD
     const allPayloads = [];
     page.on('response', async (resp) => {
       const rurl = resp.url();
-      if (!rurl.includes('sportsbook-nash.draftkings.com')) return;
+      // Default behavior: only sportsbook-nash (existing /leagues/* scrapers).
+      // Discovery mode (captureAllDkHosts=true): capture XHRs from any DK host
+      // and tag the host so we can find which API serves /sports/* pages.
+      if (captureAllDkHosts) {
+        if (!/draftkings\.com/.test(rurl)) return;
+      } else {
+        if (!rurl.includes('sportsbook-nash.draftkings.com')) return;
+      }
       try {
         const ct = resp.headers()['content-type'] || '';
         if (!ct.includes('json')) return;
@@ -2530,6 +2540,21 @@ async function probeDkPage({ url, subcategory = null, postWaitMs = 10000, eventD
         if (!data || typeof data !== 'object') return;
         allPayloads.push({ url: rurl, data });
         capture.xhrCount++;
+        if (captureAllDkHosts) {
+          const host = (rurl.match(/^https?:\/\/([^/]+)/) || [])[1] || rurl;
+          capture.xhrHostCounts[host] = (capture.xhrHostCounts[host] || 0) + 1;
+          if (capture.xhrSampleUrls.length < 30) {
+            // Strip query for readability; keep path for routing insight.
+            capture.xhrSampleUrls.push(rurl.split('?')[0]);
+          }
+          if (capture.payloadShapes.length < 15 && data && typeof data === 'object') {
+            capture.payloadShapes.push({
+              path: rurl.split('?')[0].replace(/^https?:\/\/[^/]+/, ''),
+              keys: Object.keys(data).slice(0, 12),
+              sample: JSON.stringify(data).slice(0, 250),
+            });
+          }
+        }
       } catch { /* ignore parse errors */ }
     });
 
