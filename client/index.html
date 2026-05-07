@@ -9870,8 +9870,21 @@
     const pnlLo = rawMinPnl - pnlPad;
     const pnlHi = rawMaxPnl + pnlPad;
 
-    const rawMinRoi = Math.min(0, ...points.map(p => p.roi));
-    const rawMaxRoi = Math.max(0, ...points.map(p => p.roi));
+    // ROI axis range: skip the warmup period where cumulRisk is tiny and
+    // ROI swings wildly on a single win/loss (e.g. first $50 of risk
+    // produces ±50%+ swings). Using all points compresses the meaningful
+    // late-stage range into a few pixels because the early extremes
+    // dominate. Skip first ~5% of points (min 20) when computing axis
+    // bounds — early points still draw, but extreme values clip off the
+    // top/bottom of the chart via the chart-area clipPath added below.
+    const roiWarmup = Math.min(points.length - 1, Math.max(20, Math.floor(points.length * 0.05)));
+    const stableRois = points.slice(roiWarmup).map(p => p.roi);
+    const rawMinRoi = stableRois.length > 0
+      ? Math.min(0, ...stableRois)
+      : Math.min(0, ...points.map(p => p.roi));
+    const rawMaxRoi = stableRois.length > 0
+      ? Math.max(0, ...stableRois)
+      : Math.max(0, ...points.map(p => p.roi));
     const roiPad = (rawMaxRoi - rawMinRoi) * 0.1 || 1;
     const roiLo = rawMinRoi - roiPad;
     const roiHi = rawMaxRoi + roiPad;
@@ -9885,6 +9898,10 @@
     const scaleYroi = (v) => pad.t + chartH - ((v - roiLo) / (roiHi - roiLo)) * chartH;
 
     let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:360px;">`;
+    // ClipPath bounding the chart drawing area — used on the ROI line so
+    // early-warmup ROI values that fall outside the narrowed axis range
+    // don't bleed below/above the chart.
+    svg += `<defs><clipPath id="cumul-pnlroi-chart-clip"><rect x="${pad.l}" y="${pad.t}" width="${chartW}" height="${chartH}"/></clipPath></defs>`;
 
     // Left axis: P&L gridlines (4-5 ticks across the range)
     const pnlTicks = 5;
@@ -9946,7 +9963,7 @@
     for (let i = 0; i < points.length; i++) {
       roiLinePath += (i === 0 ? 'M' : ' L') + scaleX(points[i].t) + ',' + scaleYroi(points[i].roi);
     }
-    svg += `<path d="${roiLinePath}" fill="none" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5,3" />`;
+    svg += `<path d="${roiLinePath}" fill="none" stroke="var(--blue)" stroke-width="2" stroke-dasharray="5,3" clip-path="url(#cumul-pnlroi-chart-clip)" />`;
 
     // Dots on P&L line — subsample if too many to keep chart readable
     const dotStep = points.length > 100 ? Math.ceil(points.length / 60) : 1;
