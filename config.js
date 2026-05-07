@@ -617,10 +617,50 @@ const config = {
     //                        with under)
     //   ml_spread    : not listed; correlation rules already block this
     //                  combo (anti-arb) regardless of pricing
-    //   3+leg combos : not yet supported; use 1.0 (no boost) until calibrated
+    //   3+leg combos : handled separately via sgpCorrelation3PlusByCombo
+    //                  (any event with 3+ legs falls through to that map).
     sgpCorrelationByCombo: (() => {
       const defaults = { spread_total: 1.15, ml_total: 1.10 };
       const raw = process.env.SGP_CORRELATION_BY_COMBO;
+      if (!raw || !raw.trim()) return defaults;
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const out = { ...defaults };
+          for (const [k, v] of Object.entries(parsed)) {
+            const num = parseFloat(v);
+            if (Number.isFinite(num) && num > 0) out[k] = num;
+          }
+          return out;
+        }
+      } catch (e) { /* fall through to defaults */ }
+      return defaults;
+    })(),
+    // 3+ legs same-event SGP correlation factors. Previously these
+    // combinations got NO correlation discount because the 2-leg detector
+    // skipped them (legs.length === 2 gate). Operator confirmed 2026-05-07
+    // that those parlays were systematically under-charging vs true
+    // correlated likelihood.
+    //
+    // Factor lookup uses a sorted-market signature, e.g.:
+    //   moneyline + spread + total      → 'ml_spread_total'
+    //   moneyline + 2× total (alt lines) → 'ml_total_total'
+    //   moneyline + spread + 2× total    → 'ml_spread_total_total'
+    //   anything else                    → 'default'
+    //
+    // Defaults are conservative starting points (no empirical calibration
+    // yet — needs DK/FD SGP price observations to refine):
+    //   ml_spread_total: 1.20 — slightly more than either 2-leg ml_total
+    //                    (1.10) or spread_total (1.15) since adding a 3rd
+    //                    correlated leg compounds correlation but not
+    //                    multiplicatively (which would be 1.10×1.15=1.265).
+    //   default:         1.15 — fallback for unrecognized combos and 4+leg
+    //                    same-event SGPs.
+    //
+    // Same JSON env-var override pattern as sgpCorrelationByCombo.
+    sgpCorrelation3PlusByCombo: (() => {
+      const defaults = { ml_spread_total: 1.20, default: 1.15 };
+      const raw = process.env.SGP_CORRELATION_3PLUS_BY_COMBO;
       if (!raw || !raw.trim()) return defaults;
       try {
         const parsed = JSON.parse(raw);

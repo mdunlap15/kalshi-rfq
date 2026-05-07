@@ -1293,26 +1293,59 @@ function priceParlay(legs, opts = {}) {
       eventLegs[eid].push(l);
     }
     const byCombo = config.pricing.sgpCorrelationByCombo || {};
+    const by3Plus = config.pricing.sgpCorrelation3PlusByCombo || {};
     const detectedCombos = [];
-    for (const legs of Object.values(eventLegs)) {
-      if (legs.length !== 2) continue;
-      let spreadLeg = null, totalLeg = null, mlLeg = null;
-      for (const l of legs) {
+
+    // Build a sorted market signature for an event's leg set. Used both
+    // for direct 2-leg combo lookups (e.g. 'ml_total') and for the 3+leg
+    // signature lookups (e.g. 'ml_spread_total', 'ml_total_total' for
+    // 2 alt totals + ml).
+    function comboSignature(legs) {
+      const parts = legs.map(l => {
         const mt = l.lineInfo.marketType;
-        if (mt === 'spread') spreadLeg = l;
-        else if (mt === 'total') totalLeg = l;
-        else if (mt === 'moneyline') mlLeg = l;
-      }
+        if (mt === 'moneyline') return 'ml';
+        if (mt === 'spread') return 'spread';
+        if (mt === 'total') return 'total';
+        return mt; // pass through anything we don't normalize (e.g. team_total)
+      }).sort();
+      return parts.join('_');
+    }
+
+    for (const legs of Object.values(eventLegs)) {
       let combo = null;
-      if (spreadLeg && totalLeg) combo = 'spread_total';
-      else if (mlLeg && totalLeg) combo = 'ml_total';
-      if (!combo) continue;
-      detectedCombos.push(combo);
-      // Per-combo factor wins; legacy sgpCorrelationPositive is the
-      // fallback for spread_total when the new map isn't configured.
       let factor = 1;
-      if (byCombo[combo] != null) factor = byCombo[combo];
-      else if (combo === 'spread_total') factor = config.pricing.sgpCorrelationPositive || 1;
+
+      if (legs.length === 2) {
+        // 2-leg path — legacy combo names ('ml_total','spread_total').
+        let spreadLeg = null, totalLeg = null, mlLeg = null;
+        for (const l of legs) {
+          const mt = l.lineInfo.marketType;
+          if (mt === 'spread') spreadLeg = l;
+          else if (mt === 'total') totalLeg = l;
+          else if (mt === 'moneyline') mlLeg = l;
+        }
+        if (spreadLeg && totalLeg) combo = 'spread_total';
+        else if (mlLeg && totalLeg) combo = 'ml_total';
+        if (!combo) continue;
+        if (byCombo[combo] != null) factor = byCombo[combo];
+        else if (combo === 'spread_total') factor = config.pricing.sgpCorrelationPositive || 1;
+      } else if (legs.length >= 3) {
+        // 3+ legs same-event — previously got NO correlation discount.
+        // Build a sorted market signature and look up in the 3+ map;
+        // falls back to 'default' for unrecognized combos.
+        combo = comboSignature(legs);
+        if (by3Plus[combo] != null) {
+          factor = by3Plus[combo];
+        } else {
+          factor = by3Plus.default || 1;
+          log.debug('Pricing', `SGP 3+leg combo '${combo}' not in sgpCorrelation3PlusByCombo — using default factor ${factor}`);
+        }
+      } else {
+        continue; // 1 leg per event isn't an SGP component
+      }
+
+      if (factor === 1) continue;
+      detectedCombos.push(combo);
       sgpCorrelationFactor *= factor;
     }
     // Metadata: first detected combo for back-compat with consumers that
