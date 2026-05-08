@@ -7821,24 +7821,41 @@
       // parlays never export as Open when _pxPositions is stale (60s
       // ledger TTL on the server).
       const allLocal = orderState.allOrders || {};
-      // Also exclude stale-confirmed (all legs started >12h ago, OR any
-      // leg already has a known game result). These are almost
-      // certainly settled or failed on PX but couldn't be reconciled.
-      // Mirrors the filter applied in renderPositions.
+      // Stale-confirmed filter — must mirror renderPositions's
+      // isStaleConfirmed exactly so the dashboard and the CSV export agree
+      // on what's "still open." Two prior bugs caused divergence (operator
+      // hit this 2026-05-08 with R1 Truist Championship golf parlays):
+      //   1) Multi-day markets (golf_matchups, series_*) span 4+ day
+      //      tournaments / multi-game series — the 12h startTime cutoff
+      //      misfires. Dashboard exempts them; export must too.
+      //   2) "ANY leg resolved → stale" was wrong — partial leg resolution
+      //      is normal mid-event. Stale only when ALL legs are resolved
+      //      (matches dashboard).
       const STALE_CUT = 12 * 3600 * 1000;
       const nowMs = Date.now();
-      const legResolved = (legs) => {
-        for (const l of legs || []) {
+      const allLegsResolved = (legs) => {
+        if (!legs || legs.length === 0) return false;
+        for (const l of legs) {
           const r = l.inferredResult || l.settlementStatus || l.settlement_status;
-          if (r && r !== 'pending' && r !== 'unknown') return true;
+          if (!r || r === 'pending' || r === 'unknown') return false;
         }
-        return false;
+        return true;
       };
       const isStale = (o) => {
         if (!o || o.status !== 'confirmed') return false;
         const legs = o.legs || (o.meta && o.meta.legs) || [];
         if (legs.length === 0) return false;
-        if (legResolved(legs)) return true;
+        // Multi-day exemption: golf matchups and series markets span
+        // multiple days, so the time-based cutoff would falsely flag
+        // them. Hide only when every leg has resolved.
+        const multiDayExempt = legs.some(l => {
+          const m = l.market || l.marketType;
+          const sp = l.sport || l.oddsApiSport;
+          return (typeof m === 'string' && m.startsWith('series_'))
+            || sp === 'golf_matchups';
+        });
+        if (multiDayExempt) return allLegsResolved(legs);
+        if (allLegsResolved(legs)) return true;
         let latest = null;
         for (const l of legs) {
           const st = l.startTime || l.start_time;
