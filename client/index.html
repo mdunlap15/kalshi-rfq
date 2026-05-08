@@ -11799,6 +11799,14 @@
       if (linesState.team) qs.set('team', linesState.team);
       if (linesState.event) qs.set('event', linesState.event);
       qs.set('limit', String(linesState.limit || 500));
+      // Cache-buster so a CDN/browser-cached empty response from earlier
+      // (e.g., before MMA seeded today) can't keep returning. Operator
+      // hit this 2026-05-08: header counter showed MMA: 78 lines but the
+      // sport-filtered Lines table came back empty because a stale
+      // ?sport=mma_mixed_martial_arts response from an earlier-in-the-day
+      // pre-seed window was being served. The endpoint sets no Cache-Control
+      // headers so an intermediate cache could legitimately reuse the body.
+      qs.set('_t', String(Date.now()));
       const data = await fetchJSON('/lines/detail?' + qs.toString());
       linesState.loaded = true;
       linesState._rows = (data && data.lines) || [];
