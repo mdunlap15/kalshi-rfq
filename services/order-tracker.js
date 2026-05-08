@@ -2342,12 +2342,25 @@ function getStats() {
 /**
  * Get P&L summary grouped by sport.
  */
+// Targeted bucket-key normalizer — mirrors client/index.html bucketSportKey.
+// Collapses 'Ice Hockey' / 'hockey' / 'NHL' raw spellings into the canonical
+// odds-feed key 'icehockey_nhl' so backfilled and live orders bucket together.
+// Same for golf variants → 'golf_matchups'. Soccer leagues are left split
+// per operator preference.
+function bucketSportKey(raw) {
+  if (!raw) return raw;
+  const s = String(raw).toLowerCase().trim();
+  if (s === 'ice hockey' || s === 'hockey' || s === 'nhl') return 'icehockey_nhl';
+  if (s === 'golf' || s === 'pga' || s === 'lpga' || s === 'golf_pga_championship') return 'golf_matchups';
+  return raw;
+}
+
 function getPnLBySport() {
   const bySport = {};
   for (const order of Object.values(orders)) {
     if (order.pnl == null) continue;
     const legs = order.meta?.legs || order.legs || [];
-    const knownSports = [...new Set(legs.map(l => l.sport).filter(s => s && s !== 'unknown'))];
+    const knownSports = [...new Set(legs.map(l => bucketSportKey(l.sport)).filter(s => s && s !== 'unknown'))];
     let sport;
     if (knownSports.length === 0) sport = 'Unknown';
     else if (knownSports.length === 1) sport = knownSports[0];

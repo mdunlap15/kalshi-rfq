@@ -5949,7 +5949,7 @@
     const bySport = {};
     for (const o of settled) {
       const legs = o.legs || o.meta?.legs || [];
-      const knownSports = [...new Set(legs.map(l => l.sport).filter(s => s && s !== 'unknown'))];
+      const knownSports = [...new Set(legs.map(l => bucketSportKey(l.sport)).filter(s => s && s !== 'unknown'))];
       let sport;
       if (knownSports.length === 0) sport = 'Unknown';
       else if (knownSports.length === 1) sport = knownSports[0];
@@ -7434,11 +7434,33 @@
       'soccer_germany_bundesliga': 'Bundesliga',
       'soccer_france_ligue_one': 'Ligue 1',
       'soccer_usa_nwsl': 'NWSL',
+      'golf_matchups': 'Golf',
       'golf_pga_championship': 'PGA',
       'mma_mixed_martial_arts': 'MMA',
       'boxing_boxing': 'Boxing',
     };
     return map[sport] || (sport === 'unknown' ? 'Unknown' : sport);
+  }
+
+  /**
+   * Targeted bucket-key normalizer for P&L-by-sport aggregations.
+   *
+   * Some legs come through with the canonical odds-feed key
+   * ('icehockey_nhl', 'golf_matchups') while others — especially older
+   * backfilled orders — carry a pretty-name string ('Ice Hockey', 'Golf').
+   * Without normalization those produce duplicate buckets in the P&L by
+   * Sport table. Collapse the known duplicates here while preserving the
+   * per-league soccer split (which the operator wants to keep visible).
+   */
+  function bucketSportKey(raw) {
+    if (!raw) return raw;
+    const s = String(raw).toLowerCase().trim();
+    // Hockey: every variant rolls to icehockey_nhl (sportLabel renders NHL)
+    if (s === 'ice hockey' || s === 'hockey' || s === 'nhl') return 'icehockey_nhl';
+    // Golf: collapse the matchup feed AND the legacy 'Golf' string
+    // AND tournament outrights into one bucket. sportLabel renders "Golf".
+    if (s === 'golf' || s === 'pga' || s === 'lpga' || s === 'golf_pga_championship') return 'golf_matchups';
+    return raw;
   }
 
   /**
