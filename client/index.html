@@ -9907,24 +9907,13 @@
     const pnlLo = rawMinPnl - pnlPad;
     const pnlHi = rawMaxPnl + pnlPad;
 
-    // ROI axis range: skip the warmup period where cumulRisk is tiny and
-    // ROI swings wildly on a single win/loss (e.g. first $50 of risk
-    // produces ±50%+ swings). Using all points compresses the meaningful
-    // late-stage range into a few pixels because the early extremes
-    // dominate. Skip first ~5% of points (min 20) when computing axis
-    // bounds — early points still draw, but extreme values clip off the
-    // top/bottom of the chart via the chart-area clipPath added below.
-    const roiWarmup = Math.min(points.length - 1, Math.max(20, Math.floor(points.length * 0.05)));
-    const stableRois = points.slice(roiWarmup).map(p => p.roi);
-    const rawMinRoi = stableRois.length > 0
-      ? Math.min(0, ...stableRois)
-      : Math.min(0, ...points.map(p => p.roi));
-    const rawMaxRoi = stableRois.length > 0
-      ? Math.max(0, ...stableRois)
-      : Math.max(0, ...points.map(p => p.roi));
-    const roiPad = (rawMaxRoi - rawMinRoi) * 0.1 || 1;
-    const roiLo = rawMinRoi - roiPad;
-    const roiHi = rawMaxRoi + roiPad;
+    // ROI axis: fixed -10% / +10% range. Cumulative ROI on a $400k+
+    // book settles into a narrow band (typically ±5%); a fixed window
+    // keeps the late-stage signal readable and lets the warmup period's
+    // wild swings clip via the chart-area clipPath rather than dictating
+    // the axis range.
+    const roiLo = -10;
+    const roiHi = 10;
 
     const tMin = points[0].t;
     const tMax = points[points.length - 1].t;
