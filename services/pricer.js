@@ -1317,6 +1317,13 @@ function priceParlay(legs, opts = {}) {
 
       if (legs.length === 2) {
         // 2-leg path — legacy combo names ('ml_total','spread_total').
+        // For spread_total, also detect the directional sub-combo
+        // (fav+over, dog+under, fav+under, dog+over) so the per-direction
+        // factor can apply if configured. FD calibration 2026-05-07
+        // showed factor ranges from 1.02 (dog+under) to 1.30 (fav+over)
+        // — single-value spread_total can't capture that spread, so a
+        // directional key wins the lookup if present, falling back to
+        // the un-directed 'spread_total' value otherwise.
         let spreadLeg = null, totalLeg = null, mlLeg = null;
         for (const l of legs) {
           const mt = l.lineInfo.marketType;
@@ -1324,11 +1331,31 @@ function priceParlay(legs, opts = {}) {
           else if (mt === 'total') totalLeg = l;
           else if (mt === 'moneyline') mlLeg = l;
         }
-        if (spreadLeg && totalLeg) combo = 'spread_total';
-        else if (mlLeg && totalLeg) combo = 'ml_total';
+        if (spreadLeg && totalLeg) {
+          combo = 'spread_total';
+          // Directional key: spread_<favOrDog>_<overOrUnder>.
+          //   spreadLeg.lineInfo.line < 0 → bettor's side is favorite
+          //   totalLeg.lineInfo.selection 'over'/'under' → which side of total
+          const spreadLine = Number(spreadLeg.lineInfo.line);
+          const totalSel = String(totalLeg.lineInfo.selection || totalLeg.lineInfo.oddsApiSelection || '').toLowerCase();
+          if (Number.isFinite(spreadLine) && spreadLine !== 0 && (totalSel === 'over' || totalSel === 'under')) {
+            const sd = spreadLine < 0 ? 'fav' : 'dog';
+            const td = totalSel; // 'over' or 'under'
+            const directional = `spread_${sd}_${td}`;
+            if (byCombo[directional] != null) {
+              factor = byCombo[directional];
+              combo = directional; // metadata reflects what actually applied
+            }
+          }
+        } else if (mlLeg && totalLeg) {
+          combo = 'ml_total';
+        }
         if (!combo) continue;
-        if (byCombo[combo] != null) factor = byCombo[combo];
-        else if (combo === 'spread_total') factor = config.pricing.sgpCorrelationPositive || 1;
+        // Fall back to un-directed factor when no directional key matched.
+        if (factor === 1) {
+          if (byCombo[combo] != null) factor = byCombo[combo];
+          else if (combo === 'spread_total') factor = config.pricing.sgpCorrelationPositive || 1;
+        }
       } else if (legs.length >= 3) {
         // 3+ legs same-event — previously got NO correlation discount.
         // Build a sorted market signature and look up in the 3+ map;

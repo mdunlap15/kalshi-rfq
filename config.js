@@ -606,21 +606,46 @@ const config = {
     // applied on TOP of zero correlation discount — pricing every ml+total
     // SGP looser than fair AND wider with vig, double-disadvantage.
     //
-    // Map keys are sorted alphabetically: 'ml_total' (not 'total_ml').
-    // Defaults are conservative — calibrated below empirical book discounts
-    // so we don't over-boost fair on weak data. Tune up gradually with
-    // acceptance/ROI data via SGP_CORRELATION_BY_COMBO env JSON map.
+    // Lookup precedence (in pricer.js):
+    //   1. Directional key for spread_total (e.g. 'spread_fav_over')
+    //      — pricer detects spread side (line < 0 = fav, > 0 = dog) and
+    //        total side (selection over/under) and tries this key first
+    //   2. Un-directed combo key ('spread_total', 'ml_total')
+    //   3. Legacy sgpCorrelationPositive (spread_total only, when even
+    //      the un-directed key isn't configured)
     //
-    //   spread_total : 1.15 (existing default — moderate, see comment above)
-    //   ml_total     : 1.10 (smaller — strongest when team wins AND scores;
-    //                        weaker when team wins low-scoring or blowout
-    //                        with under)
-    //   ml_spread    : not listed; correlation rules already block this
-    //                  combo (anti-arb) regardless of pricing
-    //   3+leg combos : handled separately via sgpCorrelation3PlusByCombo
-    //                  (any event with 3+ legs falls through to that map).
+    // Defaults calibrated 2026-05-07 from FanDuel's actual SGP-builder
+    // prices on 4 sample SGPs (Nationals ml+total, Rays spread+total
+    // dog+under, Yankees spread+total fav+over, Habs ml+total in NHL).
+    // Implied factors back-calculated from FD vs naive product:
+    //
+    //   ml_total              MLB winning+over: ~1.18 → set 1.15
+    //                         NHL winning+over: ~1.07 (lower variance)
+    //                         Single value used; bias toward MLB sample.
+    //   spread_total          Un-directed fallback: 1.15 (compromise)
+    //   spread_fav_over       Strong positive correlation (blowout = high
+    //                         total): observed 1.30
+    //   spread_dog_under      Weak positive correlation (close low-margin
+    //                         games tend low-total too): observed 1.02
+    //   spread_fav_under      Negative correlation (fav blows out usually
+    //                         scores high) — bettor edge here, set 0.95
+    //   spread_dog_over       Negative correlation (dog upset rare and
+    //                         not necessarily high-scoring): set 0.95
+    //   ml_spread             Not listed; correlation rules already block
+    //                         this combo (anti-arb) regardless of pricing
+    //   3+leg combos          Handled separately via
+    //                         sgpCorrelation3PlusByCombo
+    //
+    // All overridable via SGP_CORRELATION_BY_COMBO env JSON map.
     sgpCorrelationByCombo: (() => {
-      const defaults = { spread_total: 1.15, ml_total: 1.10 };
+      const defaults = {
+        spread_total: 1.15,
+        ml_total: 1.15,
+        spread_fav_over: 1.30,
+        spread_dog_under: 1.02,
+        spread_fav_under: 0.95,
+        spread_dog_over: 0.95,
+      };
       const raw = process.env.SGP_CORRELATION_BY_COMBO;
       if (!raw || !raw.trim()) return defaults;
       try {
