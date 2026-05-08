@@ -581,9 +581,18 @@ const config = {
     //   'spread_total'  — spread + total on same game (moderate correlation)
     //   'ml_total'      — moneyline + total (strong correlation, −37% ROI historically)
     //   'ml_spread'     — still blocked by correlation rules regardless (highly correlated)
-    //   empty string    — no SGPs allowed (safe default-ish; matches pre-this-change)
-    sgpAllowedCombos: (process.env.SGP_ALLOWED_COMBOS || 'spread_total')
-      .split(',').map(s => s.trim()).filter(Boolean),
+    //   empty string    — explicitly disables ALL SGP combos
+    //   unset           — falls back to legacy default 'spread_total'
+    //
+    // The explicit-empty handling matters: setting SGP_ALLOWED_COMBOS=""
+    // on Railway should mean "block every SGP", not "fall back to allowing
+    // spread_total". Distinguish unset (undefined) from explicitly empty
+    // ('') so the env var can actually disable SGPs. K-prop carve-outs
+    // (kprop_ml, kprop_kprop) are auto-included downstream regardless.
+    sgpAllowedCombos: (process.env.SGP_ALLOWED_COMBOS != null
+      ? process.env.SGP_ALLOWED_COMBOS
+      : 'spread_total'
+    ).split(',').map(s => s.trim()).filter(Boolean),
     // Multiplier applied to per-leg effective vig when pricing an SGP.
     // 2.0 = double the normal vig on each leg of the SGP. Tunable while
     // we gather acceptance + ROI data on re-enabled SGPs.
