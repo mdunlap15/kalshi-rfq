@@ -3964,14 +3964,16 @@ function startStatusServer() {
   // decline. Match is "exact gameKey OR substring of game display name
   // (case-insensitive)" — usable as ?game=spurs or ?game=10077857|2026-05-09.
   //
-  // Each entry returns the parent parlay's leg details, offered odds/stake,
-  // weighted risk contribution, and seconds-until-expiry. The aggregate
-  // sum of weightedRiskRaw should match the same number that would feed
-  // checkGameExposure (before the pendingReservationDiscount scaling).
+  // Returns TWO sections:
+  //   live: reservations still in pendingExposure (within offerValidSeconds).
+  //         Empty after ~120s of inactivity.
+  //   recentDeclines: snapshots captured at decline time, kept for 30 min
+  //         so the operator can investigate well after the live data has
+  //         expired. Each snapshot includes the contributing parlays' leg
+  //         details (resolved at view time from the persistent orders map).
   //
-  // Reservations expire after offerValidSeconds (default 120s). To diagnose
-  // a Game exposure limit decline, hit this endpoint within ~2 minutes
-  // of the decline firing — older snapshots are gone.
+  // Each parlay-level entry has team/market/line/sport per leg, offered
+  // odds/stake, weighted risk contribution, and timestamp metadata.
   app.get('/debug/pending-game-legs', (req, res) => {
     try {
       const game = req.query.game;
@@ -3982,23 +3984,42 @@ function startStatusServer() {
           examples: ['?game=spurs', '?game=spurs%20%40%20wolves', '?game=10077857|2026-05-09'],
         });
       }
-      const reservations = orderTracker.getPendingReservationsForGame(game);
       const discount = (config && config.pricing && config.pricing.pendingReservationDiscount > 0
         && config.pricing.pendingReservationDiscount <= 1)
         ? config.pricing.pendingReservationDiscount : 1.0;
-      const totalRaw = reservations.reduce((s, r) => s + (r.weightedRiskRaw || 0), 0);
-      const enriched = reservations.map(r => ({
-        ...r,
-        weightedRiskEffective: Math.round(r.weightedRiskRaw * discount * 100) / 100,
+
+      // Live section
+      const liveReservations = orderTracker.getPendingReservationsForGame(game);
+      const liveTotalRaw = liveReservations.reduce((s, r) => s + (r.weightedRiskRaw || 0), 0);
+      const live = {
+        matchCount: liveReservations.length,
+        totalWeightedRiskRaw: Math.round(liveTotalRaw * 100) / 100,
+        totalWeightedRiskEffective: Math.round(liveTotalRaw * discount * 100) / 100,
+        reservations: liveReservations.map(r => ({
+          ...r,
+          weightedRiskEffective: Math.round(r.weightedRiskRaw * discount * 100) / 100,
+        })),
+      };
+
+      // Historical section — captured at decline time, kept 30 min
+      const snapshots = orderTracker.getRecentDeclineSnapshotsForGame(game);
+      const recentDeclines = snapshots.map(snap => ({
+        ...snap,
+        // Surface effective values for parity with live + the original decline message
+        pendingNetEffective: Math.round(snap.pendingNetRaw * discount * 100) / 100,
+        newRiskEffective: Math.round(snap.newRiskRaw * discount * 100) / 100,
+        pendingReservations: snap.pendingReservations.map(r => ({
+          ...r,
+          weightedRiskEffective: Math.round(r.weightedRiskRaw * discount * 100) / 100,
+        })),
       }));
+
       res.json({
         ok: true,
         game,
         pendingReservationDiscount: discount,
-        matchCount: enriched.length,
-        totalWeightedRiskRaw: Math.round(totalRaw * 100) / 100,
-        totalWeightedRiskEffective: Math.round(totalRaw * discount * 100) / 100,
-        reservations: enriched,
+        live,
+        recentDeclines,
       });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message, stack: err.stack });

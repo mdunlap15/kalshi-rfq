@@ -474,6 +474,126 @@ function getPendingGameRisk(gameKey) {
   return pendingGameRiskByKey.get(gameKey) || 0;
 }
 
+// Game-exposure-decline snapshot buffer. When checkGameExposure declines
+// an RFQ, pending reservations contributing to the cap are gone after
+// offerValidSeconds (~120s default) — the operator has no way to see
+// what stacked up unless they hit /debug/pending-game-legs IMMEDIATELY.
+// Snapshot the contributing pending reservations at decline time and
+// keep them for 30 min so the diagnostic endpoint can surface them well
+// after the live data has expired. In-memory only; cleared on restart.
+const declineSnapshots = []; // [{ declinedAt, gameKey, gameName, currentNet, pendingNetRaw, newRiskRaw, maxPerGame, pendingReservations[] }]
+const DECLINE_SNAPSHOT_TTL_MS = 30 * 60 * 1000;
+const DECLINE_SNAPSHOT_LIMIT = 200;
+
+function _pruneDeclineSnapshots(now) {
+  const cutoff = now - DECLINE_SNAPSHOT_TTL_MS;
+  while (declineSnapshots.length && declineSnapshots[0].declinedAt < cutoff) declineSnapshots.shift();
+  while (declineSnapshots.length > DECLINE_SNAPSHOT_LIMIT) declineSnapshots.shift();
+}
+
+function _captureGameDeclineSnapshot(gameKey, gameName, currentNet, pendingNetRaw, newRiskRaw, maxPerGame) {
+  const now = Date.now();
+  const captured = [];
+  for (const [parlayId, res] of Object.entries(pendingExposure)) {
+    if (!res || !res.expiresAt || res.expiresAt < now) continue;
+    for (const gk of res.gameKeys || []) {
+      if (gk.key !== gameKey) continue;
+      captured.push({
+        parlayId,
+        weightedRiskRaw: gk.risk,
+        expiresAtAtCapture: res.expiresAt,
+      });
+    }
+  }
+  declineSnapshots.push({
+    declinedAt: now,
+    gameKey,
+    gameName,
+    currentNet: Math.round(currentNet * 100) / 100,
+    pendingNetRaw: Math.round(pendingNetRaw * 100) / 100,
+    newRiskRaw: Math.round(newRiskRaw * 100) / 100,
+    maxPerGame,
+    pendingReservations: captured,
+  });
+  _pruneDeclineSnapshots(now);
+}
+
+/**
+ * Build the same {team, market, line, ...} leg view that the live endpoint
+ * returns, given a parlayId. Returns null if the order is gone (rare —
+ * orders[] persists across status transitions).
+ */
+function _legsForParlay(parlayId) {
+  const order = orders[parlayId];
+  if (!order) return null;
+  const legsRaw = order.legs || (order.meta && order.meta.legs) || [];
+  return {
+    order,
+    legs: legsRaw.map(l => ({
+      team: l.team || l.teamName || null,
+      market: l.market || l.marketType || null,
+      line: l.line != null ? l.line : null,
+      sport: l.sport || null,
+      pxEventName: l.pxEventName || null,
+      pxEventId: l.pxEventId || null,
+      startTime: l.startTime || null,
+      fairProb: l.fairProb != null ? l.fairProb : null,
+      pinnacleOdds: l.pinnacleOdds != null ? l.pinnacleOdds : null,
+      fanduelOdds: l.fanduelOdds != null ? l.fanduelOdds : null,
+      draftkingsOdds: l.draftkingsOdds != null ? l.draftkingsOdds : null,
+    })),
+  };
+}
+
+/**
+ * Return decline snapshots whose game (key OR display name) matches the
+ * given query. Snapshot's pendingReservations entries are joined back to
+ * orders[] so leg details surface — order data persists across status
+ * transitions, so legs are usually still recoverable even minutes later.
+ * Returns most-recent-first.
+ */
+function getRecentDeclineSnapshotsForGame(matcher) {
+  if (!matcher) return [];
+  _pruneDeclineSnapshots(Date.now());
+  const m = String(matcher).toLowerCase();
+  const out = [];
+  for (let i = declineSnapshots.length - 1; i >= 0; i--) {
+    const snap = declineSnapshots[i];
+    const matchKey = snap.gameKey === matcher;
+    const matchName = String(snap.gameName).toLowerCase().includes(m);
+    if (!matchKey && !matchName) continue;
+    const enrichedReservations = snap.pendingReservations.map(r => {
+      const view = _legsForParlay(r.parlayId);
+      const order = view && view.order;
+      return {
+        parlayId: r.parlayId,
+        weightedRiskRaw: Math.round(r.weightedRiskRaw * 100) / 100,
+        status: order ? order.status : null,
+        offeredOdds: order ? (order.offeredOdds || null) : null,
+        offeredStake: order ? (order.offeredStake || null) : null,
+        confirmedStake: order ? (order.confirmedStake || null) : null,
+        maxRisk: order ? (order.maxRisk || null) : null,
+        quotedAt: order ? (order.quotedAt || null) : null,
+        legCount: view ? view.legs.length : 0,
+        legs: view ? view.legs : [],
+      };
+    });
+    out.push({
+      declinedAt: new Date(snap.declinedAt).toISOString(),
+      secondsAgo: Math.round((Date.now() - snap.declinedAt) / 1000),
+      gameKey: snap.gameKey,
+      gameName: snap.gameName,
+      currentNet: snap.currentNet,
+      pendingNetRaw: snap.pendingNetRaw,
+      newRiskRaw: snap.newRiskRaw,
+      maxPerGame: snap.maxPerGame,
+      reservationCount: enrichedReservations.length,
+      pendingReservations: enrichedReservations,
+    });
+  }
+  return out;
+}
+
 /**
  * List pending (in-flight, non-expired) reservations whose gameKeys match
  * the supplied query. Match is "exact gameKey OR substring of gameExposure
@@ -501,21 +621,8 @@ function getPendingReservationsForGame(matcher) {
       const matchKey = gk.key === matcher;
       const matchName = String(gameName).toLowerCase().includes(m);
       if (!matchKey && !matchName) continue;
-      const order = orders[parlayId] || null;
-      const legsRaw = (order && (order.legs || (order.meta && order.meta.legs))) || [];
-      const legs = legsRaw.map(l => ({
-        team: l.team || l.teamName || null,
-        market: l.market || l.marketType || null,
-        line: l.line != null ? l.line : null,
-        sport: l.sport || null,
-        pxEventName: l.pxEventName || null,
-        pxEventId: l.pxEventId || null,
-        startTime: l.startTime || null,
-        fairProb: l.fairProb != null ? l.fairProb : null,
-        pinnacleOdds: l.pinnacleOdds != null ? l.pinnacleOdds : null,
-        fanduelOdds: l.fanduelOdds != null ? l.fanduelOdds : null,
-        draftkingsOdds: l.draftkingsOdds != null ? l.draftkingsOdds : null,
-      }));
+      const view = _legsForParlay(parlayId);
+      const order = view && view.order;
       out.push({
         parlayId,
         msUntilExpiry: res.expiresAt - now,
@@ -529,8 +636,8 @@ function getPendingReservationsForGame(matcher) {
         confirmedStake: order ? (order.confirmedStake || null) : null,
         maxRisk: order ? (order.maxRisk || null) : null,
         quotedAt: order ? (order.quotedAt || null) : null,
-        legCount: legs.length,
-        legs,
+        legCount: view ? view.legs.length : 0,
+        legs: view ? view.legs : [],
       });
     }
   }
@@ -3243,6 +3350,11 @@ function checkGameExposure(legs, estPayout, maxPerGame) {
       const gameName = gameExposure[gameKey]?.name || gameKey;
       const wouldBe = currentNet + pendingNetEff + newWeightedRiskEff;
       const discTag = discount < 1 ? ` (discount ${Math.round(discount * 100)}%)` : '';
+      // Snapshot the contributing pending reservations so /debug/pending-game-legs
+      // can surface them up to 30 min after the live ones have expired.
+      try {
+        _captureGameDeclineSnapshot(gameKey, gameName, currentNet, pendingNetRaw, newWeightedRiskRaw, maxPerGame);
+      } catch (_) { /* never break the decline path on diagnostic capture */ }
       return {
         allowed: false,
         reason: `Game "${gameName}" net $${Math.round(currentNet)} + pending $${Math.round(pendingNetEff)} + new $${Math.round(newWeightedRiskEff)} > max $${Math.round(maxPerGame)}${discTag}`,
@@ -5683,6 +5795,7 @@ module.exports = {
   getPendingTeamRisk,
   getPendingGameRisk,
   getPendingReservationsForGame,
+  getRecentDeclineSnapshotsForGame,
   checkRecentDuplicate,
   recordParlaySignature,
   recordMatchedParlay,
