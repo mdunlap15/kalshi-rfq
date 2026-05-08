@@ -3959,6 +3959,52 @@ function startStatusServer() {
     }
   });
 
+  // Debug: list in-flight pending reservations on a given game so the
+  // operator can see exactly which RFQs make up a "Game exposure limit"
+  // decline. Match is "exact gameKey OR substring of game display name
+  // (case-insensitive)" — usable as ?game=spurs or ?game=10077857|2026-05-09.
+  //
+  // Each entry returns the parent parlay's leg details, offered odds/stake,
+  // weighted risk contribution, and seconds-until-expiry. The aggregate
+  // sum of weightedRiskRaw should match the same number that would feed
+  // checkGameExposure (before the pendingReservationDiscount scaling).
+  //
+  // Reservations expire after offerValidSeconds (default 120s). To diagnose
+  // a Game exposure limit decline, hit this endpoint within ~2 minutes
+  // of the decline firing — older snapshots are gone.
+  app.get('/debug/pending-game-legs', (req, res) => {
+    try {
+      const game = req.query.game;
+      if (!game) {
+        return res.status(400).json({
+          ok: false,
+          error: 'game query param required (substring of game name or exact gameKey)',
+          examples: ['?game=spurs', '?game=spurs%20%40%20wolves', '?game=10077857|2026-05-09'],
+        });
+      }
+      const reservations = orderTracker.getPendingReservationsForGame(game);
+      const discount = (config && config.pricing && config.pricing.pendingReservationDiscount > 0
+        && config.pricing.pendingReservationDiscount <= 1)
+        ? config.pricing.pendingReservationDiscount : 1.0;
+      const totalRaw = reservations.reduce((s, r) => s + (r.weightedRiskRaw || 0), 0);
+      const enriched = reservations.map(r => ({
+        ...r,
+        weightedRiskEffective: Math.round(r.weightedRiskRaw * discount * 100) / 100,
+      }));
+      res.json({
+        ok: true,
+        game,
+        pendingReservationDiscount: discount,
+        matchCount: enriched.length,
+        totalWeightedRiskRaw: Math.round(totalRaw * 100) / 100,
+        totalWeightedRiskEffective: Math.round(totalRaw * discount * 100) / 100,
+        reservations: enriched,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Debug: trace golf matchup matching step by step
   // Debug: pull DataGolf's raw per-book odds for a specific matchup so we
   // can see which books actually offered the pairing and confirm the

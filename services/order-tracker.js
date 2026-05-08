@@ -475,6 +475,69 @@ function getPendingGameRisk(gameKey) {
 }
 
 /**
+ * List pending (in-flight, non-expired) reservations whose gameKeys match
+ * the supplied query. Match is "exact gameKey OR substring of gameExposure
+ * display name (case-insensitive)" — so callers can pass either an exact
+ * key like "10077857|2026-05-09" or a partial team string like "spurs".
+ *
+ * Returns enriched objects ready for /debug/pending-game-legs display:
+ * each entry has the parent parlay's leg details, offered odds/stake,
+ * and the per-game weighted risk (raw — caller multiplies by
+ * pendingReservationDiscount for the effective number used in caps).
+ *
+ * Used to diagnose "Game exposure limit" declines so the operator can
+ * see which specific RFQs are stacking pending exposure on a given game.
+ */
+function getPendingReservationsForGame(matcher) {
+  if (!matcher) return [];
+  const m = String(matcher).toLowerCase();
+  const now = Date.now();
+  const out = [];
+  for (const [parlayId, res] of Object.entries(pendingExposure)) {
+    if (!res || !res.expiresAt || res.expiresAt < now) continue;
+    for (const gk of res.gameKeys || []) {
+      const game = gameExposure[gk.key];
+      const gameName = (game && game.name) || gk.key;
+      const matchKey = gk.key === matcher;
+      const matchName = String(gameName).toLowerCase().includes(m);
+      if (!matchKey && !matchName) continue;
+      const order = orders[parlayId] || null;
+      const legsRaw = (order && (order.legs || (order.meta && order.meta.legs))) || [];
+      const legs = legsRaw.map(l => ({
+        team: l.team || l.teamName || null,
+        market: l.market || l.marketType || null,
+        line: l.line != null ? l.line : null,
+        sport: l.sport || null,
+        pxEventName: l.pxEventName || null,
+        pxEventId: l.pxEventId || null,
+        startTime: l.startTime || null,
+        fairProb: l.fairProb != null ? l.fairProb : null,
+        pinnacleOdds: l.pinnacleOdds != null ? l.pinnacleOdds : null,
+        fanduelOdds: l.fanduelOdds != null ? l.fanduelOdds : null,
+        draftkingsOdds: l.draftkingsOdds != null ? l.draftkingsOdds : null,
+      }));
+      out.push({
+        parlayId,
+        msUntilExpiry: res.expiresAt - now,
+        secondsUntilExpiry: Math.round((res.expiresAt - now) / 1000),
+        gameKey: gk.key,
+        gameName,
+        weightedRiskRaw: Math.round(gk.risk * 100) / 100,
+        status: order ? order.status : null,
+        offeredOdds: order ? (order.offeredOdds || null) : null,
+        offeredStake: order ? (order.offeredStake || null) : null,
+        confirmedStake: order ? (order.confirmedStake || null) : null,
+        maxRisk: order ? (order.maxRisk || null) : null,
+        quotedAt: order ? (order.quotedAt || null) : null,
+        legCount: legs.length,
+        legs,
+      });
+    }
+  }
+  return out.sort((a, b) => b.weightedRiskRaw - a.weightedRiskRaw);
+}
+
+/**
  * Sum of in-flight pending risk against a pitcher key. Used by
  * checkPitcherExposure to close the quote-time race window. Same lazy-
  * expiry contract as the team/game variants.
@@ -5619,6 +5682,7 @@ module.exports = {
   releasePending,
   getPendingTeamRisk,
   getPendingGameRisk,
+  getPendingReservationsForGame,
   checkRecentDuplicate,
   recordParlaySignature,
   recordMatchedParlay,
