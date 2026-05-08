@@ -7557,17 +7557,6 @@ function startStatusServer() {
       // If bookPriceOverride is set, quote at that raw implied
       // instead of fair + our vig. Mirrors the priceParlay behavior
       // so /lines/detail display matches what we'd quote on an RFQ.
-      let quote = null;
-      if (bookPriceOverride != null && bookPriceOverride > 0 && bookPriceOverride < 1) {
-        quote = {
-          vig: fairProb != null ? (bookPriceOverride - fairProb) / fairProb : null,
-          impliedProb: bookPriceOverride,
-          americanOdds: pricer.decimalToAmerican(1 / bookPriceOverride),
-        };
-      } else if (fairProb != null && fairProb > 0 && fairProb < 1) {
-        quote = pricer.computeSingleLegQuote(fairProb, info.sport, info.marketType);
-      }
-
       // Per-book raw odds for this selection. Must be LINE-AWARE for
       // spreads/totals — the previous implementation looked up
       // market[book][selection] in the primary cache without passing
@@ -7581,6 +7570,9 @@ function startStatusServer() {
       // altLinesCache via getAltLineBookOdds when the registered line
       // differs from the primary. Moneylines still need the line=null
       // call since lineMatchesPrimary special-cases h2h.
+      //
+      // Computed BEFORE the quote so consensusImplied can feed the
+      // consensus-floor clamp inside computeSingleLegQuote.
       let bookOdds = { pinnacle: null, fanduel: null, draftkings: null, kalshi: null };
       try {
         const oaSport = info.oddsApiSport || info.sport;
@@ -7607,6 +7599,18 @@ function startStatusServer() {
           consensusAmerican = pricer.decimalToAmerican(1 / consensusImplied);
         }
       }
+
+      let quote = null;
+      if (bookPriceOverride != null && bookPriceOverride > 0 && bookPriceOverride < 1) {
+        quote = {
+          vig: fairProb != null ? (bookPriceOverride - fairProb) / fairProb : null,
+          impliedProb: bookPriceOverride,
+          americanOdds: pricer.decimalToAmerican(1 / bookPriceOverride),
+        };
+      } else if (fairProb != null && fairProb > 0 && fairProb < 1) {
+        quote = pricer.computeSingleLegQuote(fairProb, info.sport, info.marketType, consensusImplied);
+      }
+
       const vsConsensusPp = (consensusImplied != null && quote)
         ? Math.round((quote.impliedProb - consensusImplied) * 10000) / 100
         : null;

@@ -558,6 +558,17 @@ const config = {
     maxSeriesRiskPerParlay: parseFloat(process.env.MAX_SERIES_RISK_PER_PARLAY) || 500,
     maxSeriesGrossExposure: parseFloat(process.env.MAX_SERIES_GROSS_EXPOSURE) || 1000,
 
+    // Consensus-floor guardrail. When our offered implied prob on a single
+    // leg would land more than this many percentage points BELOW the
+    // Pin/FD/DK consensus implied prob (i.e. we'd be more bettor-friendly
+    // than market by a wide margin), clamp our offer up to consensus −
+    // threshold. Protects against fair-prob plumbing bugs (selection flips,
+    // wrong market mapping) where our internal fair lands far from the
+    // actual market — without this clamp, we'd offer +266 on a line the
+    // market prices at -128. Default 8pp; set to 0 to disable. Skipped
+    // when no Pin/FD/DK price is available for the leg.
+    priceFloorVsConsensusPp: parseFloat(process.env.PRICE_FLOOR_VS_CONSENSUS_PP) || 8,
+
     // Same-game parlay (SGP) handling. Historically all SGPs were blocked
     // because a multiplicative correlation "boost" (+3-15%) caused PX to
     // reject with "invalid estimated prices" on any offer we pushed above

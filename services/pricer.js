@@ -458,6 +458,29 @@ function decimalToAmerican(dec) {
 }
 
 /**
+ * Compute the consensus implied probability for a leg from Pin/FD/DK
+ * (Kalshi excluded — same definition as the Lines tab "CONS" column).
+ * Returns null when none of the three books have a price for this leg.
+ *
+ * Used by the consensus-floor guardrail in priceParlay and computeSingleLegQuote.
+ */
+function getConsensusImplied(lineInfo) {
+  if (!lineInfo) return null;
+  const oaSport = lineInfo.oddsApiSport || lineInfo.sport;
+  const oaMarket = lineInfo.oddsApiMarket || lineInfo.marketType;
+  const sel = lineInfo.oddsApiSelection || lineInfo.selection;
+  let pin = null, fd = null, dk = null;
+  try { pin = oddsFeed.getPinnacleOdds(oaSport, lineInfo.homeTeam, lineInfo.awayTeam, oaMarket, sel, lineInfo.startTime, lineInfo.line); } catch (_) {}
+  try { fd  = oddsFeed.getFanDuelOdds(oaSport, lineInfo.homeTeam, lineInfo.awayTeam, oaMarket, sel, lineInfo.startTime, lineInfo.line); } catch (_) {}
+  try { dk  = oddsFeed.getDraftKingsOdds(oaSport, lineInfo.homeTeam, lineInfo.awayTeam, oaMarket, sel, lineInfo.startTime, lineInfo.line); } catch (_) {}
+  const implieds = [pin, fd, dk]
+    .filter(o => o != null && Number.isFinite(o))
+    .map(o => o >= 0 ? 100 / (o + 100) : -o / (-o + 100));
+  if (implieds.length === 0) return null;
+  return implieds.reduce((a, b) => a + b, 0) / implieds.length;
+}
+
+/**
  * Standalone (not-inside-priceParlay) vig computation for a single leg.
  * Mirrors the closures inside priceParlay: base sport vig → favorite ramp
  * → series/MMA floors. Used by the /lines/detail endpoint to show "what
@@ -506,7 +529,7 @@ function computeSingleLegVig(fairProb, sport, marketType) {
  * quote on chalky legs (e.g. soccer slight-favorite spreads showed
  * -130 while the RFQ pipeline would have offered -135).
  */
-function computeSingleLegQuote(fairProb, sport, marketType) {
+function computeSingleLegQuote(fairProb, sport, marketType, consensusImplied = null) {
   const vig = computeSingleLegVig(fairProb, sport, marketType);
   if (vig == null) return null;
   const fairDecimal = 1 / fairProb;
@@ -532,6 +555,17 @@ function computeSingleLegQuote(fairProb, sport, marketType) {
     const heavyImplied = fairProb * (1 + heavyFavMarkup);
     if (heavyImplied > impliedProb && heavyImplied < 0.99) {
       impliedProb = heavyImplied;
+    }
+  }
+  // Consensus floor clamp — final guardrail. If our offered implied is more
+  // than priceFloorVsConsensusPp pp BELOW the Pin/FD/DK consensus implied,
+  // clamp up to consensus − threshold. Caller supplies consensusImplied to
+  // avoid duplicate book lookups; null disables the clamp.
+  const floorPp = config.pricing.priceFloorVsConsensusPp || 0;
+  if (floorPp > 0 && consensusImplied != null && Number.isFinite(consensusImplied)) {
+    const floorImplied = consensusImplied - (floorPp / 100);
+    if (impliedProb < floorImplied) {
+      impliedProb = Math.min(0.99, Math.max(0.01, floorImplied));
     }
   }
   const decimalOdds = 1 / impliedProb;
@@ -1775,6 +1809,42 @@ function priceParlay(legs, opts = {}) {
     const scaledOffered = vigFair * (1 + currentVigFraction * legCountMult);
     if (scaledOffered > offeredImpliedProb) {
       offeredImpliedProb = Math.min(0.99, scaledOffered);
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // CONSENSUS FLOOR CLAMP — final guardrail against fair-prob plumbing
+  // bugs (selection flips, wrong market mapping). For each leg, look up
+  // Pin/FD/DK consensus implied; floor the leg's contribution at
+  // consensusImplied − priceFloorVsConsensusPp. Compound across legs and
+  // MAX-gate against the current offeredImpliedProb so the clamp can
+  // only TIGHTEN (never widen). Legs without Pin/FD/DK data contribute
+  // their normal payout-vig'd implied so the floor product reflects
+  // only the legs we have data on.
+  //
+  // Without this clamp, a sign-flip on a team_total line can produce
+  // offered odds 25-30pp wider than market — observed 2026-05-08 Lines
+  // tab with My +266 vs CONS −128 on Rockies +4.5 team total.
+  // -------------------------------------------------------------------
+  const consFloorPp = config.pricing.priceFloorVsConsensusPp || 0;
+  if (consFloorPp > 0 && vigLegs.length > 0) {
+    let floorProduct = overrideProduct;
+    let anyFloorApplied = false;
+    for (const leg of vigLegs) {
+      const consImp = getConsensusImplied(leg.lineInfo);
+      if (consImp != null) {
+        anyFloorApplied = true;
+        const legFloor = Math.max(0.01, consImp - (consFloorPp / 100));
+        floorProduct *= legFloor;
+      } else {
+        // No consensus for this leg — contribute its normal payout-vig'd
+        // implied so legs without book data aren't double-counted as
+        // (1.0) which would inflate the floor product.
+        floorProduct *= applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType, leg.vigBump || 0);
+      }
+    }
+    if (anyFloorApplied && floorProduct > offeredImpliedProb) {
+      offeredImpliedProb = Math.min(0.99, floorProduct);
     }
   }
 
