@@ -2796,7 +2796,7 @@ function shouldDecline(legs) {
     const eid = l.lineInfo.pxEventId;
     if (!eid) continue;
     if (!byEvent[eid]) byEvent[eid] = [];
-    byEvent[eid].push({ market: l.lineInfo.marketType, team: l.lineInfo.teamName, home: l.lineInfo.homeTeam, away: l.lineInfo.awayTeam });
+    byEvent[eid].push({ market: l.lineInfo.marketType, team: l.lineInfo.teamName, home: l.lineInfo.homeTeam, away: l.lineInfo.awayTeam, sport: l.lineInfo.sport });
   }
   // Classify a 2-leg SGP group into a stable combo key. Returns null if
   // the group is 3+ legs or the market pair isn't a recognized combo
@@ -2828,6 +2828,23 @@ function shouldDecline(legs) {
   for (const [eid, entries] of Object.entries(byEvent)) {
     if (entries.length <= 1) continue;
     const gameLabel0 = entries[0].away && entries[0].home ? `${entries[0].away} @ ${entries[0].home}` : `event ${eid}`;
+    // Tennis SGPs are structurally different from team-sport SGPs:
+    // sets/games are tightly coupled (a fav covering -1.5 sets means a
+    // straight-set match, which makes Under games near-certain). Our
+    // sport-agnostic SGP_CORRELATION_BY_COMBO grid was calibrated on
+    // MLB samples and badly underestimates tennis correlation — observed
+    // case 2026-05-08: priced spread_fav_under at +251 while DK had
+    // +170 / FD had +182. Block until sport-specific correlation keys
+    // are wired in.
+    const sgpSport = entries[0].sport || '';
+    if (sgpSport === 'tennis') {
+      log.info('Pricing', `Declined SGP: tennis SGPs blocked (${entries.length} legs on ${gameLabel0})`);
+      return {
+        declined: true,
+        reason: 'SGP not allowed',
+        detail: `tennis SGPs blocked — sport-specific correlation factors not yet calibrated`,
+      };
+    }
     const combo = classifySgpCombo(entries);
     if (!combo || !allowedCombos.has(combo)) {
       log.info('Pricing', `Declined SGP: ${entries.length} legs on ${gameLabel0} (combo=${combo || 'unclassified'}, not in allowed list)`);
