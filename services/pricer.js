@@ -2915,6 +2915,25 @@ function shouldDecline(legs) {
         detail: `tennis SGPs blocked — sport-specific correlation factors not yet calibrated`,
       };
     }
+    // Soccer: block ml_total and spread_total combos. Most major sportsbooks
+    // (DK, FD, etc.) don't offer these for soccer because goal totals are
+    // tightly correlated with ML/spread outcomes — a team winning by a
+    // margin almost always means goals scored, so the "independent legs"
+    // pricing model breaks down. Operator-confirmed 2026-05-08 after
+    // observing Manchester United ML + Manchester @ Sunderland Over 2.5
+    // SGP get accepted at +123 (FD had +168, well wider). Other sports
+    // (MLB/NBA/NHL) keep the combos allowed via SGP_ALLOWED_COMBOS.
+    if (sgpSport === 'soccer' || sgpSport.startsWith('soccer_')) {
+      const soccerCombo = classifySgpCombo(entries);
+      if (soccerCombo === 'ml_total' || soccerCombo === 'spread_total') {
+        log.info('Pricing', `Declined SGP: soccer ${soccerCombo} blocked (${entries.length} legs on ${gameLabel0})`);
+        return {
+          declined: true,
+          reason: 'SGP not allowed',
+          detail: `soccer ${soccerCombo} SGPs blocked — books don't offer due to goal-total correlation with ML/spread outcomes`,
+        };
+      }
+    }
     const combo = classifySgpCombo(entries);
     if (!combo || !allowedCombos.has(combo)) {
       log.info('Pricing', `Declined SGP: ${entries.length} legs on ${gameLabel0} (combo=${combo || 'unclassified'}, not in allowed list)`);
