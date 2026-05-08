@@ -1325,6 +1325,16 @@
         renderAnalytics(orders, intel);
         renderHistory(orders);
       });
+      // Lines tab piggy-back: when the operator is currently viewing the
+      // Lines tab, kick off a /lines/detail re-fetch on the same cadence.
+      // Fire-and-forget — loadLines has its own inFlight guard so a slow
+      // fetch can't stack onto the next tick. Other tabs skip this work.
+      // Without this hook the Lines table goes stale until the operator
+      // hits Refresh manually (operator hit this 2026-05-08 with MLB MLs
+      // showing only 6 of 30 because the table cached an early-boot fetch).
+      if (activeSection === 'lines' && linesState.loaded) {
+        loadLines().catch(err => console.warn('[Lines auto-refresh]', err));
+      }
       addLog('system', 'Dashboard refreshed');
     } catch (err) {
       addLog('error', 'Failed to refresh: ' + err.message);
@@ -11872,7 +11882,10 @@
       // need to burn cycles on hidden UI.
       const adv = document.getElementById('lines-advanced');
       if (adv && adv.style.display !== 'none') renderLinesAdvancedFilters();
-      renderLinesTable();
+      // Wrap in rerenderWithFocus so when the global refresh cycle
+      // re-fetches Lines data while the user is typing in the team /
+      // event filter input, the in-progress caret position is preserved.
+      rerenderWithFocus(() => renderLinesTable());
     } catch (err) {
       // Log to console so operator can see full stack trace in DevTools.
       // Stage tells us whether the fetch succeeded but render threw.
