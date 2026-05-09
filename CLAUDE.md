@@ -53,21 +53,23 @@ client/
 | `LOG_LEVEL` | No | Default: `info` |
 | `AUTH_USERNAME` | No | Default: `mike`. Admin username for HTTP Basic Auth. |
 | `AUTH_PASSWORD` | No | Admin password. **Auth is OFF when unset** — server is publicly accessible. |
-| `AUTH_VIEWERS` | No | Comma-separated `user:pass` pairs for read-only accounts (e.g., `alice:hunter2,bob:sekret`). |
+| `AUTH_VIEWERS` | No | Comma-separated `user:pass` pairs for **scaled-down** read-only accounts (e.g., `alice:hunter2,bob:sekret`). Restricted to `AUTH_VIEWER_PATHS`. |
+| `AUTH_FULL_VIEWERS` | No | Comma-separated `user:pass` pairs for **full-dashboard** read-only accounts. Can hit every GET endpoint; all mutations 403. |
 | `AUTH_VIEWER_PATHS` | No | Comma-separated paths viewers may access. Default: `/edge-vs-fair.html,/viewer,/viewer.html,/status,/orders,/me`. |
 
-## Auth & Read-Only Viewer
+## Auth & Read-Only Viewers
 
-Two roles via HTTP Basic Auth (browser-native login dialog):
+Three roles via HTTP Basic Auth (browser-native login dialog):
 
 - **Admin** (`AUTH_USERNAME` / `AUTH_PASSWORD`) — full access to `/` (main dashboard), all admin endpoints, and `/viewer`.
-- **Viewer** (`AUTH_VIEWERS`) — read-only, allowed only the paths in `AUTH_VIEWER_PATHS`. The default list grants access to:
-  - `/viewer` and `/viewer.html` — scaled-down dashboard with two tabs: P&L (Daily Volume & P&L chart + table) and Exposure (Team Exposure, Game Exposure, Risk Simulation).
-  - `/status`, `/orders` — the GET endpoints viewer.html polls every 15s.
-  - `/me` — returns the current Basic Auth username so the viewer header shows who is signed in.
-  - `/edge-vs-fair.html` — pre-existing shared report.
+- **Full viewer** (`AUTH_FULL_VIEWERS`) — read-only access to the **full** dashboard (`/`, market intel, lines, reports, all GET endpoints). Every POST/PUT/DELETE/PATCH returns 403. Admin-action buttons (Pause, Refresh Lines, etc.) remain visible but silently fail when clicked.
+- **Viewer** (`AUTH_VIEWERS`) — read-only, restricted to `AUTH_VIEWER_PATHS`. Default list scopes them to the scaled-down `/viewer` dashboard plus the two endpoints it polls (`/status`, `/orders`) and `/me`.
 
-**Provisioning a viewer:** add an entry to `AUTH_VIEWERS` on Railway. Example: `AUTH_VIEWERS=alice:correctHorse,bob:battery`. Tell the viewer to visit `https://<railway-host>/viewer` and enter their username/password in the browser dialog. They cannot reach the main dashboard or any admin endpoint.
+**Provisioning:**
+- Scaled-down viewer: `AUTH_VIEWERS=alice:correctHorse,bob:battery` — point them at `https://<host>/viewer`.
+- Full read-only viewer: `AUTH_FULL_VIEWERS=charlie:correctHorse2,dave:battery2` — point them at `https://<host>/`.
+
+If a username appears in both lists, `AUTH_VIEWERS` wins (more restrictive); a warning logs at boot. Don't reuse usernames between the admin slot and the viewer pools either — collisions are skipped with a warning.
 
 **Sign-out:** HTTP Basic Auth credentials are cached by the browser until the tab/process closes. There is no clean server-side logout.
 

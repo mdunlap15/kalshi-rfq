@@ -582,25 +582,42 @@ function startStatusServer() {
   // Viewers: comma-separated user:pass list. A user with a colon in
   // its name would break parsing; document this is intentional and
   // disallow such names below.
-  const AUTH_VIEWERS = (() => {
-    const raw = process.env.AUTH_VIEWERS || '';
+  // Shared parser for the two viewer pools — both env vars are
+  // comma-separated user:pass lists. Skips malformed entries and
+  // collisions with the admin username.
+  function parseAuthList(raw, label) {
     const map = new Map();
-    for (const pair of raw.split(',').map(s => s.trim()).filter(Boolean)) {
+    for (const pair of (raw || '').split(',').map(s => s.trim()).filter(Boolean)) {
       const idx = pair.indexOf(':');
       if (idx <= 0 || idx === pair.length - 1) {
-        log.warn('Auth', `Skipping malformed AUTH_VIEWERS entry: "${pair}" (expected "user:pass")`);
+        log.warn('Auth', `Skipping malformed ${label} entry: "${pair}" (expected "user:pass")`);
         continue;
       }
       const user = pair.slice(0, idx);
       const pass = pair.slice(idx + 1);
       if (user === AUTH_USERNAME) {
-        log.warn('Auth', `Skipping viewer entry that collides with AUTH_USERNAME: "${user}"`);
+        log.warn('Auth', `Skipping ${label} entry that collides with AUTH_USERNAME: "${user}"`);
         continue;
       }
       map.set(user, pass);
     }
     return map;
-  })();
+  }
+  const AUTH_VIEWERS = parseAuthList(process.env.AUTH_VIEWERS, 'AUTH_VIEWERS');
+  // Full viewers: read-only access to every GET endpoint (whole admin
+  // dashboard) but every POST/PUT/DELETE/PATCH returns 403. Use this
+  // when you want someone to see everything an admin sees but never
+  // mutate state. Bob in AUTH_VIEWERS could only hit /viewer; Charlie
+  // in AUTH_FULL_VIEWERS can hit / and every report page too.
+  const AUTH_FULL_VIEWERS = parseAuthList(process.env.AUTH_FULL_VIEWERS, 'AUTH_FULL_VIEWERS');
+  // Catch the (likely-unintentional) case where the same username appears
+  // in both pools — AUTH_VIEWERS wins because it's checked first below,
+  // which would silently scope a user we meant to give full access.
+  for (const u of AUTH_FULL_VIEWERS.keys()) {
+    if (AUTH_VIEWERS.has(u)) {
+      log.warn('Auth', `User "${u}" is in both AUTH_VIEWERS and AUTH_FULL_VIEWERS — AUTH_VIEWERS takes precedence (scaled-down access). Remove from AUTH_VIEWERS to grant full read-only access.`);
+    }
+  }
   // Paths a viewer is permitted to load. Defaults cover:
   //   - /edge-vs-fair.html — the original shared report
   //   - /viewer + /viewer.html — the read-only dashboard (P&L + Exposure
@@ -616,7 +633,7 @@ function startStatusServer() {
       .split(',').map(s => s.trim()).filter(Boolean)
   );
   if (AUTH_ENABLED) {
-    log.info('Auth', `HTTP Basic Auth enabled (admin: "${AUTH_USERNAME}", viewers: ${AUTH_VIEWERS.size}, viewer paths: ${Array.from(AUTH_VIEWER_PATHS).join(', ')}, public paths: ${Array.from(AUTH_PUBLIC_PATHS).join(', ')})`);
+    log.info('Auth', `HTTP Basic Auth enabled (admin: "${AUTH_USERNAME}", viewers: ${AUTH_VIEWERS.size}, full viewers: ${AUTH_FULL_VIEWERS.size}, viewer paths: ${Array.from(AUTH_VIEWER_PATHS).join(', ')}, public paths: ${Array.from(AUTH_PUBLIC_PATHS).join(', ')})`);
   } else {
     log.warn('Auth', 'AUTH_PASSWORD env var not set — server is PUBLICLY ACCESSIBLE. Set AUTH_PASSWORD on Railway to lock down access.');
   }
@@ -657,6 +674,19 @@ function startStatusServer() {
               if (AUTH_VIEWER_PATHS.has(req.path)) return next();
               // Authenticated as viewer but path is admin-only.
               return res.status(403).send('Forbidden');
+            }
+          }
+          // Full viewer: every read (GET/HEAD/OPTIONS) is allowed; any
+          // mutation is rejected. Lets a permissioned user see the whole
+          // admin dashboard — market intel, lines, reports — without the
+          // ability to pause RFQ handling, refresh odds, etc.
+          if (AUTH_FULL_VIEWERS.has(user)) {
+            const expected = AUTH_FULL_VIEWERS.get(user);
+            if (safeEqual(pass, expected)) {
+              req.user = { username: user, role: 'full_viewer' };
+              const m = req.method;
+              if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return next();
+              return res.status(403).send('Forbidden — read-only account');
             }
           }
         }
