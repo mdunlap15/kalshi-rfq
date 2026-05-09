@@ -4,8 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <!-- PWA install metadata. iOS / Android home-screen install runs this
-       page in standalone mode (no browser chrome) when these are set. -->
-  <link rel="manifest" href="/viewer/manifest.json">
+       page in standalone mode (no browser chrome) when these are set.
+       crossorigin="use-credentials" tells Chrome to send Basic Auth
+       when fetching the manifest — otherwise the fetch is anonymous
+       and the manifest 401s, dropping the install option to a plain
+       "Add Shortcut" bookmark. -->
+  <link rel="manifest" href="/viewer/manifest.json" crossorigin="use-credentials">
   <meta name="theme-color" content="#0d1117">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">

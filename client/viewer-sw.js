@@ -11,6 +11,11 @@
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
-// Pass-through fetch handler. Required for some browsers to consider the
-// SW "valid" for PWA install eligibility, but doesn't intercept anything.
-self.addEventListener('fetch', () => { /* network handles it */ });
+// Pass-through fetch handler. Chrome's PWA install eligibility check
+// requires the SW to have a `fetch` listener that calls respondWith()
+// (a no-op listener isn't always enough). We forward the request to
+// the network unchanged — viewer.html doesn't need offline caching
+// and live data must always hit the server.
+self.addEventListener('fetch', (event) => {
+  event.respondWith(fetch(event.request));
+});
