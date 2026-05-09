@@ -8103,17 +8103,25 @@
       svg += svgText(pad.l - 6, y + 3, fmtDollarK(Math.round(v)), { anchor: 'end', size: 9 });
     }
 
-    // Bars — overlaid at same x position. Wrap each day in a group with a
-    // hover-target rect so users can read full-precision values even when
-    // numeric labels are stripped on dense charts.
+    // Bars — overlaid at same x position. Wrap each day in a clickable
+    // group: tap toggles the day's inclusion in window._dvSelectedDays,
+    // which filters the table below to show only the selected days.
+    // Selected bars get a yellow tinted background spanning the chart
+    // height so the user can see what's filtered at a glance.
+    if (!window._dvSelectedDays) window._dvSelectedDays = new Set();
+    const selectedDays = window._dvSelectedDays;
     for (let i = 0; i < days.length; i++) {
       const d = byDay[days[i]];
+      const day = days[i];
+      const isSelected = selectedDays.has(day);
       const cx = pad.l + (i + 0.5) * colW;
-      const tip = `${days[i]} — ${d.count} fills · risk ${fmtDollar(d.risk)} · P&L ${fmtPnl(d.pnl)} · cumul ${fmtPnl(cumul[i])}`;
+      const tip = `${day} — ${d.count} fills · risk ${fmtDollar(d.risk)} · P&L ${fmtPnl(d.pnl)} · cumul ${fmtPnl(cumul[i])}` + (isSelected ? ' · SELECTED' : ' · tap to filter');
 
-      svg += `<g><title>${escapeHtml(tip)}</title>`;
-      // Invisible hover hit area covering the full column
-      svg += `<rect x="${cx - colW / 2}" y="${pad.t}" width="${colW}" height="${chartH}" fill="transparent"/>`;
+      svg += `<g onclick="toggleDvDayFilter('${day}')" style="cursor:pointer;"><title>${escapeHtml(tip)}</title>`;
+      // Selection highlight (or invisible hover hit area).
+      const hitFill = isSelected ? 'rgba(245, 185, 66, 0.18)' : 'transparent';
+      const hitStroke = isSelected ? 'rgba(245, 185, 66, 0.7)' : 'none';
+      svg += `<rect x="${cx - colW / 2 + 1}" y="${pad.t}" width="${colW - 2}" height="${chartH}" fill="${hitFill}" stroke="${hitStroke}" stroke-width="1" rx="2"/>`;
 
       // Risk bar (blue, semi-transparent, always above zero)
       if (d.risk > 0) {
@@ -8196,8 +8204,9 @@
     svg += svgText(pad.l + 83, H - 4, 'Daily P&L', { anchor: 'start', size: 9 });
     svg += svgLine(pad.l + 145, H - 8, pad.l + 161, H - 8, '#f5b942', 2.5);
     svg += svgText(pad.l + 165, H - 4, 'Cumulative P&L', { anchor: 'start', size: 9 });
-    // Hover hint on the right end
-    svg += svgText(W - pad.r, H - 4, 'hover bars for detail', { anchor: 'end', size: 8, fill: 'var(--text3)' });
+    // Hover hint on the right end — also tells the user about the new
+    // tap-to-filter behavior so it's discoverable.
+    svg += svgText(W - pad.r, H - 4, 'tap bars to filter table', { anchor: 'end', size: 8, fill: 'var(--text3)' });
 
     svg += '</svg>';
 
@@ -8205,8 +8214,20 @@
     // Month rows default collapsed; expanding reveals the day rows, and
     // each day row expands to its individual parlays. Same persistence
     // via expandedRows so auto-refresh doesn't collapse open sections.
+    //
+    // If the user has clicked one or more bars in the chart, restrict
+    // the table to only those days. selectedDays is a Set populated by
+    // toggleDvDayFilter() above. Clicking a bar again removes it; an
+    // empty Set falls through to "show everything" behavior.
+    let tableByDay = byDay;
+    if (selectedDays.size > 0) {
+      tableByDay = {};
+      for (const day of selectedDays) {
+        if (byDay[day]) tableByDay[day] = byDay[day];
+      }
+    }
     const byMonth = {};
-    for (const [day, d] of Object.entries(byDay)) {
+    for (const [day, d] of Object.entries(tableByDay)) {
       const month = day.substring(0, 7);
       if (!byMonth[month]) byMonth[month] = { count: 0, risk: 0, toWin: 0, pnl: 0, settled: 0, days: [] };
       byMonth[month].count += d.count;
@@ -10168,13 +10189,19 @@
     if (toEl && window._dvToIso) toEl.value = window._dvToIso;
     const sumEl = document.getElementById('dv-filter-summary');
     if (sumEl) {
-      if (!window._dvFromMs && !window._dvToMs) {
-        sumEl.textContent = '';
-      } else {
+      const parts = [];
+      if (window._dvFromMs || window._dvToMs) {
         const f = window._dvFromIso || '…';
         const t = window._dvToIso || '…';
-        sumEl.textContent = `· filtered ${f} → ${t}`;
+        parts.push(`filtered ${f} → ${t}`);
       }
+      const dayCount = window._dvSelectedDays ? window._dvSelectedDays.size : 0;
+      if (dayCount > 0) {
+        // Inline link to clear the day-click selections without touching
+        // the date-range inputs.
+        parts.push(`${dayCount} day${dayCount === 1 ? '' : 's'} selected <a href="#" onclick="event.preventDefault(); clearDvDayFilter();" style="color:var(--accent); margin-left:4px;">clear</a>`);
+      }
+      sumEl.innerHTML = parts.length ? '· ' + parts.join(' · ') : '';
     }
   }
   function setDvDateFrom(isoDate) {
@@ -10195,6 +10222,23 @@
     _resetDateInputs('dv-date-from', 'dv-date-to');
     _rerenderDvChart();
   }
+  // Bar-click multi-select filter — clicking a bar in the Daily Volume
+  // chart toggles that day in the filter Set. Non-empty Set narrows
+  // the table below to only the selected days; clicking a selected
+  // bar again removes it.
+  if (!window._dvSelectedDays) window._dvSelectedDays = new Set();
+  function toggleDvDayFilter(day) {
+    if (!window._dvSelectedDays) window._dvSelectedDays = new Set();
+    if (window._dvSelectedDays.has(day)) window._dvSelectedDays.delete(day);
+    else window._dvSelectedDays.add(day);
+    _rerenderDvChart();
+  }
+  window.toggleDvDayFilter = toggleDvDayFilter;
+  function clearDvDayFilter() {
+    if (window._dvSelectedDays) window._dvSelectedDays.clear();
+    _rerenderDvChart();
+  }
+  window.clearDvDayFilter = clearDvDayFilter;
 
   // 2. P&L by Sport bar chart
   // Sort state for the P&L breakdown tables. Persists across re-renders.
@@ -12795,6 +12839,12 @@
       closeOnSelect: false,
       // Match dashboard dark theme.
       theme: 'dark',
+      // Force the custom calendar on mobile too. By default flatpickr
+      // falls back to the OS native date picker on touch devices, which
+      // closes immediately on tap and ignores our confirmDatePlugin's
+      // Apply button. With disableMobile:true, mobile users get the
+      // same persistent-until-Apply behavior as desktop.
+      disableMobile: true,
     };
     if (typeof window.confirmDatePlugin === 'function') {
       opts.plugins = [window.confirmDatePlugin({
