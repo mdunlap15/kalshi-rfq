@@ -626,10 +626,13 @@ function startStatusServer() {
   //     15s to render its 4 sections
   //   - /me — returns the current Basic Auth username so the viewer
   //     header can show who is signed in
+  //   - /viewer/manifest.json, /viewer/sw.js, /viewer/icon-*.svg — PWA
+  //     install assets so viewer.html can be installed to the home
+  //     screen as a mobile app
   // Viewers cannot reach /, /index.html, or any admin POST endpoint —
   // the middleware below rejects with 403.
   const AUTH_VIEWER_PATHS = new Set(
-    (process.env.AUTH_VIEWER_PATHS || '/edge-vs-fair.html,/viewer,/viewer.html,/status,/orders,/me')
+    (process.env.AUTH_VIEWER_PATHS || '/edge-vs-fair.html,/viewer,/viewer.html,/status,/orders,/me,/viewer/manifest.json,/viewer/sw.js,/viewer/icon-192.svg,/viewer/icon-512.svg')
       .split(',').map(s => s.trim()).filter(Boolean)
   );
   if (AUTH_ENABLED) {
@@ -712,6 +715,37 @@ function startStatusServer() {
   app.get('/viewer', (req, res) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.sendFile(path.join(__dirname, 'client', 'viewer.html'));
+  });
+
+  // Viewer PWA assets — separate from the admin /app PWA so the two can
+  // be installed side-by-side (different name, different icon color,
+  // different start_url). Manifest + service worker + icons.
+  app.get('/viewer/manifest.json', (req, res) => {
+    res.sendFile(path.join(__dirname, 'client', 'viewer-manifest.json'));
+  });
+  app.get('/viewer/sw.js', (req, res) => {
+    // Allow the SW scope to be /viewer/ — the page lives at /viewer
+    // (no trailing slash) and fetches API endpoints (/status, /orders)
+    // that fall outside the default scope. We don't need the SW to
+    // intercept those, but we do want install eligibility on /viewer.
+    res.setHeader('Service-Worker-Allowed', '/viewer');
+    res.setHeader('Content-Type', 'application/javascript');
+    res.sendFile(path.join(__dirname, 'client', 'viewer-sw.js'));
+  });
+  app.get('/viewer/icon-192.svg', (req, res) => {
+    res.setHeader('Content-Type', 'image/svg+xml');
+    // Green "V" on dark — visually distinct from admin /app's blue "P".
+    res.send(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+      <rect width="192" height="192" rx="32" fill="#0d1117"/>
+      <text x="96" y="120" text-anchor="middle" font-size="100" font-family="sans-serif" font-weight="bold" fill="#3fb950">V</text>
+    </svg>`);
+  });
+  app.get('/viewer/icon-512.svg', (req, res) => {
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.send(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+      <rect width="512" height="512" rx="80" fill="#0d1117"/>
+      <text x="256" y="320" text-anchor="middle" font-size="280" font-family="sans-serif" font-weight="bold" fill="#3fb950">V</text>
+    </svg>`);
   });
 
   // Returns the currently-authenticated user. Used by viewer.html to

@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <!-- PWA install metadata. iOS / Android home-screen install runs this
+       page in standalone mode (no browser chrome) when these are set. -->
+  <link rel="manifest" href="/viewer/manifest.json">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SP Viewer">
+  <link rel="apple-touch-icon" href="/viewer/icon-192.svg">
   <title>Parlay SP — Viewer</title>
   <!-- flatpickr — replaces native browser date/datetime pickers with a
        custom calendar that has a confirm button. Click on a date no
@@ -676,6 +684,46 @@
   }
   .bankroll-sub.positive { color: var(--green); }
   .bankroll-sub.negative { color: var(--red); }
+
+  /* ========== Mobile-responsive overrides (≤640px) ==========
+     Phone widths: stack the bankroll cells, condense the header,
+     allow horizontal scroll inside cards so the wide exposure /
+     daily-volume tables don't break the layout. PWA install runs
+     viewer.html in standalone mode where these rules apply. */
+  @media (max-width: 640px) {
+    body { font-size: 13px; }
+    .viewer-header {
+      padding: env(safe-area-inset-top) 12px 10px 12px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .viewer-header .brand { font-size: 13px; }
+    .viewer-header .viewer-tag { font-size: 9px; padding: 1px 4px; margin-left: 4px; }
+    .viewer-header .tabs { margin-left: 0; flex: 1 1 100%; order: 3; }
+    .viewer-header .tab-btn { flex: 1; padding: 10px 8px; font-size: 13px; }
+    .viewer-header .user-info {
+      margin-left: auto;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 2px;
+      font-size: 11px;
+    }
+    .viewer-main {
+      padding: 12px env(safe-area-inset-right) calc(env(safe-area-inset-bottom) + 12px) env(safe-area-inset-left);
+    }
+    /* Stack bankroll cells vertically on phones — three side-by-side
+       cells get unreadable below ~640px. */
+    .bankroll-bar { flex-direction: column; gap: 1px; margin-bottom: 12px; }
+    .bankroll-cell { padding: 8px 12px; }
+    .bankroll-value { font-size: 16px; }
+    /* Card bodies on the viewer hold tables (Team Exposure, Game
+       Exposure, Daily Volume). Allow horizontal scroll so columns
+       don't squish or wrap awkwardly. */
+    .card-body { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    /* Tighten the date filter row so the inputs + Reset button fit. */
+    #chart-dv-filter { font-size: 10px; gap: 6px; padding: 0 4px 6px; }
+    #chart-dv-filter input[type="date"] { padding: 4px 6px; font-size: 12px; }
+  }
 </style>
 </head>
 <body>
@@ -12665,6 +12713,14 @@
   // -----------------------------------------------------------------------
 
   if (window.IS_VIEWER) {
+    // Register the PWA service worker so the page is installable as a
+    // home-screen app on iOS / Android. The SW itself is minimal —
+    // just enables install eligibility, no offline caching or push.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/viewer/sw.js', { scope: '/viewer' })
+        .catch(err => console.warn('[viewer SW] register failed:', err));
+    }
+
     // Fetch the current user's username so the header shows who is signed in.
     fetch('/me').then(r => r.ok ? r.json() : null).then(me => {
       if (me && me.username) {
