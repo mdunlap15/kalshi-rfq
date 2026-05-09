@@ -637,6 +637,44 @@
   .viewer-main { padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
   .viewer-section { display: block; }
   .viewer-section.hidden { display: none; }
+  /* Bankroll split bar — sits above both tabs so the partner balances
+     are visible whether the operator is viewing P&L or Exposure. */
+  .bankroll-bar {
+    display: flex;
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .bankroll-cell {
+    flex: 1 1 0;
+    background: var(--surface);
+    padding: 10px 14px;
+    min-width: 0;
+  }
+  .bankroll-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text3);
+    margin-bottom: 4px;
+  }
+  .bankroll-value {
+    font-family: monospace;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .bankroll-sub {
+    font-family: monospace;
+    font-size: 11px;
+    color: var(--text3);
+    margin-top: 2px;
+  }
+  .bankroll-sub.positive { color: var(--green); }
+  .bankroll-sub.negative { color: var(--red); }
 </style>
 </head>
 <body>
@@ -650,11 +688,35 @@
   <div class="user-info">
     <span class="username" id="viewer-username">&mdash;</span>
     <span id="viewer-refresh-status" style="font-size:11px; color:var(--text3);"></span>
-    <button class="btn-logout" onclick="viewerLogout()">Sign out</button>
+    <!-- Sign-out: HTTP Basic Auth credentials are cached by the browser
+         until the tab/process closes. There's no clean server-side
+         logout. Closing the tab signs out. -->
   </div>
 </header>
 
 <main class="viewer-main">
+  <!-- Bankroll split — top-of-page indicator visible on both tabs.
+       Mike $17,500 base + 75% of P&L gain · Rick $12,500 base + 25%
+       of P&L gain. Computed client-side in viewerRefresh() from the
+       /status portfolio.accountValue (live PX balance). -->
+  <div class="bankroll-bar" id="bankroll-bar">
+    <div class="bankroll-cell">
+      <div class="bankroll-label">Total Balance</div>
+      <div class="bankroll-value" id="bankroll-total">&mdash;</div>
+      <div class="bankroll-sub" id="bankroll-pnl">&mdash;</div>
+    </div>
+    <div class="bankroll-cell">
+      <div class="bankroll-label">Mike (75% + $17.5k)</div>
+      <div class="bankroll-value" id="bankroll-mike">&mdash;</div>
+      <div class="bankroll-sub" id="bankroll-mike-pnl">&mdash;</div>
+    </div>
+    <div class="bankroll-cell">
+      <div class="bankroll-label">Rick (25% + $12.5k)</div>
+      <div class="bankroll-value" id="bankroll-rick">&mdash;</div>
+      <div class="bankroll-sub" id="bankroll-rick-pnl">&mdash;</div>
+    </div>
+  </div>
+
   <!-- ============================== P&L TAB ============================== -->
   <div id="section-pnl" class="viewer-section">
     <!-- Daily Volume & P&L (chart + table) -->
@@ -12514,6 +12576,12 @@
       // Risk Sim renders only when the user clicks "Run Simulation" — it
       // reads from orderState.allOrders which is now fresh.
 
+      // Bankroll split — Mike $17.5k + 75% of P&L gain, Rick $12.5k +
+      // 25% of P&L gain. Total starting bankroll = $30k. Computed from
+      // portfolio.accountValue (live PX balance); falls back to "—" if
+      // PX hasn't reported a balance yet (e.g., during boot).
+      renderBankrollSplit(status.portfolio || {});
+
       if (statusEl) {
         const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         statusEl.textContent = `Updated ${t}`;
@@ -12524,6 +12592,63 @@
     }
   }
   window.viewerRefresh = viewerRefresh;
+
+  /**
+   * Render the bankroll split bar at the top of the viewer.
+   *
+   * Split is fixed (Mike's business arrangement with Rick):
+   *   Total starting bankroll = $30,000
+   *   Mike: $17,500 base + 75% of (current balance − $30,000)
+   *   Rick: $12,500 base + 25% of (current balance − $30,000)
+   *
+   * Same proportions apply to losses — if balance drops below $30k,
+   * each share moves down by their respective percentage of the loss.
+   * Mike + Rick always sum to the live balance.
+   */
+  const BANKROLL_BASE_TOTAL = 30000;
+  const BANKROLL_MIKE_BASE = 17500;
+  const BANKROLL_RICK_BASE = 12500;
+  const BANKROLL_MIKE_SHARE = 0.75;
+  const BANKROLL_RICK_SHARE = 0.25;
+
+  function renderBankrollSplit(portfolio) {
+    const totalEl = document.getElementById('bankroll-total');
+    const pnlEl = document.getElementById('bankroll-pnl');
+    const mikeEl = document.getElementById('bankroll-mike');
+    const mikePnlEl = document.getElementById('bankroll-mike-pnl');
+    const rickEl = document.getElementById('bankroll-rick');
+    const rickPnlEl = document.getElementById('bankroll-rick-pnl');
+    if (!totalEl) return;
+
+    const balance = Number(portfolio && (portfolio.accountValue ?? portfolio.balance));
+    if (!Number.isFinite(balance) || balance <= 0) {
+      totalEl.textContent = '—';
+      pnlEl.textContent = 'Waiting on PX balance';
+      pnlEl.className = 'bankroll-sub';
+      mikeEl.textContent = '—';
+      mikePnlEl.textContent = '';
+      rickEl.textContent = '—';
+      rickPnlEl.textContent = '';
+      return;
+    }
+
+    const gain = balance - BANKROLL_BASE_TOTAL;
+    const mikeShare = BANKROLL_MIKE_BASE + BANKROLL_MIKE_SHARE * gain;
+    const rickShare = BANKROLL_RICK_BASE + BANKROLL_RICK_SHARE * gain;
+    const mikeGain = BANKROLL_MIKE_SHARE * gain;
+    const rickGain = BANKROLL_RICK_SHARE * gain;
+    const cls = (n) => n > 0 ? 'bankroll-sub positive' : n < 0 ? 'bankroll-sub negative' : 'bankroll-sub';
+
+    totalEl.textContent = fmtDollar(balance);
+    pnlEl.textContent = fmtPnl(gain) + ' vs $' + fmt(BANKROLL_BASE_TOTAL, 0) + ' start';
+    pnlEl.className = cls(gain);
+    mikeEl.textContent = fmtDollar(mikeShare);
+    mikePnlEl.textContent = fmtPnl(mikeGain);
+    mikePnlEl.className = cls(mikeGain);
+    rickEl.textContent = fmtDollar(rickShare);
+    rickPnlEl.textContent = fmtPnl(rickGain);
+    rickPnlEl.className = cls(rickGain);
+  }
 
   // -----------------------------------------------------------------------
   // INIT
