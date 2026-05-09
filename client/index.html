@@ -4532,13 +4532,35 @@
           const toWinVal = o.confirmedStake && o.offeredOdds ? calcSpProfit(o.confirmedStake, o.offeredOdds) : null;
           const toWin = toWinVal != null ? fmtDollar(toWinVal) : '-';
           const time = o.confirmedAt ? new Date(o.confirmedAt).toLocaleString() : '-';
-          detailHtml += '<tr>';
+          // Red X if any leg has already lost. Mirrors the SP-side
+          // "this parlay can no longer hit" semantic that the risk-sim
+          // already uses (any 'lost' leg = bettor's parlay is dead).
+          const hasLostLeg = legs.some(l => {
+            const r = l.inferredResult || l.settlementStatus || l.settlement_status;
+            return r === 'lost';
+          });
+          const lostMarker = hasLostLeg
+            ? '<span style="color:var(--red); font-weight:700; margin-right:6px;" title="At least one leg has already lost — bettor parlay can\'t hit">✗</span>'
+            : '';
+          // Per-parlay drill-down row key. Stable across renders so
+          // expandedRows survives auto-refresh.
+          const parlayRowKey = 'tep-' + rowKey + '-' + (o.parlayId || Math.random().toString(36).slice(2, 8));
+          const parlayExpanded = expandedRows.has(parlayRowKey);
+          detailHtml += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + parlayRowKey + '\')" data-detail-key="' + parlayRowKey + '">';
           detailHtml += '<td style="padding:2px 8px; white-space:nowrap;">' + time + '</td>';
-          detailHtml += '<td style="padding:2px 8px; max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + allTeams + '">' + allTeams + '</td>';
+          detailHtml += '<td style="padding:2px 8px; max-width:250px; overflow:hidden; text-overflow:ellipsis;" title="' + allTeams + '">' + lostMarker + allTeams + '</td>';
           detailHtml += '<td style="padding:2px 8px; text-align:right; font-weight:600;">' + oddsStr + '</td>';
           detailHtml += '<td style="padding:2px 8px; text-align:right;">' + myRisk + '</td>';
           detailHtml += '<td style="padding:2px 8px; text-align:right; font-weight:600; color:var(--green);">' + toWin + '</td>';
           detailHtml += '</tr>';
+          // Hidden detail row — same structure Open/Settled tables use
+          // via buildLegTable. Marked .inline-detail-row so the inline
+          // sort logic keeps it paired with its parent.
+          detailHtml += '<tr id="' + parlayRowKey + '" class="inline-detail-row" style="display:' + (parlayExpanded ? 'table-row' : 'none') + '; background:var(--surface2);">';
+          detailHtml += '<td colspan="5" style="padding:8px 12px;">';
+          detailHtml += buildLegTable(legs, { pad: '2px 6px', vig: o.meta?.vig || o.vig || 0 });
+          detailHtml += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (o.parlayId || '-') + '</div>';
+          detailHtml += '</td></tr>';
         }
         detailHtml += '</table>';
       } else {
@@ -5612,16 +5634,34 @@
       arrow.style.cssText = 'color:var(--accent); font-size:9px; margin-left:2px;';
       th.appendChild(arrow);
     }
-    const rows = Array.from(table.rows).slice(1);
-    rows.sort((a, b) => {
+    // Pair primary rows with their detail rows (data-detail-key \u2192
+    // detail row id) so click-to-expand pairs stay adjacent through
+    // sorts. Only primaries are sorted; detail rows trail their parent.
+    const allRows = Array.from(table.rows).slice(1);
+    const detailById = {};
+    const primaries = [];
+    for (const r of allRows) {
+      if (r.classList.contains('inline-detail-row')) {
+        if (r.id) detailById[r.id] = r;
+      } else {
+        primaries.push(r);
+      }
+    }
+    primaries.sort((a, b) => {
       const va = _inlineCellValue(a.cells[colIdx], asNumber);
       const vb = _inlineCellValue(b.cells[colIdx], asNumber);
       if (va === vb) return 0;
       return (va < vb ? -1 : 1) * (dir === 'asc' ? 1 : -1);
     });
-    const parent = rows[0]?.parentNode;
+    const parent = primaries[0]?.parentNode;
     if (!parent) return;
-    for (const r of rows) parent.appendChild(r);
+    for (const r of primaries) {
+      parent.appendChild(r);
+      const detailKey = r.dataset.detailKey;
+      if (detailKey && detailById[detailKey]) {
+        parent.appendChild(detailById[detailKey]);
+      }
+    }
   }
 
   // Click handler — toggles direction, saves to _inlineTableSort
