@@ -254,6 +254,20 @@ async function startup() {
   } catch (err) {
     log.warn('Startup', `    ⚠ Pause-state load failed: ${err.message} — defaulting to paused=true`);
   }
+  // Restore operator's manually-disabled lines + events from kv_store.
+  // MUST run before websocket.connect — otherwise the first batch of RFQs
+  // after restart could quote on lines the operator had disabled. Pre-fix,
+  // disabled state lived in process memory and wiped on every redeploy.
+  try {
+    const restored = await lineManager.hydrateDisabledFromDb();
+    if (restored.lines > 0 || restored.events > 0) {
+      log.info('Startup', `    ✓ Disabled-lines hydrated: ${restored.lines} line(s), ${restored.events} event(s)`);
+    } else {
+      log.info('Startup', '    ✓ Disabled-lines hydrated: none');
+    }
+  } catch (err) {
+    log.warn('Startup', `    ⚠ Disabled-lines hydrate failed: ${err.message}`);
+  }
   try {
     await websocket.connect();
     log.info('Startup', '    ✓ WebSocket connected');

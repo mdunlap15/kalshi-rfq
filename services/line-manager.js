@@ -1497,11 +1497,72 @@ function lookupLine(lineId) {
 // etc) but our cache still shows stale prices. Pausing the entire service
 // is too heavy. Instead the operator clicks "Disable" in the Lines table
 // drill-down to make a specific line (or whole event) auto-decline at the
-// pricer level. Cleared on service restart — operator re-enables when the
-// game is back on the board.
+// pricer level.
+//
+// Persistence: in-memory Sets are the source of truth at runtime. After
+// each mutation we fire-and-forget a write to Supabase kv_store so the
+// disable survives Railway redeploys (every push to main restarts the
+// service). hydrateDisabledFromDb() is called once at startup to repopulate
+// the Sets from kv_store. Operator caught 2026-05-09 that an MMA event
+// they had disabled re-enabled itself after a redeploy — pre-fix the
+// disabled state was wiped on every restart.
 // ===========================================================================
+const KV_DISABLED_LINES = 'disabled_line_ids';
+const KV_DISABLED_PX_EVENTS = 'disabled_px_event_ids';
+
 const disabledLineIds = new Set();
 const disabledPxEventIds = new Set();
+
+let _db = null;
+function _getDb() {
+  if (_db === null) {
+    try { _db = require('./db'); }
+    catch (_) { _db = false; }
+  }
+  return _db || null;
+}
+
+function _persistDisabledLines() {
+  const db = _getDb();
+  if (!db || typeof db.saveKV !== 'function') return;
+  // Fire-and-forget. Failures log a warning inside saveKV; the in-memory
+  // Set is unaffected so the disable still works for this process lifetime.
+  db.saveKV(KV_DISABLED_LINES, Array.from(disabledLineIds))
+    .catch(() => { /* logged by saveKV */ });
+}
+
+function _persistDisabledPxEvents() {
+  const db = _getDb();
+  if (!db || typeof db.saveKV !== 'function') return;
+  db.saveKV(KV_DISABLED_PX_EVENTS, Array.from(disabledPxEventIds))
+    .catch(() => { /* logged by saveKV */ });
+}
+
+/**
+ * Restore disabled lines + events from kv_store. Called once at startup
+ * before WebSocket connects so the first RFQs after restart respect the
+ * operator's prior disable selections. Best-effort — DB outage logs a
+ * warning and the service continues with empty Sets.
+ */
+async function hydrateDisabledFromDb() {
+  const db = _getDb();
+  if (!db || typeof db.loadKV !== 'function') return { lines: 0, events: 0 };
+  try {
+    const [lines, events] = await Promise.all([
+      db.loadKV(KV_DISABLED_LINES).catch(() => null),
+      db.loadKV(KV_DISABLED_PX_EVENTS).catch(() => null),
+    ]);
+    if (Array.isArray(lines)) {
+      for (const id of lines) if (id) disabledLineIds.add(String(id));
+    }
+    if (Array.isArray(events)) {
+      for (const id of events) if (id) disabledPxEventIds.add(String(id));
+    }
+    return { lines: disabledLineIds.size, events: disabledPxEventIds.size };
+  } catch (_) {
+    return { lines: 0, events: 0 };
+  }
+}
 
 function isLineDisabled(lineId) {
   if (!lineId) return false;
@@ -1519,23 +1580,29 @@ function isPxEventDisabled(pxEventId) {
 function disableLine(lineId) {
   if (!lineId) return false;
   disabledLineIds.add(String(lineId));
+  _persistDisabledLines();
   return true;
 }
 
 function enableLine(lineId) {
   if (!lineId) return false;
-  return disabledLineIds.delete(String(lineId));
+  const removed = disabledLineIds.delete(String(lineId));
+  if (removed) _persistDisabledLines();
+  return removed;
 }
 
 function disablePxEvent(pxEventId) {
   if (pxEventId == null) return false;
   disabledPxEventIds.add(String(pxEventId));
+  _persistDisabledPxEvents();
   return true;
 }
 
 function enablePxEvent(pxEventId) {
   if (pxEventId == null) return false;
-  return disabledPxEventIds.delete(String(pxEventId));
+  const removed = disabledPxEventIds.delete(String(pxEventId));
+  if (removed) _persistDisabledPxEvents();
+  return removed;
 }
 
 function getDisabledSnapshot() {
@@ -2743,4 +2810,5 @@ module.exports = {
   disablePxEvent,
   enablePxEvent,
   getDisabledSnapshot,
+  hydrateDisabledFromDb,
 };
