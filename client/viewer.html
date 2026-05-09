@@ -702,7 +702,7 @@
        /status portfolio.accountValue (live PX balance). -->
   <div class="bankroll-bar" id="bankroll-bar">
     <div class="bankroll-cell">
-      <div class="bankroll-label">Total Balance</div>
+      <div class="bankroll-label">Total Equity</div>
       <div class="bankroll-value" id="bankroll-total">&mdash;</div>
       <div class="bankroll-sub" id="bankroll-pnl">&mdash;</div>
     </div>
@@ -12621,7 +12621,16 @@
     const rickPnlEl = document.getElementById('bankroll-rick-pnl');
     if (!totalEl) return;
 
-    const balance = Number(portfolio && (portfolio.accountValue ?? portfolio.balance));
+    // Total Equity = Cash Available + Deployed (matches the main dashboard's
+    // "Total Equity" stat). Server computes it in /status portfolio.totalEquity.
+    // Falls back to (accountValue + currentRisk) if the server hasn't been
+    // updated yet, then to balance for older deployments.
+    let balance = Number(portfolio && portfolio.totalEquity);
+    if (!Number.isFinite(balance)) {
+      const av = Number(portfolio && portfolio.accountValue);
+      const risk = Number(portfolio && (portfolio.currentRisk ?? portfolio.totalRisk)) || 0;
+      balance = Number.isFinite(av) && av > 0 ? av + risk : NaN;
+    }
     if (!Number.isFinite(balance) || balance <= 0) {
       totalEl.textContent = '—';
       pnlEl.textContent = 'Waiting on PX balance';

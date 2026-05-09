@@ -808,12 +808,18 @@ function startStatusServer() {
         const accountPnL = (accountValue != null && startingBankroll != null)
           ? (accountValue - startingBankroll)
           : null;
+        // Total Equity = Cash Available + Deployed. Mirrors the
+        // calculation the main dashboard does in renderPortfolioSummary
+        // (balanceNum + portRisk). Surfaces it here so the viewer page
+        // can display the same number without a separate /balance fetch.
+        const totalEquity = (accountValue != null) ? (accountValue + currentRisk) : null;
         return {
           bankroll: getBankroll(),
           balance: liveBal || getBankroll(),
           accountValue,
           startingBankroll,
           accountPnL,
+          totalEquity,
           totalRisk: orderTracker.getTotalPortfolioRisk(),
           currentRisk: orderTracker.getTotalPortfolioRisk(),
           totalToWin: orderTracker.getTotalToWin(),
