@@ -5199,13 +5199,35 @@
         const parentOrder = (p.parlayId && orderState.allOrders) ? orderState.allOrders[p.parlayId] : null;
         const parentLegs = parentOrder ? (parentOrder.legs || parentOrder.meta?.legs || []) : [];
         const allLegsLabel = parentLegs.length > 0 ? formatParlaySelections(parentLegs) : '—';
-        detail += '<tr>';
+        // Red X if any leg has already lost. Mirrors the Team Exposure
+        // drill-down + the risk-sim "parlay can't hit" predicate.
+        const hasLostLeg = parentLegs.some(l => {
+          const r = l.inferredResult || l.settlementStatus || l.settlement_status;
+          return r === 'lost';
+        });
+        const lostMarker = hasLostLeg
+          ? '<span style="color:var(--red); font-weight:700; margin-right:6px;" title="At least one leg has already lost — bettor parlay can\'t hit">✗</span>'
+          : '';
+        // Per-parlay drill-down row key. Stable across renders so
+        // expandedRows survives auto-refresh.
+        const parlayRowKey = 'gep-' + rowKey + '-' + (p.parlayId || gi);
+        const parlayExpanded = expandedRows.has(parlayRowKey);
+        detail += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + parlayRowKey + '\')" data-detail-key="' + parlayRowKey + '">';
         detail += '<td style="padding:2px 6px;">' + escapeHtml(sel) + '</td>';
-        detail += '<td style="padding:2px 6px; max-width:280px; overflow:hidden; text-overflow:ellipsis;" title="' + escapeHtml(allLegsLabel) + '">' + escapeHtml(allLegsLabel) + '</td>';
+        detail += '<td style="padding:2px 6px; max-width:280px; overflow:hidden; text-overflow:ellipsis;" title="' + escapeHtml(allLegsLabel) + '">' + lostMarker + escapeHtml(allLegsLabel) + '</td>';
         detail += '<td style="padding:2px 6px;">' + p.legCount + '-leg</td>';
         detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.weightedRisk) + '</td>';
         detail += '<td style="padding:2px 6px; text-align:right;">' + fmtDollar(p.payout) + '</td>';
         detail += '<td style="padding:2px 6px; text-align:right; color:var(--green);">' + fmtDollar(p.stake) + '</td></tr>';
+        // Hidden detail row — buildLegTable for the full parlay. Marked
+        // .inline-detail-row so sort logic keeps it paired with parent.
+        if (parentLegs.length > 0) {
+          detail += '<tr id="' + parlayRowKey + '" class="inline-detail-row" style="display:' + (parlayExpanded ? 'table-row' : 'none') + '; background:var(--surface2);">';
+          detail += '<td colspan="6" style="padding:8px 12px;">';
+          detail += buildLegTable(parentLegs, { pad: '2px 6px', vig: parentOrder.meta?.vig || parentOrder.vig || 0 });
+          detail += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (p.parlayId || '-') + '</div>';
+          detail += '</td></tr>';
+        }
       }
       detail += '</table>';
 
