@@ -601,11 +601,18 @@ function startStatusServer() {
     }
     return map;
   })();
-  // Paths a viewer is permitted to load. Default covers the shareable
-  // report and the static asset paths it implicitly resolves to. /health
-  // is already public via AUTH_PUBLIC_PATHS so viewers don't need it.
+  // Paths a viewer is permitted to load. Defaults cover:
+  //   - /edge-vs-fair.html — the original shared report
+  //   - /viewer + /viewer.html — the read-only dashboard (P&L + Exposure
+  //     tabs only) that this scaled-down view is built around
+  //   - /status, /orders — the GET endpoints viewer.html fetches every
+  //     15s to render its 4 sections
+  //   - /me — returns the current Basic Auth username so the viewer
+  //     header can show who is signed in
+  // Viewers cannot reach /, /index.html, or any admin POST endpoint —
+  // the middleware below rejects with 403.
   const AUTH_VIEWER_PATHS = new Set(
-    (process.env.AUTH_VIEWER_PATHS || '/edge-vs-fair.html')
+    (process.env.AUTH_VIEWER_PATHS || '/edge-vs-fair.html,/viewer,/viewer.html,/status,/orders,/me')
       .split(',').map(s => s.trim()).filter(Boolean)
   );
   if (AUTH_ENABLED) {
@@ -623,7 +630,11 @@ function startStatusServer() {
     return diff === 0;
   }
   app.use((req, res, next) => {
-    if (!AUTH_ENABLED) return next();
+    if (!AUTH_ENABLED) {
+      // No auth configured — leave req.user unset; routes that need a
+      // username (like /me) will fall back gracefully.
+      return next();
+    }
     if (AUTH_PUBLIC_PATHS.has(req.path)) return next();
     const header = req.headers.authorization || '';
     if (header.startsWith('Basic ')) {
@@ -635,12 +646,14 @@ function startStatusServer() {
           const pass = decoded.slice(idx + 1);
           // Admin: full access to every non-public path.
           if (user === AUTH_USERNAME && safeEqual(pass, AUTH_PASSWORD)) {
+            req.user = { username: user, role: 'admin' };
             return next();
           }
           // Viewer: only the allowlisted paths.
           if (AUTH_VIEWERS.has(user)) {
             const expected = AUTH_VIEWERS.get(user);
             if (safeEqual(pass, expected)) {
+              req.user = { username: user, role: 'viewer' };
               if (AUTH_VIEWER_PATHS.has(req.path)) return next();
               // Authenticated as viewer but path is admin-only.
               return res.status(403).send('Forbidden');
@@ -661,6 +674,26 @@ function startStatusServer() {
       }
     }
   }));
+
+  // Read-only viewer dashboard. Same content as /viewer.html — this is
+  // just a cleaner URL. Auth middleware above gates access by role:
+  // admins always allowed, viewers only when /viewer is in their
+  // AUTH_VIEWER_PATHS allowlist (it's there by default).
+  app.get('/viewer', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.sendFile(path.join(__dirname, 'client', 'viewer.html'));
+  });
+
+  // Returns the currently-authenticated user. Used by viewer.html to
+  // display the username in the header. When AUTH is disabled (open
+  // server), returns username:null and role:'admin' so the dashboard
+  // works in dev environments.
+  app.get('/me', (req, res) => {
+    res.json({
+      username: req.user ? req.user.username : null,
+      role: req.user ? req.user.role : 'admin',
+    });
+  });
 
   // Health check — always returns 200 so Railway deployment succeeds
   app.get('/health', (req, res) => {

@@ -51,6 +51,25 @@ client/
 | `REFRESH_INTERVAL_MINUTES` | No | Default: 2 |
 | `SUPPORTED_SPORTS` | No | Default: `basketball_nba,basketball_ncaab,baseball_mlb,icehockey_nhl,tennis,soccer` |
 | `LOG_LEVEL` | No | Default: `info` |
+| `AUTH_USERNAME` | No | Default: `mike`. Admin username for HTTP Basic Auth. |
+| `AUTH_PASSWORD` | No | Admin password. **Auth is OFF when unset** — server is publicly accessible. |
+| `AUTH_VIEWERS` | No | Comma-separated `user:pass` pairs for read-only accounts (e.g., `alice:hunter2,bob:sekret`). |
+| `AUTH_VIEWER_PATHS` | No | Comma-separated paths viewers may access. Default: `/edge-vs-fair.html,/viewer,/viewer.html,/status,/orders,/me`. |
+
+## Auth & Read-Only Viewer
+
+Two roles via HTTP Basic Auth (browser-native login dialog):
+
+- **Admin** (`AUTH_USERNAME` / `AUTH_PASSWORD`) — full access to `/` (main dashboard), all admin endpoints, and `/viewer`.
+- **Viewer** (`AUTH_VIEWERS`) — read-only, allowed only the paths in `AUTH_VIEWER_PATHS`. The default list grants access to:
+  - `/viewer` and `/viewer.html` — scaled-down dashboard with two tabs: P&L (Daily Volume & P&L chart + table) and Exposure (Team Exposure, Game Exposure, Risk Simulation).
+  - `/status`, `/orders` — the GET endpoints viewer.html polls every 15s.
+  - `/me` — returns the current Basic Auth username so the viewer header shows who is signed in.
+  - `/edge-vs-fair.html` — pre-existing shared report.
+
+**Provisioning a viewer:** add an entry to `AUTH_VIEWERS` on Railway. Example: `AUTH_VIEWERS=alice:correctHorse,bob:battery`. Tell the viewer to visit `https://<railway-host>/viewer` and enter their username/password in the browser dialog. They cannot reach the main dashboard or any admin endpoint.
+
+**Sign-out:** HTTP Basic Auth credentials are cached by the browser until the tab/process closes. There is no clean server-side logout.
 
 ## RFQ Flow
 
