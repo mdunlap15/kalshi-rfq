@@ -574,9 +574,10 @@
     display: flex;
     align-items: center;
     gap: 16px;
-    position: sticky;
-    top: 0;
-    z-index: 10;
+    /* Was position:sticky — sticky creates a stacking context that the
+       flatpickr calendar (appended to body, z-index 99999) couldn't
+       reliably escape, causing the date popup to render behind the
+       header. The main dashboard doesn't have a sticky header either. */
   }
   .viewer-header .brand {
     font-weight: 700;
