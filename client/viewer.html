@@ -627,6 +627,21 @@
     color: var(--text);
     border-bottom-color: var(--accent);
   }
+  /* Unread badge on a tab button — count of new open positions since
+     the user last entered the Positions tab. Hidden via inline
+     display:none when count == 0. */
+  .viewer-header .tab-btn .tab-badge {
+    display: inline-block;
+    background: var(--red);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    padding: 2px 6px;
+    border-radius: 10px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
   .viewer-header .user-info {
     margin-left: auto;
     display: flex;
@@ -736,12 +751,16 @@
   <div class="brand">PARLAY SP<span class="viewer-tag">VIEWER</span></div>
   <nav class="tabs">
     <button class="tab-btn active" id="tab-pnl" onclick="switchViewerTab('pnl')">P&amp;L</button>
-    <button class="tab-btn" id="tab-positions" onclick="switchViewerTab('positions')">Positions</button>
+    <button class="tab-btn" id="tab-positions" onclick="switchViewerTab('positions')">Positions<span class="tab-badge" id="positions-badge" style="display:none;">0</span></button>
     <button class="tab-btn" id="tab-exposure" onclick="switchViewerTab('exposure')">Exposure</button>
   </nav>
   <div class="user-info">
     <span class="username" id="viewer-username">&mdash;</span>
     <span id="viewer-refresh-status" style="font-size:11px; color:var(--text3);"></span>
+    <!-- Notification subscribe button. Hidden if the browser doesn't
+         support the Notifications/Push APIs or the user is already
+         subscribed. Tap → request permission → POST to /push/subscribe. -->
+    <button id="viewer-notif-btn" onclick="enableViewerNotifications()" style="display:none; background:transparent; border:1px solid var(--border); color:var(--text2); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;" title="Enable push notifications for new fills + settlements">🔔 Enable</button>
     <!-- Sign-out: HTTP Basic Auth credentials are cached by the browser
          until the tab/process closes. There's no clean server-side
          logout. Closing the tab signs out. -->
@@ -12633,6 +12652,16 @@
     if (tabPnl) tabPnl.classList.toggle('active', name === 'pnl');
     if (tabPositions) tabPositions.classList.toggle('active', name === 'positions');
     if (tabExp) tabExp.classList.toggle('active', name === 'exposure');
+    // Visiting Positions clears the unread badge — bookmark "now" as the
+    // last-viewed timestamp so future arrivals from after this point
+    // show up as new on the next refresh.
+    if (name === 'positions') {
+      try {
+        localStorage.setItem('viewer_posLastViewedTs', String(Date.now()));
+        window._viewerPosLastViewed = Date.now();
+        updatePositionsTabBadge(0);
+      } catch (_) { /* localStorage unavailable */ }
+    }
     // Live odds polling runs only while Exposure tab is active.
     if (name === 'exposure' && typeof startLiveOddsRefresh === 'function') {
       try { startLiveOddsRefresh(); } catch (_) { /* ignore */ }
@@ -12640,6 +12669,147 @@
       try { stopLiveOddsRefresh(); } catch (_) { /* ignore */ }
     }
   }
+
+  // ====== Push notifications + Positions-tab unread badge ======
+
+  // Update the red number badge on the Positions tab. count <= 0 hides it.
+  function updatePositionsTabBadge(count) {
+    const el = document.getElementById('positions-badge');
+    if (!el) return;
+    if (count > 0) {
+      el.textContent = count > 99 ? '99+' : String(count);
+      el.style.display = 'inline-block';
+    } else {
+      el.style.display = 'none';
+    }
+  }
+
+  // Compute the unread count from the latest /orders payload — number of
+  // open positions whose confirmedAt is newer than the last time the user
+  // entered the Positions tab.
+  function computeNewOpenPositionsCount(orders) {
+    const lastTs = window._viewerPosLastViewed || 0;
+    if (!lastTs) return 0;
+    const recent = (orders && orders.recentOrders) || [];
+    let count = 0;
+    for (const o of recent) {
+      if (o.status !== 'confirmed') continue;
+      if (o.meta && o.meta.phantom) continue;
+      if (o.isStalePhantom) continue;
+      if (!o.orderUuid) continue;
+      const ts = o.confirmedAt ? new Date(o.confirmedAt).getTime() : 0;
+      if (ts > lastTs) count++;
+    }
+    return count;
+  }
+
+  // Refresh the badge against current data. Called from viewerRefresh
+  // each cycle so the count stays current as new positions arrive.
+  function refreshPositionsTabBadge() {
+    if (!window._viewerPosLastViewed) return;
+    // Don't show a badge while the Positions tab is currently active —
+    // the user is already looking at the data.
+    const positionsActive = document.getElementById('tab-positions')?.classList.contains('active');
+    if (positionsActive) {
+      updatePositionsTabBadge(0);
+      return;
+    }
+    const count = computeNewOpenPositionsCount(window._lastOrders);
+    updatePositionsTabBadge(count);
+  }
+  window.refreshPositionsTabBadge = refreshPositionsTabBadge;
+
+  // Subscribe the current device to push notifications. Runs the full
+  // permission → SW registration → PushManager subscribe → /push/subscribe
+  // POST flow. Idempotent — re-running on an already-subscribed device
+  // just refreshes the server's record.
+  async function enableViewerNotifications() {
+    const btn = document.getElementById('viewer-notif-btn');
+    if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      if (btn) btn.style.display = 'none';
+      console.warn('[viewer push] APIs not available in this browser');
+      return;
+    }
+    if (btn) { btn.disabled = true; btn.textContent = '...'; }
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') {
+        if (btn) { btn.disabled = false; btn.textContent = '🔕 Blocked'; }
+        return;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const keyResp = await fetch('/push/vapid-key').then(r => r.ok ? r.json() : null);
+        if (!keyResp || !keyResp.publicKey) throw new Error('vapid key unavailable');
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(keyResp.publicKey),
+        });
+      }
+      const subJson = sub.toJSON();
+      await fetch('/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(subJson),
+      });
+      if (btn) { btn.disabled = false; btn.textContent = '🔔 On'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; }
+    } catch (err) {
+      console.warn('[viewer push] subscribe failed:', err);
+      if (btn) { btn.disabled = false; btn.textContent = '🔔 Enable'; }
+    }
+  }
+  window.enableViewerNotifications = enableViewerNotifications;
+
+  // VAPID public keys are URL-safe base64 — convert to Uint8Array for the
+  // PushManager. Standard helper from web-push docs.
+  function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = atob(base64);
+    const out = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) out[i] = rawData.charCodeAt(i);
+    return out;
+  }
+
+  // Show the Enable button if the browser supports push and the user
+  // hasn't already subscribed in this browser session.
+  async function _initViewerNotifBtn() {
+    const btn = document.getElementById('viewer-notif-btn');
+    if (!btn) return;
+    if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      btn.style.display = 'none';
+      return;
+    }
+    if (Notification.permission === 'denied') {
+      btn.style.display = 'inline-block';
+      btn.textContent = '🔕 Blocked';
+      btn.disabled = true;
+      return;
+    }
+    btn.style.display = 'inline-block';
+    try {
+      const reg = await navigator.serviceWorker.getRegistration('/viewer');
+      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      if (sub && Notification.permission === 'granted') {
+        btn.textContent = '🔔 On';
+        btn.style.color = 'var(--green)';
+        btn.style.borderColor = 'var(--green)';
+      } else {
+        btn.textContent = '🔔 Enable';
+      }
+    } catch (_) { /* default text already set */ }
+  }
+
+  // Clear the home-screen icon badge when the viewer becomes visible —
+  // tells the SW to call navigator.clearAppBadge.
+  function _clearAppBadgeOnFocus() {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.controller?.postMessage({ type: 'badge-clear' });
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') _clearAppBadgeOnFocus();
+  });
   window.switchViewerTab = switchViewerTab;
 
   /**
@@ -12681,6 +12851,10 @@
       // portfolio.accountValue (live PX balance); falls back to "—" if
       // PX hasn't reported a balance yet (e.g., during boot).
       renderBankrollSplit(status.portfolio || {});
+
+      // Update the unread count on the Positions tab (open positions
+      // confirmed since the user last opened the tab).
+      refreshPositionsTabBadge();
 
       if (statusEl) {
         const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -12765,12 +12939,35 @@
 
   if (window.IS_VIEWER) {
     // Register the PWA service worker so the page is installable as a
-    // home-screen app on iOS / Android. The SW itself is minimal —
-    // just enables install eligibility, no offline caching or push.
+    // home-screen app on iOS / Android. The SW handles install
+    // eligibility, push events, and app icon badge updates.
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/viewer/sw.js', { scope: '/viewer' })
+        .then(() => _initViewerNotifBtn())
         .catch(err => console.warn('[viewer SW] register failed:', err));
+    } else {
+      _initViewerNotifBtn();
     }
+
+    // Restore the Positions-tab "last viewed" timestamp from localStorage
+    // so the unread badge survives page reloads. First-time visitors get
+    // "now" as the initial baseline — they don't see a giant unread
+    // count for the entire historical book.
+    try {
+      const stored = localStorage.getItem('viewer_posLastViewedTs');
+      if (stored && /^\d+$/.test(stored)) {
+        window._viewerPosLastViewed = Number(stored);
+      } else {
+        window._viewerPosLastViewed = Date.now();
+        localStorage.setItem('viewer_posLastViewedTs', String(window._viewerPosLastViewed));
+      }
+    } catch (_) {
+      window._viewerPosLastViewed = Date.now();
+    }
+
+    // Clear the icon badge on initial load — the user is here, so any
+    // pending unread count from previous sessions is now seen.
+    setTimeout(() => _clearAppBadgeOnFocus(), 500);
 
     // Fetch the current user's username so the header shows who is signed in.
     fetch('/me').then(r => r.ok ? r.json() : null).then(me => {

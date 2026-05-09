@@ -629,10 +629,13 @@ function startStatusServer() {
   //   - /viewer/manifest.json, /viewer/sw.js, /viewer/icon-*.svg — PWA
   //     install assets so viewer.html can be installed to the home
   //     screen as a mobile app
+  //   - /push/vapid-key, /push/subscribe — viewer push notification
+  //     subscribe flow (broadcast pushes go to all subscribers, viewers
+  //     included)
   // Viewers cannot reach /, /index.html, or any admin POST endpoint —
   // the middleware below rejects with 403.
   const AUTH_VIEWER_PATHS = new Set(
-    (process.env.AUTH_VIEWER_PATHS || '/edge-vs-fair.html,/viewer,/viewer.html,/status,/orders,/me,/viewer/manifest.json,/viewer/sw.js,/viewer/icon-192.svg,/viewer/icon-512.svg')
+    (process.env.AUTH_VIEWER_PATHS || '/edge-vs-fair.html,/viewer,/viewer.html,/status,/orders,/me,/viewer/manifest.json,/viewer/sw.js,/viewer/icon-192.svg,/viewer/icon-512.svg,/push/vapid-key,/push/subscribe')
       .split(',').map(s => s.trim()).filter(Boolean)
   );
   if (AUTH_ENABLED) {
