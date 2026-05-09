@@ -736,6 +736,7 @@
   <div class="brand">PARLAY SP<span class="viewer-tag">VIEWER</span></div>
   <nav class="tabs">
     <button class="tab-btn active" id="tab-pnl" onclick="switchViewerTab('pnl')">P&amp;L</button>
+    <button class="tab-btn" id="tab-positions" onclick="switchViewerTab('positions')">Positions</button>
     <button class="tab-btn" id="tab-exposure" onclick="switchViewerTab('exposure')">Exposure</button>
   </nav>
   <div class="user-info">
@@ -790,6 +791,26 @@
         <div id="chart-daily-volume">
           <div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- =========================== POSITIONS TAB =========================== -->
+  <div id="section-positions" class="viewer-section hidden">
+    <!-- Open / Settled tabs inside a single card. Mirrors the admin
+         dashboard's Portfolio "Positions" card; the Export CSV button
+         is intentionally omitted on the viewer. -->
+    <div class="card">
+      <div class="card-header" style="padding-bottom:0; border-bottom:none;">
+        <div style="display:flex; gap:0; align-items:center;">
+          <button class="btn" id="pos-tab-open" onclick="switchPositionsTab('open')" style="border-radius:4px 4px 0 0; border-bottom:2px solid var(--accent); font-size:12px; padding:6px 16px;">Open Positions</button>
+          <button class="btn" id="pos-tab-settled" onclick="switchPositionsTab('settled')" style="border-radius:4px 4px 0 0; border-bottom:2px solid transparent; font-size:12px; padding:6px 16px; color:var(--text3);">Settled Positions</button>
+        </div>
+        <span id="positions-count" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+      </div>
+      <div class="card-body" style="padding: 0;">
+        <div id="positions-table"><div class="empty-state"><div class="icon">-</div><div>No open positions</div></div></div>
+        <div id="portfolio-settled" style="display:none;"><div class="empty-state"><div class="icon">-</div><div>No settled positions yet</div></div></div>
       </div>
     </div>
   </div>
@@ -3500,16 +3521,9 @@
       <tr>
         <th ${pSortClick('time')}>Confirmed${pSortArrow('time')}</th>
         <th>Selections</th>
-        <th ${pSortClick('legs')}>Legs${pSortArrow('legs')}</th>
         <th ${pSortClick('odds')}>My Odds${pSortArrow('odds')}</th>
-        <th ${pSortClick('pinnacle', 'right')} style="color:var(--purple);">Pinnacle${pSortArrow('pinnacle')}</th>
-        <th ${pSortClick('fanduel', 'right')} style="color:var(--blue);">FanDuel${pSortArrow('fanduel')}</th>
-        <th ${pSortClick('kalshi', 'right')} style="color:var(--amber);">Kalshi${pSortArrow('kalshi')}</th>
-        <th ${pSortClick('draftkings', 'right')} style="color:var(--green);">DK${pSortArrow('draftkings')}</th>
         <th ${pSortClick('stake', 'right')}>My Risk${pSortArrow('stake')}</th>
         <th ${pSortClick('towin', 'right')}>To Win${pSortArrow('towin')}</th>
-        <th ${pSortClick('edge', 'right')} title="Theoretical edge per $ wagered = 1 - (fair / bettor_implied)">Theo Edge${pSortArrow('edge')}</th>
-        <th ${pSortClick('ev', 'right')} title="Expected $ EV = bettor_wager × theoretical_edge">EV $${pSortArrow('ev')}</th>
         <th ${pSortClick('winprob', 'right')} title="Probability you win (at least one bettor leg fails)">Win Prob${pSortArrow('winprob')}</th>
         <th ${pSortClick('status')} title="Game status">Status${pSortArrow('status')}</th>
       </tr>`;
@@ -3635,23 +3649,16 @@
       html += `<tr style="cursor:pointer;" onclick="toggleDetailRow('${rowKey}')">
         <td style="white-space:nowrap; font-size:12px;">${time}</td>
         <td style="max-width:320px; white-space:nowrap;" title="${teams}"><span style="display:inline-block; max-width:280px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">${teamsShort}</span>${sgpBadge(legs)}${propBadge(legs)}</td>
-        <td>${legs.length}</td>
         <td style="font-weight:600;">${offeredAm}</td>
-        <td style="text-align:right; color:var(--purple);">${posPinFmt}</td>
-        <td style="text-align:right; color:var(--blue);">${posFdFmt}</td>
-        <td style="text-align:right; color:var(--amber);">${posKlFmt}</td>
-        <td style="text-align:right; color:var(--green);">${posDkFmt}</td>
         <td style="text-align:right">${myRisk}</td>
         <td style="text-align:right; font-weight:600; color:var(--green);">${toWin}</td>
-        <td style="text-align:right" class="${posEdgeCls}">${posEdgeStr}</td>
-        <td style="text-align:right" class="${posEdgeCls}">${posEvStr}</td>
         <td style="text-align:right">${posWpLabel}</td>
         <td title="${gameStatus.title}"><span style="color:${gameStatus.color}; font-weight:600; font-size:11px;">${gameStatus.label}</span></td>
       </tr>
       <tr id="${rowKey}" style="display:${expanded ? 'table-row' : 'none'}; background: var(--surface3);">
-        <td colspan="14" style="padding: 12px 16px;">
+        <td colspan="7" style="padding: 12px 16px;">
           <div style="font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px;">PARLAY LEGS</div>
-          ${buildLegTable(legs, { vig: order.meta?.vig || order.vig || 0 })}
+          ${buildLegTable(legs, { vig: order.meta?.vig || order.vig || 0, hideBookOdds: true })}
           <div style="margin-top: 8px; font-size: 11px; color: var(--text3);">
             Vig: ${((order.meta?.vig || order.vig || 0) * 100).toFixed(1)}% · Max Risk: $${order.maxRisk || '-'} · Decimal: ${order.meta?.decimalOdds || '-'}x · ID: ${order.parlayId || '-'}
           </div>
@@ -3883,15 +3890,8 @@
     html += '<tr>';
     html += '<th ' + sSortClick('settled') + '>Settled' + sSortArrow('settled') + '</th>';
     html += '<th>Selections</th>';
-    html += '<th>Legs</th>';
     html += '<th ' + sSortClick('odds') + '>Odds' + sSortArrow('odds') + '</th>';
-    html += '<th style="text-align:right; color:var(--purple);">Pinnacle</th>';
-    html += '<th style="text-align:right; color:var(--blue);">FanDuel</th>';
-    html += '<th style="text-align:right; color:var(--amber);">Kalshi</th>';
-    html += '<th style="text-align:right; color:var(--green);">DK</th>';
     html += '<th ' + sSortClick('stake', 'right') + '>My Risk' + sSortArrow('stake') + '</th>';
-    html += '<th ' + sSortClick('edge', 'right') + ' title="Theoretical edge per $ wagered = 1 - (fair / bettor_implied)">Theo Edge' + sSortArrow('edge') + '</th>';
-    html += '<th ' + sSortClick('ev', 'right') + ' title="Expected $ EV at quote time = bettor_wager × theoretical_edge">EV $' + sSortArrow('ev') + '</th>';
     html += '<th ' + sSortClick('result') + ' title="Settlement outcome from our (SP) perspective">SP Result' + sSortArrow('result') + '</th>';
     html += '<th ' + sSortClick('pnl', 'right') + '>P&L' + sSortArrow('pnl') + '</th>';
     html += '<th style="text-align:right">Cumul.</th>';
@@ -3950,22 +3950,15 @@
       html += '<tr style="cursor:pointer;" onclick="toggleDetailRow(\'' + rowKey + '\')">';
       html += '<td style="white-space:nowrap; font-size:12px;">' + time + '</td>';
       html += '<td style="max-width:290px; white-space:nowrap;" title="' + teams + '"><span style="display:inline-block; max-width:250px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;">' + teamsShort + '</span>' + sgpBadge(legs) + propBadge(legs) + '</td>';
-      html += '<td>' + legs.length + '</td>';
       html += '<td style="font-weight:600;">' + offeredAm + '</td>';
-      html += '<td style="text-align:right; color:var(--purple);">' + sPinFmt + '</td>';
-      html += '<td style="text-align:right; color:var(--blue);">' + sFdFmt + '</td>';
-      html += '<td style="text-align:right; color:var(--amber);">' + sKlFmt + '</td>';
-      html += '<td style="text-align:right; color:var(--green);">' + sDkFmt + '</td>';
       html += '<td style="text-align:right">' + stake + '</td>';
-      html += '<td style="text-align:right" class="' + stlEdgeCls + '">' + stlEdgeStr + '</td>';
-      html += '<td style="text-align:right" class="' + stlEdgeCls + '">' + stlEvStr + '</td>';
       html += '<td title="' + resultTitle + '"><span class="' + resultCls + '">' + resultText + '</span></td>';
       html += '<td style="text-align:right">' + pnlHtml + '</td>';
       html += '<td style="text-align:right">' + cumulHtml + '</td>';
       html += '</tr>';
       html += '<tr id="' + rowKey + '" style="display:' + (expanded ? 'table-row' : 'none') + '; background:var(--surface3);">';
-      html += '<td colspan="14" style="padding:12px 16px;">';
-      html += buildLegTable(sLegs.length > 0 ? sLegs : legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 });
+      html += '<td colspan="7" style="padding:12px 16px;">';
+      html += buildLegTable(sLegs.length > 0 ? sLegs : legs, { pad: '2px 6px', vig: order.meta?.vig || order.vig || 0, hideBookOdds: true });
       html += '<div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ' + (order.parlayId || '-') + '</div>';
       html += '</td></tr>';
     }
@@ -8240,7 +8233,7 @@
     const months = Object.keys(byMonth).sort().reverse();
 
     svg += '<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:11px;">';
-    svg += '<tr><th>Month / Date</th><th style="text-align:center">Fills</th><th style="text-align:center">My Risk</th><th style="text-align:center">To Win</th><th style="text-align:center">Settled</th><th style="text-align:center">P&L</th></tr>';
+    svg += '<tr><th>Month / Date</th><th style="text-align:center">Fills</th><th style="text-align:center">My Risk</th><th style="text-align:center">To Win</th><th style="text-align:center">P&L</th></tr>';
 
     for (const month of months) {
       const m = byMonth[month];
@@ -8252,11 +8245,10 @@
       svg += '<td style="text-align:center">' + m.count + '</td>';
       svg += '<td style="text-align:center">' + fmtDollar(m.risk) + '</td>';
       svg += '<td style="text-align:center; color:var(--green);">' + fmtDollar(m.toWin) + '</td>';
-      svg += '<td style="text-align:center">' + m.settled + '</td>';
       svg += '<td style="text-align:center" class="' + mPnlCls + '">' + fmtPnl(m.pnl) + '</td></tr>';
 
       // Month detail row: daily breakdown
-      svg += '<tr id="' + monthId + '" style="display:' + (monthExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
+      svg += '<tr id="' + monthId + '" style="display:' + (monthExpanded ? 'table-row' : 'none') + ';"><td colspan="5" style="padding:0;">';
       svg += '<table style="font-size:11px; width:100%; background:var(--surface2); margin:0;">';
       const monthDays = [...m.days].sort().reverse();
       for (const day of monthDays) {
@@ -8269,11 +8261,10 @@
         svg += '<td style="text-align:center; padding:2px 10px;">' + d.count + '</td>';
         svg += '<td style="text-align:center; padding:2px 10px;">' + fmtDollar(d.risk) + '</td>';
         svg += '<td style="text-align:center; padding:2px 10px; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
-        svg += '<td style="text-align:center; padding:2px 10px;">' + d.settled + '</td>';
         svg += '<td style="text-align:center; padding:2px 10px;" class="' + pnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
 
         // Day detail row: parlay breakdown (sortable)
-        svg += '<tr id="' + dayId + '" style="display:' + (dayExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
+        svg += '<tr id="' + dayId + '" style="display:' + (dayExpanded ? 'table-row' : 'none') + ';"><td colspan="5" style="padding:0;">';
         svg += '<table style="font-size:10px; width:100%; background:var(--surface3); margin:0;">';
         const sortState = window._dvSort[dayId] || { col: 'time', dir: 1 };
         const arrow = (col) => sortState.col === col ? (sortState.dir > 0 ? ' &#9650;' : ' &#9660;') : '';
@@ -8285,7 +8276,6 @@
           + '<th ' + hClick('odds') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Odds' + arrow('odds') + '</th>'
           + '<th ' + hClick('stake') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Stake' + arrow('stake') + '</th>'
           + '<th ' + hClick('pnl') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">P&L' + arrow('pnl') + '</th>'
-          + '<th ' + hClick('result') + ' style="padding:2px 6px;text-align:center; cursor:pointer;">Result' + arrow('result') + '</th>'
           + '</tr>';
         const rows = d.orders.filter(o => o.pnl != null).map(o => {
           const legs = o.legs || o.meta?.legs || [];
@@ -8346,11 +8336,10 @@
           svg += '<td style="padding:2px 6px;text-align:center;">' + r.oddsStr + '</td>';
           svg += '<td style="padding:2px 6px;text-align:center;">' + fmtDollar(r.stake) + '</td>';
           svg += '<td style="padding:2px 6px;text-align:center;" class="' + pnlCls2 + '">' + fmtPnl(r.pnl) + '</td>';
-          svg += '<td style="padding:2px 6px;text-align:center;color:' + resultColor + ';">' + r.result.charAt(0).toUpperCase() + r.result.slice(1) + '</td>';
           svg += '</tr>';
           if (parlayDetailId) {
-            svg += '<tr id="' + parlayDetailId + '" style="display:' + (expanded ? 'table-row' : 'none') + ';"><td colspan="7" style="padding:6px 12px; background:var(--surface);">';
-            svg += buildLegTable(r.legs, { pad: '4px 8px', showStatus: true, showSport: true });
+            svg += '<tr id="' + parlayDetailId + '" style="display:' + (expanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:6px 12px; background:var(--surface);">';
+            svg += buildLegTable(r.legs, { pad: '4px 8px', showStatus: true, showSport: true, hideBookOdds: true });
             svg += '</td></tr>';
           }
         }
@@ -11168,6 +11157,10 @@
     const showStatus = opts.showStatus !== false;
     const showSport = opts.showSport || false;
     const showOdds = opts.showFairOdds !== false;
+    // hideBookOdds: hide Pinnacle / FanDuel / Kalshi / DK / Fair columns
+    // but keep "My Odds". Used by the viewer page where book-by-book
+    // pricing isn't relevant for read-only consumers.
+    const hideBookOdds = opts.hideBookOdds || false;
     const vig = opts.vig || 0;
 
     let h = '<table style="width:100%; font-size:12px;">';
@@ -11179,11 +11172,13 @@
     h += '<th style="text-align:left; padding:' + pad + ';">Line</th>';
     h += '<th style="text-align:left; padding:' + pad + ';">Event Time</th>';
     if (showOdds) {
-      h += '<th style="text-align:right; padding:' + pad + '; color:var(--purple);">Pinnacle</th>';
-      h += '<th style="text-align:right; padding:' + pad + '; color:var(--blue);">FanDuel</th>';
-      h += '<th style="text-align:right; padding:' + pad + '; color:var(--amber);">Kalshi</th>';
-      h += '<th style="text-align:right; padding:' + pad + '; color:var(--green);">DK</th>';
-      h += '<th style="text-align:right; padding:' + pad + ';">Fair</th>';
+      if (!hideBookOdds) {
+        h += '<th style="text-align:right; padding:' + pad + '; color:var(--purple);">Pinnacle</th>';
+        h += '<th style="text-align:right; padding:' + pad + '; color:var(--blue);">FanDuel</th>';
+        h += '<th style="text-align:right; padding:' + pad + '; color:var(--amber);">Kalshi</th>';
+        h += '<th style="text-align:right; padding:' + pad + '; color:var(--green);">DK</th>';
+        h += '<th style="text-align:right; padding:' + pad + ';">Fair</th>';
+      }
       h += '<th style="text-align:right; padding:' + pad + '; color:var(--accent);">My Odds</th>';
     }
     h += '</tr>';
@@ -11409,11 +11404,13 @@
       h += '<td style="padding:' + pad + '; color:var(--text2);">' + lineDisplay + '</td>';
       h += '<td style="padding:' + pad + '; white-space:nowrap; font-size:11px; color:var(--text3);">' + eventTime + '</td>';
       if (showOdds) {
-        h += '<td style="padding:' + pad + '; text-align:right; color:var(--purple);">' + pinOdds + '</td>';
-        h += '<td style="padding:' + pad + '; text-align:right; color:var(--blue);">' + fdOdds + '</td>';
-        h += '<td style="padding:' + pad + '; text-align:right; color:var(--amber);">' + klOdds + '</td>';
-        h += '<td style="padding:' + pad + '; text-align:right; color:var(--green);">' + dkOdds + '</td>';
-        h += '<td style="padding:' + pad + '; text-align:right;">' + fairOdds + '</td>';
+        if (!hideBookOdds) {
+          h += '<td style="padding:' + pad + '; text-align:right; color:var(--purple);">' + pinOdds + '</td>';
+          h += '<td style="padding:' + pad + '; text-align:right; color:var(--blue);">' + fdOdds + '</td>';
+          h += '<td style="padding:' + pad + '; text-align:right; color:var(--amber);">' + klOdds + '</td>';
+          h += '<td style="padding:' + pad + '; text-align:right; color:var(--green);">' + dkOdds + '</td>';
+          h += '<td style="padding:' + pad + '; text-align:right;">' + fairOdds + '</td>';
+        }
         h += '<td style="padding:' + pad + '; text-align:right; color:var(--accent);">' + myOdds + '</td>';
       }
       h += '</tr>';
@@ -12625,12 +12622,16 @@
   // -----------------------------------------------------------------------
   function switchViewerTab(name) {
     const pnl = document.getElementById('section-pnl');
+    const positions = document.getElementById('section-positions');
     const exp = document.getElementById('section-exposure');
     const tabPnl = document.getElementById('tab-pnl');
+    const tabPositions = document.getElementById('tab-positions');
     const tabExp = document.getElementById('tab-exposure');
     if (pnl) pnl.classList.toggle('hidden', name !== 'pnl');
+    if (positions) positions.classList.toggle('hidden', name !== 'positions');
     if (exp) exp.classList.toggle('hidden', name !== 'exposure');
     if (tabPnl) tabPnl.classList.toggle('active', name === 'pnl');
+    if (tabPositions) tabPositions.classList.toggle('active', name === 'positions');
     if (tabExp) tabExp.classList.toggle('active', name === 'exposure');
     // Live odds polling runs only while Exposure tab is active.
     if (name === 'exposure' && typeof startLiveOddsRefresh === 'function') {
@@ -12666,8 +12667,10 @@
       }
       window._lastOrders = orders;
 
-      // Render the four viewer sections.
+      // Render the viewer sections.
       renderChartDailyVolume(recent);
+      renderPositions(orders);
+      renderSettled(orders);
       renderExposure(status.exposure || {});
       renderGameExposure(status.exposure || {});
       // Risk Sim renders only when the user clicks "Run Simulation" — it
