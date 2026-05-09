@@ -8559,7 +8559,7 @@
     const months = Object.keys(byMonth).sort().reverse();
 
     svg += '<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:11px;">';
-    svg += '<tr><th>Month / Date</th><th style="text-align:right">Fills</th><th style="text-align:right">My Risk</th><th style="text-align:right">To Win</th><th style="text-align:right">Settled</th><th style="text-align:right">P&L</th></tr>';
+    svg += '<tr><th>Month / Date</th><th style="text-align:center">Fills</th><th style="text-align:center">My Risk</th><th style="text-align:center">To Win</th><th style="text-align:center">Settled</th><th style="text-align:center">P&L</th></tr>';
 
     for (const month of months) {
       const m = byMonth[month];
@@ -8568,11 +8568,11 @@
       const monthExpanded = expandedRows.has(monthId);
       svg += '<tr onclick="toggleDetailRow(\'' + monthId + '\')" style="cursor:pointer;">';
       svg += '<td style="font-weight:600;">&#9654; ' + month + '</td>';
-      svg += '<td style="text-align:right">' + m.count + '</td>';
-      svg += '<td style="text-align:right">' + fmtDollar(m.risk) + '</td>';
-      svg += '<td style="text-align:right; color:var(--green);">' + fmtDollar(m.toWin) + '</td>';
-      svg += '<td style="text-align:right">' + m.settled + '</td>';
-      svg += '<td style="text-align:right" class="' + mPnlCls + '">' + fmtPnl(m.pnl) + '</td></tr>';
+      svg += '<td style="text-align:center">' + m.count + '</td>';
+      svg += '<td style="text-align:center">' + fmtDollar(m.risk) + '</td>';
+      svg += '<td style="text-align:center; color:var(--green);">' + fmtDollar(m.toWin) + '</td>';
+      svg += '<td style="text-align:center">' + m.settled + '</td>';
+      svg += '<td style="text-align:center" class="' + mPnlCls + '">' + fmtPnl(m.pnl) + '</td></tr>';
 
       // Month detail row: daily breakdown
       svg += '<tr id="' + monthId + '" style="display:' + (monthExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
@@ -8585,11 +8585,11 @@
         const dayExpanded = expandedRows.has(dayId);
         svg += '<tr onclick="event.stopPropagation(); toggleDetailRow(\'' + dayId + '\')" style="cursor:pointer;">';
         svg += '<td style="padding:2px 12px;">&#9654; ' + day + '</td>';
-        svg += '<td style="text-align:right; padding:2px 10px;">' + d.count + '</td>';
-        svg += '<td style="text-align:right; padding:2px 10px;">' + fmtDollar(d.risk) + '</td>';
-        svg += '<td style="text-align:right; padding:2px 10px; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
-        svg += '<td style="text-align:right; padding:2px 10px;">' + d.settled + '</td>';
-        svg += '<td style="text-align:right; padding:2px 10px;" class="' + pnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
+        svg += '<td style="text-align:center; padding:2px 10px;">' + d.count + '</td>';
+        svg += '<td style="text-align:center; padding:2px 10px;">' + fmtDollar(d.risk) + '</td>';
+        svg += '<td style="text-align:center; padding:2px 10px; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
+        svg += '<td style="text-align:center; padding:2px 10px;">' + d.settled + '</td>';
+        svg += '<td style="text-align:center; padding:2px 10px;" class="' + pnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
 
         // Day detail row: parlay breakdown (sortable)
         svg += '<tr id="' + dayId + '" style="display:' + (dayExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
@@ -8737,11 +8737,11 @@
 
     let html = '<div style="overflow-x:auto;"><table style="font-size:12px; width:100%;">';
     html += '<tr><th style="padding:4px 10px;">Month</th>'
-      + '<th style="text-align:right; padding:4px 10px;">Fills</th>'
-      + '<th style="text-align:right; padding:4px 10px;">My Risk</th>'
-      + '<th style="text-align:right; padding:4px 10px;">To Win</th>'
-      + '<th style="text-align:right; padding:4px 10px;">Settled</th>'
-      + '<th style="text-align:right; padding:4px 10px;">P&L</th></tr>';
+      + '<th style="text-align:center; padding:4px 10px;">Fills</th>'
+      + '<th style="text-align:center; padding:4px 10px;">My Risk</th>'
+      + '<th style="text-align:center; padding:4px 10px;">To Win</th>'
+      + '<th style="text-align:center; padding:4px 10px;">Settled</th>'
+      + '<th style="text-align:center; padding:4px 10px;">P&L</th></tr>';
 
     for (const month of months) {
       const m = byMonth[month];
@@ -8750,22 +8750,22 @@
       const monthExpanded = expandedRows.has(monthId);
       html += '<tr onclick="toggleDetailRow(\'' + monthId + '\')" style="cursor:pointer;">';
       html += '<td style="padding:4px 10px; font-weight:600;">&#9654; ' + month + '</td>';
-      html += '<td style="padding:4px 10px; text-align:right;">' + m.count + '</td>';
-      html += '<td style="padding:4px 10px; text-align:right;">' + fmtDollar(m.risk) + '</td>';
-      html += '<td style="padding:4px 10px; text-align:right; color:var(--green);">' + fmtDollar(m.toWin) + '</td>';
-      html += '<td style="padding:4px 10px; text-align:right;">' + m.settled + '</td>';
-      html += '<td style="padding:4px 10px; text-align:right;" class="' + mPnlCls + '">' + fmtPnl(m.pnl) + '</td></tr>';
+      html += '<td style="padding:4px 10px; text-align:center;">' + m.count + '</td>';
+      html += '<td style="padding:4px 10px; text-align:center;">' + fmtDollar(m.risk) + '</td>';
+      html += '<td style="padding:4px 10px; text-align:center; color:var(--green);">' + fmtDollar(m.toWin) + '</td>';
+      html += '<td style="padding:4px 10px; text-align:center;">' + m.settled + '</td>';
+      html += '<td style="padding:4px 10px; text-align:center;" class="' + mPnlCls + '">' + fmtPnl(m.pnl) + '</td></tr>';
 
       // Month detail row: daily breakdown
       html += '<tr id="' + monthId + '" style="display:' + (monthExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
       html += '<table style="font-size:11px; width:100%; background:var(--surface2); margin:0;">';
       html += '<tr style="color:var(--text3);">'
         + '<th style="text-align:left; padding:2px 10px;">Date</th>'
-        + '<th style="text-align:right; padding:2px 10px;">Fills</th>'
-        + '<th style="text-align:right; padding:2px 10px;">My Risk</th>'
-        + '<th style="text-align:right; padding:2px 10px;">To Win</th>'
-        + '<th style="text-align:right; padding:2px 10px;">Settled</th>'
-        + '<th style="text-align:right; padding:2px 10px;">P&L</th></tr>';
+        + '<th style="text-align:center; padding:2px 10px;">Fills</th>'
+        + '<th style="text-align:center; padding:2px 10px;">My Risk</th>'
+        + '<th style="text-align:center; padding:2px 10px;">To Win</th>'
+        + '<th style="text-align:center; padding:2px 10px;">Settled</th>'
+        + '<th style="text-align:center; padding:2px 10px;">P&L</th></tr>';
 
       const monthDays = [...m.days].sort().reverse();
       for (const day of monthDays) {
@@ -8775,11 +8775,11 @@
         const dayExpanded = expandedRows.has(dayId);
         html += '<tr onclick="event.stopPropagation(); toggleDetailRow(\'' + dayId + '\')" style="cursor:pointer;">';
         html += '<td style="padding:2px 10px;">&#9654; ' + day + '</td>';
-        html += '<td style="padding:2px 10px; text-align:right;">' + d.count + '</td>';
-        html += '<td style="padding:2px 10px; text-align:right;">' + fmtDollar(d.risk) + '</td>';
-        html += '<td style="padding:2px 10px; text-align:right; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
-        html += '<td style="padding:2px 10px; text-align:right;">' + d.settled + '</td>';
-        html += '<td style="padding:2px 10px; text-align:right;" class="' + dPnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
+        html += '<td style="padding:2px 10px; text-align:center;">' + d.count + '</td>';
+        html += '<td style="padding:2px 10px; text-align:center;">' + fmtDollar(d.risk) + '</td>';
+        html += '<td style="padding:2px 10px; text-align:center; color:var(--green);">' + fmtDollar(d.toWin) + '</td>';
+        html += '<td style="padding:2px 10px; text-align:center;">' + d.settled + '</td>';
+        html += '<td style="padding:2px 10px; text-align:center;" class="' + dPnlCls + '">' + fmtPnl(d.pnl) + '</td></tr>';
 
         // Day detail row: parlay breakdown (sortable)
         html += '<tr id="' + dayId + '" style="display:' + (dayExpanded ? 'table-row' : 'none') + ';"><td colspan="6" style="padding:0;">';
