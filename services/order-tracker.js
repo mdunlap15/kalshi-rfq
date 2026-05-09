@@ -764,6 +764,16 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
     if (!wasCountedAsFill && orderUuid != null) {
       stats.totalConfirmations++;
       stats.sessionFills++;
+      // Per-bucket fill count for the Win Rate by Sport & Leg Count
+      // heatmap. Previously this only fired in the recordMatchedParlay
+      // 'won' branch — but that branch is the OPPORTUNISTIC backup
+      // path (order.matched), not the canonical fill signal. Real fills
+      // arrive here via order.finalized → orderUuid; without this hook
+      // the heatmap shows 0 fills despite stats.sessionFills counting
+      // them correctly. Operator caught this 2026-05-08 with a 1996/0
+      // matrix despite ~30+ confirmed parlays in the same window.
+      const legs = order.legs || (order.meta && order.meta.legs) || [];
+      if (legs.length > 0) recordFillBucketFill(legs);
     }
 
     order.status = 'confirmed';
@@ -1455,9 +1465,11 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     } else {
     outcome = 'won';
     matchedWonIds.add(parlayId);
-    // Session-accurate fill count for fill-rate tracking. Uses the legs
-    // from our original quote so sport/leg-count match the submission entry.
-    recordFillBucketFill(ourQuote.legs || []);
+    // Fill count is now recorded in recordConfirmation gated on first
+    // orderUuid arrival — that's the canonical "real fill" signal
+    // (bettor committed, not just selected). Counting here would
+    // double-count every fill AND inflate by phantom-match events
+    // where the bettor backed out during PX's final-review step.
     // weQuoted here is a misnamed legacy counter — it's really "matched
     // events we received that we won". True quote-submission count lives
     // in rfqStages.submitted on the websocket side. Keep incrementing for
