@@ -112,10 +112,10 @@
 <div class="grid-2">
   <div class="card">
     <div class="card-title">Comparison</div>
-    <div class="card-sub">5/4–5/8 (current, ex 2 erroneous) vs 4/27–5/1 (prior)</div>
+    <div class="card-sub">5/4–5/8 (this week, ex 2 erroneous) vs 4/27–5/1 (week prior)</div>
     <table>
       <thead>
-        <tr><th>Metric</th><th>Prior</th><th>Current</th><th>Δ</th></tr>
+        <tr><th>Metric</th><th>4/27–5/1</th><th>5/4–5/8</th><th>Δ</th></tr>
       </thead>
       <tbody>
         <tr><td>Fills</td><td class="num">297</td><td class="num">340</td><td class="num delta-pos">+43</td></tr>
@@ -151,10 +151,10 @@
 <div class="grid-2">
   <div class="card">
     <div class="card-title">Comparison</div>
-    <div class="card-sub">5/8–5/10 (current) vs 5/1–5/3 (prior)</div>
+    <div class="card-sub">5/8–5/10 (this week) vs 5/1–5/3 (week prior)</div>
     <table>
       <thead>
-        <tr><th>Metric</th><th>Prior</th><th>Current</th><th>Δ</th></tr>
+        <tr><th>Metric</th><th>5/1–5/3</th><th>5/8–5/10</th><th>Δ</th></tr>
       </thead>
       <tbody>
         <tr><td>Fills</td><td class="num">131</td><td class="num">230</td><td class="num delta-pos">+99</td></tr>
@@ -190,8 +190,8 @@
 <div class="chart-card">
   <svg id="chart-evpct" viewBox="0 0 720 240"></svg>
   <div class="legend">
-    <span><span class="legend-swatch" style="background:var(--text3);"></span>Prior week</span>
-    <span><span class="legend-swatch" style="background:var(--accent);"></span>Current week</span>
+    <span><span class="legend-swatch" style="background:var(--text3);"></span>Week prior</span>
+    <span><span class="legend-swatch" style="background:var(--accent);"></span>This week</span>
   </div>
 </div>
 
@@ -255,23 +255,23 @@
   function fmtUSD(v) { return '$' + Math.round(v).toLocaleString(); }
 
   bar('chart-A-edge', [
-    { label: 'Prior',   subLabel: '4/27–5/1', value: 5.37, color: palette.prior },
-    { label: 'Current', subLabel: '5/4–5/8',  value: 3.80, color: palette.current },
+    { label: '4/27–5/1', subLabel: 'week prior', value: 5.37, color: palette.prior },
+    { label: '5/4–5/8',  subLabel: 'this week',  value: 3.80, color: palette.current },
   ], { fmt: fmtPct });
 
   bar('chart-A-ev', [
-    { label: 'Prior',   subLabel: '4/27–5/1', value: 528.96, color: palette.prior },
-    { label: 'Current', subLabel: '5/4–5/8',  value: 503.30, color: palette.current },
+    { label: '4/27–5/1', subLabel: 'week prior', value: 528.96, color: palette.prior },
+    { label: '5/4–5/8',  subLabel: 'this week',  value: 503.30, color: palette.current },
   ], { fmt: fmtUSD });
 
   bar('chart-B-edge', [
-    { label: 'Prior',   subLabel: '5/1–5/3',  value: 5.40, color: palette.prior },
-    { label: 'Current', subLabel: '5/8–5/10', value: 5.89, color: palette.current },
+    { label: '5/1–5/3',  subLabel: 'week prior', value: 5.40, color: palette.prior },
+    { label: '5/8–5/10', subLabel: 'this week',  value: 5.89, color: palette.current },
   ], { fmt: fmtPct });
 
   bar('chart-B-ev', [
-    { label: 'Prior',   subLabel: '5/1–5/3',  value: 363.53, color: palette.prior },
-    { label: 'Current', subLabel: '5/8–5/10', value: 558.99, color: palette.current },
+    { label: '5/1–5/3',  subLabel: 'week prior', value: 363.53, color: palette.prior },
+    { label: '5/8–5/10', subLabel: 'this week',  value: 558.99, color: palette.current },
   ], { fmt: fmtUSD });
 
   // Combined comparison: theo EV / stake side-by-side per period
