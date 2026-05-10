@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Week-over-Week Pricing — Parlay SP</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text2: #8b949e;
+    --text3: #6e7681;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --amber: #d29922;
+    --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--text); min-height: 100vh;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.5; font-size: 14px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 24px 64px; }
+  header { margin-bottom: 28px; }
+  h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.2px; margin-bottom: 4px; }
+  .meta { font-size: 12px; color: var(--text3); }
+  h2 {
+    font-size: 14px; font-weight: 700; color: var(--text2);
+    text-transform: uppercase; letter-spacing: 0.6px;
+    margin: 32px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  .lede {
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 6px;
+    padding: 14px 18px; margin-bottom: 24px; font-size: 13.5px; color: var(--text2);
+  }
+  .lede strong { color: var(--text); }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 18px 20px;
+  }
+  .card-title { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .card-sub  { font-size: 11px; color: var(--text3); margin-bottom: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { padding: 6px 10px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  th {
+    background: var(--surface2); color: var(--text2);
+    font-size: 10.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+  }
+  tbody tr { border-top: 1px solid var(--border); }
+  tbody tr:last-child {
+    background: rgba(88, 166, 255, 0.04);
+    font-weight: 600;
+  }
+  td.num { font-family: monospace; }
+  .delta-pos { color: var(--green); }
+  .delta-neg { color: var(--red); }
+  .delta-flat { color: var(--text3); }
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 24px 0; }
+  @media (max-width: 720px) { .chart-row { grid-template-columns: 1fr; } }
+  .chart-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 18px;
+  }
+  .chart-title { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 8px; }
+  svg { width: 100%; height: auto; max-height: 240px; display: block; }
+  .legend {
+    display: flex; gap: 14px; align-items: center; justify-content: center;
+    margin-top: 6px; font-size: 11px; color: var(--text3);
+  }
+  .legend-swatch {
+    display: inline-block; width: 11px; height: 11px; border-radius: 2px;
+    vertical-align: middle; margin-right: 4px;
+  }
+  .takeaways {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 18px 22px; margin-top: 12px;
+  }
+  .takeaways ol { padding-left: 18px; }
+  .takeaways li { margin: 8px 0; color: var(--text2); font-size: 13.5px; }
+  .takeaways li strong { color: var(--text); }
+  .footnote { font-size: 11px; color: var(--text3); margin-top: 24px; line-height: 1.6; }
+  .footnote code {
+    background: var(--surface2); padding: 1px 5px; border-radius: 3px;
+    font-size: 10px; color: var(--text2);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Week-Over-Week Pricing — Two Period Comparison</h1>
+  <div class="meta">Parlay SP · Periods anchored to ET · 2 erroneous parlays from 5/5 excluded from current Period A</div>
+</header>
+
+<div class="lede">
+  Across two distinct windows — one weekday, one weekend — we compare this week's pricing against the same window a week ago. <strong>Period A (weekday) shows margin contraction at higher volume.</strong> <strong>Period B (weekend) shows the opposite: bigger book at slightly tighter pricing,</strong> with theo EV up substantially. The pattern suggests pricing changes pushed mid-to-late this week landed cleanly in Period B, while Period A captured a transitional regime.
+</div>
+
+<h2>Period A · Weekday slate (Mon 2am → Fri Noon ET)</h2>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Comparison</div>
+    <div class="card-sub">5/4–5/8 (current, ex 2 erroneous) vs 4/27–5/1 (prior)</div>
+    <table>
+      <thead>
+        <tr><th>Metric</th><th>Prior</th><th>Current</th><th>Δ</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Fills</td><td class="num">297</td><td class="num">340</td><td class="num delta-pos">+43</td></tr>
+        <tr><td>Avg legs</td><td class="num">2.70</td><td class="num">2.80</td><td class="num delta-pos">+0.10</td></tr>
+        <tr><td>Stake</td><td class="num">$56,097</td><td class="num">$81,751</td><td class="num delta-pos">+$25,655</td></tr>
+        <tr><td>Stake-weighted edge</td><td class="num">5.37%</td><td class="num">3.80%</td><td class="num delta-neg">−1.57pp</td></tr>
+        <tr><td>Theo EV</td><td class="num">$528.96</td><td class="num">$503.30</td><td class="num delta-neg">−$25.66</td></tr>
+        <tr><td>Theo EV / stake</td><td class="num">0.943%</td><td class="num">0.616%</td><td class="num delta-neg">−0.33pp</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card">
+    <div class="card-title">What happened</div>
+    <div class="card-sub">Period A read</div>
+    <p style="font-size:13px; color:var(--text2); margin-top:6px;">
+      Weekday volume grew 46%, but stake-weighted edge contracted 1.57pp. Theo EV per dollar of SP stake fell from 0.94% to 0.62% — about a third less return per dollar at risk. Net dollar EV stayed roughly flat ($529 → $503) only because volume covered the margin contraction. The window captured pre-change pricing for most of the week.
+    </p>
+  </div>
+</div>
+
+<div class="chart-row">
+  <div class="chart-card">
+    <div class="chart-title">Stake-weighted edge (%)</div>
+    <svg id="chart-A-edge" viewBox="0 0 360 200"></svg>
+  </div>
+  <div class="chart-card">
+    <div class="chart-title">Theoretical EV ($)</div>
+    <svg id="chart-A-ev" viewBox="0 0 360 200"></svg>
+  </div>
+</div>
+
+<h2>Period B · Weekend slate (Fri 12:01pm → Sun 11:15am ET)</h2>
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">Comparison</div>
+    <div class="card-sub">5/8–5/10 (current) vs 5/1–5/3 (prior)</div>
+    <table>
+      <thead>
+        <tr><th>Metric</th><th>Prior</th><th>Current</th><th>Δ</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Fills</td><td class="num">131</td><td class="num">230</td><td class="num delta-pos">+99</td></tr>
+        <tr><td>Avg legs</td><td class="num">2.84</td><td class="num">2.96</td><td class="num delta-pos">+0.12</td></tr>
+        <tr><td>Stake</td><td class="num">$36,398</td><td class="num">$53,526</td><td class="num delta-pos">+$17,128</td></tr>
+        <tr><td>Stake-weighted edge</td><td class="num">5.40%</td><td class="num">5.89%</td><td class="num delta-pos">+0.49pp</td></tr>
+        <tr><td>Theo EV</td><td class="num">$363.53</td><td class="num">$558.99</td><td class="num delta-pos">+$195.45</td></tr>
+        <tr><td>Theo EV / stake</td><td class="num">0.999%</td><td class="num">1.044%</td><td class="num delta-pos">+0.05pp</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card">
+    <div class="card-title">What happened</div>
+    <div class="card-sub">Period B read</div>
+    <p style="font-size:13px; color:var(--text2); margin-top:6px;">
+      Weekend volume nearly doubled (+76% fills, +47% stake) at slightly tighter pricing. Edge widened 0.49pp; theo EV +$195 (a 54% jump). Theo EV per dollar of SP stake ticked up from 1.00% to 1.04%. This is the cleanest WoW improvement in the dataset — bigger book, better margins, more expected return per dollar.
+    </p>
+  </div>
+</div>
+
+<div class="chart-row">
+  <div class="chart-card">
+    <div class="chart-title">Stake-weighted edge (%)</div>
+    <svg id="chart-B-edge" viewBox="0 0 360 200"></svg>
+  </div>
+  <div class="chart-card">
+    <div class="chart-title">Theoretical EV ($)</div>
+    <svg id="chart-B-ev" viewBox="0 0 360 200"></svg>
+  </div>
+</div>
+
+<h2>Side-by-side: theo EV / stake (return per dollar SP risks)</h2>
+<div class="chart-card">
+  <svg id="chart-evpct" viewBox="0 0 720 240"></svg>
+  <div class="legend">
+    <span><span class="legend-swatch" style="background:var(--text3);"></span>Prior week</span>
+    <span><span class="legend-swatch" style="background:var(--accent);"></span>Current week</span>
+  </div>
+</div>
+
+<h2>Takeaways</h2>
+<div class="takeaways">
+  <ol>
+    <li><strong>Two opposite stories across the same week.</strong> Weekday window: bigger volume, thinner margin (Period A). Weekend window: bigger volume, slightly fatter margin (Period B). The dividing line falls right at Friday noon — the cutoff between Period A's end and Period B's start.</li>
+    <li><strong>Theo EV / stake more than doubled between the two current windows</strong> (0.62% → 1.04%). Bookend that against the prior week's near-1.00% in both periods, and the message is clear: pricing has become measurably tighter since Friday.</li>
+    <li><strong>Period A's edge regression is the only soft signal.</strong> 5.37% → 3.80% is a real decline week-over-week. The window includes Mon–Wed when many variable changes were in flight. The Period B recovery confirms the changes weren't broken — just transitional.</li>
+    <li><strong>Volume growth holds across both periods.</strong> +46% Period A stake, +47% Period B stake. Bettor demand for Parlay SP's prices is structurally up regardless of the small edge swings — exactly what you'd want to see in a maturing book.</li>
+    <li><strong>Per-fill EV is down WoW in both periods</strong> ($1.78 → $1.48, $2.78 → $2.43). Bettor mix shifted toward smaller individual parlays with about the same total stake — more, smaller tickets. Total EV is the durable metric; per-fill EV is the noise.</li>
+  </ol>
+</div>
+
+<div class="footnote">
+  Excluded parlay_ids (Period A current): <code>019df939-22e3-7d8c-8e65-4e44b1fa93ae</code>, <code>019df92e-421b-7ed9-9f75-048673d5dffd</code> — duplicate OAK@PHI Over 9 + MIN@WSH Over 9 stacks from 5/5 erroneously permitted.
+  Edge = <code>1 − (fair_parlay_prob / bettor_implied_prob)</code>. Theo EV = <code>bettor_wager × edge</code>, summed across all settled-or-confirmed parlays in window. Stake = SP risk (confirmedStake) on each parlay.
+</div>
+
+</div>
+
+<script>
+  const palette = { prior: '#6e7681', current: '#58a6ff', green: '#3fb950', red: '#f85149', text: '#e6edf3', text2: '#8b949e', text3: '#6e7681', border: '#30363d' };
+
+  function bar(svgId, data, opts = {}) {
+    const svg = document.getElementById(svgId);
+    if (!svg) return;
+    const W = 360, H = 200;
+    const pad = { l: 48, r: 16, t: 18, b: 38 };
+    const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+    const max = Math.max(...data.map(d => d.value), opts.minMax || 0) * 1.2 || 1;
+    const groupW = cw / data.length;
+    const barW = Math.min(70, groupW * 0.55);
+    let g = '';
+    // y grid
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.t + (ch * i / 4);
+      const v = max - (max * i / 4);
+      g += '<line x1="' + pad.l + '" y1="' + y + '" x2="' + (W - pad.r) + '" y2="' + y + '" stroke="' + palette.border + '" stroke-width="0.5"/>';
+      g += '<text x="' + (pad.l - 6) + '" y="' + (y + 3) + '" font-size="9" fill="' + palette.text3 + '" text-anchor="end">' + (opts.fmt ? opts.fmt(v) : v.toFixed(2)) + '</text>';
+    }
+    // bars
+    for (let i = 0; i < data.length; i++) {
+      const d = data[i];
+      const cx = pad.l + (i + 0.5) * groupW;
+      const h = (d.value / max) * ch;
+      const y = pad.t + ch - h;
+      g += '<rect x="' + (cx - barW / 2) + '" y="' + y + '" width="' + barW + '" height="' + h + '" fill="' + d.color + '" rx="2"/>';
+      // value label
+      g += '<text x="' + cx + '" y="' + (y - 5) + '" font-size="11" font-weight="600" fill="' + palette.text + '" text-anchor="middle">' + (opts.fmt ? opts.fmt(d.value) : d.value.toFixed(2)) + '</text>';
+      // x label
+      g += '<text x="' + cx + '" y="' + (H - pad.b + 14) + '" font-size="10" fill="' + palette.text2 + '" text-anchor="middle">' + d.label + '</text>';
+      if (d.subLabel) {
+        g += '<text x="' + cx + '" y="' + (H - pad.b + 26) + '" font-size="9" fill="' + palette.text3 + '" text-anchor="middle">' + d.subLabel + '</text>';
+      }
+    }
+    svg.innerHTML = g;
+  }
+
+  function fmtPct(v) { return v.toFixed(2) + '%'; }
+  function fmtUSD(v) { return '$' + Math.round(v).toLocaleString(); }
+
+  bar('chart-A-edge', [
+    { label: 'Prior',   subLabel: '4/27–5/1', value: 5.37, color: palette.prior },
+    { label: 'Current', subLabel: '5/4–5/8',  value: 3.80, color: palette.current },
+  ], { fmt: fmtPct });
+
+  bar('chart-A-ev', [
+    { label: 'Prior',   subLabel: '4/27–5/1', value: 528.96, color: palette.prior },
+    { label: 'Current', subLabel: '5/4–5/8',  value: 503.30, color: palette.current },
+  ], { fmt: fmtUSD });
+
+  bar('chart-B-edge', [
+    { label: 'Prior',   subLabel: '5/1–5/3',  value: 5.40, color: palette.prior },
+    { label: 'Current', subLabel: '5/8–5/10', value: 5.89, color: palette.current },
+  ], { fmt: fmtPct });
+
+  bar('chart-B-ev', [
+    { label: 'Prior',   subLabel: '5/1–5/3',  value: 363.53, color: palette.prior },
+    { label: 'Current', subLabel: '5/8–5/10', value: 558.99, color: palette.current },
+  ], { fmt: fmtUSD });
+
+  // Combined comparison: theo EV / stake side-by-side per period
+  (function () {
+    const svg = document.getElementById('chart-evpct');
+    const W = 720, H = 240;
+    const pad = { l: 56, r: 24, t: 24, b: 48 };
+    const cw = W - pad.l - pad.r, ch = H - pad.t - pad.b;
+    const groups = [
+      { label: 'Period A · Weekday',  prior: 0.943, current: 0.616 },
+      { label: 'Period B · Weekend',  prior: 0.999, current: 1.044 },
+    ];
+    const max = 1.4;
+    const groupW = cw / groups.length;
+    const barW = Math.min(60, groupW * 0.30);
+    const gap = 8;
+    let g = '';
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.t + (ch * i / 4);
+      const v = max - (max * i / 4);
+      g += '<line x1="' + pad.l + '" y1="' + y + '" x2="' + (W - pad.r) + '" y2="' + y + '" stroke="' + palette.border + '" stroke-width="0.5"/>';
+      g += '<text x="' + (pad.l - 6) + '" y="' + (y + 3) + '" font-size="10" fill="' + palette.text3 + '" text-anchor="end">' + v.toFixed(2) + '%</text>';
+    }
+    for (let i = 0; i < groups.length; i++) {
+      const G = groups[i];
+      const cx = pad.l + (i + 0.5) * groupW;
+      const xPrior = cx - (barW + gap / 2);
+      const xCurrent = cx + gap / 2;
+      const hP = (G.prior / max) * ch;
+      const hC = (G.current / max) * ch;
+      const yP = pad.t + ch - hP, yC = pad.t + ch - hC;
+      g += '<rect x="' + xPrior + '" y="' + yP + '" width="' + barW + '" height="' + hP + '" fill="' + palette.prior + '" rx="2"/>';
+      g += '<rect x="' + xCurrent + '" y="' + yC + '" width="' + barW + '" height="' + hC + '" fill="' + palette.current + '" rx="2"/>';
+      g += '<text x="' + (xPrior + barW / 2) + '" y="' + (yP - 5) + '" font-size="11" font-weight="600" fill="' + palette.text + '" text-anchor="middle">' + G.prior.toFixed(2) + '%</text>';
+      g += '<text x="' + (xCurrent + barW / 2) + '" y="' + (yC - 5) + '" font-size="11" font-weight="600" fill="' + palette.text + '" text-anchor="middle">' + G.current.toFixed(2) + '%</text>';
+      g += '<text x="' + cx + '" y="' + (H - pad.b + 16) + '" font-size="11" fill="' + palette.text + '" text-anchor="middle">' + G.label + '</text>';
+    }
+    svg.innerHTML = g;
+  })();
+</script>
+
+</body>
+</html>
