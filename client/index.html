@@ -867,6 +867,19 @@
           </div>
         </div>
 
+        <!-- Cumulative P&L: SGP vs PROP. Two-line chart isolating how each
+             parlay-type has performed over time. A parlay that is BOTH
+             same-game and contains a player prop counts in both series. -->
+        <div class="card">
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Cumulative P&L: SGP vs PROP</span>
+            <span id="cumul-sgpprop-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body collapsed" id="chart-cumul-sgpprop">
+            <div class="empty-state"><div class="icon">-</div><div>Need settled SGP/PROP orders to chart</div></div>
+          </div>
+        </div>
+
         <!-- Rolling 500-SETTLED-parlay window: total EV, total realized P&L,
              stake-weighted edge. Settled-only so the rolling pnl sum is over
              a constant 500 finished outcomes — not a partially-settled subset
@@ -8149,6 +8162,7 @@
     renderChartParlayVsBooks(allQuoted);
     renderChartLegVsBooks(allQuoted);
     renderChartCumulPnlRoi(settled);
+    renderChartCumulPnlByType(settled);
     renderChartRolling500(ownOrders);
     renderChartPnlSport(settled);
     renderChartPnlLegs(settled);
@@ -10132,6 +10146,150 @@
 
     svg += '</svg>';
     svg += `<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">${points.length} settled parlays &middot; x-axis by settlement time</div>`;
+    el.innerHTML = svg;
+  }
+
+  // Cumulative P&L by parlay type — two lines on a shared $-axis, one
+  // for SGP-touching parlays and one for player-prop-touching parlays.
+  // A parlay that's BOTH (same-game + contains a player prop) counts in
+  // both series. Each line accumulates only on settledAt timestamps of
+  // its bucket; non-SGP / non-PROP parlays don't affect either line.
+  // Same SVG style as renderChartCumulPnlRoi for visual consistency.
+  function renderChartCumulPnlByType(settled) {
+    const el = document.getElementById('chart-cumul-sgpprop');
+    const sumEl = document.getElementById('cumul-sgpprop-summary');
+    if (!el) return;
+
+    const sorted = [...(settled || [])]
+      .filter(o => o.settledAt)
+      .sort((a, b) => (a.settledAt || '').localeCompare(b.settledAt || ''));
+
+    // Classify each settled order. Reuses isSameGameParlay /
+    // containsPlayerProp from the type-filter machinery so the buckets
+    // here match what the Open Positions / Settled tables filter on.
+    const sgpPoints = [];
+    const propPoints = [];
+    let sgpCum = 0, propCum = 0;
+    let sgpN = 0, propN = 0;
+    for (const o of sorted) {
+      const legs = o.legs || o.meta?.legs || [];
+      const isSgp  = isSameGameParlay(legs);
+      const hasProp = containsPlayerProp(legs);
+      if (!isSgp && !hasProp) continue;
+      const t = new Date(o.settledAt).getTime();
+      if (!Number.isFinite(t)) continue;
+      const pnl = Number.isFinite(Number(o.pnl)) ? Number(o.pnl) : 0;
+      if (isSgp) {
+        sgpCum += pnl; sgpN++;
+        sgpPoints.push({ t, pnl: sgpCum });
+      }
+      if (hasProp) {
+        propCum += pnl; propN++;
+        propPoints.push({ t, pnl: propCum });
+      }
+    }
+
+    if (sgpPoints.length < 2 && propPoints.length < 2) {
+      el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>Need 2+ settled SGP or PROP parlays to chart</div></div>';
+      if (sumEl) sumEl.textContent = '';
+      return;
+    }
+
+    const sgpFinal = sgpPoints.length ? sgpPoints[sgpPoints.length - 1].pnl : 0;
+    const propFinal = propPoints.length ? propPoints[propPoints.length - 1].pnl : 0;
+    if (sumEl) {
+      const sgpCls = sgpFinal >= 0 ? 'positive' : 'negative';
+      const propCls = propFinal >= 0 ? 'positive' : 'negative';
+      sumEl.innerHTML = 'SGP <span class="' + sgpCls + '">' + (sgpFinal >= 0 ? '+$' : '-$') + Math.abs(sgpFinal).toFixed(0) + '</span>'
+        + ' (' + sgpN + ') &middot; '
+        + 'PROP <span class="' + propCls + '">' + (propFinal >= 0 ? '+$' : '-$') + Math.abs(propFinal).toFixed(0) + '</span>'
+        + ' (' + propN + ')';
+    }
+
+    // Combined time + dollar ranges so both series share axes.
+    const allPoints = sgpPoints.concat(propPoints);
+    const tMin = allPoints.reduce((a, p) => Math.min(a, p.t), Infinity);
+    const tMax = allPoints.reduce((a, p) => Math.max(a, p.t), -Infinity);
+    const tRange = Math.max(1, tMax - tMin);
+    const rawMin = Math.min(0, ...allPoints.map(p => p.pnl));
+    const rawMax = Math.max(0, ...allPoints.map(p => p.pnl));
+    const dRange = Math.max(rawMax - rawMin, 1);
+    const dStep = niceStep(dRange / 5);
+    const dLo = Math.floor((rawMin - dStep * 0.1) / dStep) * dStep;
+    const dHi = Math.ceil((rawMax + dStep * 0.1) / dStep) * dStep;
+
+    const W = 720, H = 300, pad = { l: 64, r: 64, t: 28, b: 42 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const scaleX = (t) => pad.l + ((t - tMin) / tRange) * chartW;
+    const scaleY = (v) => pad.t + chartH - ((v - dLo) / (dHi - dLo)) * chartH;
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%; height:auto; max-height:360px;">`;
+
+    // $ gridlines + ticks
+    for (let v = dLo; v <= dHi + 1e-6; v += dStep) {
+      const y = scaleY(v);
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.3);
+      const label = v >= 0 ? '+$' + v.toFixed(0) : '-$' + Math.abs(v).toFixed(0);
+      const fill = v >= 0 ? 'var(--green)' : 'var(--red)';
+      svg += svgText(pad.l - 8, y + 3, label, { anchor: 'end', size: 9, fill });
+    }
+    const zeroY = scaleY(0);
+    svg += svgLine(pad.l, zeroY, W - pad.r, zeroY, 'var(--text3)', 0.8);
+
+    // Time axis ticks
+    const spanHours = tRange / (1000 * 60 * 60);
+    const spanDays = spanHours / 24;
+    let tickMs, tickFmt;
+    if (spanHours <= 6) { tickMs = 60 * 60 * 1000; tickFmt = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+    else if (spanHours <= 36) { tickMs = 2 * 60 * 60 * 1000; tickFmt = (d) => d.toLocaleTimeString([], { hour: 'numeric' }); }
+    else if (spanDays <= 14) { tickMs = 24 * 60 * 60 * 1000; tickFmt = (d) => d.toLocaleDateString([], { month: 'numeric', day: 'numeric' }); }
+    else { tickMs = 7 * 24 * 60 * 60 * 1000; tickFmt = (d) => d.toLocaleDateString([], { month: 'numeric', day: 'numeric' }); }
+    const firstTick = Math.ceil(tMin / tickMs) * tickMs;
+    const xAxisY = pad.t + chartH;
+    for (let t = firstTick; t <= tMax; t += tickMs) {
+      const x = scaleX(t);
+      svg += svgLine(x, pad.t, x, xAxisY, 'var(--border)', 0.25);
+      svg += svgText(x, xAxisY + 14, tickFmt(new Date(t)), { size: 9, fill: 'var(--text3)' });
+    }
+
+    // SGP line (amber)
+    const sgpColor = '#f5b942';
+    if (sgpPoints.length >= 2) {
+      let path = '';
+      for (let i = 0; i < sgpPoints.length; i++) {
+        path += (i === 0 ? 'M' : ' L') + scaleX(sgpPoints[i].t) + ',' + scaleY(sgpPoints[i].pnl);
+      }
+      svg += `<path d="${path}" fill="none" stroke="${sgpColor}" stroke-width="2.2" />`;
+      const last = sgpPoints[sgpPoints.length - 1];
+      svg += svgCircle(scaleX(last.t), scaleY(last.pnl), 3, sgpColor);
+      const lbl = (last.pnl >= 0 ? '+$' : '-$') + Math.abs(last.pnl).toFixed(0);
+      svg += svgText(scaleX(last.t) - 4, scaleY(last.pnl) - 4, 'SGP ' + lbl, { anchor: 'end', size: 11, fill: sgpColor });
+    }
+
+    // PROP line (purple, dashed)
+    const propColor = '#bd93f9';
+    if (propPoints.length >= 2) {
+      let path = '';
+      for (let i = 0; i < propPoints.length; i++) {
+        path += (i === 0 ? 'M' : ' L') + scaleX(propPoints[i].t) + ',' + scaleY(propPoints[i].pnl);
+      }
+      svg += `<path d="${path}" fill="none" stroke="${propColor}" stroke-width="2" stroke-dasharray="5,3" />`;
+      const last = propPoints[propPoints.length - 1];
+      svg += svgCircle(scaleX(last.t), scaleY(last.pnl), 3, propColor);
+      const lbl = (last.pnl >= 0 ? '+$' : '-$') + Math.abs(last.pnl).toFixed(0);
+      svg += svgText(scaleX(last.t) - 4, scaleY(last.pnl) - 14, 'PROP ' + lbl, { anchor: 'end', size: 11, fill: propColor });
+    }
+
+    // Legend
+    svg += '<g transform="translate(' + (pad.l + 10) + ',' + (pad.t + 12) + ')">';
+    svg += '<line x1="0" y1="0" x2="18" y2="0" stroke="' + sgpColor + '" stroke-width="2.2"/>';
+    svg += svgText(24, 4, 'SGP cumulative P&L ($)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
+    svg += '<line x1="160" y1="0" x2="178" y2="0" stroke="' + propColor + '" stroke-width="2" stroke-dasharray="5,3"/>';
+    svg += svgText(184, 4, 'PROP cumulative P&L ($)', { anchor: 'start', size: 10, fill: 'var(--text2)' });
+    svg += '</g>';
+
+    svg += '</svg>';
+    svg += `<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">SGP: ${sgpN} settled parlays &middot; PROP: ${propN} settled parlays &middot; parlays that are both SGP and PROP count in both lines</div>`;
     el.innerHTML = svg;
   }
 
