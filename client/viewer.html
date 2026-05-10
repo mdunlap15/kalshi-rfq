@@ -12920,9 +12920,9 @@
       // Risk Sim renders only when the user clicks "Run Simulation" — it
       // reads from orderState.allOrders which is now fresh.
 
-      // Bankroll split — Mike $17.5k + 75% of P&L gain, Rick $12.5k +
-      // 25% of P&L gain. Total starting bankroll = $30k. Computed from
-      // portfolio.totalEquity (Cash Available + Deployed).
+      // Bankroll split — Mike $17.5k + 58.333% of P&L gain, Rick $12.5k +
+      // 41.667% of P&L gain. Total starting bankroll = $30k. Computed
+      // from portfolio.totalEquity (Cash Available + Deployed).
       safeRender(() => renderBankrollSplit(status.portfolio || {}),  'bankrollSplit');
 
       // Update the unread count on the Positions tab (open positions
@@ -12945,8 +12945,8 @@
    *
    * Split is fixed (Mike's business arrangement with Rick):
    *   Total starting bankroll = $30,000
-   *   Mike: $17,500 base + 75% of (current balance − $30,000)
-   *   Rick: $12,500 base + 25% of (current balance − $30,000)
+   *   Mike: $17,500 base + 58.333% of (current balance − $30,000)
+   *   Rick: $12,500 base + 41.667% of (current balance − $30,000)
    *
    * Same proportions apply to losses — if balance drops below $30k,
    * each share moves down by their respective percentage of the loss.
@@ -12955,8 +12955,8 @@
   const BANKROLL_BASE_TOTAL = 30000;
   const BANKROLL_MIKE_BASE = 17500;
   const BANKROLL_RICK_BASE = 12500;
-  const BANKROLL_MIKE_SHARE = 0.75;
-  const BANKROLL_RICK_SHARE = 0.25;
+  const BANKROLL_MIKE_SHARE = 7 / 12;   // 0.58333…
+  const BANKROLL_RICK_SHARE = 5 / 12;   // 0.41666…
 
   function renderBankrollSplit(portfolio) {
     const totalEl = document.getElementById('bankroll-total');
