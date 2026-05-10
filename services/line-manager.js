@@ -26,6 +26,14 @@ const _NBA_PROP_TO_TOA_MARKET = {
 };
 const _NHL_PROP_TO_TOA_MARKET = {
   shots_on_goal: 'player_shots_on_goal',
+  // Phase-2 NHL props — bridge wired but each requires explicit entry in
+  // PROP_LAUNCH_ALLOWLIST (e.g. "icehockey_nhl.points") to actually quote.
+  // Saves intentionally omitted: TOA NHL save coverage is uneven and
+  // high per-stat variance (one save flips a 28.5 line) makes it a poor
+  // first prop to enable.
+  points:   'player_points',
+  goals:    'player_goals',
+  assists:  'player_assists',
 };
 // MLB hitter props. classifyMlbProp's bucket names map to TOA's
 // batter_* market keys. Operator chose to enable the high-volume hitter

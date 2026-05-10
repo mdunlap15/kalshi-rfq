@@ -189,6 +189,7 @@ const PROP_TYPE_LABEL = {
   player_assists: 'Ast',
   player_threes_made: '3PM',
   player_shots_on_goal: 'SOG',
+  player_goals: 'G',
 };
 function _formatLeg(l) {
   if (!l) return '?';
