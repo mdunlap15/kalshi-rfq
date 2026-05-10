@@ -755,7 +755,7 @@
     <!-- Notification subscribe button. Hidden if the browser doesn't
          support the Notifications/Push APIs or the user is already
          subscribed. Tap → request permission → POST to /push/subscribe. -->
-    <button id="viewer-notif-btn" onclick="enableViewerNotifications()" style="display:none; background:transparent; border:1px solid var(--border); color:var(--text2); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;" title="Enable push notifications for new fills + settlements">🔔 Enable</button>
+    <button id="viewer-notif-btn" onclick="toggleViewerNotifications()" style="display:none; background:transparent; border:1px solid var(--border); color:var(--text2); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;" title="Toggle push notifications for new fills + settlements">🔔 Enable</button>
     <!-- Sign-out: HTTP Basic Auth credentials are cached by the browser
          until the tab/process closes. There's no clean server-side
          logout. Closing the tab signs out. -->
@@ -12745,13 +12745,84 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(subJson),
       });
-      if (btn) { btn.disabled = false; btn.textContent = '🔔 On'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; }
+      _setNotifBtnOn(btn);
     } catch (err) {
       console.warn('[viewer push] subscribe failed:', err);
       if (btn) { btn.disabled = false; btn.textContent = '🔔 Enable'; }
     }
   }
   window.enableViewerNotifications = enableViewerNotifications;
+
+  // Unsubscribe the device from push notifications. Calls
+  // PushManager.unsubscribe() locally (revokes the browser-side
+  // subscription) and POSTs /push/unsubscribe so the server drops the
+  // endpoint from its delivery list. Used by toggleViewerNotifications
+  // when the user clicks the button while it's "🔔 On".
+  async function disableViewerNotifications() {
+    const btn = document.getElementById('viewer-notif-btn');
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (btn) { btn.disabled = true; btn.textContent = '...'; }
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        const endpoint = sub.endpoint;
+        // Remove server-side first so a race that re-subscribes can't
+        // leave a stale endpoint on the broadcast list.
+        try {
+          await fetch('/push/unsubscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ endpoint }),
+          });
+        } catch (_) { /* best effort */ }
+        try { await sub.unsubscribe(); } catch (_) { /* best effort */ }
+      }
+      _setNotifBtnOff(btn);
+    } catch (err) {
+      console.warn('[viewer push] unsubscribe failed:', err);
+      if (btn) { btn.disabled = false; btn.textContent = '🔔 On'; }
+    }
+  }
+  window.disableViewerNotifications = disableViewerNotifications;
+
+  // Toggle entry point for the header button. Inspects current
+  // subscription state (and Notification.permission) and dispatches
+  // to enable / disable. Single onclick handler simplifies the markup.
+  async function toggleViewerNotifications() {
+    if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (Notification.permission === 'denied') return; // OS-level blocked, can't toggle from page
+    try {
+      const reg = await navigator.serviceWorker.getRegistration('/viewer');
+      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      if (sub && Notification.permission === 'granted') {
+        await disableViewerNotifications();
+      } else {
+        await enableViewerNotifications();
+      }
+    } catch (err) {
+      console.warn('[viewer push] toggle failed:', err);
+    }
+  }
+  window.toggleViewerNotifications = toggleViewerNotifications;
+
+  // Visual helpers — keep button color/text in sync with subscription state.
+  function _setNotifBtnOn(btn) {
+    if (!btn) return;
+    btn.disabled = false;
+    btn.textContent = '🔔 On';
+    btn.style.color = 'var(--green)';
+    btn.style.borderColor = 'var(--green)';
+    btn.title = 'Notifications on — click to disable';
+  }
+  function _setNotifBtnOff(btn) {
+    if (!btn) return;
+    btn.disabled = false;
+    btn.textContent = '🔔 Enable';
+    btn.style.color = '';
+    btn.style.borderColor = '';
+    btn.title = 'Click to enable push notifications for new fills + settlements';
+  }
 
   // VAPID public keys are URL-safe base64 — convert to Uint8Array for the
   // PushManager. Standard helper from web-push docs.
@@ -12777,6 +12848,7 @@
       btn.style.display = 'inline-block';
       btn.textContent = '🔕 Blocked';
       btn.disabled = true;
+      btn.title = 'Notifications blocked at OS / browser level — re-enable in system settings';
       return;
     }
     btn.style.display = 'inline-block';
@@ -12784,11 +12856,9 @@
       const reg = await navigator.serviceWorker.getRegistration('/viewer');
       const sub = reg ? await reg.pushManager.getSubscription() : null;
       if (sub && Notification.permission === 'granted') {
-        btn.textContent = '🔔 On';
-        btn.style.color = 'var(--green)';
-        btn.style.borderColor = 'var(--green)';
+        _setNotifBtnOn(btn);
       } else {
-        btn.textContent = '🔔 Enable';
+        _setNotifBtnOff(btn);
       }
     } catch (_) { /* default text already set */ }
   }

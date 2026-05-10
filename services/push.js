@@ -421,6 +421,7 @@ function sendTestNotification(category) {
 
 module.exports = {
   addSubscription,
+  removeSubscription,
   setMutedCategories,
   getMutedCategories,
   notifyConfirmation,

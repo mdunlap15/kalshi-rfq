@@ -662,7 +662,7 @@ function startStatusServer() {
   // Viewers cannot reach /, /index.html, or any admin POST endpoint —
   // the middleware below rejects with 403.
   const AUTH_VIEWER_PATHS = new Set(
-    (process.env.AUTH_VIEWER_PATHS || '/edge-vs-fair.html,/viewer,/viewer.html,/status,/orders,/me,/viewer/manifest.json,/viewer/sw.js,/viewer/icon-192.svg,/viewer/icon-512.svg,/push/vapid-key,/push/subscribe,/wow-analysis,/wow-analysis.html')
+    (process.env.AUTH_VIEWER_PATHS || '/edge-vs-fair.html,/viewer,/viewer.html,/status,/orders,/me,/viewer/manifest.json,/viewer/sw.js,/viewer/icon-192.svg,/viewer/icon-512.svg,/push/vapid-key,/push/subscribe,/push/unsubscribe,/wow-analysis,/wow-analysis.html')
       .split(',').map(s => s.trim()).filter(Boolean)
   );
   if (AUTH_ENABLED) {
@@ -8074,6 +8074,16 @@ function startStatusServer() {
     if (Array.isArray(body.mutedCategories)) {
       push.setMutedCategories(body.endpoint, body.mutedCategories);
     }
+    res.json({ ok: true, subscriptions: push.getSubscriptionCount() });
+  });
+
+  // Operator (or viewer) explicitly opts out of notifications. Removes
+  // the subscription from the in-memory map AND the Supabase mirror.
+  // Body: { endpoint } (the subscription endpoint URL).
+  app.post('/push/unsubscribe', (req, res) => {
+    const endpoint = req.body && req.body.endpoint;
+    if (!endpoint) return res.status(400).json({ ok: false, error: 'endpoint required' });
+    push.removeSubscription(String(endpoint));
     res.json({ ok: true, subscriptions: push.getSubscriptionCount() });
   });
 
