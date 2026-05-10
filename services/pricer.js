@@ -1026,8 +1026,15 @@ function priceParlay(legs, opts = {}) {
       }
     }
 
-    if (fairProb == null || fairProb <= 0 || fairProb >= 1) {
-      log.debug('Pricing', `Declined: no fair value for ${lineInfo.teamName} ${lineInfo.marketType}`);
+    // Strict guard. Includes !Number.isFinite to catch NaN/Infinity — NaN
+    // compares false against every numeric operator, so without this it
+    // silently propagates through fairParlayProb *= fairProb, stores as
+    // null in Supabase, and surfaces as fair=0.000 in the dashboard
+    // (which is what the 5 unaccounted-for losing parlays from the
+    // 5-6 leg audit had). Declining here is the right thing — a NaN
+    // fair prob is a pricing-pipeline failure, not a legitimate quote.
+    if (fairProb == null || !Number.isFinite(fairProb) || fairProb <= 0 || fairProb >= 1) {
+      log.debug('Pricing', `Declined: no fair value for ${lineInfo.teamName} ${lineInfo.marketType} (fairProb=${fairProb})`);
       priceParlay._lastFailure = {
         reason: 'no fair value',
         detail: `no ${lineInfo.oddsApiMarket || lineInfo.marketType} quote for ${legLabel} in our odds feed`,
@@ -1252,12 +1259,19 @@ function priceParlay(legs, opts = {}) {
     fairParlayProb *= fairProb;
   }
 
-  // Sanity check — if fair parlay prob is extremely small, decline
-  if (fairParlayProb < 0.001) {
-    log.debug('Pricing', `Declined: fair parlay prob too small (${fairParlayProb.toFixed(6)})`);
+  // Sanity check — if fair parlay prob is extremely small OR not finite,
+  // decline. !Number.isFinite catches NaN that may have leaked in from
+  // a leg whose fairProb was NaN (the per-leg guard catches this too, but
+  // defense in depth here is cheap — NaN comparisons are always false so
+  // without the explicit finite check it would silently slip through this
+  // sub-0.001 guard as well).
+  if (!Number.isFinite(fairParlayProb) || fairParlayProb < 0.001) {
+    log.debug('Pricing', `Declined: fair parlay prob invalid (${fairParlayProb})`);
     priceParlay._lastFailure = {
       reason: 'parlay too unlikely',
-      detail: `combined fair prob ${(fairParlayProb * 100).toFixed(3)}% < 0.1% threshold`,
+      detail: Number.isFinite(fairParlayProb)
+        ? `combined fair prob ${(fairParlayProb * 100).toFixed(3)}% < 0.1% threshold`
+        : `combined fair prob non-finite (${fairParlayProb}) — pricing pipeline failure`,
       blockerLeg: null,
     };
     return null;
