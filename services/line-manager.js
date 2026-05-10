@@ -1612,6 +1612,85 @@ function getDisabledSnapshot() {
   };
 }
 
+// ===========================================================================
+// Manual line-odds override: operator-set fixed offered odds for a specific
+// lineId. When an RFQ leg matches a line with an override, the pricer uses
+// the override American odds directly (converted to implied prob via
+// bookPriceOverride) instead of the model's fair × vig. Same persistence
+// pattern as the disabled-lines blocklist — kv_store + boot-time hydrate.
+//
+// Use case: operator sees the model's fair_prob has drifted on a specific
+// matchup (stale odds source, mid-game state mismatch, etc.) and wants to
+// hand-fix the offered price without disabling the line entirely. Override
+// stays in place until cleared via /admin/clear-line-odds.
+// ===========================================================================
+const KV_MANUAL_LINE_ODDS = 'manual_line_odds';
+
+// lineId → American odds (number, integer). Persisted as JSON object
+// {lineId: americanOdds, ...} in kv_store.
+const manualLineOdds = new Map();
+
+function _persistManualLineOdds() {
+  const db = _getDb();
+  if (!db || typeof db.saveKV !== 'function') return;
+  const obj = {};
+  for (const [lineId, odds] of manualLineOdds) obj[lineId] = odds;
+  db.saveKV(KV_MANUAL_LINE_ODDS, obj).catch(() => { /* logged inside saveKV */ });
+}
+
+async function hydrateManualLineOddsFromDb() {
+  const db = _getDb();
+  if (!db || typeof db.loadKV !== 'function') return { count: 0 };
+  try {
+    const stored = await db.loadKV(KV_MANUAL_LINE_ODDS).catch(() => null);
+    if (stored && typeof stored === 'object') {
+      for (const [lineId, odds] of Object.entries(stored)) {
+        const n = Number(odds);
+        if (lineId && Number.isFinite(n) && n !== 0) {
+          manualLineOdds.set(String(lineId), Math.round(n));
+        }
+      }
+    }
+    return { count: manualLineOdds.size };
+  } catch (_) {
+    return { count: 0 };
+  }
+}
+
+function getManualLineOdds(lineId) {
+  if (!lineId) return null;
+  const v = manualLineOdds.get(String(lineId));
+  return v != null ? v : null;
+}
+
+function hasManualLineOdds(lineId) {
+  return lineId != null && manualLineOdds.has(String(lineId));
+}
+
+function setManualLineOdds(lineId, americanOdds) {
+  if (!lineId) return false;
+  const n = Number(americanOdds);
+  if (!Number.isFinite(n) || n === 0) return false;
+  // Reject odds in the (-99, 99) gap — not a valid American odds value.
+  if (n > -100 && n < 100) return false;
+  manualLineOdds.set(String(lineId), Math.round(n));
+  _persistManualLineOdds();
+  return true;
+}
+
+function clearManualLineOdds(lineId) {
+  if (!lineId) return false;
+  const removed = manualLineOdds.delete(String(lineId));
+  if (removed) _persistManualLineOdds();
+  return removed;
+}
+
+function getManualLineOddsSnapshot() {
+  const out = {};
+  for (const [k, v] of manualLineOdds) out[k] = v;
+  return out;
+}
+
 /**
  * Async lookupLine that falls back to the persistent Supabase cache
  * when the in-memory lineIndex doesn't have the lineId.
@@ -2811,4 +2890,11 @@ module.exports = {
   enablePxEvent,
   getDisabledSnapshot,
   hydrateDisabledFromDb,
+  // Manual line-odds override
+  getManualLineOdds,
+  hasManualLineOdds,
+  setManualLineOdds,
+  clearManualLineOdds,
+  getManualLineOddsSnapshot,
+  hydrateManualLineOddsFromDb,
 };

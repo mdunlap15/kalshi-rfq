@@ -11918,6 +11918,46 @@
       alert('Network error: ' + err.message);
     }
   };
+  // Pin or update a manual American-odds override on a specific line.
+  // Pricer uses this directly as the leg's offered prob, bypassing the
+  // model's fair × vig. Persists across restarts via kv_store.
+  window.setLineOddsOverride = async (lineId, valueStr) => {
+    const americanOdds = Number(valueStr);
+    if (!Number.isFinite(americanOdds) || americanOdds === 0 || (americanOdds > -100 && americanOdds < 100)) {
+      alert('Enter a valid American odds value (integer outside -99 to +99). Examples: -125, +210.');
+      return;
+    }
+    try {
+      const resp = await fetch('/admin/set-line-odds', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineId, americanOdds: Math.round(americanOdds) }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        alert('Failed: ' + (err.error || resp.status));
+        return;
+      }
+      await loadLines();
+    } catch (err) {
+      alert('Network error: ' + err.message);
+    }
+  };
+  window.clearLineOddsOverride = async (lineId) => {
+    try {
+      const resp = await fetch('/admin/clear-line-odds', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineId }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        alert('Failed: ' + (err.error || resp.status));
+        return;
+      }
+      await loadLines();
+    } catch (err) {
+      alert('Network error: ' + err.message);
+    }
+  };
   // Debounce text-input-driven refetches so every keystroke doesn't fire
   // an HTTP request. Dropdown changes call loadLines() directly (no need
   // to debounce those — user-intentional single actions).
@@ -12318,19 +12358,26 @@
         : (r.lineDisabled
           ? '<span style="background:#7c2d12; color:#fed7aa; font-size:10px; font-weight:700; padding:1px 5px; border-radius:3px; margin-right:6px;" title="This line manually disabled — auto-declined">DISABLED</span>'
           : '');
+      // Manual override badge — shown inline next to team name, like the
+      // DISABLED badge. Tooltip carries the model price for context.
+      const isManualOverride = r.manualOddsOverride != null;
+      const overrideBadge = isManualOverride
+        ? '<span style="background:#1f3a52; color:#7dd3fc; font-size:10px; font-weight:700; padding:1px 5px; border-radius:3px; margin-right:6px;" title="My Odds is operator-pinned to ' + r.manualOddsOverride + (r.myOddsModelAmerican != null ? ' (model would quote ' + r.myOddsModelAmerican + ')' : '') + '">OVR</span>'
+        : '';
       const disabledRowStyle = isDisabled
         ? ' border-left:3px solid var(--red); opacity:0.65; text-decoration:line-through;'
-        : '';
+        : (isManualOverride ? ' border-left:3px solid var(--accent);' : '');
       const rowStyle = 'cursor:pointer;' + (expanded ? ' background:var(--surface2);' : '') + disabledRowStyle;
+      const myOddsColor = isManualOverride ? 'var(--accent)' : (missing ? 'var(--text3)' : 'var(--text)');
       html += '<tr onclick="window.toggleLinesDrillDown(\'' + r.lineId + '\')" style="' + rowStyle + '">'
         + '<td style="padding:4px 8px;">' + escapeHtml(sportLbl) + '</td>'
         + '<td style="padding:4px 8px; font-family:monospace; color:var(--text2);">' + escapeHtml(r.marketType || '-') + '</td>'
-        + '<td style="padding:4px 8px; text-decoration:none;">' + disabledBadge + escapeHtml(team) + '</td>'
+        + '<td style="padding:4px 8px; text-decoration:none;">' + disabledBadge + overrideBadge + escapeHtml(team) + '</td>'
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace;">' + lineDisp + '</td>'
         + '<td style="padding:4px 8px; color:var(--text2);">' + escapeHtml(event) + '</td>'
         + '<td style="padding:4px 8px; color:var(--text3); font-size:11px;">' + starts + '</td>'
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (missing ? 'var(--text3)' : 'var(--text2)') + ';">' + fairPct + '</td>'
-        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (missing ? 'var(--text3)' : 'var(--text)') + '; font-weight:600;">' + myAm + '</td>'
+        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + myOddsColor + '; font-weight:600;" title="' + (isManualOverride && r.myOddsModelAmerican != null ? 'Operator-pinned. Model price: ' + r.myOddsModelAmerican : '') + '">' + myAm + '</td>'
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.pinnacleOdds==null?'var(--text3)':'var(--purple)') + ';">' + pinAm + '</td>'
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.fanduelOdds==null?'var(--text3)':'var(--blue)') + ';">' + fdAm + '</td>'
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.draftkingsOdds==null?'var(--text3)':'var(--green)') + ';">' + dkAm + '</td>'
@@ -12363,6 +12410,34 @@
           html += '<button onclick="event.stopPropagation(); window.toggleEventDisabled(\'' + escId(r.pxEventId) + '\', ' + (r.eventDisabled ? 'true' : 'false') + ')" '
             + 'style="background:' + evtDisColor + '; color:white; border:none; padding:4px 10px; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer;">'
             + evtDisBtnLabel + '</button>';
+        }
+        html += '</div>';
+
+        // Manual line-odds override controls. Operator pins a fixed
+        // American odds value that the pricer uses directly (bypasses
+        // model fair × vig). Persists across restarts via kv_store.
+        const ovrInputId = 'ovr-input-' + escId(r.lineId);
+        const currentOvr = r.manualOddsOverride;
+        const placeholderAm = r.myOddsAmerican != null ? String(r.myOddsAmerican) : 'e.g. -125';
+        html += '<div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--border); flex-wrap:wrap;">';
+        html += '<span style="color:var(--text2); font-size:12px;">My Odds override:</span>';
+        if (currentOvr != null) {
+          html += '<span style="background:#1f3a52; color:#7dd3fc; padding:2px 8px; border-radius:4px; font-family:monospace; font-size:12px; font-weight:600;">' + (currentOvr > 0 ? '+' : '') + currentOvr + '</span>';
+          if (r.myOddsModelAmerican != null) {
+            html += '<span style="color:var(--text3); font-size:11px;">model would quote ' + (r.myOddsModelAmerican > 0 ? '+' : '') + r.myOddsModelAmerican + '</span>';
+          }
+        } else {
+          html += '<span style="color:var(--text3); font-size:11px;">none — pricer uses model fair × vig</span>';
+        }
+        html += '<input type="number" id="' + ovrInputId + '" placeholder="' + placeholderAm + '" step="1" '
+          + 'onclick="event.stopPropagation();" '
+          + 'style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-family:monospace; width:90px; font-size:12px;">';
+        html += '<button onclick="event.stopPropagation(); window.setLineOddsOverride(\'' + escId(r.lineId) + '\', document.getElementById(\'' + ovrInputId + '\').value)" '
+          + 'style="background:var(--accent); color:#0d1117; border:none; padding:4px 12px; border-radius:4px; font-size:11px; font-weight:600; cursor:pointer;">'
+          + (currentOvr != null ? 'Update' : 'Pin Override') + '</button>';
+        if (currentOvr != null) {
+          html += '<button onclick="event.stopPropagation(); window.clearLineOddsOverride(\'' + escId(r.lineId) + '\')" '
+            + 'style="background:var(--surface3); color:var(--text2); border:1px solid var(--border); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer;">Clear</button>';
         }
         html += '</div>';
         html += '<div style="display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; font-size:12px;">';

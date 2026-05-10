@@ -1211,11 +1211,32 @@ function priceParlay(legs, opts = {}) {
       }
     }
 
+    // Operator-pinned manual line-odds override. When set, the leg's
+    // offered prob is the implied-prob of the operator's American odds,
+    // bypassing the model's fair × vig (same plumbing as the NBA-series
+    // bookPriceOverride). Operator override always wins over any prior
+    // bookPriceOverride from the fair-prob lookups (e.g., NBA heavy fav).
+    let effectiveBookPriceOverride = bookPriceOverride != null ? bookPriceOverride : null;
+    let manualOddsApplied = null;
+    const manualAm = lineManager.getManualLineOdds(lineId);
+    if (manualAm != null && Number.isFinite(manualAm) && manualAm !== 0) {
+      // SP perspective: stored override IS what we offer (operator-set
+      // American odds). Convert to implied prob for parlay compounding.
+      const absAm = Math.abs(manualAm);
+      const implied = manualAm > 0 ? 100 / (manualAm + 100) : absAm / (absAm + 100);
+      if (implied > 0 && implied < 1) {
+        effectiveBookPriceOverride = implied;
+        manualOddsApplied = manualAm;
+        log.info('Pricing', `Manual override applied to line ${lineId}: offered ${manualAm} (implied ${implied.toFixed(4)})`);
+      }
+    }
+
     pricedLegs.push({
       lineId,
       lineInfo,
       fairProb,
-      bookPriceOverride: bookPriceOverride != null ? bookPriceOverride : null,
+      bookPriceOverride: effectiveBookPriceOverride,
+      manualOddsApplied,
       vigBump: legVigBumps[legIdx] || 0,
       displayFairProb,
       pinnacleOdds,

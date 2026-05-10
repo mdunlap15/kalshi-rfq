@@ -268,6 +268,19 @@ async function startup() {
   } catch (err) {
     log.warn('Startup', `    ⚠ Disabled-lines hydrate failed: ${err.message}`);
   }
+  // Restore operator's manual line-odds overrides — the fixed offered prices
+  // operator pinned via the Lines table edit affordance. Same restart-safety
+  // rationale as the disabled-lines hydrate above.
+  try {
+    const restoredOdds = await lineManager.hydrateManualLineOddsFromDb();
+    if (restoredOdds.count > 0) {
+      log.info('Startup', `    ✓ Manual line-odds overrides hydrated: ${restoredOdds.count}`);
+    } else {
+      log.info('Startup', '    ✓ Manual line-odds overrides hydrated: none');
+    }
+  } catch (err) {
+    log.warn('Startup', `    ⚠ Manual line-odds hydrate failed: ${err.message}`);
+  }
   try {
     await websocket.connect();
     log.info('Startup', '    ✓ WebSocket connected');
@@ -5803,6 +5816,32 @@ function startStatusServer() {
     res.json(lineManager.getDisabledSnapshot());
   });
 
+  // Admin: pin a fixed offered price (American odds) to a specific lineId.
+  // Pricer will use this directly as the leg's offered prob (via
+  // bookPriceOverride), bypassing the model's fair × vig calculation.
+  // Persists across restarts via kv_store.
+  // Body: { lineId: string, americanOdds: number }
+  app.post('/admin/set-line-odds', (req, res) => {
+    const { lineId, americanOdds } = req.body || {};
+    if (!lineId) return res.status(400).json({ ok: false, error: 'lineId required' });
+    const ok = lineManager.setManualLineOdds(String(lineId), Number(americanOdds));
+    if (!ok) return res.status(400).json({ ok: false, error: 'invalid americanOdds (must be integer outside (-100, 100))' });
+    log.warn('AdminOddsOverride', `Line ${lineId} pinned to ${americanOdds}`);
+    res.json({ ok: true, lineId, americanOdds: Number(americanOdds) });
+  });
+  // Admin: clear a manual line-odds override. Pricer reverts to model price.
+  // Body: { lineId: string }
+  app.post('/admin/clear-line-odds', (req, res) => {
+    const { lineId } = req.body || {};
+    if (!lineId) return res.status(400).json({ ok: false, error: 'lineId required' });
+    const removed = lineManager.clearManualLineOdds(String(lineId));
+    log.warn('AdminOddsOverride', `Line ${lineId} ${removed ? 'cleared' : 'had no override'}`);
+    res.json({ ok: true, lineId, cleared: removed });
+  });
+  app.get('/admin/manual-line-odds', (req, res) => {
+    res.json({ overrides: lineManager.getManualLineOddsSnapshot() });
+  });
+
   // Admin: manually override a leg's inferredResult. For cases where the
   // automatic re-validation can't heal a wrongly-set leg (e.g. the score
   // source no longer carries the historical day's game).
@@ -7788,6 +7827,7 @@ function startStatusServer() {
       }
 
       let quote = null;
+      let modelQuote = null; // pre-override quote for display when an override is in force
       if (bookPriceOverride != null && bookPriceOverride > 0 && bookPriceOverride < 1) {
         quote = {
           vig: fairProb != null ? (bookPriceOverride - fairProb) / fairProb : null,
@@ -7796,6 +7836,21 @@ function startStatusServer() {
         };
       } else if (fairProb != null && fairProb > 0 && fairProb < 1) {
         quote = pricer.computeSingleLegQuote(fairProb, info.sport, info.marketType, consensusImplied);
+      }
+      // Manual operator override — replaces myOddsAmerican with a fixed
+      // price. Save the model quote first so the UI can show "was N → now M".
+      const manualOverrideAm = lineManager.getManualLineOdds(lineId);
+      if (manualOverrideAm != null && Number.isFinite(manualOverrideAm) && manualOverrideAm !== 0) {
+        modelQuote = quote ? { americanOdds: quote.americanOdds, vig: quote.vig } : null;
+        const absAm = Math.abs(manualOverrideAm);
+        const impliedFromOverride = manualOverrideAm > 0
+          ? 100 / (manualOverrideAm + 100)
+          : absAm / (absAm + 100);
+        quote = {
+          vig: fairProb != null ? (impliedFromOverride - fairProb) / fairProb : null,
+          impliedProb: impliedFromOverride,
+          americanOdds: manualOverrideAm,
+        };
       }
 
       const vsConsensusPp = (consensusImplied != null && quote)
@@ -7836,6 +7891,11 @@ function startStatusServer() {
         // a decline reason 'manually_disabled'.
         lineDisabled: lineManager.isLineDisabled(lineId) && !(info.pxEventId != null && lineManager.isPxEventDisabled(info.pxEventId)),
         eventDisabled: info.pxEventId != null && lineManager.isPxEventDisabled(info.pxEventId),
+        // Manual operator override on this line's offered odds. When set,
+        // myOddsAmerican above is the operator's pinned value;
+        // myOddsModelAmerican shows what the model would otherwise quote.
+        manualOddsOverride: lineManager.getManualLineOdds(lineId),
+        myOddsModelAmerican: modelQuote ? modelQuote.americanOdds : null,
       });
       if (out.length >= limit) break;
     }
