@@ -665,6 +665,49 @@
   .viewer-main { padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
   .viewer-section { display: block; }
   .viewer-section.hidden { display: none; }
+
+  /* Prominent refresh banner — sticky at the top of the main content
+     area so it's impossible to miss when data is in flight. Hidden by
+     default; toggled by viewerRefresh(). */
+  .refresh-banner {
+    position: sticky;
+    top: 0;
+    z-index: 150;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 10px 16px;
+    margin: -16px -24px 12px -24px;
+    background: linear-gradient(90deg, rgba(31,111,235,0.18), rgba(31,111,235,0.32), rgba(31,111,235,0.18));
+    border-bottom: 1px solid rgba(31,111,235,0.55);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    animation: refresh-banner-pulse 1.4s ease-in-out infinite;
+  }
+  .refresh-banner.visible { display: flex; }
+  .refresh-banner .big-spinner {
+    width: 18px;
+    height: 18px;
+    border: 3px solid rgba(255,255,255,0.22);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.85s linear infinite;
+  }
+  @keyframes refresh-banner-pulse {
+    0%, 100% { background-position: 0% 50%; }
+    50%      { background-position: 100% 50%; }
+  }
+  @media (max-width: 640px) {
+    .refresh-banner {
+      margin: -12px -12px 10px -12px;
+      padding: 12px 14px;
+      font-size: 15px;
+    }
+    .refresh-banner .big-spinner { width: 20px; height: 20px; border-width: 3px; }
+  }
   /* Compact bankroll stat strip — sits above both tabs so partner
      balances are visible on either tab. One short row of three stats:
      Total Equity / Mike / Rick. */
@@ -763,10 +806,18 @@
 </header>
 
 <main class="viewer-main">
+  <!-- Prominent refresh indicator. Toggled by viewerRefresh() so it's
+       obvious when data is loading — replaces the subtle status text
+       in the header that was easy to miss. -->
+  <div id="refresh-banner" class="refresh-banner" role="status" aria-live="polite">
+    <span class="big-spinner" aria-hidden="true"></span>
+    <span id="refresh-banner-text">Refreshing data&hellip;</span>
+  </div>
+
   <!-- Bankroll split — top-of-page indicator visible on both tabs.
-       Mike $17,500 base + 75% of P&L gain · Rick $12,500 base + 25%
-       of P&L gain. Computed client-side in viewerRefresh() from the
-       /status portfolio.accountValue (live PX balance). -->
+       Mike $17,500 base + 58.333% of P&L gain · Rick $12,500 base +
+       41.667% of P&L gain. Computed client-side in viewerRefresh()
+       from the /status portfolio.totalEquity (Cash + Deployed). -->
   <div class="bankroll-bar" id="bankroll-bar">
     <div class="bankroll-cell">
       <span class="bankroll-label">Total</span>
@@ -12874,7 +12925,13 @@
     navigator.serviceWorker.controller?.postMessage({ type: 'badge-clear' });
   }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') _clearAppBadgeOnFocus();
+    if (document.visibilityState === 'visible') {
+      _clearAppBadgeOnFocus();
+      // Reopening the PWA (or returning the tab to foreground) should
+      // pull fresh data immediately rather than waiting up to 15s for
+      // the next interval tick. The banner makes the refresh obvious.
+      try { viewerRefresh(); } catch (_) {}
+    }
   });
   window.switchViewerTab = switchViewerTab;
 
@@ -12884,58 +12941,83 @@
    * /health/coverage, /px-pnl, /px-positions, /market-intel — those return
    * 403 for viewer accounts and would noise up the console anyway.
    */
+  // Helper: show/hide the prominent refresh banner. Kept as a tiny
+  // module-level helper so manual-refresh buttons or future code paths
+  // can drive the same UI without duplicating selectors.
+  function setViewerRefreshing(on, msg) {
+    const banner = document.getElementById('refresh-banner');
+    const text = document.getElementById('refresh-banner-text');
+    if (banner) banner.classList.toggle('visible', !!on);
+    if (text && msg) text.innerHTML = msg;
+    const statusEl = document.getElementById('viewer-refresh-status');
+    if (statusEl) statusEl.textContent = on ? 'Refreshing…' : '';
+  }
+
   async function viewerRefresh() {
     const statusEl = document.getElementById('viewer-refresh-status');
-    if (statusEl) statusEl.textContent = 'Refreshing…';
+    setViewerRefreshing(true, 'Refreshing data&hellip;');
+    const safeRender = (fn, label) => {
+      try { fn(); }
+      catch (err) { console.warn('[viewer ' + label + ']', err); }
+    };
+
+    // Kick off both requests in parallel. Render /status-derived
+    // sections (bankroll, exposure) as soon as that one resolves —
+    // it's a small payload (~few KB) and unblocks the visible
+    // "Total / Mike / Rick" strip + exposure tables without waiting
+    // for the much-larger /orders response. The Positions + P&L tabs
+    // render in a second wave once /orders lands.
+    const statusP = fetchJSON('/status').catch(err => ({ _err: err }));
+    const ordersP = fetchJSON('/orders').catch(err => ({ _err: err }));
+
+    let firstWaveOk = false;
     try {
-      const [status, orders] = await Promise.all([
-        fetchJSON('/status'),
-        fetchJSON('/orders'),
-      ]);
-
-      // Populate orderState.allOrders so renderRiskSim() and the exposure
-      // drill-downs (which read from orderState directly) have current data.
-      orderState.allOrders = {};
-      const recent = orders.recentOrders || [];
-      for (const o of recent) {
-        const key = o.parlay_id || o.parlayId;
-        if (key) orderState.allOrders[key] = o;
+      const status = await statusP;
+      if (status && !status._err) {
+        safeRender(() => renderBankrollSplit(status.portfolio || {}), 'bankrollSplit');
+        safeRender(() => renderExposure(status.exposure || {}),       'exposure');
+        safeRender(() => renderGameExposure(status.exposure || {}),   'gameExposure');
+        firstWaveOk = true;
+        // Update the banner so the user sees that the bankroll/exposure
+        // are already current while we're still waiting on /orders.
+        setViewerRefreshing(true, 'Loading positions&hellip;');
       }
-      window._lastOrders = orders;
+    } catch (err) {
+      console.warn('[viewer status]', err);
+    }
 
-      // Render the viewer sections. Each call wrapped in try/catch so
-      // one render's failure (e.g., null DOM target on a tab the
-      // operator hasn't visited yet) doesn't break the rest of the
-      // chain — e.g., a renderExposure throw would otherwise prevent
-      // renderBankrollSplit from running on every refresh.
-      const safeRender = (fn, label) => {
-        try { fn(); }
-        catch (err) { console.warn('[viewer ' + label + ']', err); }
-      };
-      safeRender(() => renderChartDailyVolume(recent),               'chartDailyVolume');
-      safeRender(() => renderPositions(orders),                       'positions');
-      safeRender(() => renderSettled(orders),                         'settled');
-      safeRender(() => renderExposure(status.exposure || {}),         'exposure');
-      safeRender(() => renderGameExposure(status.exposure || {}),     'gameExposure');
-      // Risk Sim renders only when the user clicks "Run Simulation" — it
-      // reads from orderState.allOrders which is now fresh.
+    try {
+      const orders = await ordersP;
+      if (orders && !orders._err) {
+        // Populate orderState.allOrders so renderRiskSim() and the exposure
+        // drill-downs (which read from orderState directly) have current data.
+        orderState.allOrders = {};
+        const recent = orders.recentOrders || [];
+        for (const o of recent) {
+          const key = o.parlay_id || o.parlayId;
+          if (key) orderState.allOrders[key] = o;
+        }
+        window._lastOrders = orders;
 
-      // Bankroll split — Mike $17.5k + 58.333% of P&L gain, Rick $12.5k +
-      // 41.667% of P&L gain. Total starting bankroll = $30k. Computed
-      // from portfolio.totalEquity (Cash Available + Deployed).
-      safeRender(() => renderBankrollSplit(status.portfolio || {}),  'bankrollSplit');
-
-      // Update the unread count on the Positions tab (open positions
-      // confirmed since the user last opened the tab).
-      safeRender(() => refreshPositionsTabBadge(),                    'positionsTabBadge');
+        safeRender(() => renderChartDailyVolume(recent),  'chartDailyVolume');
+        safeRender(() => renderPositions(orders),         'positions');
+        safeRender(() => renderSettled(orders),           'settled');
+        safeRender(() => refreshPositionsTabBadge(),      'positionsTabBadge');
+      } else if (orders && orders._err) {
+        throw orders._err;
+      }
 
       if (statusEl) {
         const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         statusEl.textContent = `Updated ${t}`;
       }
+      setViewerRefreshing(false);
     } catch (err) {
       console.warn('[viewer refresh]', err);
-      if (statusEl) statusEl.textContent = 'Refresh failed: ' + err.message;
+      setViewerRefreshing(true, 'Refresh failed: ' + (err.message || 'unknown'));
+      // Auto-hide the failure banner after 4s so it doesn't linger.
+      setTimeout(() => setViewerRefreshing(false), 4000);
+      if (statusEl) statusEl.textContent = 'Refresh failed';
     }
   }
   window.viewerRefresh = viewerRefresh;
