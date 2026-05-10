@@ -210,20 +210,28 @@ function _parseTennisMatches(event, leagueLabel) {
   return out;
 }
 
-async function _fetchOneLeague(sport, league) {
-  const url = `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard`;
+function _ymdUTC(offsetDays) {
+  const d = new Date(Date.now() + offsetDays * 86400 * 1000);
+  return d.getUTCFullYear().toString()
+    + String(d.getUTCMonth() + 1).padStart(2, '0')
+    + String(d.getUTCDate()).padStart(2, '0');
+}
+
+async function _fetchOneLeagueDay(sport, league, dateStr) {
+  // dateStr is YYYYMMDD or '' for the default (today) endpoint.
+  const url = dateStr
+    ? `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard?dates=${dateStr}`
+    : `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard`;
   try {
     const resp = await fetch(url, { timeout: 10000 });
     if (!resp.ok) {
-      log.debug('EspnScores', `Fetch failed for ${sport}/${league}: ${resp.status}`);
+      log.debug('EspnScores', `Fetch failed for ${sport}/${league} dates=${dateStr || 'today'}: ${resp.status}`);
       return [];
     }
     const data = await resp.json();
     const events = Array.isArray(data?.events) ? data.events : [];
     const out = [];
     for (const e of events) {
-      // Tennis: walk event.groupings[].competitions[] for individual
-      // matches. Other sports use the standard event.competitions[] root.
       if (sport === 'tennis') {
         const matches = _parseTennisMatches(e, `${sport}/${league}`);
         for (const m of matches) out.push(m);
@@ -234,9 +242,44 @@ async function _fetchOneLeague(sport, league) {
     }
     return out;
   } catch (err) {
-    log.debug('EspnScores', `Fetch error for ${sport}/${league}: ${err.message}`);
+    log.debug('EspnScores', `Fetch error for ${sport}/${league} dates=${dateStr || 'today'}: ${err.message}`);
     return [];
   }
+}
+
+// Fetch today + yesterday in parallel and dedupe. ESPN's default
+// scoreboard endpoint returns only games for "today" in their UTC
+// reckoning — so once UTC midnight passes, yesterday's afternoon games
+// silently disappear from the cache. A Saturday 3pm ET / 19:00 UTC NBA
+// playoff game falls off ~5 hours after kickoff, well before the
+// leg-resolution loop next runs. Verified 2026-05-10 against parlay
+// 019e0ced — Lakers (8:30pm ET = 5/10 00:30 UTC) resolved, Pistons
+// (3pm ET = 5/9 19:00 UTC) didn't.
+//
+// The explicit ?dates=YYYYMMDD lookup is the documented way to fetch
+// a historical day's scoreboard. Yesterday's slice + today's default
+// covers a 48-hour window with no overlap (ESPN's "today" is keyed by
+// its own server's UTC interpretation, so we just trust it for the
+// recent window and rely on the explicit date for what fell off).
+async function _fetchOneLeague(sport, league) {
+  const [todayGames, yesterdayGames] = await Promise.all([
+    _fetchOneLeagueDay(sport, league, ''),
+    _fetchOneLeagueDay(sport, league, _ymdUTC(-1)),
+  ]);
+  const seen = new Set();
+  const merged = [];
+  for (const list of [todayGames, yesterdayGames]) {
+    for (const g of list) {
+      // Dedupe on team-pair + commenceTime so a game showing up in
+      // both windows (rare but possible near the UTC boundary) only
+      // lands once in the cache.
+      const key = `${g.homeTeam || ''}|${g.awayTeam || ''}|${g.commenceTime || ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(g);
+    }
+  }
+  return merged;
 }
 
 async function refreshSport(sportKey) {
