@@ -2021,6 +2021,161 @@ const RISK_LIMIT_REASONS = new Set([
   'odds too high',
 ]);
 
+// ---------------------------------------------------------------------------
+// PERSISTENT 7-DAY ROLLUP — Declines + Missed Volume that survive restarts.
+// ---------------------------------------------------------------------------
+// In-memory `declineStats` + `matchedParlays.declineReason` get wiped on
+// every Railway redeploy. To give the dashboard a stable rolling-week view,
+// we periodically query Supabase's `declines` + `matched_parlays` tables,
+// cross-reference them by parlay_id, and stash the rollup here. `getMarketIntel`
+// pulls these values into intel.declines / intel.missedVolume /
+// intel.riskLimitMissed in place of the session counters.
+const ROLLUP_WINDOW_DAYS = 7;
+const ROLLUP_REFRESH_MS = 60 * 1000;
+
+let cachedRollup7d = {
+  refreshedAt: null,
+  windowDays: ROLLUP_WINDOW_DAYS,
+  // Declines aggregate over last 7d
+  declines: { total: 0, reasons: {}, volumeByReason: {} },
+  // Matched parlays we missed (any reason) over last 7d
+  missedVolume: { totalMissed: 0, totalStake: 0, byReason: {} },
+  // Risk-limit-only subset, daily + by reason (drives the stacked-bar chart)
+  riskLimitMissed: {
+    byDay: {},
+    byReason: {},
+    grandTotal: { count: 0, stake: 0 },
+    reasons: [...RISK_LIMIT_REASONS],
+  },
+};
+
+async function refreshPersistentRollup7d() {
+  if (!db.isEnabled()) return;
+  try {
+    const fromIso = new Date(Date.now() - ROLLUP_WINDOW_DAYS * 24 * 3600 * 1000).toISOString();
+    const [declines, matched] = await Promise.all([
+      db.loadDeclinesSince(fromIso),
+      db.loadMatchedParlaysSince(fromIso),
+    ]);
+
+    // parlay_id → reason map for cross-referencing missed matches back
+    // to the reason we declined them for.
+    const declineByParlay = {};
+    for (const d of declines) {
+      if (d.parlay_id) declineByParlay[d.parlay_id] = d.reason || 'unknown';
+    }
+
+    // Declines aggregate
+    const declinesByReason = {};
+    const volumeByReason = {};
+    for (const d of declines) {
+      const reason = d.reason || 'unknown';
+      declinesByReason[reason] = (declinesByReason[reason] || 0) + 1;
+      if (!volumeByReason[reason]) volumeByReason[reason] = { count: 0, totalLegs: 0, byLegCount: {} };
+      const legs = Array.isArray(d.known_legs) ? d.known_legs : [];
+      const legCount = legs.length;
+      const lcKey = legCount > 10 ? '10+' : String(legCount);
+      volumeByReason[reason].count++;
+      volumeByReason[reason].totalLegs += legCount;
+      volumeByReason[reason].byLegCount[lcKey] = (volumeByReason[reason].byLegCount[lcKey] || 0) + 1;
+    }
+
+    // Missed volume (any reason) — matched_parlays where we_quoted=false
+    let mvCount = 0;
+    let mvStake = 0;
+    const mvByReason = {};
+    for (const m of matched) {
+      if (m.we_quoted) continue;
+      mvCount++;
+      const stake = Number(m.matched_stake) || 0;
+      mvStake += stake;
+      const reason = declineByParlay[m.parlay_id] || 'not seen';
+      if (!mvByReason[reason]) mvByReason[reason] = { count: 0, totalStake: 0, avgStake: 0 };
+      mvByReason[reason].count++;
+      mvByReason[reason].totalStake += stake;
+    }
+    for (const r of Object.keys(mvByReason)) {
+      const v = mvByReason[r];
+      v.totalStake = Math.round(v.totalStake * 100) / 100;
+      v.avgStake = v.count > 0 ? Math.round(v.totalStake / v.count * 100) / 100 : 0;
+    }
+
+    // Risk-limit subset — daily stacked-bar source
+    const rlmByDay = {};
+    const ensureDay = (day) => {
+      if (!rlmByDay[day]) rlmByDay[day] = { totalCount: 0, totalStake: 0, byReason: {} };
+      return rlmByDay[day];
+    };
+    for (const d of declines) {
+      if (!RISK_LIMIT_REASONS.has(d.reason)) continue;
+      const day = (d.declined_at || '').substring(0, 10);
+      if (!day) continue;
+      const bucket = ensureDay(day);
+      bucket.totalCount++;
+      if (!bucket.byReason[d.reason]) bucket.byReason[d.reason] = { count: 0, stake: 0 };
+      bucket.byReason[d.reason].count++;
+    }
+    for (const m of matched) {
+      if (m.we_quoted) continue;
+      const reason = declineByParlay[m.parlay_id];
+      if (!RISK_LIMIT_REASONS.has(reason)) continue;
+      const day = (m.matched_at || '').substring(0, 10);
+      if (!day) continue;
+      const stake = Number(m.matched_stake) || 0;
+      const bucket = ensureDay(day);
+      bucket.totalStake += stake;
+      if (!bucket.byReason[reason]) bucket.byReason[reason] = { count: 0, stake: 0 };
+      bucket.byReason[reason].stake += stake;
+    }
+    let grandCount = 0;
+    let grandStake = 0;
+    const rlmByReason = {};
+    for (const day of Object.keys(rlmByDay)) {
+      rlmByDay[day].totalStake = Math.round(rlmByDay[day].totalStake * 100) / 100;
+      grandCount += rlmByDay[day].totalCount;
+      grandStake += rlmByDay[day].totalStake;
+      for (const [r, sub] of Object.entries(rlmByDay[day].byReason)) {
+        sub.stake = Math.round(sub.stake * 100) / 100;
+        if (!rlmByReason[r]) rlmByReason[r] = { count: 0, stake: 0 };
+        rlmByReason[r].count += sub.count;
+        rlmByReason[r].stake += sub.stake;
+      }
+    }
+    for (const r of Object.keys(rlmByReason)) {
+      rlmByReason[r].stake = Math.round(rlmByReason[r].stake * 100) / 100;
+    }
+
+    cachedRollup7d = {
+      refreshedAt: new Date().toISOString(),
+      windowDays: ROLLUP_WINDOW_DAYS,
+      declines: { total: declines.length, reasons: declinesByReason, volumeByReason },
+      missedVolume: { totalMissed: mvCount, totalStake: Math.round(mvStake * 100) / 100, byReason: mvByReason },
+      riskLimitMissed: {
+        byDay: rlmByDay,
+        byReason: rlmByReason,
+        grandTotal: { count: grandCount, stake: Math.round(grandStake * 100) / 100 },
+        reasons: [...RISK_LIMIT_REASONS],
+      },
+    };
+    log.info('Market', `7d rollup refreshed: ${declines.length} declines, ${mvCount} missed fills, $${cachedRollup7d.missedVolume.totalStake.toFixed(2)} stake`);
+  } catch (err) {
+    log.warn('Market', `refreshPersistentRollup7d error: ${err.message}`);
+  }
+}
+
+function startPersistentRollupRefresher() {
+  // Fire once immediately, then on the interval. Boot-time call is
+  // fire-and-forget so it doesn't block startup if Supabase is slow.
+  refreshPersistentRollup7d().catch(() => {});
+  setInterval(() => {
+    refreshPersistentRollup7d().catch(() => {});
+  }, ROLLUP_REFRESH_MS).unref();
+}
+
+function getPersistentRollup7d() {
+  return cachedRollup7d;
+}
+
 function buildRiskLimitMissedVolume() {
   // Init empty daily rollup
   const byDay = {}; // day → { totalCount, totalStake, byReason: { reason: { count, stake } } }
@@ -2144,43 +2299,62 @@ function getMarketIntel(limit = 50) {
       return out;
     })(),
     sessionStartedAt: stats.startedAt,
+    // Persistent 7-day rollup. `cachedRollup7d` is repopulated every 60s
+    // from Supabase (declines + matched_parlays tables) so the totals
+    // survive Railway restarts. Falls back to session counters until the
+    // first refresh completes.
+    rollupWindowDays: cachedRollup7d.windowDays,
+    rollupRefreshedAt: cachedRollup7d.refreshedAt,
     declines: {
-      total: declineStats.total,
-      reasons: { ...declineStats.reasons },
-      volumeByReason: declineStats.volumeByReason || {},
+      total: cachedRollup7d.refreshedAt ? cachedRollup7d.declines.total : declineStats.total,
+      reasons: cachedRollup7d.refreshedAt
+        ? { ...cachedRollup7d.declines.reasons }
+        : { ...declineStats.reasons },
+      volumeByReason: cachedRollup7d.refreshedAt
+        ? cachedRollup7d.declines.volumeByReason
+        : (declineStats.volumeByReason || {}),
+      // Session-only fields below — used for live drilldowns, not rollups.
       unknownSports: { ...declineStats.unknownSports },
       unknownLegCategories: declineStats.unknownLegCategories || {},
       unsupportedMarkets: declineStats.unsupportedMarkets || {},
       nearMissCount: declineStats.nearMisses.length,
       recentNearMisses: declineStats.nearMisses.slice(0, 500),
-      // Rolling event log for /decline-audit?window= time filtering.
-      // Reference (not a copy) — consumers should treat as read-only.
       recentDeclineEvents: declineStats.recentDeclineEvents || [],
     },
-    // Volume analysis: matched parlays we missed, with real stake data
-    missedVolume: (() => {
-      const missed = matchedParlays.filter(m => !m.weQuoted);
-      const byReason = {};
-      let totalStake = 0;
-      for (const m of missed) {
-        const reason = m.declineReason || 'not seen';
-        if (!byReason[reason]) byReason[reason] = { count: 0, totalStake: 0, avgStake: 0 };
-        byReason[reason].count++;
-        byReason[reason].totalStake += (m.matchedStake || 0);
-        totalStake += (m.matchedStake || 0);
-      }
-      for (const r of Object.keys(byReason)) {
-        byReason[r].avgStake = byReason[r].count > 0 ? Math.round(byReason[r].totalStake * 100) / 100 : 0;
-      }
-      return {
-        totalMissed: missed.length,
-        totalStake: Math.round(totalStake * 100) / 100,
-        byReason,
-        notSeenBreakdown: buildNotSeenBreakdown(missed),
-      };
-    })(),
-    // Risk-limit decline breakdown for the Analytics tab
-    riskLimitMissed: buildRiskLimitMissedVolume(),
+    // Volume analysis: matched parlays we missed, with real stake data.
+    // Sourced from the 7d Supabase rollup so totals persist across restarts.
+    missedVolume: cachedRollup7d.refreshedAt
+      ? {
+          totalMissed: cachedRollup7d.missedVolume.totalMissed,
+          totalStake: cachedRollup7d.missedVolume.totalStake,
+          byReason: cachedRollup7d.missedVolume.byReason,
+          notSeenBreakdown: buildNotSeenBreakdown(matchedParlays.filter(m => !m.weQuoted)),
+        }
+      : (() => {
+          const missed = matchedParlays.filter(m => !m.weQuoted);
+          const byReason = {};
+          let totalStake = 0;
+          for (const m of missed) {
+            const reason = m.declineReason || 'not seen';
+            if (!byReason[reason]) byReason[reason] = { count: 0, totalStake: 0, avgStake: 0 };
+            byReason[reason].count++;
+            byReason[reason].totalStake += (m.matchedStake || 0);
+            totalStake += (m.matchedStake || 0);
+          }
+          for (const r of Object.keys(byReason)) {
+            byReason[r].avgStake = byReason[r].count > 0 ? Math.round(byReason[r].totalStake * 100) / 100 : 0;
+          }
+          return {
+            totalMissed: missed.length,
+            totalStake: Math.round(totalStake * 100) / 100,
+            byReason,
+            notSeenBreakdown: buildNotSeenBreakdown(missed),
+          };
+        })(),
+    // Risk-limit decline breakdown for the Analytics tab — 7d persistent.
+    riskLimitMissed: cachedRollup7d.refreshedAt
+      ? cachedRollup7d.riskLimitMissed
+      : buildRiskLimitMissedVolume(),
     recentMatched: matchedParlays.slice(0, limit),
     quoteWinRate: marketStats.weQuoted > 0 ? (marketStats.weWon / marketStats.weQuoted * 100).toFixed(1) + '%' : '-',
     coverageRate: marketStats.totalMatched > 0 ? (marketStats.weQuoted / marketStats.totalMatched * 100).toFixed(1) + '%' : '-',
@@ -5818,6 +5992,9 @@ module.exports = {
   markAcceptUnknown,
   sweepGhostOrders,
   getMarketIntel,
+  getPersistentRollup7d,
+  refreshPersistentRollup7d,
+  startPersistentRollupRefresher,
   getAlerts,
   getRecentRejects: (limit = 100) => rejectStats.recent.slice(0, Math.max(1, Math.min(limit, 100))),
   getExposureLimitStats,

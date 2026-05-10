@@ -125,6 +125,14 @@ async function startup() {
     } catch (err) {
       log.warn('Startup', `    ⚠ DB load failed: ${err.message}`);
     }
+    // Kick off the persistent 7-day Declines + Missed Volume rollup
+    // refresher. Reads `declines` + `matched_parlays` from Supabase every
+    // 60s so the totals survive Railway restarts. Fire-and-forget.
+    try {
+      orderTracker.startPersistentRollupRefresher();
+    } catch (err) {
+      log.warn('Startup', `    ⚠ persistent rollup refresher init failed: ${err.message}`);
+    }
     if (authOk) {
       try {
         const result = await orderTracker.fullPxReconcile(px);

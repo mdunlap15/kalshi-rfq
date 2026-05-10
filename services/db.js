@@ -1178,6 +1178,100 @@ async function savePropShadowQuote(entry) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// PERSISTENT ROLLUP HELPERS — used by order-tracker's 7-day window cache.
+// ---------------------------------------------------------------------------
+// Streamlined readers that pull a date-windowed slice of declines /
+// matched_parlays for cross-referencing. Default to paginating with retries
+// up to MAX_ROWS so a busy week doesn't get silently truncated.
+
+async function loadDeclinesSince(fromIso, opts = {}) {
+  const client = getClient();
+  if (!client) return [];
+  const PAGE_SIZE = 1000;
+  const MAX_PAGE_RETRIES = 4;
+  const MAX_ROWS = opts.maxRows || 200000;
+  const cols = opts.cols || 'parlay_id, reason, declined_at, is_limit, known_legs';
+  const all = [];
+  let offset = 0;
+  const start = Date.now();
+  try {
+    while (all.length < MAX_ROWS) {
+      const pageSize = Math.min(PAGE_SIZE, MAX_ROWS - all.length);
+      let data = null;
+      let lastErr = null;
+      for (let attempt = 0; attempt < MAX_PAGE_RETRIES; attempt++) {
+        const result = await client
+          .from('declines')
+          .select(cols)
+          .gte('declined_at', fromIso)
+          .order('declined_at', { ascending: true })
+          .range(offset, offset + pageSize - 1);
+        if (!result.error) { data = result.data; lastErr = null; break; }
+        lastErr = result.error;
+        await new Promise(r => setTimeout(r, 250 * Math.pow(2, attempt)));
+      }
+      if (lastErr) {
+        log.warn('DB', `loadDeclinesSince offset ${offset}: ${lastErr.message}`);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < pageSize) break;
+      offset += pageSize;
+    }
+    log.info('DB', `loadDeclinesSince ${fromIso}: ${all.length} rows (${Date.now() - start}ms)`);
+    return all;
+  } catch (err) {
+    log.warn('DB', `loadDeclinesSince error: ${err.message}`);
+    return all;
+  }
+}
+
+async function loadMatchedParlaysSince(fromIso, opts = {}) {
+  const client = getClient();
+  if (!client) return [];
+  const PAGE_SIZE = 1000;
+  const MAX_PAGE_RETRIES = 4;
+  const MAX_ROWS = opts.maxRows || 50000;
+  const all = [];
+  let offset = 0;
+  const start = Date.now();
+  try {
+    while (all.length < MAX_ROWS) {
+      const pageSize = Math.min(PAGE_SIZE, MAX_ROWS - all.length);
+      let data = null;
+      let lastErr = null;
+      for (let attempt = 0; attempt < MAX_PAGE_RETRIES; attempt++) {
+        let q = client
+          .from('matched_parlays')
+          .select('parlay_id, matched_stake, matched_odds, legs, we_quoted, matched_at')
+          .gte('matched_at', fromIso);
+        if (opts.weQuoted != null) q = q.eq('we_quoted', !!opts.weQuoted);
+        const result = await q
+          .order('matched_at', { ascending: true })
+          .range(offset, offset + pageSize - 1);
+        if (!result.error) { data = result.data; lastErr = null; break; }
+        lastErr = result.error;
+        await new Promise(r => setTimeout(r, 250 * Math.pow(2, attempt)));
+      }
+      if (lastErr) {
+        log.warn('DB', `loadMatchedParlaysSince offset ${offset}: ${lastErr.message}`);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < pageSize) break;
+      offset += pageSize;
+    }
+    log.info('DB', `loadMatchedParlaysSince ${fromIso}: ${all.length} rows (${Date.now() - start}ms)`);
+    return all;
+  } catch (err) {
+    log.warn('DB', `loadMatchedParlaysSince error: ${err.message}`);
+    return all;
+  }
+}
+
 module.exports = {
   getClient,
   isEnabled,
@@ -1188,8 +1282,10 @@ module.exports = {
   countOrders,
   saveMatchedParlay,
   loadMatchedParlays,
+  loadMatchedParlaysSince,
   saveDecline,
   loadDeclines,
+  loadDeclinesSince,
   lookupDecline,
   savePropShadowQuote,
   loadPropShadowQuotes,
