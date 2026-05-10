@@ -867,14 +867,17 @@
           </div>
         </div>
 
-        <!-- Rolling 500-parlay window: total EV, total realized P&L, stake-weighted edge — collapsed -->
+        <!-- Rolling 500-SETTLED-parlay window: total EV, total realized P&L,
+             stake-weighted edge. Settled-only so the rolling pnl sum is over
+             a constant 500 finished outcomes — not a partially-settled subset
+             that drifts upward as backlog clears. -->
         <div class="card">
           <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
-            <span><span class="toggle-icon collapsed">&#9660;</span>Rolling 500: Total EV vs P&L vs Avg Edge</span>
+            <span><span class="toggle-icon collapsed">&#9660;</span>Rolling 500 Settled: Total EV vs P&L vs Avg Edge</span>
             <span id="rolling500-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
           </div>
           <div class="card-body collapsed" id="chart-rolling500">
-            <div class="empty-state"><div class="icon">-</div><div>Need 500+ accepted parlays to chart rolling window</div></div>
+            <div class="empty-state"><div class="icon">-</div><div>Need 500+ settled parlays to chart rolling window</div></div>
           </div>
         </div>
 
@@ -10148,18 +10151,27 @@
     const sumEl = document.getElementById('rolling500-summary');
     if (!el) return;
 
-    // Use only "accepted" parlays (confirmed or settled) since EV/edge
-    // are only meaningful for tickets that actually transacted.
-    const accepted = (ownOrders || []).filter(o =>
-      o && (o.status === 'confirmed' || (typeof o.status === 'string' && o.status.startsWith('settled_')))
+    // Use SETTLED parlays only so the rolling window holds 500 finished
+    // outcomes — not 500 accepted-but-mostly-unsettled tickets.
+    //
+    // Prior behaviour ("trailing 500 accepted") quietly summed pnl over
+    // whatever subset of the window had settled; the rightmost positions
+    // were ~60% unsettled, so as backlog settlements landed the P&L line
+    // appeared to climb by thousands of dollars without any actual new
+    // wins. Filtering to settled-only makes the denominator constant at
+    // 500 and the line interpretable: realized P&L over the last 500
+    // finished parlays. EV / edge / stake are computed at quote time so
+    // they're still available on settled rows.
+    const settled = (ownOrders || []).filter(o =>
+      o && typeof o.status === 'string' && o.status.startsWith('settled_')
     );
-    const sorted = [...accepted].sort((a, b) =>
-      (a.confirmedAt || a.quotedAt || '').localeCompare(b.confirmedAt || b.quotedAt || '')
+    const sorted = [...settled].sort((a, b) =>
+      (a.settledAt || a.confirmedAt || a.quotedAt || '').localeCompare(b.settledAt || b.confirmedAt || b.quotedAt || '')
     );
     const WINDOW = 500;
     const totalAccepted = sorted.length;
     if (totalAccepted < WINDOW) {
-      el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>Need ' + WINDOW + '+ accepted parlays to chart rolling window (have ' + totalAccepted + ')</div></div>';
+      el.innerHTML = '<div class="empty-state" style="padding:24px 12px;"><div class="icon">-</div><div>Need ' + WINDOW + '+ settled parlays to chart rolling window (have ' + totalAccepted + ')</div></div>';
       if (sumEl) sumEl.textContent = '';
       return;
     }
@@ -10255,25 +10267,35 @@
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
 
     // Left axis: $ amounts (EV + P&L share scale so they're directly comparable).
+    // Snap lo/hi to dStep boundaries so the topmost/bottommost gridline always
+    // brackets the data — otherwise a +$7k P&L peak with $5k-step gridlines
+    // shows the line shooting past the "+$5000" label with nothing labeled
+    // above it, looking like the chart is clipping.
     const dollarVals = points.flatMap(p => [p.ev, p.pnl].filter(v => v != null));
     const rawMin$ = Math.min(0, ...dollarVals);
     const rawMax$ = Math.max(0, ...dollarVals);
-    const dPad = (rawMax$ - rawMin$) * 0.1 || 1;
-    const dLo = rawMin$ - dPad, dHi = rawMax$ + dPad;
+    const dRange = Math.max(rawMax$ - rawMin$, 1);
+    const dStep = niceStep(dRange / 5);
+    const dLo = Math.floor((rawMin$ - dStep * 0.1) / dStep) * dStep;
+    const dHi = Math.ceil((rawMax$ + dStep * 0.1) / dStep) * dStep;
 
-    // Right axis (inner): edge %.
+    // Right axis (inner): edge %. Same snap so the topmost edge% gridline
+    // always sits above the peak edge value.
     const edgeVals = points.map(p => p.edgePct).filter(v => v != null);
     const rawMinE = edgeVals.length ? Math.min(0, ...edgeVals) : 0;
     const rawMaxE = edgeVals.length ? Math.max(0, ...edgeVals) : 1;
-    const ePad = (rawMaxE - rawMinE) * 0.1 || 0.5;
-    const eLo = rawMinE - ePad, eHi = rawMaxE + ePad;
+    const eRange = Math.max(rawMaxE - rawMinE, 0.5);
+    const eStep = niceStep(eRange / 5);
+    const eLo = Math.floor((rawMinE - eStep * 0.1) / eStep) * eStep;
+    const eHi = Math.ceil((rawMaxE + eStep * 0.1) / eStep) * eStep;
 
-    // Right axis (outer): stake $. Zero-anchored since cumulative stake
-    // is always non-negative. Pads max by 10% so the line never hugs
-    // the top edge.
+    // Right axis (outer): stake $. Zero-anchored since cumulative stake is
+    // always non-negative; snap hi up to a step boundary.
     const stakeVals = points.map(p => p.stake).filter(v => Number.isFinite(v));
     const rawMaxS = stakeVals.length ? Math.max(...stakeVals) : 1;
-    const sLo = 0, sHi = rawMaxS * 1.1 || 1;
+    const sStep = niceStep(Math.max(rawMaxS, 1) / 5);
+    const sLo = 0;
+    const sHi = Math.max(Math.ceil((rawMaxS + sStep * 0.1) / sStep) * sStep, sStep);
 
     const xMin = points[0].idx;
     const xMax = points[points.length - 1].idx;
@@ -10286,9 +10308,8 @@
 
     let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; height:auto; max-height:380px;">';
 
-    // Left-axis $ gridlines + ticks
-    const dStep = niceStep((dHi - dLo) / 5);
-    for (let v = Math.ceil(dLo / dStep) * dStep; v <= dHi; v += dStep) {
+    // Left-axis $ gridlines + ticks (dStep already computed above for snap)
+    for (let v = dLo; v <= dHi + 1e-6; v += dStep) {
       const y = scaleYd(v);
       svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', 0.3);
       const label = v >= 0 ? '+$' + v.toFixed(0) : '-$' + Math.abs(v).toFixed(0);
@@ -10297,9 +10318,8 @@
     // $ zero line
     svg += svgLine(pad.l, scaleYd(0), W - pad.r, scaleYd(0), 'var(--text3)', 0.8);
 
-    // Right-axis edge % ticks (inner)
-    const eStep = niceStep((eHi - eLo) / 5);
-    for (let v = Math.ceil(eLo / eStep) * eStep; v <= eHi; v += eStep) {
+    // Right-axis edge % ticks (inner) — eStep already computed above
+    for (let v = eLo; v <= eHi + 1e-6; v += eStep) {
       const y = scaleYe(v);
       const label = (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
       svg += svgText(W - pad.r + 8, y + 3, label, { anchor: 'start', size: 9, fill: 'var(--blue)' });
@@ -10311,8 +10331,8 @@
       if (Math.abs(n) >= 1e3) return '$' + Math.round(n / 1e3) + 'k';
       return '$' + Math.round(n);
     }
-    const sStep = niceStep((sHi - sLo) / 5);
-    for (let v = 0; v <= sHi; v += sStep) {
+    // sStep already computed above for snap
+    for (let v = 0; v <= sHi + 1e-6; v += sStep) {
       const y = scaleYs(v);
       svg += svgText(W - pad.r + 50, y + 3, fmtKaxis(v), { anchor: 'start', size: 9, fill: 'var(--purple)' });
     }
@@ -10325,7 +10345,7 @@
       svg += svgLine(x, pad.t + chartH, x, pad.t + chartH + 4, 'var(--text3)', 0.8);
       svg += svgText(x, pad.t + chartH + 16, '#' + idx, { anchor: 'middle', size: 9, fill: 'var(--text3)' });
     }
-    svg += svgText(pad.l + chartW / 2, H - 4, 'parlay # (chronological)', { anchor: 'middle', size: 10, fill: 'var(--text3)' });
+    svg += svgText(pad.l + chartW / 2, H - 4, 'settled parlay # (chronological)', { anchor: 'middle', size: 10, fill: 'var(--text3)' });
 
     // Polyline helper
     const buildPath = (vals, scaleY) => {
@@ -10396,7 +10416,7 @@
 
     svg += '</svg>';
     svg += '<div style="font-size:11px; color:var(--text3); text-align:center; margin-top:4px;">'
-      + 'showing last ' + points.length + ' of ' + totalAccepted + ' total accepted parlays &middot; each point = trailing-' + WINDOW + ' stat ending at that parlay # (leftmost point includes the prior ' + (WINDOW - 1) + ' parlays)</div>';
+      + 'showing last ' + points.length + ' of ' + totalAccepted + ' total settled parlays &middot; each point = trailing-' + WINDOW + ' stat ending at that parlay # (leftmost point includes the prior ' + (WINDOW - 1) + ' parlays)</div>';
     el.innerHTML = svg;
   }
 
