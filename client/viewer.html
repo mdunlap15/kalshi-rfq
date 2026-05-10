@@ -666,6 +666,58 @@
   .viewer-section { display: block; }
   .viewer-section.hidden { display: none; }
 
+  /* Pull-to-refresh indicator — appears when the user drags down from
+     the top of the page. Replaces the native browser PTR (which doesn't
+     fire in PWA standalone mode anyway). */
+  .ptr-indicator {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 0;
+    overflow: hidden;
+    background: var(--surface);
+    color: var(--text2);
+    font-size: 13px;
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+    transition: height 0.18s ease-out;
+    will-change: height;
+  }
+  .ptr-indicator.armed { color: var(--accent); font-weight: 600; }
+  .ptr-arrow {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    transition: transform 0.18s ease-out;
+  }
+  .ptr-arrow::before {
+    content: '\21E3';
+    display: block;
+    line-height: 16px;
+    text-align: center;
+  }
+  .ptr-indicator.armed .ptr-arrow { transform: rotate(180deg); }
+
+  /* Refresh button in the header — manual fallback if PTR isn't
+     intuitive on a given device. Same look as the notification bell. */
+  .viewer-refresh-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text2);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .viewer-refresh-btn:hover { color: var(--text); border-color: var(--text3); }
+  .viewer-refresh-btn:disabled { opacity: 0.5; cursor: wait; }
+
   /* Prominent refresh banner — sticky at the top of the main content
      area so it's impossible to miss when data is in flight. Hidden by
      default; toggled by viewerRefresh(). */
@@ -795,6 +847,10 @@
   <div class="user-info">
     <span class="username" id="viewer-username">&mdash;</span>
     <span id="viewer-refresh-status" style="font-size:11px; color:var(--text3);"></span>
+    <!-- Manual refresh button. Auto-refresh is once/minute; tap this to
+         force a refresh in between, or pull down from the top of the
+         page on mobile. -->
+    <button id="viewer-refresh-btn" class="viewer-refresh-btn" onclick="viewerRefresh()" title="Refresh now">&#x21BB; Refresh</button>
     <!-- Notification subscribe button. Hidden if the browser doesn't
          support the Notifications/Push APIs or the user is already
          subscribed. Tap → request permission → POST to /push/subscribe. -->
@@ -805,7 +861,15 @@
   </div>
 </header>
 
-<main class="viewer-main">
+<main class="viewer-main" id="viewer-main">
+  <!-- Pull-to-refresh indicator. Height animates from 0 → ~60px as the
+       user drags down; "armed" state at 60px+ flips the arrow and signals
+       that releasing will trigger viewerRefresh. -->
+  <div id="ptr-indicator" class="ptr-indicator">
+    <span class="ptr-arrow" aria-hidden="true"></span>
+    <span id="ptr-text">Pull to refresh</span>
+  </div>
+
   <!-- Prominent refresh indicator. Toggled by viewerRefresh() so it's
        obvious when data is loading — replaces the subtle status text
        in the header that was easy to miss. -->
@@ -12941,6 +13005,68 @@
    * /health/coverage, /px-pnl, /px-positions, /market-intel — those return
    * 403 for viewer accounts and would noise up the console anyway.
    */
+  // Pull-to-refresh: track a touchstart at the top of the page, follow
+  // the finger down, show the indicator, trigger refresh on release if
+  // the user pulled past the threshold. Standard iOS/Android PTR feel.
+  const PTR_THRESHOLD = 70;   // px of pull required to arm a refresh
+  const PTR_MAX_HEIGHT = 90;  // visual cap so the indicator doesn't grow forever
+  function _initViewerPullToRefresh() {
+    const indicator = document.getElementById('ptr-indicator');
+    const textEl = document.getElementById('ptr-text');
+    if (!indicator) return;
+    let startY = null;
+    let pulling = false;
+    let armed = false;
+
+    function reset() {
+      indicator.style.height = '';
+      indicator.classList.remove('armed');
+      if (textEl) textEl.textContent = 'Pull to refresh';
+      startY = null; pulling = false; armed = false;
+    }
+
+    document.addEventListener('touchstart', (e) => {
+      if (window.scrollY > 2) return;        // only at very top
+      if (_viewerRefreshInFlight) return;    // don't fight an active refresh
+      startY = e.touches[0].clientY;
+      pulling = false;
+    }, { passive: true });
+
+    document.addEventListener('touchmove', (e) => {
+      if (startY == null) return;
+      const dy = e.touches[0].clientY - startY;
+      if (dy <= 0) return;                    // not a downward drag
+      if (window.scrollY > 2) { reset(); return; }
+      pulling = true;
+      // Apply resistance: drag feels heavier past the threshold.
+      const h = Math.min(PTR_MAX_HEIGHT, dy * 0.5);
+      indicator.style.height = h + 'px';
+      const nowArmed = h >= PTR_THRESHOLD * 0.6;
+      if (nowArmed && !armed) {
+        armed = true;
+        indicator.classList.add('armed');
+        if (textEl) textEl.textContent = 'Release to refresh';
+      } else if (!nowArmed && armed) {
+        armed = false;
+        indicator.classList.remove('armed');
+        if (textEl) textEl.textContent = 'Pull to refresh';
+      }
+    }, { passive: true });
+
+    document.addEventListener('touchend', () => {
+      if (!pulling) { reset(); return; }
+      if (armed) {
+        // Lock the indicator open briefly so the spinner banner takes over.
+        indicator.style.height = '0px';
+        viewerRefresh().finally(() => reset());
+      } else {
+        reset();
+      }
+    }, { passive: true });
+
+    document.addEventListener('touchcancel', reset, { passive: true });
+  }
+
   // Helper: show/hide the prominent refresh banner. Kept as a tiny
   // module-level helper so manual-refresh buttons or future code paths
   // can drive the same UI without duplicating selectors.
@@ -12953,33 +13079,48 @@
     if (statusEl) statusEl.textContent = on ? 'Refreshing…' : '';
   }
 
+  // Last-known successful responses. The bankroll bar + tables re-render
+  // from these on every refresh start so the UI never goes blank during
+  // an in-flight fetch (which was the "Total/Mike/Rick stuck at —" bug).
+  let _lastViewerStatus = null;
+  let _lastViewerOrders = null;
+  let _viewerRefreshInFlight = false;
+
   async function viewerRefresh() {
+    if (_viewerRefreshInFlight) return;  // dedupe rapid taps
+    _viewerRefreshInFlight = true;
     const statusEl = document.getElementById('viewer-refresh-status');
+    const refreshBtn = document.getElementById('viewer-refresh-btn');
+    if (refreshBtn) refreshBtn.disabled = true;
     setViewerRefreshing(true, 'Refreshing data&hellip;');
     const safeRender = (fn, label) => {
       try { fn(); }
       catch (err) { console.warn('[viewer ' + label + ']', err); }
     };
 
-    // Kick off both requests in parallel. Render /status-derived
-    // sections (bankroll, exposure) as soon as that one resolves —
-    // it's a small payload (~few KB) and unblocks the visible
-    // "Total / Mike / Rick" strip + exposure tables without waiting
-    // for the much-larger /orders response. The Positions + P&L tabs
-    // render in a second wave once /orders lands.
+    // Re-render from cached status FIRST so the bankroll bar shows the
+    // last-known value while new data is in flight. Without this, if a
+    // single render call earlier in the chain throws or the network blips,
+    // the visible "Total/Mike/Rick" strip silently goes stale.
+    if (_lastViewerStatus) {
+      safeRender(() => renderBankrollSplit(_lastViewerStatus.portfolio || {}), 'bankrollSplit(cache)');
+    }
+
+    // Fetch both in parallel. /status is the smaller payload — render its
+    // sections (bankroll, exposure) as soon as it lands, then a second
+    // wave once the larger /orders response arrives (positions, P&L chart).
     const statusP = fetchJSON('/status').catch(err => ({ _err: err }));
     const ordersP = fetchJSON('/orders').catch(err => ({ _err: err }));
 
-    let firstWaveOk = false;
+    let statusOk = false, ordersOk = false;
     try {
       const status = await statusP;
       if (status && !status._err) {
+        _lastViewerStatus = status;
         safeRender(() => renderBankrollSplit(status.portfolio || {}), 'bankrollSplit');
         safeRender(() => renderExposure(status.exposure || {}),       'exposure');
         safeRender(() => renderGameExposure(status.exposure || {}),   'gameExposure');
-        firstWaveOk = true;
-        // Update the banner so the user sees that the bankroll/exposure
-        // are already current while we're still waiting on /orders.
+        statusOk = true;
         setViewerRefreshing(true, 'Loading positions&hellip;');
       }
     } catch (err) {
@@ -12989,8 +13130,7 @@
     try {
       const orders = await ordersP;
       if (orders && !orders._err) {
-        // Populate orderState.allOrders so renderRiskSim() and the exposure
-        // drill-downs (which read from orderState directly) have current data.
+        _lastViewerOrders = orders;
         orderState.allOrders = {};
         const recent = orders.recentOrders || [];
         for (const o of recent) {
@@ -12998,27 +13138,31 @@
           if (key) orderState.allOrders[key] = o;
         }
         window._lastOrders = orders;
-
         safeRender(() => renderChartDailyVolume(recent),  'chartDailyVolume');
         safeRender(() => renderPositions(orders),         'positions');
         safeRender(() => renderSettled(orders),           'settled');
         safeRender(() => refreshPositionsTabBadge(),      'positionsTabBadge');
-      } else if (orders && orders._err) {
-        throw orders._err;
+        ordersOk = true;
       }
+    } catch (err) {
+      console.warn('[viewer orders]', err);
+    }
 
+    if (statusOk && ordersOk) {
       if (statusEl) {
         const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         statusEl.textContent = `Updated ${t}`;
       }
       setViewerRefreshing(false);
-    } catch (err) {
-      console.warn('[viewer refresh]', err);
-      setViewerRefreshing(true, 'Refresh failed: ' + (err.message || 'unknown'));
-      // Auto-hide the failure banner after 4s so it doesn't linger.
+    } else {
+      const failed = !statusOk && !ordersOk ? 'data' : (!statusOk ? 'status' : 'orders');
+      setViewerRefreshing(true, 'Refresh failed (' + failed + ')');
       setTimeout(() => setViewerRefreshing(false), 4000);
       if (statusEl) statusEl.textContent = 'Refresh failed';
     }
+
+    _viewerRefreshInFlight = false;
+    if (refreshBtn) refreshBtn.disabled = false;
   }
   window.viewerRefresh = viewerRefresh;
 
@@ -13116,11 +13260,16 @@
       }
     }).catch(() => {});
 
-    // Initial load + viewer-only auto-refresh (15s — slightly slower than
-    // admin's 10s; viewers don't need fill-rate-grade freshness).
+    // Initial load + viewer-only auto-refresh (60s — operator preference;
+    // manual refresh button + pull-to-refresh handle in-between updates).
     viewerRefresh();
     if (autoRefreshTimer) clearInterval(autoRefreshTimer);
-    autoRefreshTimer = setInterval(viewerRefresh, 15000);
+    autoRefreshTimer = setInterval(viewerRefresh, 60000);
+
+    // Pull-to-refresh gesture. Native browser PTR doesn't fire in PWA
+    // standalone mode so we implement our own. Drag down from the very
+    // top of the page; release past the threshold to trigger.
+    _initViewerPullToRefresh();
   } else {
     // Original admin dashboard init.
     refreshDashboard();
