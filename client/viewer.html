@@ -3725,7 +3725,11 @@
   };
 
   function renderSettled(data) {
-    const el = document.getElementById('settled-table');
+    // Viewer page hosts the Settled list under #portfolio-settled (the
+    // Portfolio-tab convention) — admin Orders tab used #settled-table
+    // before it was replaced. Fall through to either so the function
+    // works in both layouts.
+    const el = document.getElementById('settled-table') || document.getElementById('portfolio-settled');
     const countEl = document.getElementById('settled-count');
     const orders = data.recentOrders || [];
 
@@ -12899,24 +12903,31 @@
       }
       window._lastOrders = orders;
 
-      // Render the viewer sections.
-      renderChartDailyVolume(recent);
-      renderPositions(orders);
-      renderSettled(orders);
-      renderExposure(status.exposure || {});
-      renderGameExposure(status.exposure || {});
+      // Render the viewer sections. Each call wrapped in try/catch so
+      // one render's failure (e.g., null DOM target on a tab the
+      // operator hasn't visited yet) doesn't break the rest of the
+      // chain — e.g., a renderExposure throw would otherwise prevent
+      // renderBankrollSplit from running on every refresh.
+      const safeRender = (fn, label) => {
+        try { fn(); }
+        catch (err) { console.warn('[viewer ' + label + ']', err); }
+      };
+      safeRender(() => renderChartDailyVolume(recent),               'chartDailyVolume');
+      safeRender(() => renderPositions(orders),                       'positions');
+      safeRender(() => renderSettled(orders),                         'settled');
+      safeRender(() => renderExposure(status.exposure || {}),         'exposure');
+      safeRender(() => renderGameExposure(status.exposure || {}),     'gameExposure');
       // Risk Sim renders only when the user clicks "Run Simulation" — it
       // reads from orderState.allOrders which is now fresh.
 
       // Bankroll split — Mike $17.5k + 75% of P&L gain, Rick $12.5k +
       // 25% of P&L gain. Total starting bankroll = $30k. Computed from
-      // portfolio.accountValue (live PX balance); falls back to "—" if
-      // PX hasn't reported a balance yet (e.g., during boot).
-      renderBankrollSplit(status.portfolio || {});
+      // portfolio.totalEquity (Cash Available + Deployed).
+      safeRender(() => renderBankrollSplit(status.portfolio || {}),  'bankrollSplit');
 
       // Update the unread count on the Positions tab (open positions
       // confirmed since the user last opened the tab).
-      refreshPositionsTabBadge();
+      safeRender(() => refreshPositionsTabBadge(),                    'positionsTabBadge');
 
       if (statusEl) {
         const t = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
