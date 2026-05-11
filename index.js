@@ -2362,6 +2362,212 @@ function startStatusServer() {
     }
   });
 
+  // Missed-parlay analytics — companion to /lost-analysis. Same shape but
+  // for the MISSED bucket: parlays accepted by a bettor on PX where we
+  // never even quoted (declined upstream, or never saw the RFQ).
+  //
+  // Per Mike (2026-05-11): "I'd like to do analysis, similar to your Lost
+  // Analysis tab, on the parlays we did not even bid on... distribution
+  // of reasons why, the number of parlays and $ opportunity missed."
+  //
+  // Sourcing: matched_parlays where outcome='missed', enriched by joining
+  // declines table to recover actual decline reason per parlay_id. Rows
+  // with no matching declines record are bucketed as "not seen" (we
+  // literally didn't process the RFQ — likely WS gap, line-registration
+  // race, or pipeline coverage gap).
+  app.get('/missed-analysis', async (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(90, parseInt(req.query.days) || 30));
+      const fromIso = new Date(Date.now() - days * 86400000).toISOString();
+      const supabase = db.getClient();
+
+      // Fetch all MISSED matched_parlays in window
+      const missedRows = [];
+      if (supabase) {
+        let off = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('matched_parlays')
+            .select('parlay_id,matched_stake,matched_odds,matched_at,legs')
+            .eq('outcome', 'missed')
+            .gte('matched_at', fromIso)
+            .order('matched_at', { ascending: false })
+            .range(off, off + 999);
+          if (error) { log.warn('Missed', `missed-analysis fetch err: ${error.message}`); break; }
+          if (!data || data.length === 0) break;
+          missedRows.push(...data);
+          if (data.length < 1000) break;
+          off += 1000;
+          if (off > 100000) break;
+        }
+      }
+      // Dedupe by parlay_id
+      const uniq = new Map();
+      for (const r of missedRows) if (!uniq.has(r.parlay_id)) uniq.set(r.parlay_id, r);
+      const dedupe = [...uniq.values()];
+
+      // Pull declines table to recover reasons. Bounded scan.
+      const declines = supabase ? await (async () => {
+        const all = [];
+        let off2 = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('declines')
+            .select('parlay_id,reason,detail,unknown_categories,known_legs')
+            .gte('declined_at', fromIso)
+            .range(off2, off2 + 999);
+          if (error) break;
+          if (!data || data.length === 0) break;
+          all.push(...data);
+          if (data.length < 1000) break;
+          off2 += 1000;
+          if (off2 > 250000) break;
+        }
+        return all;
+      })() : [];
+      const declineByPid = {};
+      for (const d of declines) declineByPid[d.parlay_id] = d;
+
+      // Build enriched rows
+      function amToProb(am) {
+        const n = Number(am);
+        if (!Number.isFinite(n) || n === 0) return null;
+        return n > 0 ? 100 / (n + 100) : -n / (-n + 100);
+      }
+      const enriched = [];
+      for (const m of dedupe) {
+        const d = declineByPid[m.parlay_id];
+        const reason = d?.reason || 'not seen';
+        const detail = d?.detail || null;
+        const unknownCats = d?.unknown_categories || [];
+        // Winning bettor odds = -matched_odds (PX SP-side → bettor-side)
+        const winBetAm = -Number(m.matched_odds);
+        enriched.push({
+          parlayId: m.parlay_id,
+          matchedAt: m.matched_at,
+          legs: m.legs || [],
+          legCount: (m.legs || []).length,
+          winBetAm,
+          matchedStake: Number(m.matched_stake) || 0,
+          reason,
+          detail,
+          unknownCategories: unknownCats,
+        });
+      }
+
+      // Aggregations
+      function bucket(items, keyFn) {
+        const m = {};
+        for (const x of items) {
+          const ks = keyFn(x);
+          const keys = Array.isArray(ks) ? ks : [ks];
+          for (const k of keys) {
+            if (!k) continue;
+            if (!m[k]) m[k] = { count: 0, stakeSum: 0 };
+            m[k].count++;
+            m[k].stakeSum += x.matchedStake;
+          }
+        }
+        return Object.entries(m).map(([k, v]) => ({
+          key: k, count: v.count, totalStake: v.stakeSum,
+          avgStake: v.count > 0 ? v.stakeSum / v.count : 0,
+        })).sort((a, b) => b.totalStake - a.totalStake);
+      }
+      const sportKey = (e) => {
+        const sports = [...new Set((e.legs || []).map(l => l.sport).filter(Boolean))];
+        if (sports.length === 0) return 'unknown';
+        if (sports.length > 1) return 'MULTI';
+        return sports[0];
+      };
+      const marketMixKey = (e) => {
+        const mkts = [...new Set((e.legs || []).map(l => l.market || l.marketType).filter(Boolean))].sort();
+        return mkts.join('+') || 'unknown';
+      };
+      const oddsBucketKey = (e) => {
+        const am = Math.abs(e.winBetAm || 0);
+        if (am < 200) return '<+200';
+        if (am < 500) return '+200 to +499';
+        if (am < 1000) return '+500 to +999';
+        if (am < 2500) return '+1000 to +2499';
+        if (am < 5000) return '+2500 to +4999';
+        return '+5000+';
+      };
+      const stakeBucketKey = (e) => {
+        const s = e.matchedStake;
+        if (s < 10) return '<$10';
+        if (s < 50) return '$10-$50';
+        if (s < 250) return '$50-$250';
+        if (s < 1000) return '$250-$1k';
+        return '$1k+';
+      };
+      const hourKey = (e) => {
+        const d = new Date(e.matchedAt);
+        if (isNaN(d.getTime())) return 'unknown';
+        const etHour = (d.getUTCHours() - 4 + 24) % 24;
+        return String(etHour).padStart(2, '0') + ':00 ET';
+      };
+
+      // By reason with potential-capture estimate (assume 30% of stake $ recoverable if reason were fixed)
+      const CAPTURE_RATE = 0.30;
+      const byReasonRaw = bucket(enriched, e => e.reason);
+      const byReason = byReasonRaw.map(r => ({
+        ...r,
+        potentialCapture: r.totalStake * CAPTURE_RATE,
+      }));
+
+      // Unknown legs sub-breakdown (which categories blocked us most)
+      const unknownCatBuckets = {};
+      for (const e of enriched) {
+        if (e.reason !== 'unknown legs' || !e.unknownCategories) continue;
+        for (const uc of e.unknownCategories) {
+          const k = (uc.category || 'unknown') +
+            (uc.propType ? ' / ' + uc.propType : '') +
+            (uc.sport ? ' (' + uc.sport + ')' : '');
+          if (!unknownCatBuckets[k]) unknownCatBuckets[k] = { count: 0, stakeSum: 0 };
+          unknownCatBuckets[k].count++;
+          unknownCatBuckets[k].stakeSum += e.matchedStake;
+        }
+      }
+      const byUnknownCategory = Object.entries(unknownCatBuckets)
+        .map(([k, v]) => ({ key: k, count: v.count, totalStake: v.stakeSum }))
+        .sort((a, b) => b.totalStake - a.totalStake)
+        .slice(0, 25);
+
+      // Top 20 individual MISSED parlays by stake
+      const topMissedByStake = [...enriched]
+        .sort((a, b) => b.matchedStake - a.matchedStake)
+        .slice(0, 20);
+
+      const totalStake = enriched.reduce((s, e) => s + e.matchedStake, 0);
+      res.json({
+        windowDays: days,
+        capturedAt: new Date().toISOString(),
+        rawRowCount: missedRows.length,
+        uniqueMissedCount: dedupe.length,
+        declinesRecordCount: declines.length,
+        summary: {
+          totalMissed: dedupe.length,
+          totalStake,
+          avgStake: dedupe.length > 0 ? totalStake / dedupe.length : 0,
+          captureRateAssumption: CAPTURE_RATE,
+          potentialCaptureTotal: totalStake * CAPTURE_RATE,
+        },
+        byReason,
+        bySport: bucket(enriched, sportKey),
+        byLegCount: bucket(enriched, e => e.legCount + '-leg'),
+        byMarketMix: bucket(enriched, marketMixKey),
+        byOddsRange: bucket(enriched, oddsBucketKey),
+        byStakeBucket: bucket(enriched, stakeBucketKey),
+        byHour: bucket(enriched, hourKey),
+        byUnknownCategory,
+        topMissedByStake,
+      });
+    } catch (err) {
+      log.error('Missed', `missed-analysis endpoint failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Latency breakdown — per-stage percentiles + win-rate-by-bucket
   // For measuring before/after effects of latency optimizations.
   app.get('/latency-breakdown', (req, res) => {

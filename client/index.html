@@ -1038,24 +1038,27 @@
       </div>
 
       <!-- ===================== SECTION: LOST ANALYSIS ===================== -->
-      <!-- Surfaces /lost-analysis aggregations. Mike's focus: characterize
-           parlays we quoted on but lost to another SP, where the bettor
-           actually accepted the winning offer. The MISSED bucket is NOT
-           shown here — that's a different question. -->
+      <!-- Two views: LOST (we quoted, lost to another SP) and MISSED (we
+           never quoted; bet matched on another SP). Toggle controls which
+           render function runs. Both share the same window selector. -->
       <div id="section-lost" class="section" style="display:none;">
         <div class="card">
           <div class="card-header">
-            <span>Lost Analysis — accepted parlays we bid on and lost</span>
+            <span id="lost-view-title">Lost Analysis — accepted parlays we bid on and lost</span>
             <span style="display:flex; align-items:center; gap:8px;">
-              <span style="color:var(--text3); font-size:12px;">Window:</span>
-              <select id="lost-window" onchange="loadLostAnalysis()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:12px;">
+              <span style="display:inline-flex; gap:0; border:1px solid var(--border); border-radius:4px; overflow:hidden;">
+                <button id="lost-view-btn-lost" class="lost-view-btn" onclick="setLostView('lost')" style="background:var(--accent); color:var(--text); border:0; padding:4px 12px; font-size:12px; cursor:pointer;">Lost</button>
+                <button id="lost-view-btn-missed" class="lost-view-btn" onclick="setLostView('missed')" style="background:transparent; color:var(--text3); border:0; padding:4px 12px; font-size:12px; cursor:pointer;">Missed</button>
+              </span>
+              <span style="color:var(--text3); font-size:12px; margin-left:8px;">Window:</span>
+              <select id="lost-window" onchange="reloadLostOrMissed()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:12px;">
                 <option value="7">7 days</option>
                 <option value="14">14 days</option>
                 <option value="30" selected>30 days</option>
                 <option value="60">60 days</option>
                 <option value="90">90 days</option>
               </select>
-              <button onclick="loadLostAnalysis()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 10px; border-radius:4px; font-size:12px; cursor:pointer;">Refresh</button>
+              <button onclick="reloadLostOrMissed()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 10px; border-radius:4px; font-size:12px; cursor:pointer;">Refresh</button>
             </span>
           </div>
           <div class="card-body" id="lost-analysis-body">
@@ -11995,10 +11998,31 @@
     }, 300);
   }
 
-  // ===== Lost Analysis tab =====
-  // Pulls /lost-analysis (which queries Supabase matched_parlays JOIN
-  // parlay_orders) and renders aggregations. Focus: parlays we bid on
-  // and lost AND the bettor actually accepted the winning offer.
+  // ===== Lost Analysis tab — two views: LOST and MISSED =====
+  // Both views pull from their respective backend endpoints
+  // (/lost-analysis and /missed-analysis) and render aggregations sharing
+  // a common tile + table style. Toggle persists across refreshes.
+  let _lostView = 'lost';
+  function setLostView(view) {
+    _lostView = view;
+    document.getElementById('lost-view-btn-lost').style.background = view === 'lost' ? 'var(--accent)' : 'transparent';
+    document.getElementById('lost-view-btn-lost').style.color = view === 'lost' ? 'var(--text)' : 'var(--text3)';
+    document.getElementById('lost-view-btn-missed').style.background = view === 'missed' ? 'var(--accent)' : 'transparent';
+    document.getElementById('lost-view-btn-missed').style.color = view === 'missed' ? 'var(--text)' : 'var(--text3)';
+    const titleEl = document.getElementById('lost-view-title');
+    if (titleEl) {
+      titleEl.textContent = view === 'lost'
+        ? 'Lost Analysis — accepted parlays we bid on and lost'
+        : 'Missed Analysis — accepted parlays we never bid on';
+    }
+    reloadLostOrMissed();
+  }
+  window.setLostView = setLostView;
+  function reloadLostOrMissed() {
+    if (_lostView === 'missed') loadMissedAnalysis();
+    else loadLostAnalysis();
+  }
+  window.reloadLostOrMissed = reloadLostOrMissed;
   async function loadLostAnalysis() {
     const el = document.getElementById('lost-analysis-body');
     if (!el) return;
@@ -12018,7 +12042,26 @@
       el.innerHTML = '<div class="empty-state"><div class="icon">⚠</div><div>Failed to load: ' + err.message + '</div></div>';
     }
   }
+  async function loadMissedAnalysis() {
+    const el = document.getElementById('lost-analysis-body');
+    if (!el) return;
+    const daysSel = document.getElementById('lost-window');
+    const days = daysSel ? Number(daysSel.value) || 30 : 30;
+    el.innerHTML = '<div class="empty-state"><div class="icon">…</div><div>Loading missed-analysis data for last ' + days + ' days (may take 30-60s on long windows)…</div></div>';
+    try {
+      const r = await fetch('/missed-analysis?days=' + days);
+      if (!r.ok) {
+        el.innerHTML = '<div class="empty-state"><div class="icon">⚠</div><div>Endpoint returned ' + r.status + '. Check server logs.</div></div>';
+        return;
+      }
+      const data = await r.json();
+      el.innerHTML = renderMissedAnalysis(data);
+    } catch (err) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">⚠</div><div>Failed to load: ' + err.message + '</div></div>';
+    }
+  }
   window.loadLostAnalysis = loadLostAnalysis;
+  window.loadMissedAnalysis = loadMissedAnalysis;
 
   function _lpFmt$(n) {
     if (n == null || !Number.isFinite(n)) return '-';
@@ -12200,6 +12243,122 @@
         html += '</table>';
       }
       html += '</div>';
+    }
+
+    return html;
+  }
+
+  // ----- MISSED Analysis renderer -----
+  // Same tile + table style as LOST. Key difference: focus on decline-reason
+  // breakdown and potential-capture estimates (assuming X% of stake $ could
+  // be recovered per reason if that gap were closed).
+  function renderMissedAnalysis(data) {
+    if (!data || !data.summary) return '<div class="empty-state"><div class="icon">!</div><div>No data returned</div></div>';
+    const s = data.summary;
+    let html = '';
+
+    // Headline
+    html += '<div style="padding:12px 8px; font-size:12px; color:var(--text3);">Window: last ' + data.windowDays + ' days · ' + data.uniqueMissedCount.toLocaleString() + ' unique MISSED parlays · ' + data.rawRowCount.toLocaleString() + ' raw rows (deduped by parlay_id) · ' + data.declinesRecordCount.toLocaleString() + ' declines records joined for reason recovery</div>';
+
+    html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; padding:0 8px;">';
+    const tiles = [
+      { label: 'Missed parlays', value: s.totalMissed.toLocaleString() },
+      { label: 'Bettor wager unwon', value: _lpFmt$(s.totalStake) },
+      { label: 'Avg bettor wager', value: _lpFmt$(s.avgStake) },
+      { label: 'Assumed capture rate if fixed', value: (s.captureRateAssumption * 100).toFixed(0) + '%' },
+      { label: 'Potential capture $ (total)', value: _lpFmt$(s.potentialCaptureTotal) },
+      { label: 'Annualized missed wager', value: _lpFmt$(s.totalStake * 365 / data.windowDays) },
+    ];
+    for (const t of tiles) {
+      html += '<div style="background:var(--surface2); border-radius:6px; padding:10px 12px;">'
+        + '<div style="font-size:10px; color:var(--text3); text-transform:uppercase;">' + t.label + '</div>'
+        + '<div style="font-size:18px; font-weight:600; margin-top:2px;">' + t.value + '</div>'
+        + '</div>';
+    }
+    html += '</div>';
+
+    // BY REASON — the headline table, sorted by stake $
+    html += '<div style="padding:14px 8px 4px; font-weight:600; font-size:14px; color:var(--text);">Decline reasons — sorted by total bettor wager impact</div>';
+    html += '<div style="font-size:11px; color:var(--text3); padding:0 8px 8px;">For each reason, "potential capture" assumes ' + (s.captureRateAssumption * 100).toFixed(0) + '% of the missed stake $ would convert if the underlying gap were fixed. This is a back-of-envelope estimate to help prioritize — actual conversion depends on whether pricing would also clear the auction at competitive prices.</div>';
+    html += '<div style="padding:0 8px;"><table style="font-size:12px; width:100%; border-collapse:collapse;">';
+    html += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);">';
+    html += '<th style="text-align:left; padding:4px 8px;">Reason</th>';
+    html += '<th style="text-align:right; padding:4px 8px;">Count</th>';
+    html += '<th style="text-align:right; padding:4px 8px;">Stake $</th>';
+    html += '<th style="text-align:right; padding:4px 8px;">Avg stake</th>';
+    html += '<th style="text-align:right; padding:4px 8px;">Potential capture $</th>';
+    html += '</tr>';
+    let cumCapture = 0;
+    for (const r of (data.byReason || [])) {
+      cumCapture += r.potentialCapture;
+      html += '<tr style="border-bottom:1px solid var(--surface2);">';
+      html += '<td style="padding:4px 8px;">' + r.key + '</td>';
+      html += '<td style="text-align:right; padding:4px 8px;">' + r.count.toLocaleString() + '</td>';
+      html += '<td style="text-align:right; padding:4px 8px;">' + _lpFmt$(r.totalStake) + '</td>';
+      html += '<td style="text-align:right; padding:4px 8px; color:var(--text3);">' + _lpFmt$(r.avgStake) + '</td>';
+      html += '<td style="text-align:right; padding:4px 8px; color:var(--green);">' + _lpFmt$(r.potentialCapture) + '</td>';
+      html += '</tr>';
+    }
+    html += '<tr style="border-top:2px solid var(--border); font-weight:600;">';
+    html += '<td style="padding:6px 8px;">CUMULATIVE if all fixed</td>';
+    html += '<td colspan="3"></td>';
+    html += '<td style="text-align:right; padding:6px 8px; color:var(--green);">' + _lpFmt$(cumCapture) + '</td>';
+    html += '</tr>';
+    html += '</table></div>';
+
+    // Other aggregations side-by-side
+    html += '<div style="padding:8px; display:grid; grid-template-columns:1fr 1fr; gap:18px;">';
+    html += '<div>';
+    html += _lpTable('By primary sport', data.bySport || [], null, false);
+    html += _lpTable('By leg count', data.byLegCount || [], null, false);
+    html += _lpTable('By bettor stake bucket', data.byStakeBucket || [], null, false);
+    html += '</div>';
+    html += '<div>';
+    html += _lpTable('By market mix', data.byMarketMix || [], null, false);
+    html += _lpTable('By winning bettor odds range', data.byOddsRange || [], null, false);
+    html += _lpTable('By hour (ET)', (data.byHour || []).slice().sort((a, b) => a.key.localeCompare(b.key)), null, false);
+    html += '</div>';
+    html += '</div>';
+
+    // Unknown-legs sub-breakdown — actionable: tells you which markets / props
+    // are blocking quotes most often.
+    if ((data.byUnknownCategory || []).length > 0) {
+      html += '<div style="padding:14px 8px 4px; font-weight:600; font-size:14px; color:var(--text);">"Unknown legs" sub-breakdown — which markets are blocking us most</div>';
+      html += '<div style="font-size:11px; color:var(--text3); padding:0 8px 8px;">Categories that triggered "unknown legs" declines, sorted by stake $. Each represents a market type / propType / sport combo where we couldn\'t resolve the line — either it\'s not in our supported markets, prop coverage doesn\'t include this category, or the line wasn\'t registered when the RFQ fired.</div>';
+      html += _lpTable('Unknown-leg categories', data.byUnknownCategory, null, false);
+    }
+
+    // Top missed parlays by stake — biggest individual misses
+    if ((data.topMissedByStake || []).length > 0) {
+      html += '<div style="padding:14px 8px 4px; font-weight:600; font-size:14px; color:var(--text);">Top 20 largest individual missed parlays (by bettor wager $)</div>';
+      html += '<div style="padding:0 8px; overflow-x:auto;"><table style="font-size:11px; width:100%; border-collapse:collapse;">';
+      html += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);">';
+      html += '<th style="text-align:left; padding:4px 8px;">When</th>';
+      html += '<th style="text-align:left; padding:4px 8px;">Parlay</th>';
+      html += '<th style="text-align:right; padding:4px 8px;">Legs</th>';
+      html += '<th style="text-align:right; padding:4px 8px;">Winning Am</th>';
+      html += '<th style="text-align:right; padding:4px 8px;">Bettor stake</th>';
+      html += '<th style="text-align:left; padding:4px 8px;">Decline reason</th>';
+      html += '<th style="text-align:left; padding:4px 8px;">Legs detail</th>';
+      html += '</tr>';
+      for (const item of data.topMissedByStake) {
+        const legBlurb = (item.legs || []).slice(0, 3).map(l =>
+          (l.sport || '?').replace(/^.*_/, '').slice(0, 4) + ':' +
+          (l.team || l.selection || '?').slice(0, 14) +
+          (l.line != null ? ' ' + l.line : '')
+        ).join(' / ');
+        const moreLegs = (item.legs || []).length > 3 ? ' +' + ((item.legs || []).length - 3) : '';
+        html += '<tr style="border-bottom:1px solid var(--surface2);">';
+        html += '<td style="padding:4px 8px; font-family:monospace; color:var(--text3); font-size:10px;">' + (item.matchedAt ? item.matchedAt.slice(5, 16).replace('T', ' ') : '-') + '</td>';
+        html += '<td style="padding:4px 8px; font-family:monospace; color:var(--text3); font-size:10px;">' + item.parlayId.slice(0, 8) + '</td>';
+        html += '<td style="text-align:right; padding:4px 8px;">' + item.legCount + '</td>';
+        html += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + _lpFmtAm(item.winBetAm) + '</td>';
+        html += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + _lpFmt$(item.matchedStake) + '</td>';
+        html += '<td style="padding:4px 8px; color:var(--amber); font-size:11px;">' + item.reason + '</td>';
+        html += '<td style="padding:4px 8px; font-size:10px; color:var(--text3); max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + legBlurb + moreLegs + '</td>';
+        html += '</tr>';
+      }
+      html += '</table></div>';
     }
 
     return html;
