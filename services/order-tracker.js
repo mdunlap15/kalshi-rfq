@@ -1658,10 +1658,21 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
  * Look up our offeredOdds from parlay_orders for a matched parlay whose
  * in-memory orders[] entry was missing at recordMatchedParlay time. On
  * success: populates entry.ourOdds / ourAmericanOdds, flips weQuoted to
- * true, and demotes outcome from 'missed' → 'lost' (we DID quote, we
- * just lost the bid). Re-saves the updated record so future restarts
- * preserve the backfilled state. Idempotent — safe to call multiple
- * times on the same entry; only mutates if a new value is found.
+ * true, and reclassifies outcome based on the order's persisted status —
+ * 'confirmed'/'settled_*' = we actually won this auction, otherwise we lost
+ * the bid. Re-saves the updated record so future restarts preserve the
+ * backfilled state. Idempotent — safe to call multiple times on the same
+ * entry; only mutates if a new value is found.
+ *
+ * Status-aware classification added 2026-05-11 after operator audit found
+ * matched_parlays.outcome='won' = 0 over 7 days despite parlay_orders
+ * showing 605 actual fills. Root cause: Railway restarts wipe in-memory
+ * orders[]. When order.matched broadcasts arrive after a restart for
+ * parlays quoted before it, recordMatchedParlay initially classifies as
+ * 'missed' (in-memory miss), and the prior backfill always flipped to
+ * 'lost' — so our genuine wins disappeared from matched_parlays even
+ * though parlay_orders still recorded them correctly. Now we cross-check
+ * the persisted status so wins stay classified as wins across restarts.
  */
 async function backfillOurOddsFromDb(entry) {
   if (!entry || !entry.parlayId) return;
@@ -1674,9 +1685,30 @@ async function backfillOurOddsFromDb(entry) {
   entry.ourOdds = row.offeredOdds;
   entry.ourAmericanOdds = row.offeredOdds;
   entry.weQuoted = true;
-  // 'missed' meant "we never quoted." Now we know we did quote — flip to
-  // 'lost' so the dashboard renders the row as "Outbid" not "No Quote".
-  if (entry.outcome === 'missed') entry.outcome = 'lost';
+  // 'missed' meant "we never quoted." We now know we DID quote. Determine
+  // whether we were the winning SP by checking the persisted order status:
+  // 'confirmed' or 'settled_*' means we got the fill; anything else means
+  // we were beaten on the bid.
+  if (entry.outcome === 'missed') {
+    const isOurWin = row.status === 'confirmed'
+      || (row.status && row.status.startsWith('settled_'));
+    if (isOurWin) {
+      entry.outcome = 'won';
+      matchedWonIds.add(entry.parlayId);
+      // Adjust the marketStats counters since recordMatchedParlay
+      // already bumped missedNoQuote on the initial classification.
+      marketStats.weWon = (marketStats.weWon || 0) + 1;
+      marketStats.weQuoted = (marketStats.weQuoted || 0) + 1;
+      if ((marketStats.missedNoQuote || 0) > 0) marketStats.missedNoQuote--;
+    } else {
+      entry.outcome = 'lost';
+      // Decrement the 'missed' counter — the parlay was an auction we
+      // competed in, not one we sat out. (No dedicated 'lost' counter
+      // exists; matched_parlays.outcome is the source of truth for that
+      // bucket.)
+      if ((marketStats.missedNoQuote || 0) > 0) marketStats.missedNoQuote--;
+    }
+  }
   // Persist the updated record so the next /market-intel fetch (or the
   // next restart's reload) carries the backfilled values.
   db.saveMatchedParlay(entry).catch(err =>
