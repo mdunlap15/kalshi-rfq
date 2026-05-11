@@ -2097,37 +2097,41 @@ function priceParlay(legs, opts = {}) {
   const americanOdds = decimalToAmerican(decimalOdds);
 
   // Decline heavy favorite moneyline legs — PX sign-flip bug causes overpayment.
-  // NBA:    no moneyline favorites beyond -250 (fairProb > 0.7143)
-  // Tennis: no moneyline favorites beyond -350 (fairProb > 350/450 ≈ 0.7778)
-  // MMA:    no moneyline favorites beyond -350 (fairProb > 350/450 ≈ 0.7778) —
+  // NBA:    no moneyline favorites beyond -300 (fairProb > 300/400 = 0.75)
+  // Tennis: no moneyline favorites beyond -450 (fairProb > 450/550 ≈ 0.8182)
+  // MMA:    no moneyline favorites beyond -450 (fairProb > 450/550 ≈ 0.8182) —
   //         same low-liquidity matchup-market profile as tennis; the PX
   //         overpay risk outweighs trying to quote heavy MMA chalk.
+  // Caps loosened 2026-05-11 (Mike): NBA -250→-300, tennis/MMA -350→-450 —
+  // operator wants more chalk volume but is relying on chalk-shaped vig
+  // knobs (VIG_HEAVY_FAV_FAIR_MARKUP / VIG_FAIR_MULTIPLIER / chalk-stack
+  // surcharge) to make sure these heavier favorites really pay up.
   for (const leg of pricedLegs) {
     if (leg.lineInfo.marketType !== 'moneyline') continue;
     const impliedOdds = leg.fairProb >= 0.5 ? Math.round(-100 * leg.fairProb / (1 - leg.fairProb)) : Math.round(100 * (1 - leg.fairProb) / leg.fairProb);
-    if (leg.lineInfo.sport === 'basketball_nba' && leg.fairProb > (250 / 350)) {
+    if (leg.lineInfo.sport === 'basketball_nba' && leg.fairProb > (300 / 400)) {
       log.debug('Pricing', `Declined: NBA moneyline ${leg.lineInfo.teamName} is heavy favorite (${impliedOdds})`);
       priceParlay._lastFailure = {
         reason: 'NBA heavy favorite',
-        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -250 limit`,
+        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -300 limit`,
         blockerLeg: { team: leg.lineInfo.teamName, sport: 'basketball_nba', market: 'moneyline' },
       };
       return null;
     }
-    if (leg.lineInfo.sport === 'tennis' && leg.fairProb > (350 / 450)) {
+    if (leg.lineInfo.sport === 'tennis' && leg.fairProb > (450 / 550)) {
       log.debug('Pricing', `Declined: Tennis moneyline ${leg.lineInfo.teamName} is heavy favorite (${impliedOdds})`);
       priceParlay._lastFailure = {
         reason: 'tennis heavy favorite',
-        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -350 limit`,
+        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -450 limit`,
         blockerLeg: { team: leg.lineInfo.teamName, sport: 'tennis', market: 'moneyline' },
       };
       return null;
     }
-    if (leg.lineInfo.sport === 'mma_mixed_martial_arts' && leg.fairProb > (350 / 450)) {
+    if (leg.lineInfo.sport === 'mma_mixed_martial_arts' && leg.fairProb > (450 / 550)) {
       log.debug('Pricing', `Declined: MMA moneyline ${leg.lineInfo.teamName} is heavy favorite (${impliedOdds})`);
       priceParlay._lastFailure = {
         reason: 'MMA heavy favorite',
-        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -350 limit`,
+        detail: `${leg.lineInfo.teamName} at ${impliedOdds} exceeds -450 limit`,
         blockerLeg: { team: leg.lineInfo.teamName, sport: 'mma_mixed_martial_arts', market: 'moneyline' },
       };
       return null;
