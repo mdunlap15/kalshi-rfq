@@ -2171,10 +2171,25 @@ async function resolveUnknownLine(rfqLeg) {
                   log.warn('Lines', `Phase-2 prop lookup error for ${playerName} ${propType} ${matchingProp.line}: ${err.message}`);
                 }
                 const minBooks = (config.pricing && config.pricing.propMinBooksWithBothSides) || 3;
+                // trustedAlone fallback: a single trusted book (Pin/FD/DK/
+                // BetMGM/BetRivers per config.propTrustedSingleBooks) with
+                // BOTH sides at the exact line is enough to register, even
+                // when total booksWithBothSides falls below minBooks. Mirrors
+                // the pre-seed loop's gate (line-manager.js:~1414) so the
+                // on-demand path doesn't silently decline sparse-coverage
+                // alt lines that the pre-seed would have accepted. (Closed
+                // 2026-05-11 — Trout/Neto 1.5 TB RFQs were declining here
+                // after the per-line fix exposed the asymmetry between
+                // pre-seed and on-demand gates.)
+                const trustedSet = (config.pricing && config.pricing.propTrustedSingleBooks) || [];
+                const lookupBoth = (lookup && lookup.booksWithBothSides) || 0;
+                const lookupHasTrustedSingle = lookup
+                  && lookupBoth === 1
+                  && (lookup.books || []).some(b => trustedSet.includes(String(b).toLowerCase()));
                 const usable = lookup
                   && lookup.fairProbOver != null
                   && lookup.fairProbUnder != null
-                  && (lookup.booksWithBothSides || 0) >= minBooks;
+                  && (lookupBoth >= minBooks || lookupHasTrustedSingle);
                 if (usable) {
                   const fairProb = matchingProp.selection === 'over'
                     ? lookup.fairProbOver
@@ -2209,10 +2224,13 @@ async function resolveUnknownLine(rfqLeg) {
                   log.info('Lines', `Phase-2 prop registered: ${playerName} ${propType} ${matchingProp.selection} ${matchingProp.line} (${lookup.booksWithBothSides} books, fair=${fairProb.toFixed(4)})`);
                   break; // exit markets loop — foundInfo will be stored downstream
                 }
-                // Lookup failed or insufficient books — log + fall through to decline
+                // Lookup failed or insufficient books — log + fall through to decline.
+                // "insufficient_books" now means: BOTH below minBooks AND no
+                // trusted single book with both sides (the trustedAlone gate
+                // above will have already accepted the latter).
                 const reason = !lookup ? 'lookup_null'
                   : lookup.error ? lookup.error
-                  : (lookup.booksWithBothSides || 0) < minBooks ? `insufficient_books(${lookup.booksWithBothSides || 0}<${minBooks})`
+                  : lookupBoth < minBooks ? `insufficient_books(${lookupBoth}<${minBooks},no_trusted_single)`
                   : 'no_fair_prob';
                 log.info('Lines', `Phase-2 prop declined for ${playerName} ${propType} ${matchingProp.line}: ${reason}`);
               }
