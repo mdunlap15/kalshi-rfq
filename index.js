@@ -2144,6 +2144,32 @@ function startStatusServer() {
         if (!Number.isFinite(n) || n === 0) return null;
         return n > 0 ? 100 / (n + 100) : -n / (-n + 100);
       }
+      // Map a free-text rejection reason to a stable bucket. The websocket
+      // confirm handler writes reason strings like "price drift 4.2% > 3.0%",
+      // "team exposure limit: Lakers wouldBe $52 > $50", etc. These come from
+      // pricer.validateForConfirmation + orderTracker.checkExposureLimits
+      // + checkGameExposure + checkSeriesExposure + service-paused check.
+      // Buckets here match what the operator wants to act on:
+      //   - confirmation drift → tune CONFIRMATION_DRIFT_THRESHOLD
+      //   - per-team exposure  → raise MAX_EXPOSURE_PER_TEAM
+      //   - per-game exposure  → raise MAX_EXPOSURE_PER_GAME
+      //   - series exposure    → raise MAX_SERIES_GROSS_EXPOSURE
+      //   - per-parlay risk    → raise MAX_RISK_PER_PARLAY (or MAX_SERIES_RISK_PER_PARLAY)
+      //   - service paused     → operator-initiated; no action needed
+      //   - other              → unclassified; needs eyeballing
+      function classifyRejectReason(reason) {
+        const r = String(reason || '').toLowerCase();
+        if (!r) return null;
+        if (r.includes('price drift') || r.includes('drift')) return 'confirmation drift';
+        if (r.includes('series exposure') || r.includes('series gross')) return 'series exposure cap';
+        if (r.includes('game exposure') || r.includes('per-event')) return 'game exposure cap';
+        if (r.includes('team exposure') || r.includes('per-team')) return 'team exposure cap';
+        if (r.includes('per-parlay risk') || /risk\s*\$[\d.]+\s*>\s*max/.test(r)) return 'per-parlay risk cap';
+        if (r.includes('service paused') || r.includes('paused')) return 'service paused';
+        if (r.includes('cannot reprice') || r.includes('no original meta')) return 'reprice failed';
+        return 'other';
+      }
+
       const enriched = [];
       for (const row of dedupe) {
         // PX odds convention: matched_odds and our_odds are stored SP-side
@@ -2159,6 +2185,17 @@ function startStatusServer() {
         const gapAm = (Number.isFinite(winBetAm) && Number.isFinite(ourBetAm))
           ? Math.abs(winBetAm) - Math.abs(ourBetAm) : null;
         const o = ourOrders[row.parlay_id] || {};
+        // Pull rejection metadata when we walked away from a confirm.
+        // Two possible storage shapes — meta.pxMatchedAfterReject is set by
+        // recordMatchedParlay when PX matched a parlay we rejected; the raw
+        // rejection reason on the order itself may also be present.
+        const pxAfterReject = o.meta?.pxMatchedAfterReject;
+        const rawRejectReason = pxAfterReject?.originalRejectReason
+          || o.meta?.rejectionReason
+          || o.rejectionReason
+          || null;
+        const rejectBucket = classifyRejectReason(rawRejectReason);
+        const weWalkedAway = !!rejectBucket || o.status === 'rejected';
         enriched.push({
           parlayId: row.parlay_id,
           matchedAt: row.matched_at,
@@ -2172,6 +2209,13 @@ function startStatusServer() {
           sgpCorrelationFactor: o.meta?.sgpCorrelationFactor || null,
           templateRampTier: o.meta?.templateRampTier || null,
           fairParlayProb: o.fairParlayProb || null,
+          // Rejection diagnostics — populated only when we offered, won the
+          // auction at confirm-time, then declined to confirm. Distinguishes
+          // "we were tighter" losses (gapPp >= 0) from "we walked away"
+          // losses (we had the better offer but rejected the confirmation).
+          weWalkedAway,
+          rejectBucket,
+          rawRejectReason,
         });
       }
 
@@ -2226,7 +2270,13 @@ function startStatusServer() {
       const gapBucketKey = (e) => {
         if (e.gapPp == null) return 'no-gap-data';
         const p = e.gapPp;
-        if (p < 0) return 'we-tighter-loose'; // shouldn't happen often
+        // Negative gap = we offered HIGHER odds (better payout for bettor)
+        // than the winning SP, but still didn't end up on the parlay. The
+        // by-reject-reason aggregation below explains the cause — almost
+        // always a confirmation rejection or exposure cap that pulled our
+        // offer between submit and match. Older label was "we-tighter-loose"
+        // which mis-stated the direction; renamed for clarity.
+        if (p < 0) return 'gap<0 (we walked away — see Why we walked away)';
         if (p < 0.5) return '<0.5pp';
         if (p < 1.0) return '0.5-1.0pp';
         if (p < 2.0) return '1.0-2.0pp';
@@ -2244,6 +2294,14 @@ function startStatusServer() {
       const subOnePpCount = gaps.filter(g => Math.abs(g) < 1).length;
       const subOnePpPct = gaps.length > 0 ? (subOnePpCount / gaps.length * 100) : null;
       const tieCount = gaps.filter(g => Math.abs(g) < 0.01).length;
+
+      // Walked-away counts: parlays where we won the auction but rejected
+      // the confirmation (drift, exposure cap, paused, etc.). These are
+      // strictly recoverable losses — by tuning thresholds rather than
+      // tightening our quote.
+      const walkedAway = enriched.filter(e => e.weWalkedAway);
+      const walkedAwayCount = walkedAway.length;
+      const walkedAwayStake = walkedAway.reduce((s, e) => s + e.matchedStake, 0);
 
       // Top 15 worst losses (biggest gaps with non-trivial stake)
       const worstLosses = [...enriched]
@@ -2336,6 +2394,8 @@ function startStatusServer() {
           tieCount,
           tiePct: gaps.length > 0 ? (tieCount / gaps.length * 100) : null,
           gapNonNullCount: gaps.length,
+          walkedAwayCount,
+          walkedAwayStake,
         },
         bySport: bucket(enriched, sportKey),
         byLegCount: bucket(enriched, e => e.legCount + '-leg'),
@@ -2344,6 +2404,12 @@ function startStatusServer() {
         byOddsRange: bucket(enriched, oddsBucketKey),
         byStakeBucket: bucket(enriched, stakeBucketKey),
         byGapBucket: bucket(enriched, gapBucketKey),
+        // Why we walked away from a confirmation. Only entries where we
+        // explicitly rejected (or have a recorded rejection reason on the
+        // order). Answers "we had the best odds and still lost — why?" with
+        // an actionable cause the operator can tune (drift threshold,
+        // exposure caps, etc.).
+        byRejectReason: bucket(enriched.filter(e => e.weWalkedAway), e => e.rejectBucket || 'other'),
         bySgpCombo: bucket(enriched.filter(e => e.sgpCombo), e => e.sgpCombo),
         byHour: bucket(enriched, e => {
           const d = new Date(e.matchedAt);

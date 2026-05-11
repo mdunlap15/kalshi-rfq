@@ -12240,6 +12240,14 @@
       { label: 'Median gap (pp)', value: _lpFmtPp(s.medianGapPp) },
       { label: 'Sub-1pp losses', value: _lpFmtPct(s.subOnePpPct) + ' (' + s.subOnePpCount + ')' },
       { label: 'Exact ties (lost on FIFO)', value: _lpFmtPct(s.tiePct) + ' (' + s.tieCount + ')' },
+      // Walked-away tile: parlays where we won the auction but rejected
+      // the confirmation (drift check, exposure cap, paused). Distinct
+      // recoverable bucket — surface alongside the tie/gap headline metrics.
+      {
+        label: 'Walked away at confirm',
+        value: (s.walkedAwayCount || 0).toLocaleString()
+          + (s.walkedAwayStake ? ' (' + _lpFmt$(s.walkedAwayStake) + ')' : ''),
+      },
     ];
     for (const t of tiles) {
       html += '<div style="background:var(--surface2); border-radius:6px; padding:10px 12px;">'
@@ -12264,6 +12272,13 @@
     html += _lpTable('By winning bettor odds range', data.byOddsRange, null, true);
     html += _lpTable('By bettor stake bucket', data.byStakeBucket, null, true);
     html += _lpTable('By gap-to-winner bucket', data.byGapBucket, null, false);
+    // "Why we walked away" — for losses where we had the best odds but
+    // rejected at confirm. Empty if no walked-away parlays in the window.
+    // Buckets map to action levers (drift threshold, exposure caps, etc.)
+    // so the operator can decide what to tune.
+    if (data.byRejectReason && data.byRejectReason.length > 0) {
+      html += _lpTable('Why we walked away (had best odds, rejected confirm)', data.byRejectReason, null, false);
+    }
     html += '</div>';
 
     html += '</div>';
