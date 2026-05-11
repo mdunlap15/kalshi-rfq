@@ -448,13 +448,24 @@ function getMmaFairProb(lineInfo) {
 }
 
 /**
- * Convert decimal odds to American odds (integer).
- * PX uses American odds throughout its API.
+ * Convert decimal odds to American odds.
+ *
+ * @param {number} dec - decimal odds (e.g. 2.50)
+ * @param {number} [precision=0] - decimal places to keep. 0 = integer
+ *   (legacy behavior). 2 = hundredths, 3 = thousandths, etc. Only used
+ *   on the wire payload to PX (top-level `odds` + `estimated_price`
+ *   legs); display/decline logic continues to call with precision=0.
+ *
+ * PX uses American odds throughout its API. Integer is the historical
+ * default. Sub-integer precision is opt-in via config.pricing.pxOddsPrecision
+ * (env: PX_ODDS_PRECISION) so we can break out of the rounded-tie cluster
+ * in PX's tie-breaker (odds > max_risk > timestamp).
  */
-function decimalToAmerican(dec) {
+function decimalToAmerican(dec, precision = 0) {
   if (!dec || dec <= 1) return 0;
-  if (dec >= 2.0) return Math.round((dec - 1) * 100);  // +150, +286, etc.
-  return Math.round(-100 / (dec - 1));                   // -200, -150, etc.
+  const factor = Math.pow(10, precision);
+  if (dec >= 2.0) return Math.round((dec - 1) * 100 * factor) / factor;  // +150, +286, etc.
+  return Math.round(-100 / (dec - 1) * factor) / factor;                   // -200, -150, etc.
 }
 
 /**
@@ -2094,7 +2105,11 @@ function priceParlay(legs, opts = {}) {
     return null;
   }
 
-  const americanOdds = decimalToAmerican(decimalOdds);
+  // PX-bound precision (default 0 = legacy integer). Applied to the top-
+  // level `odds` field below AND each estimated_price leg so PX's recompute
+  // -from-legs drift check stays consistent.
+  const pxPrecision = (config.pricing && config.pricing.pxOddsPrecision) || 0;
+  const americanOdds = decimalToAmerican(decimalOdds, pxPrecision);
 
   // Decline heavy favorite moneyline legs — PX sign-flip bug causes overpayment.
   // NBA:    no moneyline favorites beyond -300 (fairProb > 300/400 = 0.75)
@@ -2152,11 +2167,14 @@ function priceParlay(legs, opts = {}) {
 
   // Build estimated_price (per-leg breakdown) — bettor-side American odds per leg.
   // Apply same odds-based vig so PX's recomputed parlay matches our intended price.
+  // Uses the same pxPrecision as the top-level `odds` field so PX's drift
+  // check (recompute parlay from leg odds, compare to top-level) doesn't
+  // trip from mixed rounding granularities.
   const estimatedPrice = pricedLegs.map(leg => {
     const legImplied = leg.bookPriceOverride != null
       ? leg.bookPriceOverride
       : applyOddsVig(leg.fairProb, leg.lineInfo.sport, leg.lineInfo.marketType, leg.vigBump || 0);
-    return { line_id: leg.lineId, odds: decimalToAmerican(1 / legImplied) };
+    return { line_id: leg.lineId, odds: decimalToAmerican(1 / legImplied, pxPrecision) };
   });
 
   // valid_until in nanoseconds

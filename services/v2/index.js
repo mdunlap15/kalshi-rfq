@@ -30,11 +30,12 @@ function recordShadow(record) {
   if (_shadowLog.length > SHADOW_LOG_CAP) _shadowLog.shift();
 }
 
-function americanFromImplied(implied) {
+function americanFromImplied(implied, precision = 0) {
   if (implied == null || implied <= 0 || implied >= 1) return null;
+  const factor = Math.pow(10, precision);
   return implied >= 0.5
-    ? -Math.round((implied / (1 - implied)) * 100)
-    : Math.round(100 / implied - 100);
+    ? -Math.round((implied / (1 - implied)) * 100 * factor) / factor
+    : Math.round((100 / implied - 100) * factor) / factor;
 }
 
 function americanToImplied(a) {
@@ -116,7 +117,12 @@ function priceParlayV2(pricedLegs, opts = {}) {
 
   if (vig.offeredImpliedProb == null) return null;
 
-  const americanOdds = americanFromImplied(vig.offeredImpliedProb);
+  // Mirror pricer.js's precision choice when v2 is the live offer arm.
+  // Shadow-only mode is unaffected — precision change is purely about
+  // what hits PX's wire. Defaults to 0 = integer.
+  const cfg = require('../../config').config;
+  const pxPrecision = (cfg && cfg.pricing && cfg.pricing.pxOddsPrecision) || 0;
+  const americanOdds = americanFromImplied(vig.offeredImpliedProb, pxPrecision);
 
   return {
     offeredImpliedProb: vig.offeredImpliedProb,
