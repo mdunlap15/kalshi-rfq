@@ -48,6 +48,18 @@ const DEBOUNCE_MS = {
   daily_summary: 12 * 3600 * 1000,// 12h between summary pushes (1/day)
 };
 
+// Settlement-notification dedup. Keys are `${parlayId}|${result}`. If the
+// same parlay settles with the same result twice (e.g. reconcile loop
+// corrects a settlement_status mismatch and re-runs recordSettlement), we
+// only want to notify ONCE per (parlay, result) pair. Operator saw repeat
+// notifications for parlay 019e0d4f-... where it first settled as 'push'
+// then was re-settled as 'won' across multiple poll cycles, each firing
+// notifySettlement with stale data. Bounded LRU at 5000 entries — a
+// healthy SP settles a few hundred parlays/day so 5k covers ~2 weeks of
+// history before the oldest entries roll off.
+const settledNotifiedKeys = new Set();
+const SETTLED_NOTIFIED_MAX = 5000;
+
 async function hydrateFromDb() {
   if (hydrated) return;
   hydrated = true;
@@ -264,6 +276,29 @@ function notifyConfirmation(order) {
 function notifySettlement(order) {
   if (!order || !order.settlementResult) return;
   const result = order.settlementResult; // 'won' | 'lost' | 'push' | 'void'
+
+  // Dedup: skip if this exact (parlayId, result) was already notified.
+  // The reconcile/poll loop in order-tracker re-runs recordSettlement on
+  // status corrections, which would otherwise fire one push per cycle —
+  // sometimes with stale odds/pnl mid-correction. We notify only the
+  // first time we see this pair; subsequent re-settles to the SAME result
+  // are silent (data updates still flow through the dashboard normally).
+  // If the result CHANGES (e.g. push → won), the new pair gets through.
+  if (order.parlayId) {
+    const dedupKey = order.parlayId + '|' + result;
+    if (settledNotifiedKeys.has(dedupKey)) {
+      log.debug('Push', `Skipping duplicate settlement notification: ${dedupKey}`);
+      return;
+    }
+    settledNotifiedKeys.add(dedupKey);
+    // Bound the Set size — drop oldest entries when over the cap. Set
+    // iteration order is insertion order, so the first key is the oldest.
+    if (settledNotifiedKeys.size > SETTLED_NOTIFIED_MAX) {
+      const oldest = settledNotifiedKeys.values().next().value;
+      settledNotifiedKeys.delete(oldest);
+    }
+  }
+
   const pnl = order.pnl || 0;
   const pnlStr = pnl >= 0 ? '+$' + pnl.toFixed(2) : '-$' + Math.abs(pnl).toFixed(2);
   const legs = order.legs || order.meta?.legs || [];
