@@ -2278,15 +2278,41 @@ async function fetchFromTheOddsApi(sport) {
  */
 function getBookPairs(odds, marketType) {
   const filtered = marketType ? odds.filter(r => r.market_type === marketType) : odds;
-  const byBook = {};
+  // Key by (book, signed_home_line, selection_type) for spreads, OR
+  // (book, '', selection_type) for moneylines/markets without a line.
+  // The signed_home_line is the line FROM HOME'S PERSPECTIVE: home rows
+  // use row.line directly; away rows use -row.line so they pair with the
+  // home record that represents the same logical spread.
+  //
+  // Why this matters (root cause of 2026-05-11 F5 RL mispricing): when
+  // SharpAPI returns multiple alt-line spread rows for the same book in
+  // the primary feed (verified on MLB 1st_5_innings_run_line — Pinnacle
+  // posts +0.5, +1.5 etc. in the same response), the prior keying by
+  // (book, selection_type) only let the last-written row OVERWRITE
+  // earlier ones. Home could end up holding BAL+0.5 while away held
+  // NYY+1.5 — across-line mis-pairing. The downstream de-vig in
+  // buildConsensusSpread then produced near-50/50 garbage instead of
+  // Pinnacle's actual ~42/58 split.
+  //
+  // Same root cause that was previously fixed in getBookPairsForTotals
+  // (commit 5ad919f) and getBookPairsForTeamTotals — but never applied
+  // here. Aligning the keying scheme now.
+  const byKey = {};
   for (const row of filtered) {
-    if (!byBook[row.sportsbook]) byBook[row.sportsbook] = {};
-    byBook[row.sportsbook][row.selection_type] = row;
+    let homeSignedLine = '';
+    if (row.line != null) {
+      if (row.selection_type === 'home') homeSignedLine = row.line;
+      else if (row.selection_type === 'away') homeSignedLine = -row.line;
+      else homeSignedLine = row.line; // 'draw' etc. — bucketed by raw line
+    }
+    const bookKey = row.sportsbook + '|' + homeSignedLine;
+    if (!byKey[bookKey]) byKey[bookKey] = { book: row.sportsbook };
+    byKey[bookKey][row.selection_type] = row;
   }
-  // Only return books that have both sides
-  return Object.entries(byBook)
-    .filter(([_, sides]) => sides.home && sides.away)
-    .map(([book, sides]) => ({ book, home: sides.home, away: sides.away }));
+  // Only return entries with both home and away populated.
+  return Object.values(byKey)
+    .filter(o => o.home && o.away)
+    .map(o => ({ book: o.book, home: o.home, away: o.away }));
 }
 
 function getBookPairsForTotals(odds) {
