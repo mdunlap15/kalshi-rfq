@@ -1351,21 +1351,31 @@
       // 10s auto-refresh cycle preserves focus + caret in any visible
       // search input (positions / settled / history / market intel /
       // orders / exposure / game-exposure / portfolio).
+      //
+      // Each render is wrapped in its own try/catch so a throw in one
+      // panel does not halt the rest. Auto-refresh halted historically
+      // when renderPositions threw on va.localeCompare against a non-
+      // string confirmedAt, silently freezing All Quotes + Settled +
+      // Market Intel + Analytics + History every tick.
+      const safeRender = (name, fn) => {
+        try { fn(); }
+        catch (err) { console.warn('[refreshDashboard] ' + name + ' threw — continuing', err); }
+      };
       rerenderWithFocus(() => {
-        renderStatus(status);
-        updateNotificationBadge(orders);
-        renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {});
-        renderPortfolio(orders);
-        renderOrders(orders);
-        renderPositions(orders);
-        renderSettled(orders);
-        renderMarketIntel(intel);
+        safeRender('renderStatus',           () => renderStatus(status));
+        safeRender('updateNotificationBadge', () => updateNotificationBadge(orders));
+        safeRender('renderPortfolioSummary', () => renderPortfolioSummary(orders.stats || {}, orders.recentOrders || [], status.portfolio || {}));
+        safeRender('renderPortfolio',        () => renderPortfolio(orders));
+        safeRender('renderOrders',           () => renderOrders(orders));
+        safeRender('renderPositions',        () => renderPositions(orders));
+        safeRender('renderSettled',          () => renderSettled(orders));
+        safeRender('renderMarketIntel',      () => renderMarketIntel(intel));
         window._lastIntel = intel;
         window._lastOrders = orders;
-        renderWinRateHeatmap(intel, orders);
-        renderCompetitiveness(intel);
-        renderAnalytics(orders, intel);
-        renderHistory(orders);
+        safeRender('renderWinRateHeatmap',   () => renderWinRateHeatmap(intel, orders));
+        safeRender('renderCompetitiveness',  () => renderCompetitiveness(intel));
+        safeRender('renderAnalytics',        () => renderAnalytics(orders, intel));
+        safeRender('renderHistory',          () => renderHistory(orders));
       });
       // Lines tab piggy-back: when the operator is currently viewing the
       // Lines tab, kick off a /lines/detail re-fetch on the same cadence.
@@ -3810,8 +3820,18 @@
     filtered.sort((a, b) => {
       let va, vb;
       switch (posState.sortCol) {
-        case 'time': va = a.confirmedAt || ''; vb = b.confirmedAt || '';
-          return posState.sortDir * va.localeCompare(vb);
+        // Time: coerce to String. /px-positions may surface confirmedAt as
+        // a Date object (or null), and the old code called .localeCompare on
+        // whatever value came through — which threw "va.localeCompare is
+        // not a function" for non-strings and silently halted the rest of
+        // refreshDashboard(). That broke auto-refresh on every downstream
+        // panel (renderHistory / All Quotes most notably). Now we coerce
+        // and fall through to the lexicographic < / > comparison below,
+        // which is correct for ISO timestamps and tolerant of mixed types.
+        case 'time':
+          va = String(a.confirmedAt || '');
+          vb = String(b.confirmedAt || '');
+          break;
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
@@ -3868,10 +3888,18 @@
             return 3;
           };
           va = statusRank(a); vb = statusRank(b); break;
-        default: va = a.confirmedAt || ''; vb = b.confirmedAt || '';
-          return posState.sortDir * va.localeCompare(vb);
+        default:
+          // Default to time sort. Same String() coercion as the 'time' case
+          // above — confirmedAt can arrive as a non-string from /px-positions.
+          va = String(a.confirmedAt || ''); vb = String(b.confirmedAt || '');
+          break;
       }
-      return posState.sortDir * (va - vb);
+      // Generic comparator: works for strings (ISO timestamps), numbers,
+      // and mixed types via lexicographic <, > rather than localeCompare,
+      // which would throw on non-string values.
+      if (va < vb) return -posState.sortDir;
+      if (va > vb) return  posState.sortDir;
+      return 0;
     });
 
     const pSortArrow = (col) => posState.sortCol === col ? (posState.sortDir > 0 ? ' &#9650;' : ' &#9660;') : '';
