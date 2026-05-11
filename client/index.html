@@ -3041,6 +3041,26 @@
     // map is NOT usable as a denominator because loadFromDb skips the
     // 50K+ unfilled 'quoted' rows, biasing fill rate toward 100%.
     const tf = window._winRateHeatmapTf || 'session';
+    // Disable timeframe buttons whose window exceeds current uptime — the
+    // 24h/7d/30d data is built from an in-memory event log that resets on
+    // boot, so a 7d query when uptime is 2h returns the same data as 24h.
+    // Showing those as clickable was misleading (Mike: "7d and 24h totals
+    // are the same"). State is recomputed every render so buttons unlock
+    // automatically as uptime grows past each window.
+    const sessionStartTs = intel?.sessionStartedAt ? new Date(intel.sessionStartedAt).getTime() : null;
+    const uptimeMs = sessionStartTs ? (Date.now() - sessionStartTs) : Infinity;
+    const tfWindows = { '24h': 86400000, '7d': 7 * 86400000, '30d': 30 * 86400000 };
+    document.querySelectorAll('#win-rate-heatmap-tf .wrh-tf-btn').forEach(btn => {
+      const btnTf = btn.getAttribute('data-tf');
+      const winMs = tfWindows[btnTf];
+      const disable = winMs && uptimeMs < winMs;
+      btn.disabled = !!disable;
+      btn.style.opacity = disable ? '0.35' : '';
+      btn.style.cursor = disable ? 'not-allowed' : 'pointer';
+      btn.title = disable
+        ? 'Need ' + btnTf + ' of uptime — currently only ' + (uptimeMs / 3600000).toFixed(1) + 'h since boot. In-memory log resets on restart.'
+        : '';
+    });
     const buckets = tf === 'session'
       ? (intel?.sessionFillBuckets || {})
       : (intel?.fillBucketsByWindow?.[tf] || {});
@@ -3122,26 +3142,46 @@
       ? `${totalFills} filled of ${totalSubmitted} quoted (${(totalFills/totalSubmitted*100).toFixed(1)}%)`
       : '';
 
-    // Color thresholds use ABSOLUTE pp deviation from the overall rate,
-    // with a minimum 2pp band so low-overall windows don't paint every
-    // cell red just because ratios diverge wildly near zero.
-    //   absScale = max(2, overallRatePct)  — pp band on each side
-    //   greenAt  = overall + absScale  → full green
-    //   amberAt  = overall             → at baseline
-    //   redAt    = max(0, overall − absScale)  → full red
+    // Color shading: shrinkage-based relative performance vs overall.
     //
-    // Operator feedback (2026-04-29): a 0% cell on a 0% overall shouldn't
-    // paint solid red — it's matching the baseline, not underperforming.
-    // Likewise a 0% cell on a 1% overall is only −1pp absolute, well within
-    // small-sample noise; old scheme (ratio 0/1 = 0× = solid red) flagged
-    // it as a serious problem. Absolute-delta scoring + 2pp floor avoids
-    // this. At higher overall (e.g. 20%), absScale = overall, so a 10pp
-    // miss is full red — same severity as before for meaningful gaps.
+    // Problem with the old absolute-pp scheme: when overall fill rate is
+    // near 0%, every cell sits within the ±2pp floor → all amber, no
+    // signal. Mike's complaint: "10 fills in 250 quotes is a small % but
+    // may be a very successful rate compared to other categories."
+    //
+    // Fix: pull each cell's raw rate toward the overall rate using a
+    // Beta-style shrinkage prior (SHRINK_K pseudo-quotes at overall rate).
+    // Small-n cells get muted; large-n cells keep their signal. Then
+    // auto-scale the color range to the largest |delta| present, so the
+    // brightest red and brightest green always mark the worst and best
+    // cells in view — regardless of absolute scale.
+    //
+    //   shrunk    = (fills + K*overall) / (n + K)   K=30 → ~30 quotes
+    //                                               worth of "trust me"
+    //   delta     = shrunk - overall                signed proportion
+    //   scale     = max(|delta| over all cells, 0.005 floor)
+    //   t         = clamp(delta / scale, -1, 1)
+    //   color     = lerp(red, amber, green) by t
+    //
+    // Display number stays raw fill % — only the color uses shrinkage.
+    // Tooltip exposes both raw and shrunken estimates.
     const overallRatePct = totalSubmitted > 0 ? (totalFills / totalSubmitted * 100) : 0;
-    const absScale = Math.max(2, overallRatePct);
-    const greenAt  = overallRatePct + absScale;
-    const amberAt  = overallRatePct;
-    const redAt    = Math.max(0, overallRatePct - absScale);
+    const overallProp = overallRatePct / 100;
+    const SHRINK_K = 30;
+    const shrunkProp = (c) => (c && c.submitted > 0)
+      ? (c.fills + SHRINK_K * overallProp) / (c.submitted + SHRINK_K)
+      : null;
+    let maxAbsDelta = 0;
+    for (const sp of sportRows) {
+      for (const b of legBuckets) {
+        const sr = shrunkProp(byCell[sp + '|' + b.label]);
+        if (sr == null) continue;
+        const d = Math.abs(sr - overallProp);
+        if (d > maxAbsDelta) maxAbsDelta = d;
+      }
+    }
+    const colorScale = Math.max(maxAbsDelta, 0.005); // 0.5pp floor
+    const colorScalePct = colorScale * 100;
 
     let html = '';
     // Show the window label + origin so the operator knows the scope.
@@ -3163,10 +3203,11 @@
       + 'PX only notifies us privately on our own fills, so auction losses are inferred from quotes that never matched &mdash; we don\'t see competitors\' prices. '
       + 'Parlays tagged <em>Multi</em> span multiple sports. '
       + '<span style="color:var(--text2);">Overall fill rate this window: ' + overallRatePct.toFixed(2) + '%. '
-      + 'Cells are shaded by absolute deviation from baseline (&plusmn;' + absScale.toFixed(1) + 'pp band, min 2pp). '
-      + '<span style="color:var(--red);">Red</span> at &le; ' + redAt.toFixed(2) + '%, '
-      + 'amber at ' + amberAt.toFixed(2) + '% (baseline), '
-      + '<span style="color:var(--green);">green</span> at &ge; ' + greenAt.toFixed(2) + '%.</span>'
+      + 'Cells are shaded by performance vs overall, with small-sample shrinkage (k=' + SHRINK_K + ' pseudo-quotes) so n&lt;30 cells stay muted. '
+      + 'Color range is auto-scaled to this view: <span style="color:var(--red);">red</span> = worst (&minus;' + colorScalePct.toFixed(2) + 'pp vs overall), '
+      + 'amber = at overall, '
+      + '<span style="color:var(--green);">green</span> = best (+' + colorScalePct.toFixed(2) + 'pp vs overall). '
+      + 'Hover any cell for raw + adjusted rates.</span>'
       + '</div>';
     html += '<div style="overflow-x:auto; padding:0 12px 12px;"><table style="font-size:13px; min-width:680px; border-collapse:separate; border-spacing:3px;">';
     html += '<tr><th style="text-align:left; padding:6px 12px;">Sport</th>';
@@ -3208,40 +3249,36 @@
         rowSubmitted += c.submitted;
         rowFills += c.fills;
         const wr = c.submitted > 0 ? (c.fills / c.submitted * 100) : 0;
-        // Continuous 3-stop RGB lerp driven by absolute pp deviation from
-        // baseline. RGB lerp (not hue lerp) avoids the yellow/olive
-        // detour. absScale (set above) defines the half-width of the
-        // amber→green and red→amber bands; capped to a 2pp minimum so
-        // low-overall windows don't paint everything red. Sample-size
-        // text (n=) on each cell already conveys confidence.
+        // Color = shrinkage-adjusted delta vs overall, mapped onto a
+        // view-wide auto-scale (computed up front as colorScale). RGB
+        // lerp (not hue) avoids the yellow/olive detour. Display number
+        // stays raw (wr); color uses the shrunken estimate so a 1/20
+        // cell isn't shouting "5%!" louder than a 10/250 cell.
         const redRGB = [248, 81, 73];   // --red  #f85149
         const ambRGB = [210, 153, 34];  // --amber #d29922
         const grnRGB = [63, 185, 80];   // --green #3fb950
-        const absDelta = wr - overallRatePct;
+        const sr = (c.fills + SHRINK_K * overallProp) / (c.submitted + SHRINK_K);
+        const deltaProp = sr - overallProp;
+        const t = Math.max(-1, Math.min(1, deltaProp / colorScale));
         let cr, cg, cb;
-        if (absDelta >= absScale) {
-          [cr, cg, cb] = grnRGB; // ≥ overall + scale → full green
-        } else if (absDelta <= -absScale) {
-          [cr, cg, cb] = redRGB; // ≤ overall − scale → full red
-        } else if (absDelta >= 0) {
-          // amber → green
-          const t = absDelta / absScale; // 0 = amber, 1 = green
+        if (t >= 0) {
           cr = ambRGB[0] + (grnRGB[0] - ambRGB[0]) * t;
           cg = ambRGB[1] + (grnRGB[1] - ambRGB[1]) * t;
           cb = ambRGB[2] + (grnRGB[2] - ambRGB[2]) * t;
         } else {
-          // red → amber
-          const t = 1 + (absDelta / absScale); // -scale = 0 (red), 0 = 1 (amber)
-          cr = redRGB[0] + (ambRGB[0] - redRGB[0]) * t;
-          cg = redRGB[1] + (ambRGB[1] - redRGB[1]) * t;
-          cb = redRGB[2] + (ambRGB[2] - redRGB[2]) * t;
+          const u = 1 + t; // -1 → 0 (red), 0 → 1 (amber)
+          cr = redRGB[0] + (ambRGB[0] - redRGB[0]) * u;
+          cg = redRGB[1] + (ambRGB[1] - redRGB[1]) * u;
+          cb = redRGB[2] + (ambRGB[2] - redRGB[2]) * u;
         }
         const rr = cr.toFixed(0), gg = cg.toFixed(0), bb = cb.toFixed(0);
         const wrColor = `rgba(${rr},${gg},${bb},0.22)`;
         const wrTextColor = `rgb(${rr},${gg},${bb})`;
-        const relDelta = wr - overallRatePct;
-        const relStr = (relDelta >= 0 ? '+' : '') + relDelta.toFixed(1) + 'pp vs overall ' + overallRatePct.toFixed(1) + '%';
-        const tooltip = c.fills + ' filled / ' + c.submitted + ' quoted · ' + relStr;
+        const adjPct = sr * 100;
+        const adjDeltaPp = (sr - overallProp) * 100;
+        const tooltip = c.fills + ' filled / ' + c.submitted + ' quoted · raw ' + wr.toFixed(2)
+          + '% · adjusted ' + adjPct.toFixed(2) + '% (' + (adjDeltaPp >= 0 ? '+' : '') + adjDeltaPp.toFixed(2)
+          + 'pp vs overall ' + overallRatePct.toFixed(2) + '%)';
         const wrFontSize = isSubRow ? '16px' : '22px';
         const nFontSize = isSubRow ? '12px' : '14px';
         row += '<td style="padding:8px 12px; text-align:center; background:' + wrColor + '; border-radius:4px;" title="' + tooltip + '">'
@@ -3310,6 +3347,9 @@
   // flips display on all of them together and persists the open state
   // via the shared expandedRows Set so auto-refreshes don't collapse.
   window.setWinRateHeatmapTimeframe = function(tf) {
+    // Ignore clicks on disabled buttons (window > current uptime).
+    const target = document.querySelector('#win-rate-heatmap-tf .wrh-tf-btn[data-tf="' + tf + '"]');
+    if (target && target.disabled) return;
     window._winRateHeatmapTf = tf;
     // Update button styling
     const btns = document.querySelectorAll('#win-rate-heatmap-tf .wrh-tf-btn');
