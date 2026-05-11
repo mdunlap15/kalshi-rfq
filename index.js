@@ -6287,6 +6287,29 @@ function startStatusServer() {
     res.json({ ok: true, lineId, disabled: false });
   });
 
+  // Bulk disable / enable a list of lineIds in a single call. Used by the
+  // Lines table's "Select all + Disable selected" workflow so the operator
+  // can flip a whole market family (e.g. every player_hitter_total_bases
+  // selection) off in one click instead of per-row.
+  // Body: { lineIds: string[], action: 'disable' | 'enable' }
+  app.post('/admin/bulk-toggle-lines', (req, res) => {
+    const { lineIds, action } = req.body || {};
+    if (!Array.isArray(lineIds) || lineIds.length === 0) {
+      return res.status(400).json({ ok: false, error: 'lineIds (non-empty array) required' });
+    }
+    if (action !== 'disable' && action !== 'enable') {
+      return res.status(400).json({ ok: false, error: "action must be 'disable' or 'enable'" });
+    }
+    const fn = action === 'disable' ? lineManager.disableLine : lineManager.enableLine;
+    let count = 0;
+    for (const id of lineIds) {
+      if (!id) continue;
+      try { fn(String(id)); count++; } catch (_) { /* ignore individual failures */ }
+    }
+    log.warn('AdminDisable', `Bulk ${action} ${count}/${lineIds.length} lines`);
+    res.json({ ok: true, action, requested: lineIds.length, applied: count });
+  });
+
   // One-shot backfill of SGP correlation factor on legacy parlays. Walks
   // all in-memory orders, recomputes the multi-leg-aware correlation
   // factor, and applies it to fairParlayProb (top-level + meta) on any

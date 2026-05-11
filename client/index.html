@@ -11888,6 +11888,8 @@
     myMin: '', myMax: '',
     diffMin: '', diffMax: '',
     lineMin: '', lineMax: '',
+    // Bulk selection for disable/enable
+    selectedLineIds: new Set(),
     // Data cache so re-sort/re-filter doesn't refetch
     _rows: [],
   };
@@ -11928,6 +11930,84 @@
     } catch (err) {
       alert('Network error: ' + err.message);
     }
+  };
+  // Bulk-selection handlers for the Lines table.
+  //
+  // toggleLineSelection — flip an individual row's selection state.
+  // toggleAllVisibleLines — header checkbox: add/remove every CURRENTLY
+  //   FILTERED row to/from the selection set. Doesn't disturb rows that
+  //   are selected but hidden by the current filter — that lets you
+  //   stage selections across multiple filter passes before acting.
+  // bulkToggleSelectedLines — POST every selected lineId to
+  //   /admin/bulk-toggle-lines in one shot, then refresh.
+  // bulkClearSelection — drop all selections.
+  window.toggleLineSelection = (lineId, isChecked) => {
+    if (!lineId) return;
+    if (isChecked) linesState.selectedLineIds.add(lineId);
+    else linesState.selectedLineIds.delete(lineId);
+    renderLinesTable();
+  };
+  window.toggleAllVisibleLines = (isChecked) => {
+    // Recompute visible IDs from the same filter pipeline the table uses.
+    // Reading from the DOM is fragile; better to mirror the logic. We
+    // call renderLinesTable below anyway so the UI re-syncs.
+    const rowsAll = linesState._rows || [];
+    const numIn = (s) => { const v = parseFloat(s); return Number.isFinite(v) ? v : null; };
+    const minFair = numIn(linesState.fairMin), maxFair = numIn(linesState.fairMax);
+    const minMy = numIn(linesState.myMin),   maxMy = numIn(linesState.myMax);
+    const minDiff = numIn(linesState.diffMin), maxDiff = numIn(linesState.diffMax);
+    const minLine = numIn(linesState.lineMin), maxLine = numIn(linesState.lineMax);
+    const inRange = (v, lo, hi) => {
+      if (v == null) return lo == null && hi == null;
+      if (lo != null && v < lo) return false;
+      if (hi != null && v > hi) return false;
+      return true;
+    };
+    const visible = rowsAll.filter(r => {
+      const fp = r.fairProb != null ? r.fairProb * 100 : null;
+      if ((minFair != null || maxFair != null) && !inRange(fp, minFair, maxFair)) return false;
+      if ((minMy != null || maxMy != null) && !inRange(r.myOddsAmerican, minMy, maxMy)) return false;
+      if ((minDiff != null || maxDiff != null) && !inRange(r.vsConsensusPp, minDiff, maxDiff)) return false;
+      if ((minLine != null || maxLine != null) && !inRange(r.line, minLine, maxLine)) return false;
+      return true;
+    });
+    for (const r of visible) {
+      if (isChecked) linesState.selectedLineIds.add(r.lineId);
+      else linesState.selectedLineIds.delete(r.lineId);
+    }
+    renderLinesTable();
+  };
+  window.bulkToggleSelectedLines = async (action) => {
+    const ids = Array.from(linesState.selectedLineIds);
+    if (ids.length === 0) return;
+    const verb = action === 'disable' ? 'Disable' : 'Enable';
+    if (!confirm(verb + ' ' + ids.length + ' selected line' + (ids.length === 1 ? '' : 's') + '?')) return;
+    try {
+      const resp = await fetch('/admin/bulk-toggle-lines', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineIds: ids, action }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        alert('Bulk ' + action + ' failed: ' + (err.error || resp.status));
+        return;
+      }
+      const result = await resp.json().catch(() => ({}));
+      // Clear the selection set on success — the rows now reflect the
+      // applied state and the operator typically wants a fresh selection
+      // for the next batch.
+      linesState.selectedLineIds.clear();
+      await loadLines();
+      // Use a lightweight status message rather than another alert so
+      // the operator can chain bulk actions without dismissing dialogs.
+      console.log('Bulk ' + action + ' applied to ' + (result.applied || ids.length) + ' line(s).');
+    } catch (err) {
+      alert('Network error: ' + err.message);
+    }
+  };
+  window.bulkClearSelection = () => {
+    linesState.selectedLineIds.clear();
+    renderLinesTable();
   };
   window.toggleEventDisabled = async (pxEventId, currentlyDisabled) => {
     const path = currentlyDisabled ? '/admin/enable-event' : '/admin/disable-event';
@@ -12701,8 +12781,46 @@
     })[s] || s || '-';
     const fmtAm = (v) => v == null ? '-' : (v >= 0 ? '+' : '') + v;
 
-    let html = '<div style="overflow-x:auto;"><table style="font-size:13px;">';
+    // Bulk-selection state for the CURRENT filtered set. Tracks how many
+    // of the visible rows are checked so the header checkbox can render
+    // tri-state (unchecked / indeterminate / fully checked) and the
+    // action bar can show an accurate count.
+    const visibleIds = rows.map(r => r.lineId);
+    const visibleSelected = visibleIds.filter(id => linesState.selectedLineIds.has(id));
+    const allVisibleSelected = visibleIds.length > 0 && visibleSelected.length === visibleIds.length;
+    const someVisibleSelected = visibleSelected.length > 0 && !allVisibleSelected;
+    const totalSelectedCount = linesState.selectedLineIds.size;
+
+    // Bulk action bar — appears above the table. Visible whenever ANY row
+    // is selected (across filters), so an operator can stage selections
+    // across multiple filter passes before acting. The Clear button drops
+    // everything currently selected, not just the visible subset.
+    let html = '';
+    if (totalSelectedCount > 0) {
+      html += '<div style="display:flex; gap:10px; align-items:center; padding:8px 12px; background:var(--surface2); border:1px solid var(--accent); border-radius:4px; margin-bottom:8px; font-size:12px;">';
+      html += '<span style="color:var(--text); font-weight:600;">' + totalSelectedCount + ' selected</span>';
+      html += '<button onclick="window.bulkToggleSelectedLines(\'disable\')" style="background:var(--red); color:white; border:none; padding:5px 12px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer;">Disable selected</button>';
+      html += '<button onclick="window.bulkToggleSelectedLines(\'enable\')" style="background:var(--green); color:white; border:none; padding:5px 12px; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer;">Enable selected</button>';
+      html += '<button onclick="window.bulkClearSelection()" style="background:var(--surface3); color:var(--text2); border:1px solid var(--border); padding:5px 12px; border-radius:4px; font-size:11px; cursor:pointer;">Clear selection</button>';
+      html += '<span style="color:var(--text3); font-size:11px;">Tip: filter to a market (e.g. MLB Hitter Total Bases) then click the header checkbox to grab every visible row.</span>';
+      html += '</div>';
+    }
+
+    html += '<div style="overflow-x:auto;"><table style="font-size:13px;">';
     html += '<tr>';
+    // Header checkbox — tri-state. Clicking selects/deselects ALL currently
+    // visible rows (post-filter, post-sort). Other filter views' selections
+    // are preserved.
+    const headerCbState = allVisibleSelected ? 'checked' : '';
+    const headerCbTitle = allVisibleSelected
+      ? 'Deselect all ' + visibleIds.length + ' visible rows'
+      : 'Select all ' + visibleIds.length + ' visible rows';
+    html += '<th style="padding:4px 8px; text-align:center; width:30px;" title="' + escapeHtml(headerCbTitle) + '">'
+      + '<input type="checkbox" id="lines-header-cb" ' + headerCbState
+      + ' onclick="event.stopPropagation(); window.toggleAllVisibleLines(this.checked)"'
+      + ' onchange="event.stopPropagation();"'
+      + ' style="cursor:pointer;"'
+      + '></th>';
     html += th('sport', 'Sport', 'left');
     html += th('market', 'Market', 'left');
     html += th('team', 'Team / Selection', 'left');
@@ -12761,7 +12879,12 @@
         : (isManualOverride ? ' border-left:3px solid var(--accent);' : '');
       const rowStyle = 'cursor:pointer;' + (expanded ? ' background:var(--surface2);' : '') + disabledRowStyle;
       const myOddsColor = isManualOverride ? 'var(--accent)' : (missing ? 'var(--text3)' : 'var(--text)');
+      const rowChecked = linesState.selectedLineIds.has(r.lineId) ? 'checked' : '';
       html += '<tr onclick="window.toggleLinesDrillDown(\'' + r.lineId + '\')" style="' + rowStyle + '">'
+        + '<td style="padding:4px 8px; text-align:center; width:30px;" onclick="event.stopPropagation();">'
+        +   '<input type="checkbox" ' + rowChecked
+        +   ' onclick="event.stopPropagation(); window.toggleLineSelection(\'' + r.lineId + '\', this.checked)"'
+        +   ' style="cursor:pointer;"></td>'
         + '<td style="padding:4px 8px;">' + escapeHtml(sportLbl) + '</td>'
         + '<td style="padding:4px 8px; font-family:monospace; color:var(--text2);">' + escapeHtml(r.marketType || '-') + '</td>'
         + '<td style="padding:4px 8px; text-decoration:none;">' + disabledBadge + overrideBadge + escapeHtml(team) + '</td>'
@@ -12778,7 +12901,7 @@
         + '</tr>';
       if (expanded) {
         // Drill-down detail row spanning all columns.
-        html += '<tr style="background:var(--surface2);"><td colspan="13" style="padding:12px 16px; border-top:1px solid var(--border);">';
+        html += '<tr style="background:var(--surface2);"><td colspan="14" style="padding:12px 16px; border-top:1px solid var(--border);">';
         // Manual-disable controls — click to block this specific line or
         // the entire event from being quoted on. Calls /admin/disable-*
         // endpoints; line-manager's pricer.shouldDecline picks it up on
@@ -12866,6 +12989,14 @@
     }
     html += '</table></div>';
     el.innerHTML = html;
+
+    // Apply the indeterminate state on the header checkbox. HTML attribute
+    // doesn't accept `indeterminate`; it has to be set via JS after the
+    // element is in the DOM.
+    if (someVisibleSelected) {
+      const hdrCb = document.getElementById('lines-header-cb');
+      if (hdrCb) hdrCb.indeterminate = true;
+    }
   }
 
   // History state — accumulates all orders across refreshes
