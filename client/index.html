@@ -829,6 +829,10 @@
               <input type="date" id="dv-date-to" onchange="setDvDateTo(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; font-family:monospace;">
               <button onclick="clearDvDateRange()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Reset</button>
               <span id="dv-filter-summary" style="margin-left:4px; color:var(--text3);"></span>
+              <span id="dv-bar-selection-summary" style="margin-left:auto; color:var(--text3); display:none; align-items:center; gap:8px;">
+                <span id="dv-bar-selection-count"></span>
+                <button onclick="_dvClearSelection()" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:2px 8px; border-radius:4px; font-size:11px; cursor:pointer;">Clear bar selection</button>
+              </span>
             </div>
             <div id="chart-daily-volume">
               <div class="empty-state"><div class="icon">-</div><div>Need confirmed orders to show daily activity</div></div>
@@ -8486,14 +8490,30 @@
 
     // Bars — overlaid at same x position. Wrap each day in a group with a
     // hover-target rect so users can read full-precision values even when
-    // numeric labels are stripped on dense charts.
+    // numeric labels are stripped on dense charts. Group is also clickable:
+    // toggles the day in/out of window._dvSelectedDays which filters the
+    // table below to only the selected days. Selected bars get a yellow
+    // outline; when any are selected, unselected bars dim so the focus
+    // pops.
+    if (!window._dvSelectedDays) window._dvSelectedDays = new Set();
+    const selectedDays = window._dvSelectedDays;
+    const anySelected = selectedDays.size > 0;
     for (let i = 0; i < days.length; i++) {
       const d = byDay[days[i]];
       const cx = pad.l + (i + 0.5) * colW;
-      const tip = `${days[i]} — ${d.count} fills · risk ${fmtDollar(d.risk)} · P&L ${fmtPnl(d.pnl)} · cumul ${fmtPnl(cumul[i])}`;
+      const isSelected = selectedDays.has(days[i]);
+      const dimOpacity = (anySelected && !isSelected) ? 0.3 : 1.0;
+      const tipBase = `${days[i]} — ${d.count} fills · risk ${fmtDollar(d.risk)} · P&L ${fmtPnl(d.pnl)} · cumul ${fmtPnl(cumul[i])}`;
+      const tip = tipBase + (isSelected ? '  [selected — click to remove]' : '  [click to add to table filter]');
 
-      svg += `<g><title>${escapeHtml(tip)}</title>`;
-      // Invisible hover hit area covering the full column
+      svg += `<g style="cursor:pointer;" onclick="window._dvToggleDay('${days[i]}')" opacity="${dimOpacity}">`;
+      svg += `<title>${escapeHtml(tip)}</title>`;
+      // Selection outline behind the bars (full column highlight) — only for
+      // selected days. Drawn first so bars/labels render on top.
+      if (isSelected) {
+        svg += `<rect x="${cx - colW / 2 + 1}" y="${pad.t}" width="${colW - 2}" height="${chartH}" fill="#f5b942" fill-opacity="0.10" stroke="#f5b942" stroke-width="1.5" rx="3"/>`;
+      }
+      // Invisible hover/click hit area covering the full column
       svg += `<rect x="${cx - colW / 2}" y="${pad.t}" width="${colW}" height="${chartH}" fill="transparent"/>`;
 
       // Risk bar (blue, semi-transparent, always above zero)
@@ -8578,7 +8598,7 @@
     svg += svgLine(pad.l + 145, H - 8, pad.l + 161, H - 8, '#f5b942', 2.5);
     svg += svgText(pad.l + 165, H - 4, 'Cumulative P&L', { anchor: 'start', size: 9 });
     // Hover hint on the right end
-    svg += svgText(W - pad.r, H - 4, 'hover bars for detail', { anchor: 'end', size: 8, fill: 'var(--text3)' });
+    svg += svgText(W - pad.r, H - 4, 'hover bars for detail · click to filter table below', { anchor: 'end', size: 8, fill: 'var(--text3)' });
 
     svg += '</svg>';
 
@@ -8586,8 +8606,18 @@
     // Month rows default collapsed; expanding reveals the day rows, and
     // each day row expands to its individual parlays. Same persistence
     // via expandedRows so auto-refresh doesn't collapse open sections.
+    //
+    // Bar-click filter: when window._dvSelectedDays is non-empty, the
+    // table re-aggregates from ONLY those days, and months that contain
+    // any selected day are auto-expanded so the operator sees the day
+    // rows immediately (no manual drill needed). Chart itself still
+    // shows all bars — that's the selection UI.
+    const tableDays = anySelected
+      ? Object.keys(byDay).filter(d => selectedDays.has(d))
+      : Object.keys(byDay);
     const byMonth = {};
-    for (const [day, d] of Object.entries(byDay)) {
+    for (const day of tableDays) {
+      const d = byDay[day];
       const month = day.substring(0, 7);
       if (!byMonth[month]) byMonth[month] = { count: 0, risk: 0, toWin: 0, pnl: 0, settled: 0, days: [] };
       byMonth[month].count += d.count;
@@ -8598,6 +8628,15 @@
       byMonth[month].days.push(day);
     }
     const months = Object.keys(byMonth).sort().reverse();
+    // Sync the selection-summary chip in the filter bar.
+    const selSummaryEl = document.getElementById('dv-bar-selection-summary');
+    const selCountEl = document.getElementById('dv-bar-selection-count');
+    if (selSummaryEl) selSummaryEl.style.display = anySelected ? 'inline-flex' : 'none';
+    if (selCountEl && anySelected) {
+      const list = [...selectedDays].sort();
+      const preview = list.length <= 3 ? list.join(', ') : (list.slice(0, 2).join(', ') + ' +' + (list.length - 2) + ' more');
+      selCountEl.innerHTML = '<span style="color:#f5b942;">' + selectedDays.size + ' bar' + (selectedDays.size === 1 ? '' : 's') + ' selected</span> <span style="color:var(--text3);">(' + preview + ')</span>';
+    }
 
     svg += '<div style="overflow-x:auto; margin-top:8px;"><table style="font-size:11px;">';
     svg += '<tr><th>Month / Date</th><th style="text-align:center">Fills</th><th style="text-align:center">My Risk</th><th style="text-align:center">To Win</th><th style="text-align:center">Settled</th><th style="text-align:center">P&L</th></tr>';
@@ -8606,7 +8645,11 @@
       const m = byMonth[month];
       const mPnlCls = m.pnl > 0 ? 'positive' : m.pnl < 0 ? 'negative' : 'neutral';
       const monthId = 'dvm-' + month.replace(/-/g, '');
-      const monthExpanded = expandedRows.has(monthId);
+      // Auto-expand months that contain a selected day so the operator
+      // sees the day rows without an extra click. Doesn't pollute
+      // expandedRows so the manual state survives once selection is cleared.
+      const monthExpanded = expandedRows.has(monthId)
+        || (anySelected && m.days.some(d => selectedDays.has(d)));
       svg += '<tr onclick="toggleDetailRow(\'' + monthId + '\')" style="cursor:pointer;">';
       svg += '<td style="font-weight:600;">&#9654; ' + month + '</td>';
       svg += '<td style="text-align:center">' + m.count + '</td>';
@@ -10737,6 +10780,21 @@
     _resetDateInputs('dv-date-from', 'dv-date-to');
     _rerenderDvChart();
   }
+
+  // Bar-click multi-select for the Daily Volume chart. Clicking a bar
+  // toggles its day in window._dvSelectedDays; the table below filters to
+  // only the selected days (chart still shows everything — it's the
+  // selection UI). Empty set = no filter, table shows all months/days.
+  window._dvToggleDay = function(day) {
+    if (!window._dvSelectedDays) window._dvSelectedDays = new Set();
+    if (window._dvSelectedDays.has(day)) window._dvSelectedDays.delete(day);
+    else window._dvSelectedDays.add(day);
+    _rerenderDvChart();
+  };
+  window._dvClearSelection = function() {
+    window._dvSelectedDays = new Set();
+    _rerenderDvChart();
+  };
 
   // 2. P&L by Sport bar chart
   // Sort state for the P&L breakdown tables. Persists across re-renders.
