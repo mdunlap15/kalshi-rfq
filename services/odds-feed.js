@@ -3492,13 +3492,43 @@ async function _doAltLinesFetch(sport, homeTeam, awayTeam, targetTime, key) {
     // the full-game loops above — de-vig per line with the same
     // min-books + Pinnacle-alone gate, keep byBook stubs for missing
     // consensus so per-book accessors still resolve.
+    //
+    // PINNACLE PREFERENCE (added 2026-05-11): when Pinnacle is in byBook
+    // with both sides, de-vig from Pinnacle ALONE rather than averaging
+    // probs across every book TheOddsAPI returned. Root cause for the
+    // F5 RL mispricing: recreational books (BetMGM, BetRivers, etc.)
+    // often disagree with Pinnacle by 5-10pp on F5 spreads — likely
+    // because they model F5-specific starter-pitcher dynamics differently
+    // — and the wide-book average drags fair toward 50/50, sometimes
+    // inverting the favorite direction (e.g. TBR @ TOR: Pin had TOR -0.5
+    // de-vig at 54.8% fair, but multi-book average pulled it to 44.66%).
+    // Pinnacle is our authoritative sharp signal; mirror what the primary
+    // feed's buildConsensusSpread already does via filterSharpBooks +
+    // Pinnacle floor. Falls back to multi-book average when Pin is absent.
+    const altPinAlone = (byBook) => {
+      const p = byBook && byBook.pinnacle;
+      if (!p || p.home == null || p.away == null) return null;
+      const ph = americanToImpliedProb(p.home);
+      const pa = americanToImpliedProb(p.away);
+      if (ph == null || pa == null) return null;
+      return deVig2Way(ph, pa);
+    };
+    const altPinAloneTotal = (byBook) => {
+      const p = byBook && byBook.pinnacle;
+      if (!p || p.over == null || p.under == null) return null;
+      const po = americanToImpliedProb(p.over);
+      const pu = americanToImpliedProb(p.under);
+      if (po == null || pu == null) return null;
+      return deVig2Way(po, pu);
+    };
     for (const [lineKey, lineData] of Object.entries(result.altSpreadsF5)) {
       const bookCount = lineData.books.size;
       const byBook = lineData.byBook;
       const homeProbs = lineData.probs.filter(p => p.isHome).map(p => p.prob);
       const awayProbs = lineData.probs.filter(p => !p.isHome).map(p => p.prob);
       if (homeProbs.length > 0 && awayProbs.length > 0 && bookCountOk(bookCount, byBook)) {
-        const [fh, fa] = deVig2Way(avg(homeProbs), avg(awayProbs));
+        const pinPair = altPinAlone(byBook);
+        const [fh, fa] = pinPair || deVig2Way(avg(homeProbs), avg(awayProbs));
         result.altSpreadsF5[lineKey] = { home: fh, away: fa, books: bookCount, byBook };
       } else if (Object.keys(byBook).length > 0) {
         result.altSpreadsF5[lineKey] = { home: null, away: null, books: bookCount, byBook };
@@ -3512,7 +3542,8 @@ async function _doAltLinesFetch(sport, homeTeam, awayTeam, targetTime, key) {
       const overProbs = lineData.probs.filter(p => p.isOver).map(p => p.prob);
       const underProbs = lineData.probs.filter(p => !p.isOver).map(p => p.prob);
       if (overProbs.length > 0 && underProbs.length > 0 && bookCountOk(bookCount, byBook)) {
-        const [fo, fu] = deVig2Way(avg(overProbs), avg(underProbs));
+        const pinPair = altPinAloneTotal(byBook);
+        const [fo, fu] = pinPair || deVig2Way(avg(overProbs), avg(underProbs));
         result.altTotalsF5[lineKey] = { over: fo, under: fu, books: bookCount, byBook };
       } else if (Object.keys(byBook).length > 0) {
         result.altTotalsF5[lineKey] = { over: null, under: null, books: bookCount, byBook };
@@ -3523,13 +3554,15 @@ async function _doAltLinesFetch(sport, homeTeam, awayTeam, targetTime, key) {
     // NBA H1 alt spreads + totals. Same consolidation as the F5 loops —
     // de-vig per line with the same min-books + Pinnacle-alone gate, keep
     // byBook stubs for missing consensus so per-book accessors still resolve.
+    // Same Pinnacle-preference as F5 above.
     for (const [lineKey, lineData] of Object.entries(result.altSpreadsH1)) {
       const bookCount = lineData.books.size;
       const byBook = lineData.byBook;
       const homeProbs = lineData.probs.filter(p => p.isHome).map(p => p.prob);
       const awayProbs = lineData.probs.filter(p => !p.isHome).map(p => p.prob);
       if (homeProbs.length > 0 && awayProbs.length > 0 && bookCountOk(bookCount, byBook)) {
-        const [fh, fa] = deVig2Way(avg(homeProbs), avg(awayProbs));
+        const pinPair = altPinAlone(byBook);
+        const [fh, fa] = pinPair || deVig2Way(avg(homeProbs), avg(awayProbs));
         result.altSpreadsH1[lineKey] = { home: fh, away: fa, books: bookCount, byBook };
       } else if (Object.keys(byBook).length > 0) {
         result.altSpreadsH1[lineKey] = { home: null, away: null, books: bookCount, byBook };
@@ -3543,7 +3576,8 @@ async function _doAltLinesFetch(sport, homeTeam, awayTeam, targetTime, key) {
       const overProbs = lineData.probs.filter(p => p.isOver).map(p => p.prob);
       const underProbs = lineData.probs.filter(p => !p.isOver).map(p => p.prob);
       if (overProbs.length > 0 && underProbs.length > 0 && bookCountOk(bookCount, byBook)) {
-        const [fo, fu] = deVig2Way(avg(overProbs), avg(underProbs));
+        const pinPair = altPinAloneTotal(byBook);
+        const [fo, fu] = pinPair || deVig2Way(avg(overProbs), avg(underProbs));
         result.altTotalsH1[lineKey] = { over: fo, under: fu, books: bookCount, byBook };
       } else if (Object.keys(byBook).length > 0) {
         result.altTotalsH1[lineKey] = { over: null, under: null, books: bookCount, byBook };
