@@ -3544,7 +3544,6 @@
           const fdCalc = (o) => { const ls = o.meta?.legs || o.legs || []; const fds = ls.filter(l => l.fanduelOdds != null); if (fds.length !== ls.length) return 0; let p = 1; for (const l of fds) p *= americanToProb(l.fanduelOdds); return p > 0 && p < 1 ? decimalToAmerican(1/p) : 0; };
           va = fdCalc(a); vb = fdCalc(b); break;
         }
-        case 'kalshi': va = a.meta?.kalshiParlay || 0; vb = b.meta?.kalshiParlay || 0; break;
         case 'draftkings': va = a.meta?.draftkingsParlay || 0; vb = b.meta?.draftkingsParlay || 0; break;
         case 'stake':
           // My Risk = confirmedStake = SP's stake
@@ -3730,11 +3729,9 @@
       const mLegs = order.meta?.legs || legs;
       const posPinParlay = compoundParlayOdds(mLegs, 'pinnacleOdds');
       const posFdParlay = compoundParlayOdds(mLegs, 'fanduelOdds');
-      const posKlParlay = compoundParlayOdds(mLegs, 'kalshiOdds');
       const posDkParlay = compoundParlayOdds(mLegs, 'draftkingsOdds');
       const posPinFmt = posPinParlay != null ? posPinParlay : '-';
       const posFdFmt = posFdParlay != null ? posFdParlay : '-';
-      const posKlFmt = posKlParlay != null ? posKlParlay : '-';
       const posDkFmt = posDkParlay != null ? posDkParlay : '-';
 
       // Win Probability
@@ -4050,11 +4047,9 @@
       const sLegs = order.meta?.legs || order.legs || [];
       const sPinParlay = compoundParlayOdds(sLegs, 'pinnacleOdds');
       const sFdParlay = compoundParlayOdds(sLegs, 'fanduelOdds');
-      const sKlParlay = compoundParlayOdds(sLegs, 'kalshiOdds');
       const sDkParlay = compoundParlayOdds(sLegs, 'draftkingsOdds');
       const sPinFmt = sPinParlay != null ? sPinParlay : '-';
       const sFdFmt = sFdParlay != null ? sFdParlay : '-';
-      const sKlFmt = sKlParlay != null ? sKlParlay : '-';
       const sDkFmt = sDkParlay != null ? sDkParlay : '-';
       const myRiskVal = order.confirmedStake && order.offeredOdds ? calcBettorWager(order.confirmedStake, order.offeredOdds) : null;
       const stake = myRiskVal != null ? fmtDollar(myRiskVal) : (order.confirmedStake ? fmtDollar(order.confirmedStake) : '-');
@@ -5130,7 +5125,6 @@
         case 'time': va = a.quotedAt || ''; vb = b.quotedAt || ''; break;
         case 'fairOdds': va = fairToAmerican(a.fairParlayProb); vb = fairToAmerican(b.fairParlayProb); break;
         case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
-        case 'kalshi': va = a.meta?.kalshiParlay || 0; vb = b.meta?.kalshiParlay || 0; break;
         case 'draftkings': va = a.meta?.draftkingsParlay || 0; vb = b.meta?.draftkingsParlay || 0; break;
         case 'offeredOdds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'legs': va = (a.legs||a.meta?.legs||[]).length; vb = (b.legs||b.meta?.legs||[]).length; break;
@@ -5192,7 +5186,6 @@
         <th ${sortClick('legs')}>Legs${sortArrow('legs')}</th>
         <th ${sortClick('fairOdds')}>Fair${sortArrow('fairOdds')}</th>
         <th ${sortClick('pinnacle')}>Pinnacle${sortArrow('pinnacle')}</th>
-        <th ${sortClick('kalshi')}>Kalshi${sortArrow('kalshi')}</th>
         <th ${sortClick('draftkings')} style="color:var(--green);">DK${sortArrow('draftkings')}</th>
         <th ${sortClick('offeredOdds')}>Offered${sortArrow('offeredOdds')}</th>
         <th>Winner</th>
@@ -5221,8 +5214,6 @@
       const fairAm = (qDisplayFairProb || order.fairParlayProb) ? decimalToAmerican(1 / (qDisplayFairProb || order.fairParlayProb)) : '-';
       const pinParlay = order.meta?.pinnacleParlay;
       const pinAm = pinParlay != null ? pinParlay : '-';
-      const klParlay = order.meta?.kalshiParlay;
-      const klAm = klParlay != null ? klParlay : '-';
       const dkParlay = order.meta?.draftkingsParlay;
       const dkAm = dkParlay != null ? dkParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
@@ -5259,7 +5250,6 @@
           <td>${legs.length}</td>
           <td>${fairAm}</td>
           <td style="color:var(--purple);">${pinAm}</td>
-          <td style="color:var(--amber);">${klAm}</td>
           <td style="color:var(--green);">${dkAm}</td>
           <td style="font-weight:600;">${offeredAm}</td>
           <td style="color:${order.status === 'lost' ? 'var(--amber)' : 'var(--text3)'};">${winnerOdds}</td>
@@ -6226,7 +6216,6 @@
         }
         case 'pin': va = compoundParlayOdds(a.meta?.legs || a.legs || [], 'pinnacleOdds') || 0; vb = compoundParlayOdds(b.meta?.legs || b.legs || [], 'pinnacleOdds') || 0; break;
         case 'fd': va = compoundParlayOdds(a.meta?.legs || a.legs || [], 'fanduelOdds') || 0; vb = compoundParlayOdds(b.meta?.legs || b.legs || [], 'fanduelOdds') || 0; break;
-        case 'kalshi': va = compoundParlayOdds(a.meta?.legs || a.legs || [], 'kalshiOdds') || 0; vb = compoundParlayOdds(b.meta?.legs || b.legs || [], 'kalshiOdds') || 0; break;
         case 'stake':
           va = a.confirmedStake || 0;
           vb = b.confirmedStake || 0; break;
@@ -6287,7 +6276,7 @@
     }
 
     html += '<div style="overflow-x:auto;"><table>';
-    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">My Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('fair') + ' style="text-align:right" title="Fair American odds compounded from per-leg displayFairProb (de-vigged consensus)">Fair' + poSortArrow('fair') + '</th><th ' + poSortClick('pin') + ' style="text-align:right; color:var(--purple);">Pinnacle' + poSortArrow('pin') + '</th><th ' + poSortClick('fd') + ' style="text-align:right; color:var(--blue);">FanDuel' + poSortArrow('fd') + '</th><th ' + poSortClick('kalshi') + ' style="text-align:right; color:var(--amber);">Kalshi' + poSortArrow('kalshi') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th ' + poSortClick('winprob') + ' style="text-align:right" title="Probability you win (at least one bettor leg fails)">Win Prob' + poSortArrow('winprob') + '</th><th ' + poSortClick('status') + '>Status' + poSortArrow('status') + '</th></tr>';
+    html += '<tr><th ' + poSortClick('time') + '>Confirmed' + poSortArrow('time') + '</th><th>Selections</th><th ' + poSortClick('legs') + '>Legs' + poSortArrow('legs') + '</th><th ' + poSortClick('odds') + ' style="text-align:right">My Odds' + poSortArrow('odds') + '</th><th ' + poSortClick('fair') + ' style="text-align:right" title="Fair American odds compounded from per-leg displayFairProb (de-vigged consensus)">Fair' + poSortArrow('fair') + '</th><th ' + poSortClick('pin') + ' style="text-align:right; color:var(--purple);">Pinnacle' + poSortArrow('pin') + '</th><th ' + poSortClick('fd') + ' style="text-align:right; color:var(--blue);">FanDuel' + poSortArrow('fd') + '</th><th ' + poSortClick('stake') + ' style="text-align:right">My Risk' + poSortArrow('stake') + '</th><th ' + poSortClick('towin') + ' style="text-align:right">To Win' + poSortArrow('towin') + '</th><th ' + poSortClick('winprob') + ' style="text-align:right" title="Probability you win (at least one bettor leg fails)">Win Prob' + poSortArrow('winprob') + '</th><th ' + poSortClick('status') + '>Status' + poSortArrow('status') + '</th></tr>';
 
     const isPopenFiltering = popenState.search || popenState.dateFrom || popenState.dateTo;
     const popenLimit = (popenState.showAll || isPopenFiltering) ? filtered.length : popenState.pageSize;
@@ -6303,10 +6292,8 @@
       // Compound Pinnacle/FanDuel per-leg odds into parlay odds
       const pinParlay = compoundParlayOdds(legs, 'pinnacleOdds');
       const fdParlay = compoundParlayOdds(legs, 'fanduelOdds');
-      const klParlay = compoundParlayOdds(legs, 'kalshiOdds');
       const pinFmt = pinParlay != null ? pinParlay : '-';
       const fdFmt = fdParlay != null ? fdParlay : '-';
-      const klFmt = klParlay != null ? klParlay : '-';
       // Fair American odds compounded from per-leg displayFairProb
       // (de-vigged consensus). Matches the formula used in the All Quotes
       // table so the same number appears across views.
@@ -6364,7 +6351,6 @@
         '<td style="text-align:right;">' + fairFmt + '</td>' +
         '<td style="text-align:right; color:var(--purple);">' + pinFmt + '</td>' +
         '<td style="text-align:right; color:var(--blue);">' + fdFmt + '</td>' +
-        '<td style="text-align:right; color:var(--amber);">' + klFmt + '</td>' +
         '<td style="text-align:right">' + myRisk + '</td>' +
         '<td style="text-align:right; font-weight:600; color:var(--green);">' + toWin + '</td>' +
         '<td style="text-align:right">' + winProbLabel + '</td>' +
@@ -6490,7 +6476,6 @@
           const fdCalc2 = (o) => { const ls = o.meta?.legs || o.legs || []; const fds = ls.filter(l => l.fanduelOdds != null); if (fds.length !== ls.length) return 0; let p = 1; for (const l of fds) p *= americanToProb(l.fanduelOdds); return p > 0 && p < 1 ? decimalToAmerican(1/p) : 0; };
           va = fdCalc2(a); vb = fdCalc2(b); break;
         }
-        case 'kalshi': va = a.meta?.kalshiParlay || 0; vb = b.meta?.kalshiParlay || 0; break;
         case 'draftkings': va = a.meta?.draftkingsParlay || 0; vb = b.meta?.draftkingsParlay || 0; break;
         case 'legs': va = (a.legs || a.meta?.legs || []).length; vb = (b.legs || b.meta?.legs || []).length; break;
         case 'result': {
@@ -6584,7 +6569,6 @@
     html += '<th ' + pSortClick('fair', 'right') + ' title="Fair American odds compounded from per-leg displayFairProb (de-vigged consensus)">Fair' + pSortArrow('fair') + '</th>';
     html += '<th ' + pSortClick('pinnacle', 'right') + ' style="color:var(--purple);">Pinnacle' + pSortArrow('pinnacle') + '</th>';
     html += '<th ' + pSortClick('fanduel', 'right') + ' style="color:var(--blue);">FanDuel' + pSortArrow('fanduel') + '</th>';
-    html += '<th ' + pSortClick('kalshi', 'right') + ' style="color:var(--amber);">Kalshi' + pSortArrow('kalshi') + '</th>';
     html += '<th ' + pSortClick('draftkings', 'right') + ' style="color:var(--green);">DK' + pSortArrow('draftkings') + '</th>';
     html += '<th ' + pSortClick('stake', 'right') + '>My Risk' + pSortArrow('stake') + '</th>';
     html += '<th ' + pSortClick('edge', 'right') + ' title="Theoretical edge per $ wagered = 1 - (fair / bettor_implied)">Theo Edge' + pSortArrow('edge') + '</th>';
@@ -6615,11 +6599,9 @@
       const psLegs = order.meta?.legs || order.legs || [];
       const psPinParlay = compoundParlayOdds(psLegs, 'pinnacleOdds');
       const psFdParlay = compoundParlayOdds(psLegs, 'fanduelOdds');
-      const psKlParlay = compoundParlayOdds(psLegs, 'kalshiOdds');
       const psDkParlay = compoundParlayOdds(psLegs, 'draftkingsOdds');
       const psPinFmt = psPinParlay != null ? psPinParlay : '-';
       const psFdFmt = psFdParlay != null ? psFdParlay : '-';
-      const psKlFmt = psKlParlay != null ? psKlParlay : '-';
       const psDkFmt = psDkParlay != null ? psDkParlay : '-';
       // Fair American odds compounded from per-leg displayFairProb
       let psFairProb = null;
@@ -6659,7 +6641,6 @@
       html += '<td style="text-align:right;">' + psFairFmt + '</td>';
       html += '<td style="text-align:right; color:var(--purple);">' + psPinFmt + '</td>';
       html += '<td style="text-align:right; color:var(--blue);">' + psFdFmt + '</td>';
-      html += '<td style="text-align:right; color:var(--amber);">' + psKlFmt + '</td>';
       html += '<td style="text-align:right; color:var(--green);">' + psDkFmt + '</td>';
       html += '<td style="text-align:right">' + stake + '</td>';
       html += '<td style="text-align:right" class="' + psEdgeCls + '">' + psEdgeStr + '</td>';
@@ -7326,7 +7307,7 @@
    *   - odds-feed registrations: "basketball_nba", "baseball_mlb",
    *     "soccer_epl", "soccer_spain_la_liga"
    *   - PX backfill / historical: "NBA", "Baseball", "Ice Hockey", "Soccer"
-   *   - Kalshi / Pinnacle merges: "hockey", "basketball"
+   *   - Pinnacle merges: "hockey", "basketball"
    *
    * Without normalization, P&L-by-sport charts show Baseball AND MLB as
    * separate rows, and every soccer league as its own bucket. This helper
@@ -7777,7 +7758,7 @@
     if (rows.length === 0) return;
 
     const headers = ['Type','Parlay ID','Date','Legs','SGP','PROP','Selections','Sports',
-      'Offered Odds','Pinnacle Odds','FanDuel Odds','Kalshi Odds','DraftKings Odds','My Risk','To Win',
+      'Offered Odds','Pinnacle Odds','FanDuel Odds','DraftKings Odds','My Risk','To Win',
       'Status','P&L','ROI %'];
 
     const csvRows = [headers.join(',')];
@@ -7792,7 +7773,6 @@
       const propFlag = containsPlayerProp(legs) ? 'Y' : '';
       const pinOdds = compoundParlayOdds(legs, 'pinnacleOdds') || '';
       const fdOdds = compoundParlayOdds(legs, 'fanduelOdds') || '';
-      const klOdds = compoundParlayOdds(legs, 'kalshiOdds') || '';
       const dkOdds = compoundParlayOdds(legs, 'draftkingsOdds') || '';
       const risk = o.confirmedStake || '';
       const toWin = (o.confirmedStake && o.offeredOdds) ? calcSpProfit(o.confirmedStake, o.offeredOdds).toFixed(2) : '';
@@ -7812,7 +7792,7 @@
         type, o.parlayId || '', csvEscape(date), legs.length,
         sgpFlag, propFlag,
         csvEscape(selections), csvEscape(sports),
-        o.offeredOdds || '', pinOdds, fdOdds, klOdds, dkOdds,
+        o.offeredOdds || '', pinOdds, fdOdds, dkOdds,
         risk ? Number(risk).toFixed(2) : '', toWin,
         status, pnl, roi
       ].join(','));
@@ -8700,7 +8680,7 @@
     if (window._parlayVsBooksData) renderChartParlayVsBooks(null);
   };
   if (!window._parlayVsBooksToggle) {
-    window._parlayVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true, kalshi: true };
+    window._parlayVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true };
   }
   if (!window._parlayVsBooksFilter) {
     // Outcome filter. New values 'accepted'/'offered'/'lost' are
@@ -8883,7 +8863,6 @@
         const dnbFieldOf = {
           pinnacleOdds: 'pinnacleDNBProb',
           fanduelOdds: 'fanduelDNBProb',
-          kalshiOdds: 'kalshiDNBProb',
           draftkingsOdds: 'draftkingsDNBProb',
         };
         function compound(field) {
@@ -8913,7 +8892,6 @@
         const pinProb = compound('pinnacleOdds');
         const dkProb  = compound('draftkingsOdds');
         const fdProb  = compound('fanduelOdds');
-        const kProb   = compound('kalshiOdds');
 
         // Use formatParlaySelections per leg so bare "Over"/"Under" legs get
         // enriched with game context (AWAY @ HOME + line) just like the
@@ -8968,12 +8946,11 @@
           isMultiSport: bucketSports.length > 1,
           fairProb,
           myProb,
-          pinProb, dkProb, fdProb, kProb,
+          pinProb, dkProb, fdProb,
           distMine: distFromFair(myProb),
           distPin:  distFromFair(pinProb),
           distDk:   distFromFair(dkProb),
           distFd:   distFromFair(fdProb),
-          distK:    distFromFair(kProb),
           myOddsAm: o.offeredOdds,
           quotedAt: qDate,
           selections,
@@ -9006,7 +8983,6 @@
       { key: 'pinnacle', label: 'Pinnacle', color: '#a855f7', getDist: d => calcY(d.pinProb, d.fairProb) },
       { key: 'dk',       label: 'DK',       color: '#22c55e', getDist: d => calcY(d.dkProb,  d.fairProb) },
       { key: 'fd',       label: 'FanDuel',  color: '#3b82f6', getDist: d => calcY(d.fdProb,  d.fairProb) },
-      { key: 'kalshi',   label: 'Kalshi',   color: '#eab308', getDist: d => calcY(d.kProb,   d.fairProb) },
     ];
 
     // --- Toggle controls ---
@@ -9296,8 +9272,7 @@
         + '\nMy:  ' + fmtPp(d.distMine) + '   edge ' + fmtEdge(d.myProb)
         + '\nPIN: ' + fmtPp(d.distPin)  + '   edge ' + fmtEdge(d.pinProb)
         + '\nDK:  ' + fmtPp(d.distDk)   + '   edge ' + fmtEdge(d.dkProb)
-        + '\nFD:  ' + fmtPp(d.distFd)   + '   edge ' + fmtEdge(d.fdProb)
-        + '\nKAL: ' + fmtPp(d.distK)    + '   edge ' + fmtEdge(d.kProb);
+        + '\nFD:  ' + fmtPp(d.distFd)   + '   edge ' + fmtEdge(d.fdProb);
     };
 
     // Render — paint order: lost → offered → accepted, so accepted dots
@@ -9396,7 +9371,7 @@
   // parlay version compounds vig into the 0-50% fair range and hides
   // those gaps.
   if (!window._legVsBooksToggle) {
-    window._legVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true, kalshi: true };
+    window._legVsBooksToggle = { mine: true, pinnacle: true, dk: true, fd: true };
     window._legVsBooksFilter = 'all';
     window._legVsBooksRange = '7d';
     window._legVsBooksSport = 'all';  // filter by sport/league key (e.g. 'baseball_mlb')
@@ -9475,7 +9450,6 @@
           const pinProb = pickProb(l.pinnacleOdds,   l.pinnacleDNBProb);
           const dkProb  = pickProb(l.draftkingsOdds, l.draftkingsDNBProb);
           const fdProb  = pickProb(l.fanduelOdds,    l.fanduelDNBProb);
-          const kProb   = pickProb(l.kalshiOdds,     l.kalshiDNBProb);
           const distFromFair = (p) => p != null ? (p - fp) * 100 : null;
           // Match the Team/Selection column in the positions table — for bare
           // "Over"/"Under" totals, formatParlaySelections([l]) enriches with
@@ -9492,12 +9466,11 @@
             stake: o.confirmedStake || o.maxStake || 0,
             fairProb: fp,
             myProb,
-            pinProb, dkProb, fdProb, kProb,
+            pinProb, dkProb, fdProb,
             distMine: distFromFair(myProb),
             distPin:  distFromFair(pinProb),
             distDk:   distFromFair(dkProb),
             distFd:   distFromFair(fdProb),
-            distK:    distFromFair(kProb),
             quotedAt: qDate,
             confirmedAt: o.confirmedAt || null,
           });
@@ -9516,7 +9489,6 @@
       { key: 'pinnacle', label: 'Pinnacle', color: '#a855f7', getDist: d => d.distPin },
       { key: 'dk',       label: 'DK',       color: '#22c55e', getDist: d => d.distDk },
       { key: 'fd',       label: 'FanDuel',  color: '#3b82f6', getDist: d => d.distFd },
-      { key: 'kalshi',   label: 'Kalshi',   color: '#eab308', getDist: d => d.distK },
     ];
 
     let html = '';
@@ -9679,8 +9651,7 @@
         + '\nMy dist:  ' + fmtPp(d.distMine)
         + '\nPIN dist: ' + fmtPp(d.distPin)
         + '\nDK dist:  ' + fmtPp(d.distDk)
-        + '\nFD dist:  ' + fmtPp(d.distFd)
-        + '\nKAL dist: ' + fmtPp(d.distK);
+        + '\nFD dist:  ' + fmtPp(d.distFd);
     };
 
     const sortedF = [...filtered].sort((a, b) => (a.isConfirmed ? 1 : 0) - (b.isConfirmed ? 1 : 0));
@@ -10883,7 +10854,6 @@
           myProb, myOddsAm,
           pinProb, pinOdds: l.pinnacleOdds,
           fdProb, fdOdds: l.fanduelOdds,
-          klOdds: l.kalshiOdds,
           fairProb: l.fairProb,
           // Spread in pp: positive = we charge MORE than book (good)
           pinSpread: pinProb != null ? Math.round((myProb - pinProb) * 10000) / 100 : null,
@@ -11040,7 +11010,7 @@
     // Sort by worst (most generous) first
     const sorted = [...withPin].sort((a, b) => a.pinSpread - b.pinSpread);
     html += '<div style="max-height:400px; overflow-y:auto;"><table style="font-size:12px; width:100%;">';
-    html += '<tr><th style="text-align:left">Selection</th><th style="text-align:left">Game</th><th style="text-align:left">Market</th><th style="text-align:right">My Odds</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th style="text-align:right; color:var(--amber);">Kalshi</th><th style="text-align:right">vs PIN</th><th style="text-align:right">vs FD</th></tr>';
+    html += '<tr><th style="text-align:left">Selection</th><th style="text-align:left">Game</th><th style="text-align:left">Market</th><th style="text-align:right">My Odds</th><th style="text-align:right; color:var(--purple);">Pinnacle</th><th style="text-align:right; color:var(--blue);">FanDuel</th><th style="text-align:right">vs PIN</th><th style="text-align:right">vs FD</th></tr>';
     for (const l of sorted.slice(0, 100)) {
       const pinCls = l.pinSpread >= 0 ? 'positive' : 'negative';
       const fdCls = l.fdSpread != null ? (l.fdSpread >= 0 ? 'positive' : 'negative') : '';
@@ -11054,12 +11024,10 @@
       html += '<td style="text-align:right; font-family:monospace;">' + myFmt + '</td>';
       html += '<td style="text-align:right; font-family:monospace; color:var(--purple);">' + pinFmt + '</td>';
       html += '<td style="text-align:right; font-family:monospace; color:var(--blue);">' + fdFmt + '</td>';
-      const klFmtEdge = l.klOdds != null ? (l.klOdds >= 0 ? '+' + l.klOdds : '' + l.klOdds) : '-';
-      html += '<td style="text-align:right; font-family:monospace; color:var(--amber);">' + klFmtEdge + '</td>';
       html += '<td style="text-align:right; font-weight:600;" class="' + pinCls + '">' + (l.pinSpread >= 0 ? '+' : '') + l.pinSpread.toFixed(2) + '</td>';
       html += '<td style="text-align:right;" class="' + fdCls + '">' + (l.fdSpread != null ? (l.fdSpread >= 0 ? '+' : '') + l.fdSpread.toFixed(2) : '-') + '</td></tr>';
     }
-    if (sorted.length > 100) html += '<tr><td colspan="9" style="text-align:center; color:var(--text3);">... ' + (sorted.length - 100) + ' more legs</td></tr>';
+    if (sorted.length > 100) html += '<tr><td colspan="8" style="text-align:center; color:var(--text3);">... ' + (sorted.length - 100) + ' more legs</td></tr>';
     html += '</table></div>';
 
     el.innerHTML = html;
@@ -11287,7 +11255,7 @@
     const showStatus = opts.showStatus !== false;
     const showSport = opts.showSport || false;
     const showOdds = opts.showFairOdds !== false;
-    // hideBookOdds: hide Pinnacle / FanDuel / Kalshi / DK / Fair columns
+    // hideBookOdds: hide Pinnacle / FanDuel / DK / Fair columns
     // but keep "My Odds". Used by the viewer page where book-by-book
     // pricing isn't relevant for read-only consumers.
     const hideBookOdds = opts.hideBookOdds || false;
@@ -11305,7 +11273,6 @@
       if (!hideBookOdds) {
         h += '<th style="text-align:right; padding:' + pad + '; color:var(--purple);">Pinnacle</th>';
         h += '<th style="text-align:right; padding:' + pad + '; color:var(--blue);">FanDuel</th>';
-        h += '<th style="text-align:right; padding:' + pad + '; color:var(--amber);">Kalshi</th>';
         h += '<th style="text-align:right; padding:' + pad + '; color:var(--green);">DK</th>';
         h += '<th style="text-align:right; padding:' + pad + ';">Fair</th>';
       }
@@ -11402,7 +11369,7 @@
       }
       // YES/NO prop legs (PX-tagged moneyline with teamName=YES/NO) were
       // mis-registered against the full-match h2h cache by the substring-
-      // match bug fixed in 3bf4a8a. Their cached pinnacle/fd/dk/kalshi
+      // match bug fixed in 3bf4a8a. Their cached pinnacle/fd/dk
       // values reflect that wrong h2h, NOT the actual yes/no market —
       // showing them is misleading. Suppress every numeric column so the
       // operator can't accidentally trust the cached numbers as a price
@@ -11412,7 +11379,6 @@
       const _isYesNoMisreg = /^(yes|no)$/i.test(_ynRawTeam);
       const pinOdds = _isYesNoMisreg ? '—' : _bookOddsCell(l.pinnacleOdds, l.pinnacleDNBProb);
       const fdOdds  = _isYesNoMisreg ? '—' : _bookOddsCell(l.fanduelOdds,  l.fanduelDNBProb);
-      const klOdds  = _isYesNoMisreg ? '—' : _bookOddsCell(l.kalshiOdds,   l.kalshiDNBProb);
       const dkOdds  = _isYesNoMisreg ? '—' : _bookOddsCell(l.draftkingsOdds, l.draftkingsDNBProb);
       const fairProbDisplay = l.displayFairProb || l.fairProb;
       const fairOdds = _isYesNoMisreg ? '—' : (fairProbDisplay ? decimalToAmerican(1 / fairProbDisplay) : '-');
@@ -11503,12 +11469,12 @@
       }
 
       // DNB badge for soccer 2-way moneyline legs so operators can tell
-      // apart DNB vs 3-way at a glance. Pin/FD/Kalshi/DK odds columns
+      // apart DNB vs 3-way at a glance. Pin/FD/DK odds columns
       // on this row are DNB-equivalent (renormalized to exclude the draw)
       // rather than raw 3-way — matches how FAIR and MY ODDS are computed.
       let dnbBadge = '';
       if (l.isDNB) {
-        dnbBadge = ' <span title="Draw No Bet — stake refunds on a draw. Pin/FD/DK/Kalshi odds columns on this leg show DNB-equivalent American odds (book 3-way prob renormalized as pHome/(pHome+pAway)), not the raw 3-way odds the book posts." style="color:var(--blue); font-size:9px; padding:1px 4px; border:1px solid var(--blue); border-radius:3px; margin-left:4px;">DNB</span>';
+        dnbBadge = ' <span title="Draw No Bet — stake refunds on a draw. Pin/FD/DK odds columns on this leg show DNB-equivalent American odds (book 3-way prob renormalized as pHome/(pHome+pAway)), not the raw 3-way odds the book posts." style="color:var(--blue); font-size:9px; padding:1px 4px; border:1px solid var(--blue); border-radius:3px; margin-left:4px;">DNB</span>';
       }
 
       // Show the line whenever we have one. Originally gated on spread/total,
@@ -11537,7 +11503,6 @@
         if (!hideBookOdds) {
           h += '<td style="padding:' + pad + '; text-align:right; color:var(--purple);">' + pinOdds + '</td>';
           h += '<td style="padding:' + pad + '; text-align:right; color:var(--blue);">' + fdOdds + '</td>';
-          h += '<td style="padding:' + pad + '; text-align:right; color:var(--amber);">' + klOdds + '</td>';
           h += '<td style="padding:' + pad + '; text-align:right; color:var(--green);">' + dkOdds + '</td>';
           h += '<td style="padding:' + pad + '; text-align:right;">' + fairOdds + '</td>';
         }
@@ -12045,7 +12010,6 @@
       pin: (r) => r.pinnacleOdds,
       fd: (r) => r.fanduelOdds,
       dk: (r) => r.draftkingsOdds,
-      kalshi: (r) => r.kalshiOdds,
       cons: (r) => r.consensusAmerican,
       diff: (r) => r.vsConsensusPp,
     }[col];
@@ -12111,8 +12075,7 @@
     html += th('pin', '<span style="color:var(--purple);">Pin</span>', 'right', 'Pinnacle raw American odds (Sharp-tier only — usually blank on Hobby plan).');
     html += th('fd', '<span style="color:var(--blue);">FD</span>', 'right', 'FanDuel raw American odds.');
     html += th('dk', '<span style="color:var(--green);">DK</span>', 'right', 'DraftKings raw American odds.');
-    html += th('kalshi', '<span style="color:var(--amber);">Kalshi</span>', 'right', 'Kalshi prediction-market price — REFERENCE ONLY, not used in consensus or our pricing.');
-    html += th('cons', 'Cons', 'right', 'Consensus American odds — average of Pin / FD / DK implied probs (Kalshi excluded), converted back to American.');
+    html += th('cons', 'Cons', 'right', 'Consensus American odds — average of Pin / FD / DK implied probs, converted back to American.');
     html += th('diff', 'vs Cons', 'right', 'My implied prob minus consensus implied prob, in pp. Positive = I\'m tighter than consensus (worse for bettor). Negative = looser.');
     html += '</tr>';
 
@@ -12129,7 +12092,6 @@
       const pinAm = fmtAm(r.pinnacleOdds);
       const fdAm = fmtAm(r.fanduelOdds);
       const dkAm = fmtAm(r.draftkingsOdds);
-      const klAm = fmtAm(r.kalshiOdds);
       const consAm = fmtAm(r.consensusAmerican);
       const diffStr = r.vsConsensusPp == null
         ? '-'
@@ -12165,7 +12127,6 @@
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.pinnacleOdds==null?'var(--text3)':'var(--purple)') + ';">' + pinAm + '</td>'
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.fanduelOdds==null?'var(--text3)':'var(--blue)') + ';">' + fdAm + '</td>'
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.draftkingsOdds==null?'var(--text3)':'var(--green)') + ';">' + dkAm + '</td>'
-        + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.kalshiOdds==null?'var(--text3)':'var(--amber)') + ';">' + klAm + '</td>'
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + (r.consensusAmerican==null?'var(--text3)':'var(--text2)') + ';">' + consAm + '</td>'
         + '<td style="padding:4px 8px; text-align:right; font-family:monospace; color:' + diffColor + '; font-weight:500;">' + diffStr + '</td>'
         + '</tr>';
@@ -12222,7 +12183,6 @@
         html += bookRow('Pinnacle', r.pinnacleOdds);
         html += bookRow('FanDuel', r.fanduelOdds);
         html += bookRow('DraftKings', r.draftkingsOdds);
-        html += bookRow('Kalshi (ref)', r.kalshiOdds);
         if (r.consensusAmerican != null) {
           const consImp = _amOddsToImplied(r.consensusAmerican);
           html += kv('Consensus (Pin/FD/DK)', (r.consensusAmerican >= 0 ? '+' : '') + r.consensusAmerican + '  (implied ' + (consImp * 100).toFixed(1) + '%)');
@@ -12360,7 +12320,6 @@
         case 'fair': va = a.fairParlayProb || 0; vb = b.fairParlayProb || 0; break;
         case 'pinnacle': va = a.meta?.pinnacleParlay || 0; vb = b.meta?.pinnacleParlay || 0; break;
         case 'fanduel': va = a.meta?.fanduelParlay || 0; vb = b.meta?.fanduelParlay || 0; break;
-        case 'kalshi': va = a.meta?.kalshiParlay || 0; vb = b.meta?.kalshiParlay || 0; break;
         case 'draftkings': va = a.meta?.draftkingsParlay || 0; vb = b.meta?.draftkingsParlay || 0; break;
         case 'odds': va = a.offeredOdds || 0; vb = b.offeredOdds || 0; break;
         case 'risk':
@@ -12461,7 +12420,6 @@
         <th ${hSortClick('pinnacle')}>Pinnacle${hSortArrow('pinnacle')}</th>
         <th ${hSortClick('fanduel')} style="color:var(--blue);">FD${hSortArrow('fanduel')}</th>
         <th ${hSortClick('draftkings')} style="color:var(--green);">DK${hSortArrow('draftkings')}</th>
-        <th ${hSortClick('kalshi')}>Kalshi${hSortArrow('kalshi')}</th>
         <th ${hSortClick('risk', 'right')}>My Risk${hSortArrow('risk')}</th>
         <th ${hSortClick('towin', 'right')}>To Win${hSortArrow('towin')}</th>
         <th ${hSortClick('status')}>Status${hSortArrow('status')}</th>
@@ -12484,8 +12442,6 @@
       const pinAm = pinParlay != null ? pinParlay : '-';
       const fdParlay = order.meta?.fanduelParlay;
       const fdAm = fdParlay != null ? fdParlay : '-';
-      const klParlay = order.meta?.kalshiParlay;
-      const klAm = klParlay != null ? klParlay : '-';
       const dkParlay = order.meta?.draftkingsParlay;
       const dkAm = dkParlay != null ? dkParlay : '-';
       const offeredAm = order.offeredOdds ? (order.offeredOdds >= 0 ? '+' : '') + order.offeredOdds : '-';
@@ -12506,13 +12462,12 @@
         <td style="color:var(--purple);">${pinAm}</td>
         <td style="color:var(--blue);">${fdAm}</td>
         <td style="color:var(--green);">${dkAm}</td>
-        <td style="color:var(--amber);">${klAm}</td>
         <td style="text-align:right">${myRisk}</td>
         <td style="text-align:right; color:var(--green);">${toWin}</td>
         <td><span class="${statusClass}">${statusText}</span></td>
       </tr>
       <tr id="${rowKey}" style="display:${expanded?'table-row':'none'}; background: var(--surface3);">
-        <td colspan="12" style="padding: 12px 16px;">
+        <td colspan="11" style="padding: 12px 16px;">
           ${buildLegTable(legs, { showStatus: true, pad: '2px 6px', vig: order.meta?.vig || order.vig || 0 })}
           <div style="margin-top:4px; font-size:10px; color:var(--text3);">ID: ${order.parlayId || '-'}</div>
         </td>
@@ -12699,7 +12654,6 @@
     const dnbField = {
       pinnacleOdds: 'pinnacleDNBProb',
       fanduelOdds: 'fanduelDNBProb',
-      kalshiOdds: 'kalshiDNBProb',
       draftkingsOdds: 'draftkingsDNBProb',
     }[field];
     let prob = 1;
