@@ -595,6 +595,9 @@
       <a class="nav-item" onclick="switchSection('intel', this)">
         <span class="nav-icon">&#9881;</span> Market Intel
       </a>
+      <a class="nav-item" onclick="switchSection('lost', this)">
+        <span class="nav-icon">&#9876;</span> Lost Analysis
+      </a>
       <a class="nav-item" onclick="switchSection('lines', this)">
         <span class="nav-icon">&#9776;</span> Lines
       </a>
@@ -1030,6 +1033,33 @@
               <span id="prop-flow-counts" style="font-size:11px; color:var(--text3); margin-left:auto;"></span>
             </div>
             <div id="prop-flow-table"><div class="empty-state" style="padding:20px;"><div>Click Refresh to load recent prop flow.</div></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===================== SECTION: LOST ANALYSIS ===================== -->
+      <!-- Surfaces /lost-analysis aggregations. Mike's focus: characterize
+           parlays we quoted on but lost to another SP, where the bettor
+           actually accepted the winning offer. The MISSED bucket is NOT
+           shown here — that's a different question. -->
+      <div id="section-lost" class="section" style="display:none;">
+        <div class="card">
+          <div class="card-header">
+            <span>Lost Analysis — accepted parlays we bid on and lost</span>
+            <span style="display:flex; align-items:center; gap:8px;">
+              <span style="color:var(--text3); font-size:12px;">Window:</span>
+              <select id="lost-window" onchange="loadLostAnalysis()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:12px;">
+                <option value="7">7 days</option>
+                <option value="14">14 days</option>
+                <option value="30" selected>30 days</option>
+                <option value="60">60 days</option>
+                <option value="90">90 days</option>
+              </select>
+              <button onclick="loadLostAnalysis()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 10px; border-radius:4px; font-size:12px; cursor:pointer;">Refresh</button>
+            </span>
+          </div>
+          <div class="card-body" id="lost-analysis-body">
+            <div class="empty-state"><div class="icon">-</div><div>Loading…</div></div>
           </div>
         </div>
       </div>
@@ -11712,7 +11742,7 @@
   }
 
   // Tab switching
-  const sectionNames = { orders: 'Orders', portfolio: 'Portfolio', exposure: 'Exposure', analytics: 'Analytics', intel: 'Market Intel', lines: 'Lines', config: 'Config' };
+  const sectionNames = { orders: 'Orders', portfolio: 'Portfolio', exposure: 'Exposure', analytics: 'Analytics', intel: 'Market Intel', lost: 'Lost Analysis', lines: 'Lines', config: 'Config' };
   let activeSection = 'portfolio';
   function switchPnlBreakdown(tab) {
     const sportEl = document.getElementById('chart-pnl-sport');
@@ -11830,6 +11860,8 @@
     // Auto-load the Lines tab on first activation so the operator
     // doesn't stare at an empty panel.
     if (section === 'lines' && !linesState.loaded) loadLines();
+    // Auto-load Lost Analysis on first activation.
+    if (section === 'lost' && !window._lostAnalysisLoaded) loadLostAnalysis();
   }
   // Backwards compat alias
   function switchTab(tab, btn) { switchSection(tab, btn); }
@@ -11962,6 +11994,156 @@
       rerenderWithFocus(() => loadLines());
     }, 300);
   }
+
+  // ===== Lost Analysis tab =====
+  // Pulls /lost-analysis (which queries Supabase matched_parlays JOIN
+  // parlay_orders) and renders aggregations. Focus: parlays we bid on
+  // and lost AND the bettor actually accepted the winning offer.
+  async function loadLostAnalysis() {
+    const el = document.getElementById('lost-analysis-body');
+    if (!el) return;
+    const daysSel = document.getElementById('lost-window');
+    const days = daysSel ? Number(daysSel.value) || 30 : 30;
+    el.innerHTML = '<div class="empty-state"><div class="icon">…</div><div>Loading lost-analysis data for last ' + days + ' days…</div></div>';
+    window._lostAnalysisLoaded = true;
+    try {
+      const r = await fetch('/lost-analysis?days=' + days);
+      if (!r.ok) {
+        el.innerHTML = '<div class="empty-state"><div class="icon">⚠</div><div>Endpoint returned ' + r.status + '. Check server logs.</div></div>';
+        return;
+      }
+      const data = await r.json();
+      el.innerHTML = renderLostAnalysis(data);
+    } catch (err) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">⚠</div><div>Failed to load: ' + err.message + '</div></div>';
+    }
+  }
+  window.loadLostAnalysis = loadLostAnalysis;
+
+  function _lpFmt$(n) {
+    if (n == null || !Number.isFinite(n)) return '-';
+    if (Math.abs(n) >= 1000) return '$' + Math.round(n).toLocaleString();
+    return '$' + n.toFixed(0);
+  }
+  function _lpFmtPp(n) {
+    if (n == null || !Number.isFinite(n)) return '-';
+    return (n >= 0 ? '+' : '') + n.toFixed(2) + 'pp';
+  }
+  function _lpFmtAm(n) {
+    if (n == null || !Number.isFinite(n)) return '-';
+    return (n >= 0 ? '+' : '') + Math.round(n);
+  }
+  function _lpFmtPct(n) {
+    if (n == null || !Number.isFinite(n)) return '-';
+    return n.toFixed(1) + '%';
+  }
+
+  function _lpTable(title, rows, valueFmt, includeGap) {
+    let html = '<div style="margin-top:14px;"><div style="font-weight:600; font-size:13px; color:var(--text2); margin-bottom:6px;">' + title + '</div>';
+    html += '<table style="font-size:12px; width:100%; border-collapse:collapse;">';
+    html += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);"><th style="text-align:left; padding:4px 8px;">Category</th><th style="text-align:right; padding:4px 8px;">Count</th><th style="text-align:right; padding:4px 8px;">Stake $</th>';
+    if (includeGap) html += '<th style="text-align:right; padding:4px 8px;">Avg gap</th><th style="text-align:right; padding:4px 8px;">Avg Am pts</th>';
+    html += '</tr>';
+    for (const r of rows) {
+      html += '<tr style="border-bottom:1px solid var(--surface2);"><td style="padding:4px 8px;">' + r.key + '</td>';
+      html += '<td style="text-align:right; padding:4px 8px;">' + r.count + '</td>';
+      html += '<td style="text-align:right; padding:4px 8px;">' + _lpFmt$(r.totalStake) + '</td>';
+      if (includeGap) {
+        html += '<td style="text-align:right; padding:4px 8px; color:' + (r.avgGapPp > 1 ? 'var(--amber)' : r.avgGapPp > 0.1 ? 'var(--text2)' : 'var(--text3)') + ';">' + _lpFmtPp(r.avgGapPp) + '</td>';
+        html += '<td style="text-align:right; padding:4px 8px; color:var(--text3);">' + _lpFmtAm(r.avgGapAm) + '</td>';
+      }
+      html += '</tr>';
+    }
+    html += '</table></div>';
+    return html;
+  }
+
+  function renderLostAnalysis(data) {
+    if (!data || !data.summary) return '<div class="empty-state"><div class="icon">!</div><div>No data returned</div></div>';
+    const s = data.summary;
+    let html = '';
+
+    // Headline
+    html += '<div style="padding:12px 8px; font-size:12px; color:var(--text3);">Window: last ' + data.windowDays + ' days · ' + data.uniqueLostCount + ' unique LOST parlays · ' + data.rawRowCount + ' raw rows (deduped by parlay_id)</div>';
+
+    html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; padding:0 8px;">';
+    const tiles = [
+      { label: 'Lost parlays', value: s.totalLost.toLocaleString() },
+      { label: 'Bettor wager $ lost', value: _lpFmt$(s.totalStake) },
+      { label: 'Avg bettor wager', value: _lpFmt$(s.avgStake) },
+      { label: 'Mean gap (pp)', value: _lpFmtPp(s.meanGapPp), cls: s.meanGapPp > 1 ? 'negative' : '' },
+      { label: 'Median gap (pp)', value: _lpFmtPp(s.medianGapPp) },
+      { label: 'Sub-1pp losses', value: _lpFmtPct(s.subOnePpPct) + ' (' + s.subOnePpCount + ')' },
+      { label: 'Exact ties (lost on FIFO)', value: _lpFmtPct(s.tiePct) + ' (' + s.tieCount + ')' },
+    ];
+    for (const t of tiles) {
+      html += '<div style="background:var(--surface2); border-radius:6px; padding:10px 12px;">'
+        + '<div style="font-size:10px; color:var(--text3); text-transform:uppercase;">' + t.label + '</div>'
+        + '<div style="font-size:18px; font-weight:600; margin-top:2px;" class="' + (t.cls || '') + '">' + t.value + '</div>'
+        + '</div>';
+    }
+    html += '</div>';
+
+    // Aggregation tables
+    html += '<div style="padding:8px; display:grid; grid-template-columns:1fr 1fr; gap:18px;">';
+
+    html += '<div>';
+    html += _lpTable('By primary sport', data.bySport, null, true);
+    html += _lpTable('By leg count', data.byLegCount, null, true);
+    html += _lpTable('SGP vs multi-event', data.bySgpVsMulti, null, true);
+    html += _lpTable('By SGP correlation combo', data.bySgpCombo || [], null, true);
+    html += '</div>';
+
+    html += '<div>';
+    html += _lpTable('By market mix', data.byMarketMix, null, true);
+    html += _lpTable('By winning bettor odds range', data.byOddsRange, null, true);
+    html += _lpTable('By bettor stake bucket', data.byStakeBucket, null, true);
+    html += _lpTable('By gap-to-winner bucket', data.byGapBucket, null, false);
+    html += '</div>';
+
+    html += '</div>';
+
+    // Worst + tightest losses
+    function _renderLossList(title, items) {
+      let h = '<div style="padding:8px;"><div style="font-weight:600; font-size:13px; color:var(--text2); margin-bottom:6px;">' + title + '</div>';
+      h += '<table style="font-size:11px; width:100%; border-collapse:collapse;">';
+      h += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);">';
+      h += '<th style="text-align:left; padding:4px 8px;">When</th>';
+      h += '<th style="text-align:left; padding:4px 8px;">Parlay</th>';
+      h += '<th style="text-align:right; padding:4px 8px;">Our Am</th>';
+      h += '<th style="text-align:right; padding:4px 8px;">Winner Am</th>';
+      h += '<th style="text-align:right; padding:4px 8px;">Gap pp</th>';
+      h += '<th style="text-align:right; padding:4px 8px;">Gap Am</th>';
+      h += '<th style="text-align:right; padding:4px 8px;">Bettor $</th>';
+      h += '<th style="text-align:left; padding:4px 8px;">Legs</th>';
+      h += '</tr>';
+      for (const item of items) {
+        const legBlurb = (item.legs || []).slice(0, 3).map(l =>
+          (l.sport || '?').replace(/^.*_/, '').slice(0, 4) + ':' +
+          (l.team || l.selection || '?').slice(0, 16) +
+          (l.line != null ? ' ' + l.line : '')
+        ).join(' / ');
+        const moreLegs = (item.legs || []).length > 3 ? ' +' + ((item.legs || []).length - 3) : '';
+        h += '<tr style="border-bottom:1px solid var(--surface2);">';
+        h += '<td style="padding:4px 8px; font-family:monospace; color:var(--text3); font-size:10px;">' + (item.matchedAt ? item.matchedAt.slice(5, 16).replace('T', ' ') : '-') + '</td>';
+        h += '<td style="padding:4px 8px; font-family:monospace; color:var(--text3); font-size:10px;">' + item.parlayId.slice(0, 8) + '</td>';
+        h += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + _lpFmtAm(item.ourBetAm) + '</td>';
+        h += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:var(--text2);">' + _lpFmtAm(item.winBetAm) + '</td>';
+        h += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:' + (item.gapPp > 1 ? 'var(--amber)' : 'var(--text3)') + ';">' + _lpFmtPp(item.gapPp) + '</td>';
+        h += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:var(--text3);">' + _lpFmtAm(item.gapAm) + '</td>';
+        h += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + _lpFmt$(item.matchedStake) + '</td>';
+        h += '<td style="padding:4px 8px; font-size:10px; color:var(--text3); max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + legBlurb + moreLegs + '</td>';
+        h += '</tr>';
+      }
+      h += '</table></div>';
+      return h;
+    }
+    html += _renderLossList('Top losses by EV impact (gap × stake)', data.worstLosses || []);
+    html += _renderLossList('Top tightest losses by stake (sub-1pp gap)', data.tightestLosses || []);
+
+    return html;
+  }
+
   async function loadLines() {
     const el = document.getElementById('lines-table');
     if (!el) return;

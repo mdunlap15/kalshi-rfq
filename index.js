@@ -2080,6 +2080,224 @@ function startStatusServer() {
     res.json(orderTracker.getMarketIntel(limit));
   });
 
+  // Lost-parlay analytics — comprehensive aggregations for the LOST bucket.
+  //
+  // "LOST" = parlays where (a) we submitted a quote, (b) another SP won the
+  // auction, (c) the bettor actually accepted the winning offer. This
+  // endpoint joins matched_parlays (PX broadcasts) with parlay_orders
+  // (our pricing context) to surface what's systematically beating us.
+  //
+  // Per Mike (2026-05-11): "I want to greatly improve my accepted volumes
+  // and need to know what to change to get more volume" on this bucket.
+  //
+  // Query params:
+  //   days  (default 30, max 90) — lookback window
+  //
+  // NOTE: Last ~7 days of LOST data is partially undercounted due to a
+  // bookkeeping bug fixed in commit b431111 (matched_parlays.outcome not
+  // status-aware after Railway restarts). 30+ day windows are reliable
+  // because the misclassification fix backfills correctly going forward.
+  app.get('/lost-analysis', async (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(90, parseInt(req.query.days) || 30));
+      const fromIso = new Date(Date.now() - days * 86400000).toISOString();
+
+      // Pull LOST matched parlays from Supabase. db.getClient() returns
+      // the raw supabase client. We filter on outcome='lost' + the time
+      // window. loadMatchedParlaysSince doesn't support outcome filtering
+      // so we go direct here.
+      const supabase = db.getClient();
+      const lostRows = [];
+      if (supabase) {
+        let offset = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('matched_parlays')
+            .select('parlay_id,matched_odds,matched_stake,our_odds,legs,matched_at')
+            .eq('outcome', 'lost')
+            .gte('matched_at', fromIso)
+            .order('matched_at', { ascending: false })
+            .range(offset, offset + 999);
+          if (error) {
+            log.warn('Lost', `lost-analysis Supabase fetch failed: ${error.message}`);
+            break;
+          }
+          if (!data || data.length === 0) break;
+          lostRows.push(...data);
+          if (data.length < 1000) break;
+          offset += 1000;
+          if (offset > 50000) break;
+        }
+      }
+
+      // Dedupe by parlay_id (PX broadcasts can fire multiple times)
+      const seen = new Map();
+      for (const r of lostRows) if (!seen.has(r.parlay_id)) seen.set(r.parlay_id, r);
+      const dedupe = [...seen.values()];
+
+      // Join with parlay_orders to get our pricing context (vig, sgp factor, etc.)
+      const ourOrders = await db.loadOrdersByParlayIds(dedupe.map(r => r.parlay_id));
+
+      // Per-record computed fields
+      function amToProb(am) {
+        const n = Number(am);
+        if (!Number.isFinite(n) || n === 0) return null;
+        return n > 0 ? 100 / (n + 100) : -n / (-n + 100);
+      }
+      const enriched = [];
+      for (const row of dedupe) {
+        // PX odds convention: matched_odds and our_odds are stored SP-side
+        // (negative for the bettor's payout favorite). Flip to bettor-side
+        // for human-readable American odds and gap math.
+        const winSpOdds = Number(row.matched_odds);
+        const ourSpOdds = Number(row.our_odds);
+        const winBetAm = -winSpOdds;
+        const ourBetAm = -ourSpOdds;
+        const winImp = amToProb(winBetAm);
+        const ourImp = amToProb(ourBetAm);
+        const gapPp = (winImp != null && ourImp != null) ? (ourImp - winImp) * 100 : null;
+        const gapAm = (Number.isFinite(winBetAm) && Number.isFinite(ourBetAm))
+          ? Math.abs(winBetAm) - Math.abs(ourBetAm) : null;
+        const o = ourOrders[row.parlay_id] || {};
+        enriched.push({
+          parlayId: row.parlay_id,
+          matchedAt: row.matched_at,
+          legs: row.legs || [],
+          legCount: (row.legs || []).length,
+          ourBetAm, winBetAm, gapPp, gapAm,
+          matchedStake: Number(row.matched_stake) || 0,
+          ourVig: o.meta?.vig || null,
+          sgpCombo: o.meta?.sgpCombo || null,
+          sgpVigMultiplier: o.meta?.sgpVigMultiplier || null,
+          sgpCorrelationFactor: o.meta?.sgpCorrelationFactor || null,
+          templateRampTier: o.meta?.templateRampTier || null,
+          fairParlayProb: o.fairParlayProb || null,
+        });
+      }
+
+      // ====== AGGREGATIONS ======
+      function bucket(items, keyFn) {
+        const m = {};
+        for (const x of items) {
+          const k = keyFn(x);
+          if (!m[k]) m[k] = { count: 0, gapPpSum: 0, gapAmSum: 0, stakeSum: 0, gapNonNull: 0 };
+          m[k].count++;
+          m[k].stakeSum += x.matchedStake;
+          if (x.gapPp != null) { m[k].gapPpSum += x.gapPp; m[k].gapAmSum += x.gapAm || 0; m[k].gapNonNull++; }
+        }
+        return Object.entries(m).map(([k, v]) => ({
+          key: k, count: v.count, totalStake: v.stakeSum,
+          avgGapPp: v.gapNonNull > 0 ? v.gapPpSum / v.gapNonNull : null,
+          avgGapAm: v.gapNonNull > 0 ? v.gapAmSum / v.gapNonNull : null,
+        })).sort((a, b) => b.count - a.count);
+      }
+
+      const sportKey = (e) => {
+        const sports = [...new Set((e.legs || []).map(l => l.sport).filter(Boolean))];
+        if (sports.length === 0) return 'unknown';
+        if (sports.length > 1) return 'MULTI';
+        return sports[0];
+      };
+      const marketMixKey = (e) => {
+        const mkts = [...new Set((e.legs || []).map(l => l.market).filter(Boolean))].sort();
+        return mkts.join('+') || 'unknown';
+      };
+      const sgpKey = (e) => {
+        const evIds = new Set((e.legs || []).map(l => l.pxEventId).filter(Boolean));
+        return evIds.size > 0 && evIds.size < (e.legs || []).length ? 'SGP' : 'multi-event';
+      };
+      const oddsBucketKey = (e) => {
+        const am = Math.abs(e.winBetAm || 0);
+        if (am < 200) return '<+200';
+        if (am < 500) return '+200 to +499';
+        if (am < 1000) return '+500 to +999';
+        if (am < 2500) return '+1000 to +2499';
+        if (am < 5000) return '+2500 to +4999';
+        return '+5000+';
+      };
+      const stakeBucketKey = (e) => {
+        const s = e.matchedStake;
+        if (s < 10) return '<$10';
+        if (s < 50) return '$10-$50';
+        if (s < 250) return '$50-$250';
+        if (s < 1000) return '$250-$1k';
+        return '$1k+';
+      };
+      const gapBucketKey = (e) => {
+        if (e.gapPp == null) return 'no-gap-data';
+        const p = e.gapPp;
+        if (p < 0) return 'we-tighter-loose'; // shouldn't happen often
+        if (p < 0.5) return '<0.5pp';
+        if (p < 1.0) return '0.5-1.0pp';
+        if (p < 2.0) return '1.0-2.0pp';
+        if (p < 4.0) return '2.0-4.0pp';
+        if (p < 8.0) return '4.0-8.0pp';
+        return '>8.0pp';
+      };
+
+      // Summary
+      const totalStake = enriched.reduce((s, e) => s + e.matchedStake, 0);
+      const gaps = enriched.filter(e => e.gapPp != null).map(e => e.gapPp);
+      const gapsSorted = [...gaps].sort((a, b) => a - b);
+      const meanGapPp = gaps.length > 0 ? gaps.reduce((s, x) => s + x, 0) / gaps.length : null;
+      const medianGapPp = gapsSorted.length > 0 ? gapsSorted[Math.floor(gapsSorted.length / 2)] : null;
+      const subOnePpCount = gaps.filter(g => Math.abs(g) < 1).length;
+      const subOnePpPct = gaps.length > 0 ? (subOnePpCount / gaps.length * 100) : null;
+      const tieCount = gaps.filter(g => Math.abs(g) < 0.01).length;
+
+      // Top 15 worst losses (biggest gaps with non-trivial stake)
+      const worstLosses = [...enriched]
+        .filter(e => e.gapPp != null && e.matchedStake > 0)
+        .sort((a, b) => (b.gapPp * b.matchedStake) - (a.gapPp * a.matchedStake))
+        .slice(0, 15);
+
+      // Top 15 tightest auction losses (sub-1pp, sorted by stake)
+      const tightestLosses = [...enriched]
+        .filter(e => e.gapPp != null && Math.abs(e.gapPp) < 1)
+        .sort((a, b) => b.matchedStake - a.matchedStake)
+        .slice(0, 15);
+
+      res.json({
+        windowDays: days,
+        capturedAt: new Date().toISOString(),
+        rawRowCount: lostRows.length,
+        uniqueLostCount: dedupe.length,
+        summary: {
+          totalLost: dedupe.length,
+          totalStake,
+          avgStake: dedupe.length > 0 ? totalStake / dedupe.length : 0,
+          meanGapPp,
+          medianGapPp,
+          subOnePpCount,
+          subOnePpPct,
+          tieCount,
+          tiePct: gaps.length > 0 ? (tieCount / gaps.length * 100) : null,
+          gapNonNullCount: gaps.length,
+        },
+        bySport: bucket(enriched, sportKey),
+        byLegCount: bucket(enriched, e => e.legCount + '-leg'),
+        byMarketMix: bucket(enriched, marketMixKey),
+        bySgpVsMulti: bucket(enriched, sgpKey),
+        byOddsRange: bucket(enriched, oddsBucketKey),
+        byStakeBucket: bucket(enriched, stakeBucketKey),
+        byGapBucket: bucket(enriched, gapBucketKey),
+        bySgpCombo: bucket(enriched.filter(e => e.sgpCombo), e => e.sgpCombo),
+        byHour: bucket(enriched, e => {
+          const d = new Date(e.matchedAt);
+          if (isNaN(d.getTime())) return 'unknown';
+          // Convert to ET (UTC-4 in May, EDT)
+          const etHour = (d.getUTCHours() - 4 + 24) % 24;
+          return String(etHour).padStart(2, '0') + ':00 ET';
+        }),
+        worstLosses,
+        tightestLosses,
+      });
+    } catch (err) {
+      log.error('Lost', `lost-analysis endpoint failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Latency breakdown — per-stage percentiles + win-rate-by-bucket
   // For measuring before/after effects of latency optimizations.
   app.get('/latency-breakdown', (req, res) => {
