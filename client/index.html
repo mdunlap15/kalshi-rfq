@@ -9386,11 +9386,12 @@
     html += '</select></label>';
     html += '<button onclick="setParlayVsBooksFilter(\'all\')" style="' + btnStyle(F === 'all') + '">All</button>';
     html += '<button onclick="setParlayVsBooksFilter(\'accepted\')" style="' + btnStyle(F === 'accepted') + '" title="Bettor accepted on PX (orderUuid present) — real fills">Accepted</button>';
-    html += '<button onclick="setParlayVsBooksFilter(\'offered\')" style="' + btnStyle(F === 'offered') + '" title="PX selected our quote but bettor walked away (no orderUuid)">Offered</button>';
     html += '<button onclick="setParlayVsBooksFilter(\'lost\')" style="' + btnStyle(F === 'lost') + '" title="We weren\'t the best odds, or no SP won the RFQ">Lost</button>';
-    // Legacy filter values ('confirmed' = accepted+offered combined,
-    // 'notfilled' = lost) still routed for back-compat with any
-    // existing bookmarks / shared links.
+    // 'Offered' button removed 2026-05-11 (Mike): the bucket — PX picked
+    // our quote but the bettor walked away in final review — always
+    // returns 0 rows in practice. Filter logic below still routes the
+    // value so legacy bookmarks (and the legacy 'confirmed' alias) don't
+    // 404, but there's no UI to select it.
     html += '</div>';
 
     // Apply outcome filter, then sport filter
