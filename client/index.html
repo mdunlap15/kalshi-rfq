@@ -12161,14 +12161,30 @@
     return n.toFixed(1) + '%';
   }
 
-  function _lpTable(title, rows, valueFmt, includeGap) {
-    let html = '<div style="margin-top:14px;"><div style="font-weight:600; font-size:13px; color:var(--text2); margin-bottom:6px;">' + title + '</div>';
-    html += '<table style="font-size:12px; width:100%; border-collapse:collapse;">';
+  // Tables with > maxRows are abbreviated to top N (rows sorted by stake
+  // descending by the backend). A "Show all N more" button reveals the
+  // tail. Keeps long-tail tables (especially "By market mix", which can
+  // have 40+ unique combos) from forcing the operator to scroll past
+  // hundreds of pixels to reach the next section.
+  let _lpTableIdCounter = 0;
+  function _lpTable(title, rows, valueFmt, includeGap, opts) {
+    opts = opts || {};
+    const maxRows = opts.maxRows != null ? opts.maxRows : 15;
+    const hasOverflow = rows.length > maxRows;
+    const tableId = 'lptbl-' + (++_lpTableIdCounter);
+    const overflowLabel = hasOverflow
+      ? ' <span style="color:var(--text3); font-weight:400; font-size:11px;">(top ' + maxRows + ' of ' + rows.length + ' — click to expand)</span>'
+      : '';
+    let html = '<div style="margin-top:14px;"><div style="font-weight:600; font-size:13px; color:var(--text2); margin-bottom:6px;">' + title + overflowLabel + '</div>';
+    html += '<table id="' + tableId + '" style="font-size:12px; width:100%; border-collapse:collapse;">';
     html += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);"><th style="text-align:left; padding:4px 8px;">Category</th><th style="text-align:right; padding:4px 8px;">Count</th><th style="text-align:right; padding:4px 8px;">Stake $</th>';
     if (includeGap) html += '<th style="text-align:right; padding:4px 8px;">Avg gap</th><th style="text-align:right; padding:4px 8px;">Avg Am pts</th>';
     html += '</tr>';
-    for (const r of rows) {
-      html += '<tr style="border-bottom:1px solid var(--surface2);"><td style="padding:4px 8px;">' + r.key + '</td>';
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const isOverflow = i >= maxRows;
+      const rowStyle = 'border-bottom:1px solid var(--surface2);' + (isOverflow ? ' display:none;' : '');
+      html += '<tr class="lp-row" data-overflow="' + (isOverflow ? '1' : '0') + '" style="' + rowStyle + '"><td style="padding:4px 8px;">' + r.key + '</td>';
       html += '<td style="text-align:right; padding:4px 8px;">' + r.count + '</td>';
       html += '<td style="text-align:right; padding:4px 8px;">' + _lpFmt$(r.totalStake) + '</td>';
       if (includeGap) {
@@ -12177,9 +12193,35 @@
       }
       html += '</tr>';
     }
-    html += '</table></div>';
+    html += '</table>';
+    if (hasOverflow) {
+      const remaining = rows.length - maxRows;
+      html += '<button onclick="window._lpToggleOverflow(\'' + tableId + '\', this)" data-expanded="0" '
+        + 'style="margin-top:6px; background:var(--surface3); border:1px solid var(--border); color:var(--text2); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer;">'
+        + 'Show all ' + remaining + ' more ▾</button>';
+    }
+    html += '</div>';
     return html;
   }
+  // Global handler — defined once so every _lpTable button can reference
+  // it without inline closures. Toggles every tr with data-overflow="1"
+  // within the given table and updates the button label.
+  window._lpToggleOverflow = function(tableId, btn) {
+    const tbl = document.getElementById(tableId);
+    if (!tbl) return;
+    const expanded = btn.dataset.expanded === '1';
+    tbl.querySelectorAll('tr.lp-row[data-overflow="1"]').forEach(r => {
+      r.style.display = expanded ? 'none' : '';
+    });
+    if (expanded) {
+      const hidden = tbl.querySelectorAll('tr.lp-row[data-overflow="1"]').length;
+      btn.textContent = 'Show all ' + hidden + ' more ▾';
+      btn.dataset.expanded = '0';
+    } else {
+      btn.textContent = 'Show fewer ▴';
+      btn.dataset.expanded = '1';
+    }
+  };
 
   function renderLostAnalysis(data) {
     if (!data || !data.summary) return '<div class="empty-state"><div class="icon">!</div><div>No data returned</div></div>';
