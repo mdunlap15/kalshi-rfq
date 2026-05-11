@@ -259,6 +259,17 @@ const ODDS_API_FALLBACK = {
     markets: 'h2h,spreads,totals',
     bookmakers: ODDS_API_BOOKMAKERS,
   },
+  // English Championship (EFL Championship — second tier below EPL).
+  // Added 2026-05-11 after operator caught Hull City @ Millwall registered
+  // under the generic 'soccer' bucket with fairProb=null because SharpAPI's
+  // generic-soccer feed doesn't surface Championship games. Routing it
+  // through The Odds API as a dedicated league key gives us h2h/spreads/
+  // totals coverage and lets line-manager prefer it over generic soccer.
+  'soccer_efl_champ': {
+    oddsApiSport: 'soccer_efl_champ',
+    markets: 'h2h,spreads,totals',
+    bookmakers: ODDS_API_BOOKMAKERS,
+  },
   // Golf and combat sports — h2h only (no spreads/totals on these markets)
   'golf_pga_championship': {
     oddsApiSport: 'golf_pga_championship',

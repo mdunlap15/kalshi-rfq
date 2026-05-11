@@ -756,6 +756,7 @@ const config = {
     'soccer_mexico_ligamx': 'Soccer',
     'soccer_brazil_campeonato': 'Soccer',
     'soccer_conmebol_libertadores': 'Soccer',
+    'soccer_efl_champ': 'Soccer',
     'golf_pga_championship': 'Golf',
     'golf_matchups': 'Golf',
     // PX uses 'MMA' (short form) as sport_name, not 'Mixed Martial Arts'.
