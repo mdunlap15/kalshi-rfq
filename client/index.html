@@ -12141,6 +12141,67 @@
     html += _renderLossList('Top losses by EV impact (gap × stake)', data.worstLosses || []);
     html += _renderLossList('Top tightest losses by stake (sub-1pp gap)', data.tightestLosses || []);
 
+    // Partial-fill leakage section — distinct from LOST. These are won
+    // auctions where our exposure caps limited our take; PX routed the
+    // rest to another SP at the same price.
+    if (data.partialFillStats) {
+      const pf = data.partialFillStats;
+      html += '<div style="padding:14px 8px; margin-top:18px; border-top:2px solid var(--border);">';
+      html += '<div style="font-weight:700; font-size:14px; color:var(--text); margin-bottom:8px;">Partial-fill leakage (won auctions where cap limited us)</div>';
+      html += '<div style="font-size:11px; color:var(--text3); margin-bottom:10px;">We won the auction price but PX gave us only part of the bettor wager — the rest went to another SP at the same price. Likely cause: our MAX_RISK_PER_PARLAY / team / game / player exposure caps. Each case here is a stake we COULD have booked if the cap allowed.</div>';
+      html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-bottom:14px;">';
+      const ptiles = [
+        { label: 'Partial-fill cases', value: pf.partialFillCount.toLocaleString() },
+        { label: 'Won parlays compared', value: pf.totalWonComparable.toLocaleString() },
+        { label: 'Leakage rate', value: pf.totalWonComparable > 0 ? (pf.partialFillCount / pf.totalWonComparable * 100).toFixed(2) + '%' : '-' },
+        { label: 'Leftover bettor wager', value: _lpFmt$(pf.totalLeftover) },
+        { label: 'Avg leftover per case', value: _lpFmt$(pf.avgLeftoverPerCase) },
+        { label: 'Annualized leftover', value: _lpFmt$(pf.annualizedLeftover) },
+      ];
+      for (const t of ptiles) {
+        html += '<div style="background:var(--surface2); border-radius:6px; padding:10px 12px;">'
+          + '<div style="font-size:10px; color:var(--text3); text-transform:uppercase;">' + t.label + '</div>'
+          + '<div style="font-size:18px; font-weight:600; margin-top:2px;">' + t.value + '</div>'
+          + '</div>';
+      }
+      html += '</div>';
+
+      // Top partial-fill list
+      if ((pf.topPartials || []).length > 0) {
+        html += '<table style="font-size:11px; width:100%; border-collapse:collapse;">';
+        html += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);">';
+        html += '<th style="text-align:left; padding:4px 8px;">When</th>';
+        html += '<th style="text-align:left; padding:4px 8px;">Parlay</th>';
+        html += '<th style="text-align:right; padding:4px 8px;">Legs</th>';
+        html += '<th style="text-align:right; padding:4px 8px;">Bettor wager</th>';
+        html += '<th style="text-align:right; padding:4px 8px;">Our take</th>';
+        html += '<th style="text-align:right; padding:4px 8px;">Leftover</th>';
+        html += '<th style="text-align:right; padding:4px 8px;">Fill %</th>';
+        html += '<th style="text-align:left; padding:4px 8px;">Legs detail</th>';
+        html += '</tr>';
+        for (const p of pf.topPartials) {
+          const legBlurb = (p.legs || []).slice(0, 3).map(l =>
+            (l.sport || '?').replace(/^.*_/, '').slice(0, 4) + ':' +
+            (l.team || l.selection || '?').slice(0, 14) +
+            (l.line != null ? ' ' + l.line : '')
+          ).join(' / ');
+          const moreLegs = (p.legs || []).length > 3 ? ' +' + ((p.legs || []).length - 3) : '';
+          html += '<tr style="border-bottom:1px solid var(--surface2);">';
+          html += '<td style="padding:4px 8px; font-family:monospace; color:var(--text3); font-size:10px;">' + (p.matchedAt ? p.matchedAt.slice(5, 16).replace('T', ' ') : '-') + '</td>';
+          html += '<td style="padding:4px 8px; font-family:monospace; color:var(--text3); font-size:10px;">' + p.parlayId.slice(0, 8) + '</td>';
+          html += '<td style="text-align:right; padding:4px 8px;">' + p.legCount + '</td>';
+          html += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + _lpFmt$(p.matchedStake) + '</td>';
+          html += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:var(--text2);">' + _lpFmt$(p.ourStake) + '</td>';
+          html += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:var(--amber);">' + _lpFmt$(p.leftover) + '</td>';
+          html += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + (p.fillPct * 100).toFixed(0) + '%</td>';
+          html += '<td style="padding:4px 8px; font-size:10px; color:var(--text3); max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + legBlurb + moreLegs + '</td>';
+          html += '</tr>';
+        }
+        html += '</table>';
+      }
+      html += '</div>';
+    }
+
     return html;
   }
 

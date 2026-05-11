@@ -2251,6 +2251,69 @@ function startStatusServer() {
         .sort((a, b) => (b.gapPp * b.matchedStake) - (a.gapPp * a.matchedStake))
         .slice(0, 15);
 
+      // ====== PARTIAL-FILL LEAKAGE (won parlays where our stake < broadcast) ======
+      // Separate from the LOST bucket — these are auctions where WE were
+      // the winning price-setter but PX gave us only a portion of the
+      // bettor's wager (the rest went to another SP at the same price).
+      // Likely cause: our exposure caps limit our take, the remainder is
+      // split-routed. Surface a third bucket alongside the LOST analysis
+      // since the operator wants visibility on all auction $$ leaving the
+      // table.
+      const wonRows = [];
+      if (supabase) {
+        let off = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from('matched_parlays')
+            .select('parlay_id,matched_stake,matched_odds,matched_at,legs')
+            .eq('outcome', 'won')
+            .gte('matched_at', fromIso)
+            .order('matched_at', { ascending: false })
+            .range(off, off + 999);
+          if (error) break;
+          if (!data || data.length === 0) break;
+          wonRows.push(...data);
+          if (data.length < 1000) break;
+          off += 1000;
+          if (off > 50000) break;
+        }
+      }
+      const wonUniq = new Map();
+      for (const r of wonRows) if (!wonUniq.has(r.parlay_id)) wonUniq.set(r.parlay_id, r);
+      const wonDedupe = [...wonUniq.values()];
+      const wonOrders = await db.loadOrdersByParlayIds(wonDedupe.map(r => r.parlay_id));
+      const partials = [];
+      let totalWonComparable = 0;
+      for (const w of wonDedupe) {
+        const o = wonOrders[w.parlay_id];
+        if (!o || o.confirmedStake == null) continue;
+        totalWonComparable++;
+        const ms = Number(w.matched_stake);
+        const cs = Number(o.confirmedStake);
+        if (Number.isFinite(ms) && Number.isFinite(cs) && cs < ms - 1) {
+          partials.push({
+            parlayId: w.parlay_id,
+            matchedAt: w.matched_at,
+            legs: w.legs || o.legs || [],
+            legCount: ((w.legs || o.legs || [])).length,
+            matchedStake: ms,
+            ourStake: cs,
+            leftover: ms - cs,
+            fillPct: cs / ms,
+          });
+        }
+      }
+      partials.sort((a, b) => b.leftover - a.leftover);
+      const totalLeftover = partials.reduce((s, p) => s + p.leftover, 0);
+      const partialFillStats = {
+        totalWonComparable,
+        partialFillCount: partials.length,
+        totalLeftover,
+        avgLeftoverPerCase: partials.length > 0 ? totalLeftover / partials.length : 0,
+        annualizedLeftover: totalLeftover * (365 / days),
+        topPartials: partials.slice(0, 15),
+      };
+
       // Top 15 tightest auction losses (sub-1pp, sorted by stake)
       const tightestLosses = [...enriched]
         .filter(e => e.gapPp != null && Math.abs(e.gapPp) < 1)
@@ -2291,6 +2354,7 @@ function startStatusServer() {
         }),
         worstLosses,
         tightestLosses,
+        partialFillStats,
       });
     } catch (err) {
       log.error('Lost', `lost-analysis endpoint failed: ${err.message}`);
