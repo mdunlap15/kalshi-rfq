@@ -1335,94 +1335,120 @@ async function seedAllLines() {
           let parsedProp = [];
           try { parsedProp = px.parseMarketSelections(market) || []; } catch { continue; }
           if (parsedProp.length === 0) continue;
-          // Use the first selection's line value for the TOA lookup; all
-          // sides on a given market share the same line.
-          const sampleLine = parsedProp.find(s => s.line != null)?.line ?? null;
 
-          let lookup = null;
-          try {
-            lookup = await oddsFeed.lookupTheOddsApiPlayerProp(
-              sportKey, toaMarketKey,
-              { homeTeam: matchedHome, awayTeam: matchedAway, startTime: event.scheduled || null },
-              playerName, sampleLine,
-            );
-          } catch (err) {
-            log.debug('Lines', `Pre-seed prop lookup error for ${playerName} ${propType}: ${err.message}`);
-            // Fall through to DK scraper — don't continue here
-          }
-
-          // DK scraper fallback: when TOA returns no/insufficient data,
-          // hit the DK player-prop scraper cache. Operator directive
-          // 2026-05-03: every prop type in the allowlist must have a
-          // scraper backstop. Same pattern as the MLB F5 DK scraper —
-          // single-book DK is treated as authoritative for the prop
-          // since DK's player-prop coverage is the broadest in the
-          // industry. The DK scraper IS lazy-loaded the first time —
-          // first call per refresh cycle takes ~20-30s but every
-          // subsequent prop in the same cycle reuses the cached scrape.
-          const toaInsufficient = !lookup
-            || lookup.fairProbOver == null
-            || lookup.fairProbUnder == null
-            || ((lookup.booksWithBothSides || 0) < minBooks
-                && !((lookup.books || []).some(b => trustedSet.includes(String(b).toLowerCase()))));
-          if (toaInsufficient) {
-            try {
-              const dk = require('./dk-scraper');
-              // Trigger a scrape if no cache yet — only on first fallback per cycle
-              if (typeof dk.fetchDkPlayerProps === 'function') {
-                // Fire-and-await: we want the data this cycle. The 15-min
-                // cache TTL inside the scraper means subsequent calls
-                // reuse the same scrape result.
-                await dk.fetchDkPlayerProps(sportKey).catch((e) => {
-                  log.debug('Lines', `DK ${sportKey} player-prop scrape failed: ${e.message}`);
-                });
-              }
-              const dkHit = dk.lookupDkPlayerPropFairProb(sportKey, propType, playerName, sampleLine);
-              if (dkHit && dkHit.fairProbOver != null && dkHit.fairProbUnder != null) {
-                lookup = dkHit;
-              }
-            } catch (err) {
-              log.debug('Lines', `DK player-prop fallback error for ${playerName} ${propType}: ${err.message}`);
-            }
-          }
-          if (!lookup || lookup.fairProbOver == null || lookup.fairProbUnder == null) continue;
-          const both = lookup.booksWithBothSides || 0;
-          const trustedAlone = both === 1 && (lookup.books || []).some(b => trustedSet.includes(String(b).toLowerCase()));
-          if (both < minBooks && !trustedAlone) continue;
-
-          // Register BOTH sides — bettors will RFQ either over or under
-          // and both lineIds need to be in the index ahead of time.
+          // Group selections by line value. Each distinct line gets its
+          // OWN TOA lookup + DK-scraper fallback + minBooks gate so the
+          // per-line fair probabilities are correct.
+          //
+          // Why this matters: PX bundles every alt line for a player's
+          // prop into ONE market (e.g. Mike Trout Total Bases contains
+          // 0.5, 1.5, and 2.5 over/under selections). Previously a single
+          // `sampleLine` was used for one TOA lookup and the resulting
+          // fairProbOver / fairProbUnder were propagated to every alt —
+          // so quotes on Trout's 1.5 Under inherited the 0.5-line fair
+          // (~0.43) when the true 1.5-line fair was ~0.64. Bettors
+          // exploited the 20+ pp delta. Audit found the same pattern
+          // across NBA points / rebounds / assists. Fix is one-and-the-
+          // same: lookup per line, register per line. (Fixed 2026-05-11.)
+          //
+          // Cost is bounded: TOA prop odds are cached per (sport, event,
+          // market) so N distinct lines on the same market = 1 HTTP +
+          // N de-vig passes. The same applies to DK scraper hits.
+          const byLine = new Map();
           for (const sel of parsedProp) {
             if (!sel.lineId) continue;
             if (sel.selection !== 'over' && sel.selection !== 'under') continue;
-            const fairProb = sel.selection === 'over' ? lookup.fairProbOver : lookup.fairProbUnder;
-            lineIndex[sel.lineId] = {
-              sport: sportKey,
-              pxEventId: event.event_id,
-              pxEventName: event.name,
-              marketType: 'player_' + propType,
-              marketName: market.name,
-              selection: sel.selection,
-              teamName: playerName,
-              line: sel.line,
-              homeTeam: matchedHome,
-              awayTeam: matchedAway,
-              oddsApiSport: sportKey,
-              oddsApiMarket: toaMarketKey,
-              oddsApiSelection: sel.selection,
-              startTime: event.scheduled || null,
-              playerName,
-              propType,
-              fairProb,
-              fairProbOver: lookup.fairProbOver,
-              fairProbUnder: lookup.fairProbUnder,
-              booksWithBothSides: lookup.booksWithBothSides,
-              propBooks: lookup.books,
-              propSource: 'theoddsapi',
-              propFetchedAt: lookup.fetchedAt || Date.now(),
-            };
-            totalLines++;
-            matchedLines++;
+            if (sel.line == null) continue;
+            if (!byLine.has(sel.line)) byLine.set(sel.line, []);
+            byLine.get(sel.line).push(sel);
+          }
+
+          for (const [thisLine, sels] of byLine) {
+            let lookup = null;
+            try {
+              lookup = await oddsFeed.lookupTheOddsApiPlayerProp(
+                sportKey, toaMarketKey,
+                { homeTeam: matchedHome, awayTeam: matchedAway, startTime: event.scheduled || null },
+                playerName, thisLine,
+              );
+            } catch (err) {
+              log.debug('Lines', `Pre-seed prop lookup error for ${playerName} ${propType} ${thisLine}: ${err.message}`);
+              // Fall through to DK scraper — don't continue here
+            }
+
+            // DK scraper fallback: when TOA returns no/insufficient data,
+            // hit the DK player-prop scraper cache. Operator directive
+            // 2026-05-03: every prop type in the allowlist must have a
+            // scraper backstop. Same pattern as the MLB F5 DK scraper —
+            // single-book DK is treated as authoritative for the prop
+            // since DK's player-prop coverage is the broadest in the
+            // industry. The DK scraper IS lazy-loaded the first time —
+            // first call per refresh cycle takes ~20-30s but every
+            // subsequent prop in the same cycle reuses the cached scrape.
+            // Fallback is scoped to THIS specific line value.
+            const toaInsufficient = !lookup
+              || lookup.fairProbOver == null
+              || lookup.fairProbUnder == null
+              || ((lookup.booksWithBothSides || 0) < minBooks
+                  && !((lookup.books || []).some(b => trustedSet.includes(String(b).toLowerCase()))));
+            if (toaInsufficient) {
+              try {
+                const dk = require('./dk-scraper');
+                if (typeof dk.fetchDkPlayerProps === 'function') {
+                  // Fire-and-await: we want the data this cycle. The 15-min
+                  // cache TTL inside the scraper means subsequent calls
+                  // reuse the same scrape result.
+                  await dk.fetchDkPlayerProps(sportKey).catch((e) => {
+                    log.debug('Lines', `DK ${sportKey} player-prop scrape failed: ${e.message}`);
+                  });
+                }
+                const dkHit = dk.lookupDkPlayerPropFairProb(sportKey, propType, playerName, thisLine);
+                if (dkHit && dkHit.fairProbOver != null && dkHit.fairProbUnder != null) {
+                  lookup = dkHit;
+                }
+              } catch (err) {
+                log.debug('Lines', `DK player-prop fallback error for ${playerName} ${propType} ${thisLine}: ${err.message}`);
+              }
+            }
+            if (!lookup || lookup.fairProbOver == null || lookup.fairProbUnder == null) continue;
+            const both = lookup.booksWithBothSides || 0;
+            const trustedAlone = both === 1 && (lookup.books || []).some(b => trustedSet.includes(String(b).toLowerCase()));
+            if (both < minBooks && !trustedAlone) continue;
+
+            // Register BOTH sides at THIS line — bettors will RFQ either
+            // over or under and both lineIds need to be in the index ahead
+            // of time. Each sel.lineId in `sels` is unique (PX uses one
+            // lineId per (line, side) pair).
+            for (const sel of sels) {
+              const fairProb = sel.selection === 'over' ? lookup.fairProbOver : lookup.fairProbUnder;
+              lineIndex[sel.lineId] = {
+                sport: sportKey,
+                pxEventId: event.event_id,
+                pxEventName: event.name,
+                marketType: 'player_' + propType,
+                marketName: market.name,
+                selection: sel.selection,
+                teamName: playerName,
+                line: sel.line,
+                homeTeam: matchedHome,
+                awayTeam: matchedAway,
+                oddsApiSport: sportKey,
+                oddsApiMarket: toaMarketKey,
+                oddsApiSelection: sel.selection,
+                startTime: event.scheduled || null,
+                playerName,
+                propType,
+                fairProb,
+                fairProbOver: lookup.fairProbOver,
+                fairProbUnder: lookup.fairProbUnder,
+                booksWithBothSides: lookup.booksWithBothSides,
+                propBooks: lookup.books,
+                propSource: lookup.source || 'theoddsapi',
+                propFetchedAt: lookup.fetchedAt || Date.now(),
+              };
+              totalLines++;
+              matchedLines++;
+            }
           }
         }
       }
