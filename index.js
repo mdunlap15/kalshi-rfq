@@ -2274,13 +2274,17 @@ function startStatusServer() {
       const gapBucketKey = (e) => {
         if (e.gapPp == null) return 'no-gap-data';
         const p = e.gapPp;
-        // Negative gap = we offered HIGHER odds (better payout for bettor)
-        // than the winning SP, but still didn't end up on the parlay. The
-        // by-reject-reason aggregation below explains the cause — almost
-        // always a confirmation rejection or exposure cap that pulled our
-        // offer between submit and match. Older label was "we-tighter-loose"
-        // which mis-stated the direction; renamed for clarity.
-        if (p < 0) return 'gap<0 (we walked away — see Why we walked away)';
+        // Negative gap = our offered odds were HIGHER (better payout for
+        // bettor) than the recorded winner's odds, but we still didn't get
+        // the fill. Several possible causes:
+        //   - we walked away from the confirm (drift / exposure cap / paused)
+        //   - cascade/split fill (we won partial, remainder cascaded to a
+        //     worse-priced SP whose odds got recorded as matched_odds)
+        //   - data lag / timing race between our offer log and PX's match
+        //   - sub-integer precision rounding mismatch with our recorded value
+        // Label kept short and accurate — the "Why we walked away" table
+        // covers ONLY the first case, so cross-linking would mislead.
+        if (p < 0) return 'gap<0 (we offered better, lost anyway)';
         if (p < 0.5) return '<0.5pp';
         if (p < 1.0) return '0.5-1.0pp';
         if (p < 2.0) return '1.0-2.0pp';
