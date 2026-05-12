@@ -904,6 +904,13 @@ function startStatusServer() {
           currentRisk: orderTracker.getTotalPortfolioRisk(),
           totalToWin: orderTracker.getTotalToWin(),
           maxRiskPerParlay: config.pricing.maxRiskPerParlay,
+          // Portfolio gross-risk cap utilization. Surfaces the hard ceiling
+          // on absolute worst-case loss (sum of confirmedStake on all open
+          // parlays). Null when the cap is disabled.
+          maxGrossPortfolioRisk: config.pricing.maxGrossPortfolioRisk || null,
+          grossUtilizationPct: config.pricing.maxGrossPortfolioRisk > 0
+            ? Math.round(orderTracker.getTotalPortfolioRisk() / config.pricing.maxGrossPortfolioRisk * 1000) / 10
+            : null,
         };
       })(),
       alerts: orderTracker.getAlerts(),
@@ -2165,6 +2172,7 @@ function startStatusServer() {
         const r = String(reason || '').toLowerCase();
         if (!r) return null;
         if (r.includes('price drift') || r.includes('drift')) return 'confirmation drift';
+        if (r.includes('portfolio gross')) return 'portfolio gross cap';
         if (r.includes('series exposure') || r.includes('series gross')) return 'series exposure cap';
         if (r.includes('game exposure') || r.includes('per-event')) return 'game exposure cap';
         if (r.includes('team exposure') || r.includes('per-team')) return 'team exposure cap';
@@ -2473,6 +2481,8 @@ function startStatusServer() {
       const REJECT_ACTIONS = {
         'confirmation drift': { envVar: 'CONFIRMATION_DRIFT_THRESHOLD',
           actionTemplate: 'Loosen CONFIRMATION_DRIFT_THRESHOLD by ~0.02' },
+        'portfolio gross cap': { envVar: 'MAX_GROSS_PORTFOLIO_RISK',
+          actionTemplate: 'Raise MAX_GROSS_PORTFOLIO_RISK (currently capping total open SP-risk). Trade-off: higher worst-case drawdown.' },
         'team exposure cap': { envVar: 'MAX_EXPOSURE_PER_TEAM',
           actionTemplate: 'Raise MAX_EXPOSURE_PER_TEAM by ~20%' },
         'game exposure cap': { envVar: 'MAX_EXPOSURE_PER_GAME',
@@ -2775,6 +2785,11 @@ function startStatusServer() {
           envVar: 'MAX_ODDS',
           actionTemplate: 'Raise MAX_ODDS to allow longer-shot parlays',
           captureRate: 0.15, // longshots have low base fill rate
+        },
+        'portfolio gross cap': {
+          envVar: 'MAX_GROSS_PORTFOLIO_RISK',
+          actionTemplate: 'Raise MAX_GROSS_PORTFOLIO_RISK (capping aggregate open SP-risk). Or wait for open positions to settle and free capacity.',
+          captureRate: 0.50, // we won the auction by price but ran out of book capacity
         },
         'heavy favorite': {
           envVar: 'NBA_SERIES_FAV_CAP_ODDS / heavy-fav per-sport',

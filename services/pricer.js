@@ -3113,6 +3113,32 @@ function shouldDecline(legs) {
     };
   }
 
+  // Portfolio gross-risk hard cap (quote-time gate). Bounds absolute
+  // worst-case loss across the entire open book. Uses estPayout as the
+  // worst-case addition (= our max_risk for this parlay, the most PX
+  // could confirm on us). When maxGrossPortfolioRisk is unset or 0,
+  // the check is a no-op. Re-checked at confirm time in handleConfirm
+  // with the actual confirmedStake.
+  const portfolioCap = config.pricing.maxGrossPortfolioRisk;
+  if (portfolioCap > 0) {
+    const portfolioCheck = orderTracker.checkPortfolioRisk(estPayout, portfolioCap);
+    if (!portfolioCheck.allowed) {
+      const detail = `current $${portfolioCheck.current.toFixed(0)} + $${portfolioCheck.additional.toFixed(0)} > cap $${portfolioCheck.limit}`;
+      log.info('Pricing', `Portfolio gross cap: ${detail}`);
+      try {
+        const push = require('./push');
+        push.notifyCapHit('portfolio', { subject: 'gross open risk', limit: portfolioCheck.limit, current: portfolioCheck.current + portfolioCheck.additional });
+      } catch (_) { /* fire-and-forget */ }
+      return {
+        declined: true,
+        reason: 'portfolio gross cap',
+        detail,
+        violations: [{ team: 'portfolio', wouldBe: portfolioCheck.current + portfolioCheck.additional, limit: portfolioCheck.limit }],
+        estPayout,
+      };
+    }
+  }
+
   // Series-specific gross exposure cap. Uses the tighter per-parlay
   // cap (config.pricing.maxSeriesRiskPerParlay) as the worst-case add
   // since that's what max_risk on the offer will be set to for series
