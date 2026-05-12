@@ -7866,6 +7866,17 @@ const TOA_PROP_TTL_MS = 5 * 60 * 1000;
 const TOA_PROP_REFRESH_AHEAD_MS = 3 * 60 * 1000;
 const toaEventsCache = {};   // { sportKey: { fetchedAt, events: [...], refreshing: bool } }
 const toaPropOddsCache = {}; // { `${sport}:${eventId}:${marketKey}`: { fetchedAt, refreshing: bool, ...respBody } }
+// Diagnostics on TOA staleness — incremented every time we serve cached
+// data past TTL because refresh failed. Lets operators spot ongoing TOA
+// outages via /status without hunting log lines. Reset on service restart.
+const toaStaleServeStats = {
+  events: 0,            // count of stale events fetches
+  propOdds: 0,          // count of stale per-event prop-odds fetches
+  lastStaleEventsAt: null,
+  lastStalePropOddsAt: null,
+  maxStaleAgeMin: 0,    // largest age of stale data we've served since boot
+};
+function getToaStaleServeStats() { return { ...toaStaleServeStats }; }
 
 // Map our internal sport keys to TOA sport keys. They happen to match
 // for MLB but kept explicit for future expansion.
@@ -7919,9 +7930,21 @@ async function _getTheOddsApiEvents(sport) {
     }
     return cached.events;
   }
-  // Cache miss or fully expired: block on fetch
+  // Cache miss or fully expired: block on fetch. On failure, fall back to
+  // the stale cached entry if we have one — keeps the SP quoting through
+  // TOA outages (quota exhaustion / network errors / TOA-side incidents)
+  // rather than going dark on every prop and alt-line leg.
   const events = await _refreshTheOddsApiEvents(sportKey);
-  return events != null ? events : (cached ? cached.events : null);
+  if (events != null) return events;
+  if (cached) {
+    const ageMin = Math.round((now - cached.fetchedAt) / 60000);
+    toaStaleServeStats.events++;
+    toaStaleServeStats.lastStaleEventsAt = new Date().toISOString();
+    if (ageMin > toaStaleServeStats.maxStaleAgeMin) toaStaleServeStats.maxStaleAgeMin = ageMin;
+    log.warn('OddsFeed', `TOA events refresh failed for ${sportKey}; serving stale cache (${ageMin}min old, ${cached.events?.length || 0} events)`);
+    return cached.events;
+  }
+  return null;
 }
 
 // Internal: TOA per-event prop-odds fetch + cache write. Same dual-use
@@ -7968,8 +7991,30 @@ async function _getTheOddsApiPropOdds(sport, eventId, marketKey) {
     }
     return cached;
   }
-  // Cache miss or fully expired: block on fetch
-  return await _refreshTheOddsApiPropOdds(sport, eventId, marketKey);
+  // Cache miss or fully expired: block on fetch. On failure, fall back to
+  // the stale cached entry rather than returning null. Critical during TOA
+  // quota exhaustion or upstream incidents — without this, every prop and
+  // alt-line leg silently goes nullProb and the SP quotes nothing.
+  // Diagnosed 2026-05-12 after a multi-hour fill drought traced to TOA
+  // quota exhaustion: prop fairs went null as TTL expired with refresh
+  // failing, priceParlay declined every prop-touching parlay, and confirm-
+  // time revalidations also failed (the cannot-reprice cascade).
+  //
+  // Trade-off: stale prop fairs may misprice during long outages (player
+  // injuries, lineup changes, etc. invalidate cached data over hours).
+  // Operator should manually /pause if a TOA outage extends past their
+  // comfort threshold. Better to quote on stale data than not quote.
+  const refreshed = await _refreshTheOddsApiPropOdds(sport, eventId, marketKey);
+  if (refreshed != null) return refreshed;
+  if (cached) {
+    const ageMin = Math.round((now - cached.fetchedAt) / 60000);
+    toaStaleServeStats.propOdds++;
+    toaStaleServeStats.lastStalePropOddsAt = new Date().toISOString();
+    if (ageMin > toaStaleServeStats.maxStaleAgeMin) toaStaleServeStats.maxStaleAgeMin = ageMin;
+    log.warn('OddsFeed', `TOA prop refresh failed (${cacheKey}); serving stale cache ${ageMin}min old`);
+    return cached;
+  }
+  return null;
 }
 
 // Generic TOA player-prop lookup. Works for any TOA market key with
@@ -8331,6 +8376,7 @@ module.exports = {
   getStaleThreshold,
   isEventStalePreGame,
   getCacheStatus,
+  getToaStaleServeStats,
   getAllCachedEvents,
   __debugGetCache,
   captureClosingLines,

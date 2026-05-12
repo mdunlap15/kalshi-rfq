@@ -852,6 +852,7 @@ function startStatusServer() {
         lastSeed: lineManager.getStats(),
       },
       odds: oddsFeed.getCacheStatus(),
+      toaStaleServe: oddsFeed.getToaStaleServeStats(),
       orders: { ...orderTracker.getStats(), dbPnL: cachedDbPnL },
       exposure: {
         maxPerTeam: config.pricing.maxExposurePerTeam,
