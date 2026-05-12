@@ -391,70 +391,20 @@ async function registerWebSocket(socketId) {
 // OFFERS & CONFIRMATIONS
 // ---------------------------------------------------------------------------
 
-// Diagnostic ring buffer for the precision-mode experiment. Each entry
-// captures the full submitOffer payload + PX response so we can correlate
-// what we sent (decimal vs integer odds) with how PX responded and whether
-// that auction later confirmed. Active only when PX_PRECISION_DIAG=true.
-// Bounded to 200 entries — operator inspects via GET /admin/precision-diag.
-const _precisionDiagBuffer = [];
-const _PRECISION_DIAG_MAX = 200;
-function _recordPrecisionDiagEntry(entry) {
-  _precisionDiagBuffer.unshift({ ...entry, recordedAt: new Date().toISOString() });
-  if (_precisionDiagBuffer.length > _PRECISION_DIAG_MAX) _precisionDiagBuffer.pop();
-}
-function getPrecisionDiagSnapshot() {
-  return {
-    enabled: process.env.PX_PRECISION_DIAG === 'true' || process.env.PX_PRECISION_DIAG === '1',
-    pxOddsPrecision: parseInt(process.env.PX_ODDS_PRECISION || '0', 10),
-    bufferSize: _precisionDiagBuffer.length,
-    entries: _precisionDiagBuffer,
-  };
-}
-
 async function submitOffer(callbackUrl, parlayId, offers) {
-  // No pre-submit log on the hot path — JSON.stringify(offers) + log.info
-  // adds 1-3ms (stdout back-pressure dependent), and the "Offered" log in
-  // websocket.js already records this submission. The response log below
-  // is off the critical path — the caller fires this promise and doesn't
-  // await it.
-  //
-  // Precision-mode diagnostic: when PX_PRECISION_DIAG=true, capture the
-  // full payload + PX response into a ring buffer so we can correlate
-  // wire format with PX behavior (silent-reject vs truncate-tie vs full-
-  // precision use). Off by default so the hot path stays clean.
-  const diagOn = process.env.PX_PRECISION_DIAG === 'true' || process.env.PX_PRECISION_DIAG === '1';
-  const submittedAt = diagOn ? Date.now() : null;
+  // No pre-submit log. Removed because JSON.stringify(offers) + log.info
+  // on the hot path adds 1-3ms (stdout back-pressure dependent), and the
+  // "Offered" log in websocket.js already records this submission. The
+  // response log below is off the critical path — the caller fires this
+  // promise and doesn't await it.
   return pxFetch(callbackUrl, 'POST', {
     parlay_id: parlayId,
     offers,
   }, false).then(data => {
     log.info('PX-Offer', `Response for ${parlayId}: ${JSON.stringify(data).substring(0, 300)}`);
-    if (diagOn) {
-      _recordPrecisionDiagEntry({
-        parlayId,
-        ok: true,
-        pxStatus: data?.status || null,
-        pxResponse: data,
-        offers,
-        submittedAt,
-        elapsedMs: Date.now() - submittedAt,
-      });
-    }
     return data;
   }).catch(err => {
     log.error('PX-Offer', `Failed to submit offer for ${parlayId}: ${err.message}`);
-    if (diagOn) {
-      _recordPrecisionDiagEntry({
-        parlayId,
-        ok: false,
-        error: err.message,
-        errorStatus: err.status || null,
-        errorBody: err.body || null,
-        offers,
-        submittedAt,
-        elapsedMs: Date.now() - submittedAt,
-      });
-    }
     throw err;
   });
 }
@@ -847,7 +797,6 @@ module.exports = {
   getWebSocketConfig,
   registerWebSocket,
   submitOffer,
-  getPrecisionDiagSnapshot,
   confirmOrder,
   fetchBalance,
   fetchOrders,

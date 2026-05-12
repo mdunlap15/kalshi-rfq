@@ -6580,18 +6580,6 @@ function startStatusServer() {
     res.json({ ok: true, lineId, disabled: false });
   });
 
-  // Diagnostic snapshot for the PX_ODDS_PRECISION experiment. When
-  // PX_PRECISION_DIAG=true, every submitOffer captures its payload + PX's
-  // response into a 200-entry ring buffer. This endpoint returns the
-  // current buffer + flag state so the operator can correlate decimal vs
-  // integer odds submissions with PX behavior (silent-reject vs truncate
-  // vs full-precision-use). Off by default — flip the env var to enable
-  // before running a precision experiment, then GET this endpoint to see
-  // what PX did with each submission.
-  app.get('/admin/precision-diag', (req, res) => {
-    res.json(px.getPrecisionDiagSnapshot());
-  });
-
   // Delete one or more orders by parlayId. Removes from in-memory state,
   // reverses P&L stats (if any), and deletes from Supabase. Operator-driven
   // cleanup for phantom/orphan orders that slipped through reconcile (e.g.,

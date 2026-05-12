@@ -284,26 +284,6 @@ const config = {
     // Knobs:
     //   pricingV2TargetEdge — single vig parameter replacing the v1 stack
     //   pricingV2KSigma     — conservative uncertainty shift (0.5 = half-sigma)
-    // Sub-integer precision on the American-odds values sent to PX.
-    //
-    // PX's three-tier tie-breaker is documented as: odds (full-precision) >
-    // max_risk > submission timestamp. Submitting integer-rounded odds
-    // means we tie with any other SP at the same rounded value and lose
-    // every tie on max_risk + timestamp. Per Alec's response we believe
-    // PX accepts sub-integer odds — but until that's confirmed, keep the
-    // default at 0 (current integer behavior). Flip to 2 or 3 in Railway
-    // via PX_ODDS_PRECISION=2 to start submitting at hundredths /
-    // thousandths precision and exit the rounded-tie cluster.
-    //
-    // Precision is applied to BOTH the top-level `odds` field AND each
-    // `estimated_price[i].odds` leg in the submitOffer payload, so PX's
-    // recompute-from-legs drift check still passes.
-    //
-    // Safe defaults: integer (precision=0). Reversible via env var.
-    pxOddsPrecision: (() => {
-      const n = parseInt(process.env.PX_ODDS_PRECISION || '0', 10);
-      return Number.isFinite(n) && n >= 0 && n <= 6 ? n : 0;
-    })(),
     pricingV2Enabled:
       process.env.PRICING_V2_ENABLED === 'true' || process.env.PRICING_V2_ENABLED === '1',
     pricingV2Live:
