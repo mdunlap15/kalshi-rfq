@@ -1749,6 +1749,39 @@ const inFlightResolutions = new Map(); // lineId -> Promise
 const resolvedEventMarkets = new Map(); // eventId -> { time, markets }
 const RESOLVED_MARKET_TTL_MS = 60 * 1000; // 60s
 
+// Per-lineId resolution-failure history. Replaces the singleton
+// resolveUnknownLine._lastFailure (kept as alias for back-compat) which
+// was getting clobbered by concurrent resolveUnknownLine calls — when a
+// parlay had multiple unknown legs all racing through Promise.all, only
+// the last writer's failure survived, so the categorization step in
+// websocket.js saw `resolveReason=null` for 99.9% of MLB alt-spread
+// declines. With a per-lineId map, each leg can look up its own failure
+// reliably regardless of sibling races.
+//
+// Bounded via FIFO eviction at FAILURES_BY_LINE_ID_CAP entries to avoid
+// unbounded growth; declines table already persists the resolveReason
+// alongside each leg, so we only need this map alive long enough to span
+// resolveUnknownLine → categorization (~milliseconds, same tick).
+const _failuresByLineId = new Map();
+const FAILURES_BY_LINE_ID_CAP = 10000;
+function _recordResolveFailure(lineId, failure) {
+  if (!lineId || !failure) return;
+  // FIFO eviction: Map preserves insertion order. If we delete-then-set
+  // an existing key, it moves to the most-recent slot.
+  if (_failuresByLineId.has(lineId)) _failuresByLineId.delete(lineId);
+  _failuresByLineId.set(lineId, failure);
+  if (_failuresByLineId.size > FAILURES_BY_LINE_ID_CAP) {
+    const firstKey = _failuresByLineId.keys().next().value;
+    _failuresByLineId.delete(firstKey);
+  }
+  // Keep singleton alias for back-compat (logging code at line 2444
+  // reads _lastFailure?.reason).
+  resolveUnknownLine._lastFailure = failure;
+}
+function _getResolveFailure(lineId) {
+  return _failuresByLineId.get(lineId) || null;
+}
+
 /**
  * On-demand registration: when an RFQ references a line we don't know,
  * attempt to fetch the event's markets from PX, locate the line, build
@@ -1763,15 +1796,15 @@ async function resolveUnknownLine(rfqLeg) {
   if (lineIndex[lineId]) return lineIndex[lineId]; // already resolved
 
   // Clear stale failure state at the START of each call. _lastFailure is
-  // a function-level singleton: it's set on every failure path below but
-  // was never reset, so callers reading it after a SUCCESSFUL resolve
-  // would see the previous call's failure (potentially from a different
-  // parlay's leg). Caused 2026-04-25 cross-attribution where the
-  // /decline-audit drill-down showed marketName values from one leg
-  // attributed to another. Clearing here makes lineId-guarded reads
-  // reliable; readers that don't gate on lineId now also get null
-  // instead of stale state.
+  // kept as a back-compat alias of the most-recently-recorded failure;
+  // the authoritative state now lives in the per-lineId map
+  // _failuresByLineId. Clearing the singleton keeps lineId-unguarded
+  // readers from getting stale data.
   resolveUnknownLine._lastFailure = null;
+  // Drop any prior failure for this exact lineId so the categorization
+  // step doesn't see a stale entry if resolveUnknownLine succeeds this
+  // time (success path writes to lineIndex but not to _failuresByLineId).
+  _failuresByLineId.delete(lineId);
 
   // Sample log: capture RFQ leg shape (first 20 unknown legs only)
   if (!resolveUnknownLine._sampleCount) resolveUnknownLine._sampleCount = 0;
@@ -1788,14 +1821,14 @@ async function resolveUnknownLine(rfqLeg) {
   const eventId = rfqLeg.sport_event_id;
   if (!eventId) {
     log.debug('Lines', `Cannot resolve ${lineId}: no sport_event_id in RFQ leg`);
-    resolveUnknownLine._lastFailure = { lineId, reason: 'no_event_id' };
+    _recordResolveFailure(lineId, { lineId, reason: 'no_event_id' });
     return null;
   }
 
   const event = eventIndex[eventId];
   if (!event) {
     log.debug('Lines', `Cannot resolve ${lineId}: unknown event ${eventId}`);
-    resolveUnknownLine._lastFailure = { lineId, reason: 'unknown_event', eventId };
+    _recordResolveFailure(lineId, { lineId, reason: 'unknown_event', eventId });
     return null;
   }
 
@@ -1882,7 +1915,7 @@ async function resolveUnknownLine(rfqLeg) {
         return k + ':' + evts.length;
       }).join(', ');
       log.info('Lines', `Cannot resolve ${lineId}: no odds feed match for "${event.name}" (PX: ${pxHome} vs ${pxAway}, sports: [${sportsAvail}], keys: ${sportKeys})`);
-      resolveUnknownLine._lastFailure = { lineId, reason: 'no_odds_match', eventName: event.name, sport: event.sport || event.sportName, pxHome, pxAway, sportKeys, sportsAvail };
+      _recordResolveFailure(lineId, { lineId, reason: 'no_odds_match', eventName: event.name, sport: event.sport || event.sportName, pxHome, pxAway, sportKeys, sportsAvail });
       return null;
     }
   }
@@ -1936,7 +1969,7 @@ async function resolveUnknownLine(rfqLeg) {
       if (unsupportedMarketInfo) {
         log.info('Lines', `Unsupported market type: ${unsupportedMarketInfo.marketType} / "${unsupportedMarketInfo.marketName}" (${unsupportedMarketInfo.sport}, ${unsupportedMarketInfo.eventName})`);
         getOrderTracker().recordUnsupportedMarket(unsupportedMarketInfo);
-        resolveUnknownLine._lastFailure = { lineId, reason: 'unsupported_market_type', ...unsupportedMarketInfo };
+        _recordResolveFailure(lineId, { lineId, reason: 'unsupported_market_type', ...unsupportedMarketInfo });
         return null;
       }
 
@@ -1985,14 +2018,14 @@ async function resolveUnknownLine(rfqLeg) {
             const playerName = extractPitcherNameFromKMarket(market.name);
             if (!playerName) {
               log.warn('Lines', `K-prop name extract failed: "${market.name}" (lineId ${lineId})`);
-              resolveUnknownLine._lastFailure = {
+              _recordResolveFailure(lineId, {
                 lineId,
                 reason: 'k_prop_name_extract_failed',
                 marketType: 'player_strikeouts',
                 marketName: market.name,
                 sport: sportKey,
                 eventName: event.name,
-              };
+              });
               return null;
             }
             const eventCtx = {
@@ -2090,14 +2123,14 @@ async function resolveUnknownLine(rfqLeg) {
           const parsedSub = px.parseMarketSelections(market);
           if (parsedSub.some(s => s.lineId === lineId)) {
             log.info('Lines', `Declined sub-game market: ${market.type} / "${market.name}" (${event.name})`);
-            resolveUnknownLine._lastFailure = {
+            _recordResolveFailure(lineId, {
               lineId,
               reason: 'sub_game_market',
               marketType: market.type,
               marketName: market.name,
               sport: sportKey,
               eventName: event.name,
-            };
+            });
             return null;
           }
           // Otherwise skip this market and keep searching
@@ -2237,14 +2270,14 @@ async function resolveUnknownLine(rfqLeg) {
             }
 
             log.info('Lines', `Declined player prop market: ${market.type} / "${market.name}" (${event.name})`);
-            resolveUnknownLine._lastFailure = {
+            _recordResolveFailure(lineId, {
               lineId,
               reason: 'player_prop_market',
               marketType: market.type,
               marketName: market.name,
               sport: sportKey,
               eventName: event.name,
-            };
+            });
             return null;
           }
           continue;
@@ -2291,7 +2324,7 @@ async function resolveUnknownLine(rfqLeg) {
             if (!isValidFullGameLine(sportKey, sel.marketType, sel.line)) {
               log.debug('Lines', `resolveUnknownLine: rejecting out-of-bounds selection ${sel.marketType} ${sel.line} for ${sportKey}: ${market.name}`);
               lineFoundInPxMarket = true; // Line exists in PX — block virtual registration
-              resolveUnknownLine._lastFailure = { lineId, reason: 'out_of_bounds_line', sport: sportKey, marketType: sel.marketType, line: sel.line, marketName: market.name };
+              _recordResolveFailure(lineId, { lineId, reason: 'out_of_bounds_line', sport: sportKey, marketType: sel.marketType, line: sel.line, marketName: market.name });
               continue;
             }
           }
@@ -2315,11 +2348,11 @@ async function resolveUnknownLine(rfqLeg) {
             // Reject YES/NO selections (see seed-path comment ~line 1148).
             if (/^(yes|no)$/i.test((sel.teamName || '').trim())) {
               lineFoundInPxMarket = true;
-              resolveUnknownLine._lastFailure = {
+              _recordResolveFailure(lineId, {
                 lineId, reason: 'yes_no_prop_misclassified_as_moneyline',
                 marketType: market.type, marketName: market.name,
                 sport: sportKey, eventName: event.name,
-              };
+              });
               continue;
             }
             if (matchTeamName(sel.teamName, [matchedHome])) oddsApiSelection = 'home';
@@ -2395,11 +2428,11 @@ async function resolveUnknownLine(rfqLeg) {
           // support them and the parser would fail to map Yes/No to home/away.
           if (market.type === 'moneyline' && /\bto win\b.*\(.*min.*\)|^draw\s*\(.*min.*\)/i.test(market.name || '')) {
             log.info('Lines', `Skipping PX 3-way sub-market on-demand: ${market.name}`);
-            resolveUnknownLine._lastFailure = {
+            _recordResolveFailure(lineId, {
               lineId, reason: 'unsupported_market_type',
               marketType: market.type, marketName: market.name,
               sport: sportKey, eventName: event.name,
-            };
+            });
             continue;
           }
           const onDemandDNB = market.type === 'moneyline' && /\b2\s*[\s\-_]?way\b|draw\s*no\s*bet|\bdnb\b|\b2w\b/i.test(market.name || '');
@@ -2441,7 +2474,7 @@ async function resolveUnknownLine(rfqLeg) {
         // to virtual registration. PX already told us what this line is — the
         // heuristic would misidentify it (e.g. player prop O 1.5 → alt spread).
         if (lineFoundInPxMarket) {
-          log.info('Lines', `Blocking virtual registration for line ${lineId}: found in PX market but rejected (${resolveUnknownLine._lastFailure?.reason || 'unknown'}). Event: ${event.name}`);
+          log.info('Lines', `Blocking virtual registration for line ${lineId}: found in PX market but rejected (${(_getResolveFailure(lineId) || resolveUnknownLine._lastFailure)?.reason || 'unknown'}). Event: ${event.name}`);
           return null;
         }
 
@@ -2653,7 +2686,7 @@ async function resolveUnknownLine(rfqLeg) {
 
         if (!foundInfo) {
           log.debug('Lines', `Could not locate line ${lineId} in event ${eventId} markets (types found: ${foundTypes.join(',')}; names: ${marketNames.join(', ')}). RFQ leg: line=${rfqLeg.line}, keys=${Object.keys(rfqLeg).join(',')}`);
-          resolveUnknownLine._lastFailure = { lineId, reason: 'line_not_in_markets', eventName: event.name, sport: sportKey, marketTypesFound: foundTypes, marketNamesFound: marketNames };
+          _recordResolveFailure(lineId, { lineId, reason: 'line_not_in_markets', eventName: event.name, sport: sportKey, marketTypesFound: foundTypes, marketNamesFound: marketNames });
           return null;
         }
       }
@@ -2921,6 +2954,8 @@ module.exports = {
   lookupLineAsync,
   __debugGetLineIndex,
   resolveUnknownLine,
+  getResolveFailure: _getResolveFailure,
+  getResolveFailuresSnapshot: () => Array.from(_failuresByLineId.entries()),
   getRegisteredLineIds,
   getStats,
   getLineCount,

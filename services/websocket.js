@@ -774,8 +774,19 @@ async function handleRFQ(data) {
           let category = 'unknown';
           let detail;
 
-          // Check resolveUnknownLine failure FIRST — most reliable signal
-          const resolveFailure = lineManagerEarly.resolveUnknownLine._lastFailure;
+          // Check resolveUnknownLine failure FIRST — most reliable signal.
+          // Use the per-lineId failure map (added 2026-05-12) instead of the
+          // legacy _lastFailure singleton. The singleton was getting clobbered
+          // when a parlay had multiple unknown legs all racing through
+          // Promise.all(resolveUnknownLine(...)): only the last writer's
+          // failure survived, so 99.9% of MLB alt-spread declines reported
+          // resolveReason=null when actually each leg had its own (now
+          // recoverable) failure. The lineId guard below is still needed in
+          // case the cap evicted an entry — null fall-through to the heuristic
+          // is correct behavior.
+          const resolveFailure = lineManagerEarly.getResolveFailure
+            ? lineManagerEarly.getResolveFailure(lineId)
+            : lineManagerEarly.resolveUnknownLine._lastFailure;
           let resolveReason = null;
           let resolveDetail = null;
           if (resolveFailure && resolveFailure.lineId === lineId) {
@@ -1145,15 +1156,13 @@ async function handleRFQ(data) {
             // captured one, so the dashboard can show *exactly* what
             // unregistered market this leg belongs to.
             //
-            // CRITICAL: gate on resolveFailure.lineId === lineId. The
-            // _lastFailure singleton on resolveUnknownLine persists
-            // across calls and is only set on failure (never cleared),
-            // so a leg whose own resolve succeeded would otherwise
-            // inherit a stale marketName from the most recent failure
-            // — possibly from a different parlay. Observed 2026-04-25:
-            // baseball_mlb alt_spread legs showing marketName like
-            // "Nikola Jokić Total Points" (an NBA prop), polluting the
-            // /decline-audit drill-down with cross-attributed labels.
+            // marketName captured via gated resolveFailure read (line 778):
+            // we use the per-lineId failure map, then assert
+            // resolveFailure.lineId === lineId so propMarketName never
+            // carries cross-attributed labels (observed 2026-04-25 with
+            // the legacy singleton — baseball_mlb alt_spread legs were
+            // showing NBA prop marketNames like "Nikola Jokić Total
+            // Points" in /decline-audit).
             marketName: propMarketName,
           });
         }
