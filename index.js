@@ -2386,6 +2386,133 @@ function startStatusServer() {
         .sort((a, b) => b.matchedStake - a.matchedStake)
         .slice(0, 15);
 
+      // ====== TOP RECOVERY OPPORTUNITIES ======
+      // Aggregations specifically shaped to answer "where should the operator
+      // change pricing / raise caps next?" Each opportunity has a category
+      // label, the count + stake, a recommended action (with the relevant
+      // env-var name where possible), and an estimated recoverable $.
+      //
+      // Recoverable $ uses a piecewise heuristic:
+      //   - "within X pp" buckets count the stake of losses where our gap to
+      //     winner was < X pp. With a vig drop of X pp, we should win ~50%
+      //     of these on average (we move from tighter-than-winner to
+      //     tied-or-looser; tie-breakers still cost us some).
+      //   - Estimate = stake_within_X * 0.5.
+      // Conservative but consistent across categories so ranking is honest.
+      function coarseMarket(m) {
+        if (!m) return 'unknown';
+        const s = String(m).toLowerCase();
+        if (s.startsWith('player_')) return 'player_prop';
+        if (s.startsWith('series_')) return 'series';
+        if (s.startsWith('first_5')) return 'F5';
+        if (s.startsWith('first_half') || s.includes('1st_half')) return 'H1';
+        if (s.includes('moneyline') || s === 'h2h') return 'moneyline';
+        if (s.includes('spread') || s.includes('run_line') || s.includes('puck_line')) return 'spread';
+        if (s.includes('total') || s.includes('team_total')) return 'total';
+        if (s.includes('btts')) return 'btts';
+        return s;
+      }
+      function envVarForSportVig(sport) {
+        if (!sport || sport === 'MULTI') return 'DEFAULT_VIG';
+        return 'VIG_BY_SPORT.' + sport;
+      }
+
+      // --- 1. Pricing levers — where we lost auctions by small margin ---
+      // Group by (primary_sport, coarse-market-mix). Filter to gap >= 0
+      // (drop walked-away cases — those go in exposure bucket).
+      const pricingGroups = {};
+      for (const e of enriched) {
+        if (e.gapPp == null || e.gapPp < 0) continue;
+        if (e.matchedStake < 1) continue;
+        const sports = [...new Set((e.legs || []).map(l => l.sport).filter(Boolean))];
+        const primarySport = sports.length === 1 ? sports[0]
+          : sports.length > 1 ? 'MULTI' : 'unknown';
+        const cms = [...new Set((e.legs || []).map(l => coarseMarket(l.market || l.marketType)).filter(Boolean))].sort();
+        const marketCategory = cms.length === 0 ? 'unknown'
+          : cms.length === 1 ? cms[0] : 'mixed';
+        const key = primarySport + ' · ' + marketCategory;
+        if (!pricingGroups[key]) pricingGroups[key] = {
+          sport: primarySport, marketCategory,
+          count: 0, totalStake: 0, gapPps: [],
+          stakeWithin_0_5pp: 0, stakeWithin_1pp: 0, stakeWithin_2pp: 0,
+        };
+        const g = pricingGroups[key];
+        g.count++;
+        g.totalStake += e.matchedStake;
+        g.gapPps.push(e.gapPp);
+        if (e.gapPp < 0.5) g.stakeWithin_0_5pp += e.matchedStake;
+        if (e.gapPp < 1.0) g.stakeWithin_1pp += e.matchedStake;
+        if (e.gapPp < 2.0) g.stakeWithin_2pp += e.matchedStake;
+      }
+      const topPricingOpportunities = Object.entries(pricingGroups).map(([key, g]) => {
+        const gapsSort = g.gapPps.slice().sort((a, b) => a - b);
+        const medianGap = gapsSort.length ? gapsSort[Math.floor(gapsSort.length / 2)] : null;
+        const recoverableAt_1pp = g.stakeWithin_1pp * 0.5;
+        return {
+          key, sport: g.sport, marketCategory: g.marketCategory,
+          count: g.count, totalStake: g.totalStake,
+          medianGapPp: medianGap,
+          stakeWithin_0_5pp: g.stakeWithin_0_5pp,
+          stakeWithin_1pp: g.stakeWithin_1pp,
+          stakeWithin_2pp: g.stakeWithin_2pp,
+          estRecoverableAt_1pp: recoverableAt_1pp,
+          envVar: envVarForSportVig(g.sport),
+          suggestedAction: 'Lower ' + envVarForSportVig(g.sport)
+            + ' by ~' + Math.max(0.5, Math.ceil((medianGap || 0.5) * 2) / 2) + 'pp'
+            + (g.marketCategory !== 'mixed' ? ' (' + g.marketCategory + '-dominant)' : ''),
+        };
+      })
+      // Only surface meaningful opportunities — at least $50 within-1pp stake
+      .filter(o => o.stakeWithin_1pp >= 50)
+      .sort((a, b) => b.estRecoverableAt_1pp - a.estRecoverableAt_1pp)
+      .slice(0, 10);
+
+      // --- 2. Exposure / confirm-reject opportunities ---
+      // From the walked-away set (enriched.filter(e => e.weWalkedAway)),
+      // grouped by reject bucket. Add env-var recommendation per bucket.
+      const REJECT_ACTIONS = {
+        'confirmation drift': { envVar: 'CONFIRMATION_DRIFT_THRESHOLD',
+          actionTemplate: 'Loosen CONFIRMATION_DRIFT_THRESHOLD by ~0.02' },
+        'team exposure cap': { envVar: 'MAX_EXPOSURE_PER_TEAM',
+          actionTemplate: 'Raise MAX_EXPOSURE_PER_TEAM by ~20%' },
+        'game exposure cap': { envVar: 'MAX_EXPOSURE_PER_GAME',
+          actionTemplate: 'Raise MAX_EXPOSURE_PER_GAME by ~20%' },
+        'series exposure cap': { envVar: 'MAX_SERIES_GROSS_EXPOSURE',
+          actionTemplate: 'Raise MAX_SERIES_GROSS_EXPOSURE by ~20%' },
+        'per-parlay risk cap': { envVar: 'MAX_RISK_PER_PARLAY',
+          actionTemplate: 'Raise MAX_RISK_PER_PARLAY by ~20%' },
+        'service paused': { envVar: '(operator-initiated)',
+          actionTemplate: 'No code action; unpause when ready' },
+        'reprice failed': { envVar: '(diagnostic)',
+          actionTemplate: 'Investigate: original quote meta missing at confirm time' },
+        'other': { envVar: '(diagnostic)',
+          actionTemplate: 'See raw reason for context' },
+      };
+      const walkedAwayGroups = {};
+      for (const e of enriched) {
+        if (!e.weWalkedAway) continue;
+        const k = e.rejectBucket || 'other';
+        if (!walkedAwayGroups[k]) walkedAwayGroups[k] = { count: 0, totalStake: 0 };
+        walkedAwayGroups[k].count++;
+        walkedAwayGroups[k].totalStake += e.matchedStake;
+      }
+      // Walked-away losses are nearly 100% recoverable if the cap/threshold
+      // is loosened enough — we won the auction by price; we just stopped
+      // ourselves. Use 80% as the realistic capture (some would still trip
+      // a tighter limit even after loosening).
+      const topExposureOpportunities = Object.entries(walkedAwayGroups).map(([bucket, v]) => {
+        const action = REJECT_ACTIONS[bucket] || REJECT_ACTIONS.other;
+        return {
+          bucket, count: v.count, totalStake: v.totalStake,
+          estRecoverable: v.totalStake * 0.8,
+          envVar: action.envVar,
+          suggestedAction: action.actionTemplate,
+        };
+      })
+      .filter(o => o.totalStake >= 50)
+      .sort((a, b) => b.estRecoverable - a.estRecoverable)
+      .slice(0, 10);
+
       res.json({
         windowDays: days,
         capturedAt: new Date().toISOString(),
@@ -2429,6 +2556,12 @@ function startStatusServer() {
         worstLosses,
         tightestLosses,
         partialFillStats,
+        // Top recovery opportunities — ranked action lists shaped for the
+        // operator to decide what to tune next. Pricing levers (lower vig
+        // in close-gap categories) and exposure levers (raise the right
+        // caps to recover walked-away wins).
+        topPricingOpportunities,
+        topExposureOpportunities,
       });
     } catch (err) {
       log.error('Lost', `lost-analysis endpoint failed: ${err.message}`);
@@ -2612,6 +2745,90 @@ function startStatusServer() {
         .sort((a, b) => b.matchedStake - a.matchedStake)
         .slice(0, 20);
 
+      // ====== TOP COVERAGE OPPORTUNITIES ======
+      // Convert raw decline reasons into ranked, action-shaped opportunities.
+      // Each entry has the stake we missed, the env-var to tune, and a
+      // realistic recovery estimate. Recovery rate is conservative because
+      // even if we enable the market we still have to win the auction.
+      const COVERAGE_ACTIONS = {
+        'unknown legs': {
+          envVar: 'PROP_LAUNCH_ALLOWLIST / line-registration',
+          actionTemplate: 'Add unsupported markets to PROP_LAUNCH_ALLOWLIST or extend line registration. See byUnknownCategory below for specifics.',
+          captureRate: 0.20, // adding a market doesn't mean winning every auction
+        },
+        'too many legs': {
+          envVar: 'MAX_LEGS',
+          actionTemplate: 'Raise MAX_LEGS (currently capped — check env)',
+          captureRate: 0.30,
+        },
+        'correlated legs': {
+          envVar: 'SGP_ALLOWED_COMBOS',
+          actionTemplate: 'Allow additional SGP combos via SGP_ALLOWED_COMBOS',
+          captureRate: 0.30,
+        },
+        'SGP blocked': {
+          envVar: 'SGP_ALLOWED_COMBOS',
+          actionTemplate: 'Allow additional SGP combos via SGP_ALLOWED_COMBOS',
+          captureRate: 0.30,
+        },
+        'parlay too unlikely': {
+          envVar: 'MAX_ODDS',
+          actionTemplate: 'Raise MAX_ODDS to allow longer-shot parlays',
+          captureRate: 0.15, // longshots have low base fill rate
+        },
+        'heavy favorite': {
+          envVar: 'NBA_SERIES_FAV_CAP_ODDS / heavy-fav per-sport',
+          actionTemplate: 'Loosen heavy-favorite caps (NBA_SERIES_FAV_CAP_ODDS or per-sport thresholds)',
+          captureRate: 0.30,
+        },
+        'no fair value': {
+          envVar: 'PROP_MIN_BOOKS_WITH_BOTH_SIDES / line coverage',
+          actionTemplate: 'Investigate missing fair: book coverage gap or registration gap',
+          captureRate: 0.20,
+        },
+        'no callback url': {
+          envVar: '(diagnostic)',
+          actionTemplate: 'Investigate PX broadcast format change — should not happen',
+          captureRate: 0.30,
+        },
+        'service paused': {
+          envVar: '(operator-initiated)',
+          actionTemplate: 'No code action; unpause when ready',
+          captureRate: 0.0,
+        },
+        'not seen': {
+          envVar: '(pipeline coverage gap)',
+          actionTemplate: 'Investigate: RFQ never reached our WebSocket. Line-registration race or WS gap.',
+          captureRate: 0.20,
+        },
+      };
+      function actionForReason(reason) {
+        // Exact match first
+        if (COVERAGE_ACTIONS[reason]) return COVERAGE_ACTIONS[reason];
+        // Fuzzy match
+        const r = String(reason || '').toLowerCase();
+        for (const [k, v] of Object.entries(COVERAGE_ACTIONS)) {
+          if (r.includes(k)) return v;
+        }
+        return { envVar: '(diagnostic)', actionTemplate: 'Investigate; no known action', captureRate: 0.15 };
+      }
+      const topCoverageOpportunities = byReason.map(r => {
+        const action = actionForReason(r.key);
+        return {
+          reason: r.key,
+          count: r.count,
+          totalStake: r.totalStake,
+          avgStake: r.avgStake,
+          estRecoverable: r.totalStake * action.captureRate,
+          captureRate: action.captureRate,
+          envVar: action.envVar,
+          suggestedAction: action.actionTemplate,
+        };
+      })
+      .filter(o => o.totalStake >= 100)
+      .sort((a, b) => b.estRecoverable - a.estRecoverable)
+      .slice(0, 10);
+
       const totalStake = enriched.reduce((s, e) => s + e.matchedStake, 0);
       res.json({
         windowDays: days,
@@ -2635,6 +2852,8 @@ function startStatusServer() {
         byHour: bucket(enriched, hourKey),
         byUnknownCategory,
         topMissedByStake,
+        // Ranked action lists for the Top Recovery Opportunities panel.
+        topCoverageOpportunities,
       });
     } catch (err) {
       log.error('Missed', `missed-analysis endpoint failed: ${err.message}`);

@@ -12257,6 +12257,114 @@
     }
   };
 
+  // Render a ranked recovery-opportunities table. Each row pairs the
+  // category, count + stake, suggested action (with env-var), and an
+  // estimated recoverable $ figure. Designed so the operator can read
+  // top-down and stop at the cutoff their gut tells them is meaningful.
+  function _renderRecoveryTable(title, subtitle, rows, columns) {
+    if (!rows || rows.length === 0) {
+      return '<div style="margin-top:14px;">'
+        + '<div style="font-weight:600; font-size:13px; color:var(--text2); margin-bottom:4px;">' + title + '</div>'
+        + '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">' + (subtitle || '') + '</div>'
+        + '<div style="font-size:12px; color:var(--text3); padding:8px;">No opportunities at this threshold — either no losses in this bucket or they\'re all below the $50 floor.</div>'
+        + '</div>';
+    }
+    let html = '<div style="margin-top:14px;">';
+    html += '<div style="font-weight:600; font-size:13px; color:var(--text2); margin-bottom:4px;">' + title + '</div>';
+    if (subtitle) html += '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">' + subtitle + '</div>';
+    html += '<table style="font-size:12px; width:100%; border-collapse:collapse;">';
+    html += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);">';
+    for (const c of columns) {
+      const align = c.align ? 'text-align:' + c.align + ';' : '';
+      html += '<th style="padding:4px 8px;' + align + '">' + c.label + '</th>';
+    }
+    html += '</tr>';
+    for (const r of rows) {
+      html += '<tr style="border-bottom:1px solid var(--surface2);">';
+      for (const c of columns) {
+        const align = c.align ? 'text-align:' + c.align + ';' : '';
+        const color = c.color ? 'color:' + c.color + ';' : '';
+        const font = c.font ? 'font-family:' + c.font + ';' : '';
+        const val = c.fmt ? c.fmt(r) : (r[c.key] ?? '-');
+        html += '<td style="padding:4px 8px;' + align + color + font + '">' + val + '</td>';
+      }
+      html += '</tr>';
+    }
+    html += '</table>';
+    html += '</div>';
+    return html;
+  }
+
+  // Compose the full Top Recovery Opportunities panel — used at the top
+  // of both Lost and Missed views to surface action-ready entries before
+  // the operator drowns in breakdown tables.
+  function _renderTopOpportunitiesPanel(data, viewType) {
+    let html = '<div style="padding:8px; margin-top:8px; background:var(--surface2); border-radius:8px; border:1px solid var(--accent);">';
+    html += '<div style="font-weight:700; font-size:14px; color:var(--text); margin-bottom:8px;">⚡ Top Recovery Opportunities</div>';
+    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:10px;">Ranked actions to capture more volume. Each row has an env-var change + estimated $ recoverable (conservative: 50% capture for pricing levers, 80% for walked-away wins, variable for coverage gaps).</div>';
+
+    if (viewType === 'lost') {
+      // Pricing levers
+      html += _renderRecoveryTable(
+        '1. Where to lower vig (pricing levers)',
+        'Categories where we lost by a small margin. Lowering vig should close the gap and let us win more of these auctions.',
+        data.topPricingOpportunities || [],
+        [
+          { label: 'Category', key: 'key' },
+          { label: 'Losses', key: 'count', align: 'right' },
+          { label: 'Total stake', align: 'right', font: 'monospace',
+            fmt: r => _lpFmt$(r.totalStake) },
+          { label: 'Median gap', align: 'right', font: 'monospace',
+            fmt: r => _lpFmtPp(r.medianGapPp) },
+          { label: 'Within 1pp', align: 'right', font: 'monospace',
+            fmt: r => _lpFmt$(r.stakeWithin_1pp) },
+          { label: 'Suggested action', key: 'suggestedAction', color: 'var(--accent)' },
+          { label: 'Est. recoverable', align: 'right', font: 'monospace', color: 'var(--green)',
+            fmt: r => _lpFmt$(r.estRecoverableAt_1pp) },
+        ]
+      );
+
+      // Exposure levers
+      html += _renderRecoveryTable(
+        '2. Where to raise caps (walked-away wins)',
+        'You won the auction here — then rejected the confirmation. These are nearly 100% recoverable by loosening the corresponding cap or threshold.',
+        data.topExposureOpportunities || [],
+        [
+          { label: 'Reject reason', key: 'bucket' },
+          { label: 'Count', key: 'count', align: 'right' },
+          { label: 'Total stake', align: 'right', font: 'monospace',
+            fmt: r => _lpFmt$(r.totalStake) },
+          { label: 'Env var', key: 'envVar', font: 'monospace', color: 'var(--text2)' },
+          { label: 'Suggested action', key: 'suggestedAction', color: 'var(--accent)' },
+          { label: 'Est. recoverable', align: 'right', font: 'monospace', color: 'var(--green)',
+            fmt: r => _lpFmt$(r.estRecoverable) },
+        ]
+      );
+    } else if (viewType === 'missed') {
+      // Coverage gaps
+      html += _renderRecoveryTable(
+        'Where to expand coverage (missed bids)',
+        'Parlays accepted by another SP that we never quoted on. Each row\'s decline reason maps to a specific env-var or pipeline change to recover the bucket.',
+        data.topCoverageOpportunities || [],
+        [
+          { label: 'Decline reason', key: 'reason' },
+          { label: 'Count', key: 'count', align: 'right' },
+          { label: 'Total stake', align: 'right', font: 'monospace',
+            fmt: r => _lpFmt$(r.totalStake) },
+          { label: 'Env var', key: 'envVar', font: 'monospace', color: 'var(--text2)' },
+          { label: 'Suggested action', key: 'suggestedAction', color: 'var(--accent)' },
+          { label: 'Capture rate', align: 'right', font: 'monospace',
+            fmt: r => (r.captureRate * 100).toFixed(0) + '%' },
+          { label: 'Est. recoverable', align: 'right', font: 'monospace', color: 'var(--green)',
+            fmt: r => _lpFmt$(r.estRecoverable) },
+        ]
+      );
+    }
+
+    html += '</div>';
+    return html;
+  }
+
   function renderLostAnalysis(data) {
     if (!data || !data.summary) return '<div class="empty-state"><div class="icon">!</div><div>No data returned</div></div>';
     const s = data.summary;
@@ -12291,8 +12399,16 @@
     }
     html += '</div>';
 
-    // Aggregation tables
-    html += '<div style="padding:8px; display:grid; grid-template-columns:1fr 1fr; gap:18px;">';
+    // Top Recovery Opportunities — the primary decision surface. Goes at
+    // the top so operators see ranked actions before the breakdown tables.
+    html += _renderTopOpportunitiesPanel(data, 'lost');
+
+    // Aggregation tables — demoted to an expandable "Advanced breakdowns"
+    // section. Same content as before, just behind a click. Defaults
+    // collapsed; click to expand.
+    html += '<details style="margin-top:14px; padding:8px;">';
+    html += '<summary style="cursor:pointer; font-weight:600; font-size:13px; color:var(--text2); padding:4px 0;">▸ Advanced breakdowns (sport, leg count, market mix, odds range, stake bucket, gap, SGP, walked-away)</summary>';
+    html += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:18px; padding-top:8px;">';
 
     html += '<div>';
     html += _lpTable('By primary sport', data.bySport, null, true);
@@ -12315,7 +12431,7 @@
     }
     html += '</div>';
 
-    html += '</div>';
+    html += '</div></details>';
 
     // Worst + tightest losses
     function _renderLossList(title, items) {
@@ -12448,7 +12564,17 @@
     }
     html += '</div>';
 
-    // BY REASON — the headline table, sorted by stake $
+    // Top Recovery Opportunities — the primary decision surface for Missed
+    // view. Goes at the top so operators see ranked coverage gaps with
+    // specific env-var actions before the raw decline-reason table.
+    html += _renderTopOpportunitiesPanel(data, 'missed');
+
+    // BY REASON — the legacy headline table; demoted into advanced section
+    // since the Top Recovery Opportunities panel above carries the same
+    // info with action recommendations + capture-rate context.
+    html += '<details style="margin-top:14px; padding:0 8px;">';
+    html += '<summary style="cursor:pointer; font-weight:600; font-size:13px; color:var(--text2); padding:4px 0;">▸ Advanced breakdowns (raw decline reasons, sport, leg count, market mix, hour, unknown-leg categories, top individual misses)</summary>';
+    html += '<div style="padding-top:8px;">';
     html += '<div style="padding:14px 8px 4px; font-weight:600; font-size:14px; color:var(--text);">Decline reasons — sorted by total bettor wager impact</div>';
     html += '<div style="font-size:11px; color:var(--text3); padding:0 8px 8px;">For each reason, "potential capture" assumes ' + (s.captureRateAssumption * 100).toFixed(0) + '% of the missed stake $ would convert if the underlying gap were fixed. This is a back-of-envelope estimate to help prioritize — actual conversion depends on whether pricing would also clear the auction at competitive prices.</div>';
     html += '<div style="padding:0 8px;"><table style="font-size:12px; width:100%; border-collapse:collapse;">';
@@ -12531,6 +12657,10 @@
       }
       html += '</table></div>';
     }
+
+    // Close the "Advanced breakdowns" expandable section opened above
+    // the by-reason table. Everything between is collapsible.
+    html += '</div></details>';
 
     return html;
   }
