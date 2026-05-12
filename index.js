@@ -2512,6 +2512,49 @@ function startStatusServer() {
         .sort((a, b) => b.matchedStake - a.matchedStake)
         .slice(0, 15);
 
+      // Scatter data for the "Lost Auction Bid Comparison" chart in
+      // Analytics. Per-parlay rows with enough metadata to plot gap vs
+      // fair_prob, color by sport, size by stake, and filter by sport /
+      // market mix. Capped at 2,000 most-recent entries — enough for
+      // visual density without ballooning the response size.
+      const scatterData = [...enriched]
+        .filter(e => e.gapPp != null && e.fairParlayProb != null)
+        .sort((a, b) => (b.matchedAt || '').localeCompare(a.matchedAt || ''))
+        .slice(0, 2000)
+        .map(e => {
+          const sports = [...new Set((e.legs || []).map(l => l.sport).filter(Boolean))];
+          const primarySport = sports.length === 1 ? sports[0]
+            : sports.length > 1 ? 'MULTI' : 'unknown';
+          // Coarse market category mirrors topPricingOpportunities buckets
+          const cms = [...new Set((e.legs || []).map(l => {
+            const m = String(l.market || l.marketType || '').toLowerCase();
+            if (m.startsWith('player_')) return 'prop';
+            if (m.startsWith('series_')) return 'series';
+            if (m.startsWith('first_5')) return 'F5';
+            if (m.startsWith('first_half') || m.includes('1st_half')) return 'H1';
+            if (m.includes('moneyline') || m === 'h2h') return 'moneyline';
+            if (m.includes('spread') || m.includes('run_line') || m.includes('puck_line')) return 'spread';
+            if (m.includes('total') || m.includes('team_total')) return 'total';
+            return m;
+          }).filter(Boolean))].sort();
+          const marketCategory = cms.length === 0 ? 'unknown'
+            : cms.length === 1 ? cms[0] : 'mixed';
+          return {
+            parlayId: e.parlayId,
+            matchedAt: e.matchedAt,
+            sport: primarySport,
+            marketCategory,
+            legCount: e.legCount,
+            fairParlayProb: e.fairParlayProb,
+            ourBetAm: e.ourBetAm,
+            winBetAm: e.winBetAm,
+            gapPp: e.gapPp,
+            gapAm: e.gapAm,
+            matchedStake: e.matchedStake,
+            sgpCombo: e.sgpCombo,
+          };
+        });
+
       // ====== TOP RECOVERY OPPORTUNITIES ======
       // Aggregations specifically shaped to answer "where should the operator
       // change pricing / raise caps next?" Each opportunity has a category
@@ -2690,6 +2733,9 @@ function startStatusServer() {
         // caps to recover walked-away wins).
         topPricingOpportunities,
         topExposureOpportunities,
+        // Per-parlay scatter data for the "Lost Auction Bid Comparison"
+        // chart in Analytics. Capped at 2,000 most-recent.
+        scatterData,
       });
     } catch (err) {
       log.error('Lost', `lost-analysis endpoint failed: ${err.message}`);

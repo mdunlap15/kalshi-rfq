@@ -863,6 +863,16 @@
           </div>
         </div>
 
+        <!-- Lost Auction Bid Comparison — collapsed -->
+        <div class="card">
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed'); if(!b.classList.contains('collapsed')) loadLostBidScatter();">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Lost Auction Bid Comparison</span>
+          </div>
+          <div class="card-body collapsed" id="chart-lost-bid-scatter">
+            <div class="empty-state"><div class="icon">-</div><div>Expand to load lost-auction scatter data</div></div>
+          </div>
+        </div>
+
         <!-- Cumulative P&L + ROI (merged) — collapsed -->
         <div class="card">
           <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
@@ -10072,6 +10082,342 @@
         html += '<td style="padding:4px 10px; text-align:right; color:' + (avg != null ? s.color : 'var(--text3)') + ';">' + cellStr + '</td>';
       }
       html += '<td style="padding:4px 10px; text-align:right; color:var(--text3);">' + bucketData.length + '</td></tr>';
+    }
+    html += '</table></div>';
+
+    el.innerHTML = html;
+  }
+
+  // =====================================================================
+  // LOST AUCTION BID COMPARISON
+  // =====================================================================
+  // Scatter chart of lost auctions: where our bid was vs where the winning
+  // bid was. One dot per lost parlay. Color by primary sport, size by
+  // bettor wager. Y-axis is signed gap (our_implied − winner_implied) in
+  // pp — positive = we were tighter (lost on price), negative = looser
+  // (cascade/walk-away), 0 = integer tie (lost on max_risk/timestamp).
+  // X-axis is fair parlay implied prob so longshot losses (left) and
+  // chalk losses (right) cluster separately.
+  //
+  // Goal: surface where in the (sport × market × probability-region)
+  // space the losses concentrate, so the operator can make targeted vig /
+  // cap / coverage adjustments.
+  if (!window._lostBidState) {
+    window._lostBidState = {
+      range: '7d',                    // '24h' | '3d' | '7d' | '14d' | '30d' | 'all'
+      sportFilter: 'all',             // 'all' | specific sport key
+      marketFilter: 'all',            // 'all' | 'moneyline' | 'spread' | 'total' | 'prop' | 'series' | 'F5' | 'H1' | 'mixed'
+      data: null,                     // last-fetched data
+      loading: false,
+    };
+  }
+  async function loadLostBidScatter() {
+    const el = document.getElementById('chart-lost-bid-scatter');
+    if (!el || window._lostBidState.loading) return;
+    const rangeMap = { '24h': 1, '3d': 3, '7d': 7, '14d': 14, '30d': 30, 'all': 90 };
+    const days = rangeMap[window._lostBidState.range] || 7;
+    window._lostBidState.loading = true;
+    el.innerHTML = '<div class="empty-state"><div class="icon">⏳</div><div>Loading lost-auction data...</div></div>';
+    try {
+      const r = await fetch('/lost-analysis?days=' + days, { credentials: 'include' });
+      const data = await r.json();
+      window._lostBidState.data = data;
+      renderLostBidScatter();
+    } catch (err) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">!</div><div>Failed to load: ' + (err.message || err) + '</div></div>';
+    } finally {
+      window._lostBidState.loading = false;
+    }
+  }
+  window.loadLostBidScatter = loadLostBidScatter;
+  window.setLostBidRange = function(r) {
+    window._lostBidState.range = r;
+    loadLostBidScatter();
+  };
+  window.setLostBidSport = function(s) {
+    window._lostBidState.sportFilter = s;
+    renderLostBidScatter();
+  };
+  window.setLostBidMarket = function(m) {
+    window._lostBidState.marketFilter = m;
+    renderLostBidScatter();
+  };
+
+  // Sport color palette — same colors used elsewhere in the dashboard so
+  // visual identity carries across charts. Falls back to a hash-derived
+  // hue for unmapped sports so new leagues still get distinct colors.
+  function _lostBidSportColor(sport) {
+    const map = {
+      'baseball_mlb':           '#3b82f6',  // blue
+      'basketball_nba':         '#f59e0b',  // amber
+      'basketball_wnba':        '#fb923c',  // light amber
+      'basketball_ncaab':       '#ea580c',  // orange
+      'icehockey_nhl':          '#22c55e',  // green
+      'tennis':                 '#a855f7',  // purple
+      'mma_mixed_martial_arts': '#ef4444',  // red
+      'boxing_boxing':          '#dc2626',  // dark red
+      'soccer':                 '#06b6d4',  // cyan
+      'soccer_epl':             '#06b6d4',
+      'soccer_usa_mls':         '#0891b2',
+      'soccer_spain_la_liga':   '#0e7490',
+      'soccer_italy_serie_a':   '#155e75',
+      'soccer_germany_bundesliga':'#164e63',
+      'soccer_france_ligue_one':'#0c4a6e',
+      'soccer_efl_champ':       '#0369a1',
+      'golf_matchups':          '#84cc16',
+      'MULTI':                  '#e5e7eb',  // gray-200
+      'unknown':                '#6b7280',  // gray-500
+    };
+    if (map[sport]) return map[sport];
+    // Hash sport name → hue
+    let h = 0;
+    for (let i = 0; i < sport.length; i++) h = ((h << 5) - h + sport.charCodeAt(i)) | 0;
+    return `hsl(${Math.abs(h) % 360}, 65%, 60%)`;
+  }
+
+  function renderLostBidScatter() {
+    const el = document.getElementById('chart-lost-bid-scatter');
+    if (!el) return;
+    const state = window._lostBidState;
+    const raw = state.data?.scatterData || [];
+
+    if (raw.length === 0 && !state.data) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No data — click header to load</div></div>';
+      return;
+    }
+
+    // Apply client-side filters
+    const filtered = raw.filter(d => {
+      if (state.sportFilter !== 'all' && d.sport !== state.sportFilter) return false;
+      if (state.marketFilter !== 'all' && d.marketCategory !== state.marketFilter) return false;
+      return true;
+    });
+
+    // Build sport list (for filter dropdown) from full raw set
+    const sportCounts = {};
+    for (const d of raw) sportCounts[d.sport] = (sportCounts[d.sport] || 0) + 1;
+    const sportOptions = Object.entries(sportCounts).sort((a, b) => b[1] - a[1]);
+
+    // Build market list
+    const marketCounts = {};
+    for (const d of raw) marketCounts[d.marketCategory] = (marketCounts[d.marketCategory] || 0) + 1;
+    const marketOptions = Object.entries(marketCounts).sort((a, b) => b[1] - a[1]);
+
+    // === FILTERS BAR ===
+    let html = '<div style="padding:10px 14px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--border); font-size:12px;">';
+    html += '<span style="color:var(--text3);">Range:</span>';
+    const ranges = ['24h', '3d', '7d', '14d', '30d', 'all'];
+    for (const r of ranges) {
+      const active = state.range === r;
+      html += '<button onclick="setLostBidRange(\'' + r + '\')" style="background:' + (active ? 'var(--accent)' : 'var(--surface3)') + '; border:1px solid var(--border); color:' + (active ? '#0d1117' : 'var(--text2)') + '; padding:3px 9px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:' + (active ? '600' : '400') + ';">' + r + '</button>';
+    }
+    html += '<span style="margin-left:12px; color:var(--text3);">Sport:</span>';
+    html += '<select onchange="setLostBidSport(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:12px;">';
+    html += '<option value="all"' + (state.sportFilter === 'all' ? ' selected' : '') + '>All (' + raw.length + ')</option>';
+    for (const [s, c] of sportOptions) {
+      html += '<option value="' + s + '"' + (state.sportFilter === s ? ' selected' : '') + '>' + s + ' (' + c + ')</option>';
+    }
+    html += '</select>';
+    html += '<span style="margin-left:12px; color:var(--text3);">Market:</span>';
+    html += '<select onchange="setLostBidMarket(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:12px;">';
+    html += '<option value="all"' + (state.marketFilter === 'all' ? ' selected' : '') + '>All (' + raw.length + ')</option>';
+    for (const [m, c] of marketOptions) {
+      html += '<option value="' + m + '"' + (state.marketFilter === m ? ' selected' : '') + '>' + m + ' (' + c + ')</option>';
+    }
+    html += '</select>';
+    html += '<span style="margin-left:auto; color:var(--text3);">' + filtered.length + ' of ' + raw.length + ' lost auctions plotted</span>';
+    html += '</div>';
+
+    if (filtered.length === 0) {
+      html += '<div class="empty-state" style="padding:30px;"><div class="icon">-</div><div>No lost auctions match the current filters</div></div>';
+      el.innerHTML = html;
+      return;
+    }
+
+    // === CHART ===
+    // X axis: fair parlay implied probability (0% to max in data, capped at 100)
+    // Y axis: gap_pp signed
+    const W = 1100, H = 460;
+    const pad = { l: 70, r: 28, t: 36, b: 56 };
+    const chartW = W - pad.l - pad.r;
+    const chartH = H - pad.t - pad.b;
+
+    // Determine y-range — symmetric around 0 with padding for outliers
+    const gaps = filtered.map(d => d.gapPp).filter(g => Number.isFinite(g));
+    let yMin = Math.min(...gaps, -1);
+    let yMax = Math.max(...gaps, 1);
+    // Cap visual range so a single outlier doesn't compress everything
+    yMin = Math.max(yMin, -8);
+    yMax = Math.min(yMax, 12);
+    // Round outward to clean tick values
+    yMin = Math.floor(yMin);
+    yMax = Math.ceil(yMax);
+    const yRange = yMax - yMin;
+    // X range: fair prob 0 to 60% (most lost parlays are sub-50%)
+    const xMin = 0, xMax = 0.65;
+    const xRange = xMax - xMin;
+
+    const xPx = v => pad.l + ((v - xMin) / xRange) * chartW;
+    const yPx = v => pad.t + chartH - ((v - yMin) / yRange) * chartH;
+
+    // Stake → radius. log-scale so a $50 stake isn't invisible vs $5K.
+    const maxStake = Math.max(...filtered.map(d => d.matchedStake || 0), 1);
+    const rOf = stake => {
+      const s = Math.max(stake || 0, 1);
+      const logRatio = Math.log10(s + 1) / Math.log10(maxStake + 1);
+      return 2 + logRatio * 8;  // 2-10px radius
+    };
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; max-width:' + W + 'px; display:block;">';
+
+    // Grid: y-axis lines + labels
+    const yStep = yRange <= 6 ? 1 : 2;
+    for (let yv = Math.ceil(yMin); yv <= Math.floor(yMax); yv += yStep) {
+      const y = yPx(yv);
+      const isZero = yv === 0;
+      svg += '<line x1="' + pad.l + '" y1="' + y + '" x2="' + (pad.l + chartW) + '" y2="' + y + '" stroke="' + (isZero ? 'var(--text2)' : 'var(--border)') + '" stroke-width="' + (isZero ? 1.5 : 0.5) + '"' + (isZero ? '' : ' opacity="0.4"') + '/>';
+      svg += '<text x="' + (pad.l - 8) + '" y="' + (y + 4) + '" text-anchor="end" fill="var(--text3)" font-size="11">' + (yv > 0 ? '+' : '') + yv + 'pp</text>';
+    }
+    // X-axis lines + labels
+    for (let xv = 0; xv <= xMax; xv += 0.05) {
+      const x = xPx(xv);
+      svg += '<line x1="' + x + '" y1="' + pad.t + '" x2="' + x + '" y2="' + (pad.t + chartH) + '" stroke="var(--border)" stroke-width="0.5" opacity="0.3"/>';
+      if (Math.abs(xv * 100 - Math.round(xv * 100)) < 0.01 && (xv * 100) % 10 === 0) {
+        svg += '<text x="' + x + '" y="' + (pad.t + chartH + 16) + '" text-anchor="middle" fill="var(--text3)" font-size="11">' + (xv * 100).toFixed(0) + '%</text>';
+      }
+    }
+    // Annotation strips
+    svg += '<text x="' + (pad.l + 10) + '" y="' + (pad.t + 14) + '" text-anchor="start" fill="var(--amber)" font-size="11" opacity="0.85">Above 0 = we were TIGHTER (lost on price)</text>';
+    svg += '<text x="' + (pad.l + 10) + '" y="' + (pad.t + chartH - 6) + '" text-anchor="start" fill="var(--text3)" font-size="11" opacity="0.85">Below 0 = we were LOOSER (cascade / walked away / race)</text>';
+
+    // Plot points — sorted so larger dots draw behind smaller (visibility)
+    const sorted = [...filtered].sort((a, b) => (b.matchedStake || 0) - (a.matchedStake || 0));
+    for (const d of sorted) {
+      const x = xPx(d.fairParlayProb);
+      const y = yPx(d.gapPp);
+      const r = rOf(d.matchedStake);
+      const color = _lostBidSportColor(d.sport);
+      const fmtAm = v => (v >= 0 ? '+' : '') + Math.round(v);
+      const tip = (d.parlayId || '').slice(0, 8) + ' · '
+        + (d.matchedAt || '').slice(5, 16).replace('T', ' ') + ' · '
+        + d.sport + ' · ' + d.marketCategory + ' · '
+        + d.legCount + ' legs · '
+        + 'our ' + fmtAm(d.ourBetAm) + ' / win ' + fmtAm(d.winBetAm) + ' · '
+        + 'gap ' + (d.gapPp >= 0 ? '+' : '') + d.gapPp.toFixed(2) + 'pp · '
+        + 'stake $' + Math.round(d.matchedStake);
+      // Skip if y is off-chart (clamped data)
+      if (d.gapPp < yMin - 0.1 || d.gapPp > yMax + 0.1) continue;
+      if (d.fairParlayProb < xMin - 0.005 || d.fairParlayProb > xMax + 0.005) continue;
+      svg += '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + color + '" opacity="0.55" stroke="' + color + '" stroke-width="1.2"><title>' + tip + '</title></circle>';
+    }
+
+    // Axis titles
+    svg += '<text x="' + (pad.l + chartW / 2) + '" y="' + (H - 8) + '" text-anchor="middle" fill="#ffffff" font-size="13">Fair Parlay Implied Probability</text>';
+    svg += '<text x="14" y="' + (pad.t + chartH / 2) + '" text-anchor="middle" fill="#ffffff" font-size="13" transform="rotate(-90, 14, ' + (pad.t + chartH / 2) + ')">Gap to Winner (pp)</text>';
+
+    svg += '</svg>';
+    html += svg;
+
+    // === SPORT LEGEND ===
+    html += '<div style="padding:8px 14px; display:flex; gap:14px; flex-wrap:wrap; font-size:11px; border-top:1px solid var(--border);">';
+    for (const [s, c] of sportOptions) {
+      const color = _lostBidSportColor(s);
+      const isFiltered = state.sportFilter !== 'all' && state.sportFilter !== s;
+      html += '<span style="display:inline-flex; align-items:center; gap:5px; opacity:' + (isFiltered ? '0.3' : '1') + ';">';
+      html += '<span style="width:10px; height:10px; border-radius:50%; background:' + color + ';"></span>';
+      html += '<span style="color:var(--text2);">' + s + '</span><span style="color:var(--text3);">(' + c + ')</span>';
+      html += '</span>';
+    }
+    html += '</div>';
+
+    // === SUMMARY METRICS ===
+    const gapsF = filtered.map(d => d.gapPp);
+    const stakesF = filtered.map(d => d.matchedStake || 0);
+    const totalStake = stakesF.reduce((s, x) => s + x, 0);
+    const sortedGaps = gapsF.slice().sort((a, b) => a - b);
+    const median = sortedGaps[Math.floor(sortedGaps.length / 2)];
+    const mean = gapsF.reduce((s, x) => s + x, 0) / gapsF.length;
+    const tied = gapsF.filter(g => Math.abs(g) < 0.01).length;
+    const tighter = gapsF.filter(g => g > 0.01).length;
+    const looser = gapsF.filter(g => g < -0.01).length;
+
+    html += '<div style="padding:10px 14px; display:flex; gap:18px; flex-wrap:wrap; font-size:12px; border-top:1px solid var(--border); background:var(--surface2);">';
+    const tile = (label, val, color) =>
+      '<div style="min-width:120px;"><div style="font-size:10px; color:var(--text3); text-transform:uppercase;">' + label + '</div>'
+      + '<div style="font-size:16px; font-weight:600; color:' + (color || 'var(--text)') + '; margin-top:2px;">' + val + '</div></div>';
+    html += tile('Lost auctions', filtered.length.toLocaleString());
+    html += tile('Total bettor $', '$' + Math.round(totalStake).toLocaleString());
+    html += tile('Median gap', (median >= 0 ? '+' : '') + median.toFixed(2) + 'pp');
+    html += tile('Mean gap', (mean >= 0 ? '+' : '') + mean.toFixed(2) + 'pp');
+    html += tile('Tied (=0)', tied + ' · ' + (tied / filtered.length * 100).toFixed(0) + '%', 'var(--text2)');
+    html += tile('We tighter', tighter + ' · ' + (tighter / filtered.length * 100).toFixed(0) + '%', 'var(--amber)');
+    html += tile('We looser', looser + ' · ' + (looser / filtered.length * 100).toFixed(0) + '%', 'var(--text3)');
+    html += '</div>';
+
+    // === PER-SPORT BREAKDOWN TABLE ===
+    const bySport = {};
+    for (const d of filtered) {
+      if (!bySport[d.sport]) bySport[d.sport] = { count: 0, stake: 0, gaps: [] };
+      bySport[d.sport].count++;
+      bySport[d.sport].stake += d.matchedStake || 0;
+      bySport[d.sport].gaps.push(d.gapPp);
+    }
+    const sportRows = Object.entries(bySport).map(([sport, v]) => {
+      const sg = v.gaps.slice().sort((a, b) => a - b);
+      return {
+        sport,
+        count: v.count,
+        stake: v.stake,
+        medianGap: sg[Math.floor(sg.length / 2)],
+        meanGap: v.gaps.reduce((s, x) => s + x, 0) / v.gaps.length,
+      };
+    }).sort((a, b) => b.stake - a.stake);
+
+    html += '<div style="padding:14px;"><div style="font-weight:600; font-size:13px; color:var(--text2); margin-bottom:6px;">By sport (current filter)</div>';
+    html += '<table style="font-size:12px; width:100%; border-collapse:collapse;">';
+    html += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);"><th style="text-align:left; padding:4px 8px;">Sport</th><th style="text-align:right; padding:4px 8px;">Lost #</th><th style="text-align:right; padding:4px 8px;">Stake $</th><th style="text-align:right; padding:4px 8px;">Median gap</th><th style="text-align:right; padding:4px 8px;">Mean gap</th></tr>';
+    for (const r of sportRows) {
+      const color = _lostBidSportColor(r.sport);
+      const gColor = Math.abs(r.medianGap) < 0.5 ? 'var(--text2)' : (r.medianGap > 0 ? 'var(--amber)' : 'var(--text3)');
+      html += '<tr style="border-bottom:1px solid var(--surface2);">'
+        + '<td style="padding:4px 8px;"><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:' + color + '; margin-right:6px; vertical-align:middle;"></span>' + r.sport + '</td>'
+        + '<td style="text-align:right; padding:4px 8px;">' + r.count + '</td>'
+        + '<td style="text-align:right; padding:4px 8px; font-family:monospace;">$' + Math.round(r.stake).toLocaleString() + '</td>'
+        + '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:' + gColor + ';">' + (r.medianGap >= 0 ? '+' : '') + r.medianGap.toFixed(2) + 'pp</td>'
+        + '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:var(--text3);">' + (r.meanGap >= 0 ? '+' : '') + r.meanGap.toFixed(2) + 'pp</td>'
+        + '</tr>';
+    }
+    html += '</table></div>';
+
+    // === PER-MARKET BREAKDOWN TABLE ===
+    const byMarket = {};
+    for (const d of filtered) {
+      if (!byMarket[d.marketCategory]) byMarket[d.marketCategory] = { count: 0, stake: 0, gaps: [] };
+      byMarket[d.marketCategory].count++;
+      byMarket[d.marketCategory].stake += d.matchedStake || 0;
+      byMarket[d.marketCategory].gaps.push(d.gapPp);
+    }
+    const marketRows = Object.entries(byMarket).map(([market, v]) => {
+      const sg = v.gaps.slice().sort((a, b) => a - b);
+      return {
+        market, count: v.count, stake: v.stake,
+        medianGap: sg[Math.floor(sg.length / 2)],
+        meanGap: v.gaps.reduce((s, x) => s + x, 0) / v.gaps.length,
+      };
+    }).sort((a, b) => b.stake - a.stake);
+
+    html += '<div style="padding:14px; padding-top:0;"><div style="font-weight:600; font-size:13px; color:var(--text2); margin-bottom:6px;">By market category (current filter)</div>';
+    html += '<table style="font-size:12px; width:100%; border-collapse:collapse;">';
+    html += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);"><th style="text-align:left; padding:4px 8px;">Market</th><th style="text-align:right; padding:4px 8px;">Lost #</th><th style="text-align:right; padding:4px 8px;">Stake $</th><th style="text-align:right; padding:4px 8px;">Median gap</th><th style="text-align:right; padding:4px 8px;">Mean gap</th></tr>';
+    for (const r of marketRows) {
+      const gColor = Math.abs(r.medianGap) < 0.5 ? 'var(--text2)' : (r.medianGap > 0 ? 'var(--amber)' : 'var(--text3)');
+      html += '<tr style="border-bottom:1px solid var(--surface2);">'
+        + '<td style="padding:4px 8px;">' + r.market + '</td>'
+        + '<td style="text-align:right; padding:4px 8px;">' + r.count + '</td>'
+        + '<td style="text-align:right; padding:4px 8px; font-family:monospace;">$' + Math.round(r.stake).toLocaleString() + '</td>'
+        + '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:' + gColor + ';">' + (r.medianGap >= 0 ? '+' : '') + r.medianGap.toFixed(2) + 'pp</td>'
+        + '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:var(--text3);">' + (r.meanGap >= 0 ? '+' : '') + r.meanGap.toFixed(2) + 'pp</td>'
+        + '</tr>';
     }
     html += '</table></div>';
 
