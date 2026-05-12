@@ -942,6 +942,123 @@ function startStatusServer() {
     res.json({ rejects: orderTracker.getRecentRejects(limit) });
   });
 
+  // Long-window confirm-time rejection report. Queries parlay_orders
+  // directly (unlimited by the in-memory rejectStats.recent[100] buffer)
+  // so the operator can see rejection patterns across days or weeks
+  // rather than just the last 100 events.
+  //
+  // Per-parlay-risk-cap rejections are the focus by default (?reason=cap)
+  // but ?reason=all returns everything, and a comma-separated list of
+  // bucket names also works. Returns daily counts + overshoot histogram
+  // + top 20 individual rejects so the operator can spot patterns
+  // (e.g., "every per-parlay reject was $5-15 over → tolerance fix
+  // would clear them" vs "overshoots are scattered $50-$500 → real
+  // oversize, cap is doing its job").
+  app.get('/recent-cap-rejects', async (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(90, parseInt(req.query.days) || 7));
+      const reasonFilter = (req.query.reason || 'cap').toLowerCase();
+      const fromIso = new Date(Date.now() - days * 86400000).toISOString();
+      const supabase = db.getClient();
+      if (!supabase) return res.status(503).json({ ok: false, error: 'no supabase' });
+
+      const rows = [];
+      let offset = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from('parlay_orders')
+          .select('parlay_id,quoted_at,status,offered_odds,max_risk,meta')
+          .eq('status', 'rejected')
+          .gte('quoted_at', fromIso)
+          .order('quoted_at', { ascending: false })
+          .range(offset, offset + 999);
+        if (error) {
+          log.warn('CapRejects', `fetch failed: ${error.message}`);
+          break;
+        }
+        if (!data || data.length === 0) break;
+        rows.push(...data);
+        if (data.length < 1000) break;
+        offset += 1000;
+        if (offset > 50000) break;
+      }
+
+      // Parse and bucket
+      const PARLAY_RISK_PATTERN = /risk\s*\$?([\d.]+)\s*>\s*max\s*\$?([\d.]+)/;
+      const enriched = [];
+      for (const r of rows) {
+        const reason = r.meta?.rejectionReason || '';
+        const m = String(reason).match(PARLAY_RISK_PATTERN);
+        const isCapReject = !!m;
+        let risk = null, max = null, over = null;
+        if (m) { risk = +m[1]; max = +m[2]; over = risk - max; }
+
+        if (reasonFilter === 'cap' && !isCapReject) continue;
+        // reasonFilter === 'all' passes everything; a custom comma-separated
+        // list would need explicit matching — skip for now.
+
+        enriched.push({
+          parlayId: r.parlay_id,
+          quotedAt: r.quoted_at,
+          reason,
+          maxRiskAtTime: r.max_risk,
+          offeredOdds: r.offered_odds,
+          risk, max, overshoot: over,
+          isCapReject,
+        });
+      }
+
+      // Daily counts
+      const byDay = {};
+      for (const e of enriched) {
+        const day = (e.quotedAt || '').slice(0, 10);
+        byDay[day] = (byDay[day] || 0) + 1;
+      }
+      const dailyCounts = Object.entries(byDay)
+        .map(([day, count]) => ({ day, count }))
+        .sort((a, b) => a.day.localeCompare(b.day));
+
+      // Overshoot histogram (for cap rejects only)
+      const overshoots = enriched.filter(e => e.overshoot != null).map(e => e.overshoot);
+      const histBuckets = { '0-10': 0, '10-25': 0, '25-50': 0, '50-100': 0, '100-250': 0, '250-1000': 0, '1000+': 0 };
+      for (const o of overshoots) {
+        if (o < 10) histBuckets['0-10']++;
+        else if (o < 25) histBuckets['10-25']++;
+        else if (o < 50) histBuckets['25-50']++;
+        else if (o < 100) histBuckets['50-100']++;
+        else if (o < 250) histBuckets['100-250']++;
+        else if (o < 1000) histBuckets['250-1000']++;
+        else histBuckets['1000+']++;
+      }
+      const median = overshoots.length
+        ? overshoots.slice().sort((a, b) => a - b)[Math.floor(overshoots.length / 2)]
+        : null;
+      const p90 = overshoots.length
+        ? overshoots.slice().sort((a, b) => a - b)[Math.floor(overshoots.length * 0.9)]
+        : null;
+
+      res.json({
+        windowDays: days,
+        reasonFilter,
+        capturedAt: new Date().toISOString(),
+        totalRejectedRowsScanned: rows.length,
+        capRejectCount: enriched.length,
+        avgPerDay: dailyCounts.length ? enriched.length / dailyCounts.length : 0,
+        overshootStats: {
+          count: overshoots.length,
+          medianDollar: median,
+          p90Dollar: p90,
+          histogram: histBuckets,
+        },
+        dailyCounts,
+        topRejects: enriched.slice(0, 20),
+      });
+    } catch (err) {
+      log.error('CapRejects', `endpoint failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   app.get('/decline-stats', async (req, res) => {
     try {
       const days = parseInt(req.query.days) || 7;

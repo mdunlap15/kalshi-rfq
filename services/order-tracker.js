@@ -1092,7 +1092,17 @@ function recordRejection(parlayId, reason) {
     order.status = 'rejected';
     order.rejectedAt = new Date().toISOString();
     order.rejectionReason = reason;
+    // Persist rejection reason into meta so /recent-cap-rejects and other
+    // long-window endpoints can query rejection patterns across days/weeks
+    // (rejectStats.recent is bounded to 100 entries in-memory). The top-
+    // level order.rejectionReason field stays for in-memory consumers;
+    // meta.rejectionReason is the persistent copy that flows through
+    // db.saveOrder's metaWithExtras spread.
+    order.meta = order.meta || {};
+    order.meta.rejectionReason = reason;
+    order.meta.rejectedAt = order.rejectedAt;
     log.info('Orders', `Rejected: parlay=${parlayId}, reason=${reason}`);
+    db.saveOrder(order).catch(err => log.debug('DB', `saveOrder(rejection) failed for ${parlayId}: ${err.message}`));
   }
   // Release any pending reservation — rejection means we won't take this risk
   releasePending(parlayId);
