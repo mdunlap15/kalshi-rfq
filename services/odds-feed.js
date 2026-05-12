@@ -18,12 +18,21 @@ const bovadaAltScraper = require('./bovada-alt-scraper');
 // we actually cancel the underlying socket instead of just ignoring the
 // promise, which prevents socket leaks and frees the keep-alive connection.
 //
-// The timeout is generous (500ms) — enough for normal calls to complete,
-// tight enough to kill real hangs.
-const ODDS_API_FETCH_TIMEOUT_MS = 500;
+// Default 500ms is enough for normal calls but tight enough to kill real
+// hangs. Operator can tune via TOA_FETCH_TIMEOUT_MS — drop lower (200-300ms)
+// when the auction race is tight, raise during stable periods, or set to 0
+// to disable the timeout entirely.
+const ODDS_API_FETCH_TIMEOUT_MS = (() => {
+  const raw = parseInt(process.env.TOA_FETCH_TIMEOUT_MS, 10);
+  if (raw === 0) return 0; // explicit disable
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return 500;
+})();
 
 async function abortableFetch(url, options, timeoutMs) {
-  const t = timeoutMs || ODDS_API_FETCH_TIMEOUT_MS;
+  const t = timeoutMs != null ? timeoutMs : ODDS_API_FETCH_TIMEOUT_MS;
+  // 0 disables the timeout entirely
+  if (!t || t <= 0) return fetch(url, options);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), t);
   try {
@@ -7875,6 +7884,12 @@ const toaStaleServeStats = {
   lastStaleEventsAt: null,
   lastStalePropOddsAt: null,
   maxStaleAgeMin: 0,    // largest age of stale data we've served since boot
+  // 2026-05-12: track fetch timeouts separately from other refresh failures.
+  // Was previously lumped into the generic "TOA per-event odds error" log
+  // line, making it hard to see when latency tail was driven by TOA stalls
+  // vs. legitimate quota/HTTP failures.
+  fetchTimeouts: 0,
+  lastFetchTimeoutAt: null,
 };
 function getToaStaleServeStats() { return { ...toaStaleServeStats }; }
 
@@ -7892,7 +7907,7 @@ async function _refreshTheOddsApiEvents(sportKey) {
   const apiKey = process.env.THE_ODDS_API_KEY;
   const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events?apiKey=${apiKey}`;
   try {
-    const resp = await fetch(url);
+    const resp = await abortableFetch(url);
     if (!resp.ok) {
       log.warn('OddsFeed', `TOA events fetch failed: ${resp.status}`);
       if (toaEventsCache[sportKey]) toaEventsCache[sportKey].refreshing = false;
@@ -7906,7 +7921,13 @@ async function _refreshTheOddsApiEvents(sportKey) {
     toaEventsCache[sportKey] = { fetchedAt: Date.now(), events, refreshing: false };
     return events;
   } catch (err) {
-    log.warn('OddsFeed', `TOA events error: ${err.message}`);
+    if (err.name === 'AbortError') {
+      toaStaleServeStats.fetchTimeouts++;
+      toaStaleServeStats.lastFetchTimeoutAt = new Date().toISOString();
+      log.warn('OddsFeed', `TOA events fetch timeout (${ODDS_API_FETCH_TIMEOUT_MS}ms): ${sportKey}`);
+    } else {
+      log.warn('OddsFeed', `TOA events error: ${err.message}`);
+    }
     if (toaEventsCache[sportKey]) toaEventsCache[sportKey].refreshing = false;
     return null;
   }
@@ -7956,7 +7977,7 @@ async function _refreshTheOddsApiPropOdds(sport, eventId, marketKey) {
   const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/events/${eventId}/odds`
     + `?apiKey=${apiKey}&regions=us&markets=${marketKey}&oddsFormat=american`;
   try {
-    const resp = await fetch(url);
+    const resp = await abortableFetch(url);
     if (!resp.ok) {
       log.warn('OddsFeed', `TOA per-event odds failed (${eventId}/${marketKey}): ${resp.status}`);
       if (toaPropOddsCache[cacheKey]) toaPropOddsCache[cacheKey].refreshing = false;
@@ -7966,7 +7987,13 @@ async function _refreshTheOddsApiPropOdds(sport, eventId, marketKey) {
     toaPropOddsCache[cacheKey] = { fetchedAt: Date.now(), refreshing: false, ...data };
     return toaPropOddsCache[cacheKey];
   } catch (err) {
-    log.warn('OddsFeed', `TOA per-event odds error: ${err.message}`);
+    if (err.name === 'AbortError') {
+      toaStaleServeStats.fetchTimeouts++;
+      toaStaleServeStats.lastFetchTimeoutAt = new Date().toISOString();
+      log.warn('OddsFeed', `TOA per-event odds timeout (${ODDS_API_FETCH_TIMEOUT_MS}ms): ${cacheKey}`);
+    } else {
+      log.warn('OddsFeed', `TOA per-event odds error: ${err.message}`);
+    }
     if (toaPropOddsCache[cacheKey]) toaPropOddsCache[cacheKey].refreshing = false;
     return null;
   }
