@@ -3224,7 +3224,33 @@ async function validateForConfirmation(parlayId, originalMeta) {
 
   const legs = originalMeta.legs.map(l => l.lineId);
   const currentPricing = await priceParlay(legs);
-  if (!currentPricing) return { valid: false, reason: 'cannot reprice — missing data' };
+  if (!currentPricing) {
+    // Could not reprice. Common cause: line-index churn between quote and
+    // confirm — a leg's lineId dropped out of the index because the next
+    // refresh found it momentarily below the minBooks gate (especially for
+    // prop legs with thin TOA coverage). The leg lookup at priceParlay-
+    // time now returns null and we decline.
+    //
+    // BEFORE this fix we rejected confirmations in this case, walking
+    // away from auctions we had already won on price. PX then matched
+    // to the next-best SP. Diagnosed 2026-05-12 after a 4-hour fill
+    // drought: a 4-leg RBI prop parlay was quoted, won, then walked
+    // away from 3 times in 44 seconds because one of its prop legs
+    // churned out of the index.
+    //
+    // The fix: when we can't reprice, ACCEPT the parlay based on the
+    // original quote. Drift check is best-effort — if we can't reprice,
+    // honor our original quoted price rather than walking away. We
+    // already committed by quoting; the bettor and PX trusted our
+    // number; refusing now is worse than the missed drift coverage.
+    const lastFailure = priceParlay._lastFailure || null;
+    log.warn('Pricing', `Could not reprice at confirm — accepting based on original quote. Last priceParlay failure: ${lastFailure ? JSON.stringify(lastFailure).substring(0, 200) : 'unknown'}`);
+    return {
+      valid: true,
+      reason: 'reprice unavailable; honoring original quote',
+      currentPricing: null,
+    };
+  }
 
   // Check if fair value has moved significantly against us since quote.
   // Threshold configurable via CONFIRMATION_DRIFT_THRESHOLD env var (default 3%).
