@@ -1617,8 +1617,12 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
     unknownLegDetails: declineInfo?.unknownDetails || [],
   };
 
-  // Don't store other_sp fills as separate matched entries
-  if (outcome === 'other_sp') return entry;
+  // 'other_sp' rows ARE persisted to matched_parlays so live auction
+  // losses surface in Lost Analysis. Previously skipped here, which left
+  // the Lost view showing only post-restart backfill 'lost' entries — a
+  // tiny sliver of real losses. (Fixed 2026-05-11 after operator audit
+  // found 7-day Lost count = 1, 30-day = 1068; the 30-day was almost
+  // entirely Railway-restart artifacts.)
 
   matchedParlays.unshift(entry); // newest first
   db.saveMatchedParlay(entry).catch(() => {});
@@ -7092,7 +7096,6 @@ async function loadFromDb() {
   // totalMatched (they really did happen) but don't inflate weLost or
   // miscategorize the win counter.
   const dbMatched = await db.loadMatchedParlays(10000);
-  let legacyMisclassified = 0;
   for (const m of dbMatched) {
     matchedParlays.push(m);
     marketStats.totalMatched++;
@@ -7101,16 +7104,22 @@ async function loadFromDb() {
       if (m.outcome === 'won') {
         marketStats.weWon++;
       } else if (m.outcome === 'lost' || m.outcome === 'other_sp') {
-        // Legacy misclassified — treat as won for the counter so fill-rate
-        // math reflects reality. weLost stays at 0.
-        marketStats.weWon++;
-        legacyMisclassified++;
+        // Real auction losses. Pre-2026-05-11, the entries written here
+        // were sometimes legacy misclassified wins (this counter used to
+        // re-bucket them as wins for fill-rate display). After the fix
+        // that persists 'other_sp' to matched_parlays, the dominant
+        // population is genuine losses — the right thing is to count them
+        // as such. The small number of legacy misclassifications still in
+        // the DB will get counted as losses too; that's an acceptable
+        // accuracy hit on a non-canonical counter (true P&L lives in
+        // parlay_orders).
+        marketStats.weLost = (marketStats.weLost || 0) + 1;
       }
     } else {
       marketStats.missedNoQuote++;
     }
   }
-  log.info('DB', `Loaded ${dbMatched.length} matched parlays${legacyMisclassified > 0 ? ` (${legacyMisclassified} legacy 'lost'/'other_sp' rows re-counted as wins per PX event-model clarification)` : ''}`);
+  log.info('DB', `Loaded ${dbMatched.length} matched parlays — won=${marketStats.weWon}, lost=${marketStats.weLost || 0}, missed=${marketStats.missedNoQuote}`);
 
   // Load declines in background — the declines table is too large for a
   // synchronous startup query. Positions and P&L don't depend on it.
