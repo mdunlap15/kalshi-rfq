@@ -6361,6 +6361,27 @@ function startStatusServer() {
     res.json({ ok: true, lineId, disabled: false });
   });
 
+  // Delete one or more orders by parlayId. Removes from in-memory state,
+  // reverses P&L stats (if any), and deletes from Supabase. Operator-driven
+  // cleanup for phantom/orphan orders that slipped through reconcile (e.g.,
+  // 0-leg confirmed entries imported with a missing pxOrder.updated_at —
+  // those render with 1/21/1970 timestamps in the dashboard).
+  // Body: { parlayIds: string[] }
+  app.post('/admin/delete-orders', async (req, res) => {
+    const { parlayIds } = req.body || {};
+    if (!Array.isArray(parlayIds) || parlayIds.length === 0) {
+      return res.status(400).json({ ok: false, error: 'parlayIds (non-empty array) required' });
+    }
+    try {
+      const result = await orderTracker.deleteOrdersByParlayIds(parlayIds);
+      log.warn('AdminDelete', `Deleted ${result.deleted} orders by parlayId (notFound: ${result.notFound.length})`);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      log.error('AdminDelete', `delete-orders failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Bulk disable / enable a list of lineIds in a single call. Used by the
   // Lines table's "Select all + Disable selected" workflow so the operator
   // can flip a whole market family (e.g. every player_hitter_total_bases

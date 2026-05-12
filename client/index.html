@@ -3700,7 +3700,13 @@
       const local = localByParlayId[p.parlayId] || p;
       if (!local || local.status !== 'confirmed') return false;
       const legs = local.legs || (local.meta && local.meta.legs) || [];
-      if (legs.length === 0) return false;
+      // 0-leg confirmed orders are phantoms — reconcile/import path creates
+      // these when PX REST returns partial data. They have no team info, no
+      // selections, and typically a 1970 confirmedAt (because the import
+      // fallback is `new Date(pxOrder.updated_at * 1000)` and updated_at is
+      // missing or 0). Always treat as stale so they auto-hide; operator can
+      // toggle "Show hidden" to inspect and then delete via /admin/delete-orders.
+      if (legs.length === 0) return true;
       // Series / golf markets span multiple days. The startTime on a
       // series_* leg is Game 1; on a golf matchup it's one round of the
       // tournament. The 12h cutoff misfires on both. Exempt from time

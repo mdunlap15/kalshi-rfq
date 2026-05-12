@@ -5484,6 +5484,71 @@ async function deleteUnknownSettledOrders() {
 }
 
 /**
+ * Delete one or more orders by parlayId. Removes from in-memory state,
+ * reverses P&L stats if the order had a P&L recorded, and deletes from
+ * Supabase. Designed for operator-driven cleanup of phantom/orphaned
+ * orders (e.g., 0-leg confirmed entries created by reconcile imports
+ * when PX REST returned partial data).
+ *
+ * Idempotent: parlayIds not in memory are skipped silently in the
+ * in-memory phase but still issued as DB deletes so a Supabase-only
+ * orphan can be removed.
+ */
+async function deleteOrdersByParlayIds(parlayIds) {
+  if (!Array.isArray(parlayIds) || parlayIds.length === 0) {
+    return { deleted: 0, parlayIds: [], notFound: [] };
+  }
+  let deleted = 0;
+  const found = [];
+  const notFound = [];
+  for (const parlayId of parlayIds) {
+    const order = orders[parlayId];
+    if (!order) {
+      notFound.push(parlayId);
+      continue;
+    }
+    // Reverse P&L stats if this order had one recorded
+    if (order.pnl != null) {
+      stats.runningPnL -= order.pnl;
+      if (order.pnl > 0) stats.totalWins--;
+      else if (order.pnl < 0) stats.totalLosses--;
+    }
+    if (order.status === 'confirmed') {
+      // No counter for active confirmed; activeOrders derives from filter
+    } else if (order.status && order.status.startsWith('settled_')) {
+      stats.totalSettlements--;
+    }
+    if (order.orderUuid) delete ordersByUuid[order.orderUuid];
+    delete orders[parlayId];
+    found.push(parlayId);
+    deleted++;
+  }
+
+  // DB delete — best-effort, includes notFound IDs in case there's a DB
+  // orphan with no in-memory record.
+  const allIds = [...found, ...notFound];
+  try {
+    if (allIds.length > 0) {
+      const client = db.getClient ? db.getClient() : null;
+      if (client) {
+        const { error } = await client
+          .from('parlay_orders')
+          .delete()
+          .in('parlay_id', allIds);
+        if (error) {
+          log.warn('Orders', `DB delete failed for ${allIds.length} parlay_ids: ${error.message}`);
+        }
+      }
+    }
+  } catch (err) {
+    log.warn('Orders', `deleteOrdersByParlayIds DB delete threw: ${err.message}`);
+  }
+
+  log.info('Orders', `Deleted ${deleted} orders (in-memory) + DB delete for ${allIds.length} ids (P&L now: $${stats.runningPnL.toFixed(2)})`);
+  return { deleted, parlayIds: found, notFound };
+}
+
+/**
  * Lightweight periodic reconcile specifically for ghost 'confirmed' orders.
  * Our in-memory tracker can accumulate ghosts in two ways:
  *   1) order.matched arrived and promoted status to 'confirmed' (per the
@@ -5986,6 +6051,7 @@ module.exports = {
   backfillUnknownSports,
   backfillFromExport,
   deleteUnknownSettledOrders,
+  deleteOrdersByParlayIds,
   findByParlayId,
   findByOrderUuid,
   overrideLegResult,
