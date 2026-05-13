@@ -10095,8 +10095,10 @@
   // Scatter chart of lost auctions: where our bid was vs where the winning
   // bid was. One dot per lost parlay. Color by primary sport, size by
   // bettor wager. Y-axis is signed gap (our_implied − winner_implied) in
-  // pp — positive = we were tighter (lost on price), negative = looser
-  // (cascade/walk-away), 0 = integer tie (lost on max_risk/timestamp).
+  // pp — positive = we were LOOSER (offered more payout, lost anyway —
+  // rare per Alec's odds-first ranking), negative = we were TIGHTER
+  // (underbid winner on price, the common case), 0 = exact integer tie
+  // (lost on max_risk or timestamp tiebreaker).
   // X-axis is fair parlay implied prob so longshot losses (left) and
   // chalk losses (right) cluster separately.
   //
@@ -10338,21 +10340,30 @@
     const sortedGaps = gapsF.slice().sort((a, b) => a - b);
     const median = sortedGaps[Math.floor(sortedGaps.length / 2)];
     const mean = gapsF.reduce((s, x) => s + x, 0) / gapsF.length;
+    // Gap sign convention (corrected 2026-05-13 after Alec confirmed PX's
+    // ranking is odds-first → max_risk → timestamp):
+    //   gap = our_SP_implied − winner_SP_implied
+    //   gap > 0 ⇒ we offered LARGER payout (looser, more generous) and
+    //             still lost — extremely rare given odds-first ranking
+    //   gap < 0 ⇒ we offered SMALLER payout (tighter, underbid) — winner
+    //             won outright on price (the common case)
+    //   gap = 0 ⇒ exact integer tie, lost via PX tiebreaker (max_risk or
+    //             submission timestamp)
     const tied = gapsF.filter(g => Math.abs(g) < 0.01).length;
-    const tighter = gapsF.filter(g => g > 0.01).length;
-    const looser = gapsF.filter(g => g < -0.01).length;
+    const looser = gapsF.filter(g => g > 0.01).length;     // we offered better, lost anyway
+    const tighter = gapsF.filter(g => g < -0.01).length;   // we underbid winner
 
     html += '<div style="padding:10px 14px; display:flex; gap:18px; flex-wrap:wrap; font-size:12px; border-top:1px solid var(--border); background:var(--surface2);">';
-    const tile = (label, val, color) =>
-      '<div style="min-width:120px;"><div style="font-size:10px; color:var(--text3); text-transform:uppercase;">' + label + '</div>'
+    const tile = (label, val, color, tooltip) =>
+      '<div style="min-width:120px;"' + (tooltip ? ' title="' + tooltip + '"' : '') + '><div style="font-size:10px; color:var(--text3); text-transform:uppercase;">' + label + '</div>'
       + '<div style="font-size:16px; font-weight:600; color:' + (color || 'var(--text)') + '; margin-top:2px;">' + val + '</div></div>';
     html += tile('Lost auctions', filtered.length.toLocaleString());
     html += tile('Total bettor $', '$' + Math.round(totalStake).toLocaleString());
     html += tile('Median gap', (median >= 0 ? '+' : '') + median.toFixed(2) + 'pp');
     html += tile('Mean gap', (mean >= 0 ? '+' : '') + mean.toFixed(2) + 'pp');
-    html += tile('Tied (=0)', tied + ' · ' + (tied / filtered.length * 100).toFixed(0) + '%', 'var(--text2)');
-    html += tile('We tighter', tighter + ' · ' + (tighter / filtered.length * 100).toFixed(0) + '%', 'var(--amber)');
-    html += tile('We looser', looser + ' · ' + (looser / filtered.length * 100).toFixed(0) + '%', 'var(--text3)');
+    html += tile('Tied (=0)', tied + ' · ' + (tied / filtered.length * 100).toFixed(0) + '%', 'var(--text2)', 'Exact integer price tie — lost via PX tiebreaker (max_risk then timestamp)');
+    html += tile('We tighter (underbid)', tighter + ' · ' + (tighter / filtered.length * 100).toFixed(0) + '%', 'var(--amber)', 'We offered less payout than winner — winner won outright on price');
+    html += tile('We looser', looser + ' · ' + (looser / filtered.length * 100).toFixed(0) + '%', 'var(--text3)', 'We offered MORE payout than winner and still lost. Should be near-zero per Alec — investigate if not.');
     html += '</div>';
 
     // === PER-SPORT BREAKDOWN TABLE ===

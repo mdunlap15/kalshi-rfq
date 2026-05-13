@@ -100,11 +100,16 @@ async function computeWindow(label, fromMs, toMs) {
     const wi = amToProb(-Number(m.matched_odds));
     const oi = amToProb(-Number(m.our_odds));
     if (wi == null || oi == null) continue;
-    gaps.push((oi - wi) * 100); // negative = we offered better (looser), positive = worse (tighter)
+    gaps.push((oi - wi) * 100);
   }
+  // gap = our_SP_implied − winner_SP_implied (SP-side amToProb).
+  // gap > 0 ⇒ we offered LARGER bettor payout (LOOSER, more generous) and
+  //           lost — rare per Alec's odds-first ranking
+  // gap < 0 ⇒ we offered SMALLER bettor payout (TIGHTER, underbid winner) — common
+  // gap = 0 ⇒ exact integer tie, lost on PX tiebreaker (max_risk, timestamp)
   const tied = gaps.filter(g => Math.abs(g) < 0.01).length;
-  const tighter = gaps.filter(g => g > 0.01).length;
-  const looser = gaps.filter(g => g < -0.01).length;
+  const looser = gaps.filter(g => g > 0.01).length;     // we overbid, lost
+  const tighter = gaps.filter(g => g < -0.01).length;   // we underbid winner
 
   return {
     label,
@@ -257,7 +262,7 @@ function fmt$(n) {
   console.log('=== LOSS GAP SPLIT (when we lost auction: did we offer worse, match, or beat?) ===');
   console.log('Window        | n     | Tighter% | Tied%   | Looser% | Median gap');
   console.log('--------------+-------+----------+---------+---------+----------');
-  console.log('  (tighter = we underbid; tied = same price; looser = we beat winner but still lost)');
+  console.log('  (tighter = we underbid winner on price [common]; tied = same integer price; looser = we offered better and still lost [rare per Alec])');
   const gapRow = (r) => console.log(
     r.label.padEnd(13) + ' | ' +
     String(r.gap.n).padStart(5) + ' | ' +
@@ -285,6 +290,6 @@ function fmt$(n) {
   const deltaLooser = target.gap.looserPct - agg.looserPct;
   console.log('  Fill rate: ' + fmtPct(target.fillRatePct) + ' (baseline ' + fmtPct(agg.fillRatePct) + ', Δ ' + (deltaFill >= 0 ? '+' : '') + deltaFill.toFixed(1) + ' pts)');
   console.log('  Median vig over fair: ' + fmtMs(target.pricingVig.p50) + ' (baseline ' + fmtMs(agg.vigP50) + ', Δ ' + fmtMs(deltaVig) + ')');
-  console.log('  Tighter losses (we underbid): ' + fmtPct(target.gap.tighterPct) + ' (baseline ' + fmtPct(agg.tighterPct) + ', Δ ' + (deltaTighter >= 0 ? '+' : '') + deltaTighter.toFixed(1) + ' pts)');
-  console.log('  Looser losses (latency-tax): ' + fmtPct(target.gap.looserPct) + ' (baseline ' + fmtPct(agg.looserPct) + ', Δ ' + (deltaLooser >= 0 ? '+' : '') + deltaLooser.toFixed(1) + ' pts)');
+  console.log('  Tighter losses (we underbid winner on price): ' + fmtPct(target.gap.tighterPct) + ' (baseline ' + fmtPct(agg.tighterPct) + ', Δ ' + (deltaTighter >= 0 ? '+' : '') + deltaTighter.toFixed(1) + ' pts)');
+  console.log('  Looser losses (we offered better, lost anyway): ' + fmtPct(target.gap.looserPct) + ' (baseline ' + fmtPct(agg.looserPct) + ', Δ ' + (deltaLooser >= 0 ? '+' : '') + deltaLooser.toFixed(1) + ' pts)');
 })().catch(e => { console.error(e); process.exit(1); });

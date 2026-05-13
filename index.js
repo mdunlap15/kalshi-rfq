@@ -2344,8 +2344,10 @@ function startStatusServer() {
           fairParlayProb: o.fairParlayProb || null,
           // Rejection diagnostics — populated only when we offered, won the
           // auction at confirm-time, then declined to confirm. Distinguishes
-          // "we were tighter" losses (gapPp >= 0) from "we walked away"
-          // losses (we had the better offer but rejected the confirmation).
+          // "we were looser / overbid" losses (gapPp >= 0; we offered MORE
+          // payout than winner — rare per Alec's odds-first ranking) from
+          // "we walked away" losses (we had the better offer but rejected
+          // the confirmation).
           weWalkedAway,
           rejectBucket,
           rawRejectReason,
@@ -3440,7 +3442,9 @@ function startStatusServer() {
   //   maxGapCents=N      Cap gap-cents tail in the histogram (default 200)
   //
   // Per-RFQ output: parlayId, ourOdds, winnerOdds, ourImplied, winnerImplied,
-  // gapPp (our_implied − winner_implied; positive = we were tighter),
+  // gapPp (our_SP_implied − winner_SP_implied; positive = we offered MORE
+  // payout than winner [looser/overbid, rare], negative = we underbid
+  // winner on price [tighter, common]),
   // gapCents (payout per $100 stake difference at the winner's offer),
   // legCount, sports.
   //
