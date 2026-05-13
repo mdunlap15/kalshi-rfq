@@ -110,4 +110,16 @@ async function getSummary({ force = false } = {}) {
   };
 }
 
-module.exports = { fetchLedger, summarize, getSummary };
+/**
+ * Sync, never-fetching accessor — returns the cached PX-native open
+ * exposure if a fetch has populated the cache, otherwise null. Used by
+ * the /status hot path which can't afford a multi-second blocking PX
+ * fetch. Caller is responsible for falling back to a local estimate
+ * when this returns null (cold-start scenario).
+ */
+function getCachedOpenExposure() {
+  if (!cache) return null;
+  return cache.summary?.openExposure ?? null;
+}
+
+module.exports = { fetchLedger, summarize, getSummary, getCachedOpenExposure };

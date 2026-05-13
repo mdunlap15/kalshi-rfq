@@ -889,11 +889,22 @@ function startStatusServer() {
         const accountPnL = (accountValue != null && startingBankroll != null)
           ? (accountValue - startingBankroll)
           : null;
-        // Total Equity = Cash Available + Deployed. Mirrors the
-        // calculation the main dashboard does in renderPortfolioSummary
-        // (balanceNum + portRisk). Surfaces it here so the viewer page
-        // can display the same number without a separate /balance fetch.
-        const totalEquity = (accountValue != null) ? (accountValue + currentRisk) : null;
+        // Total Equity = Cash Available + Deployed.
+        //
+        // The "deployed" addend should be the SAME number the main dashboard
+        // uses (portRisk = pxPnL.openExposure ?? portfolio.currentRisk —
+        // see client/index.html:7059). Previously this used the local
+        // tracker's getTotalPortfolioRisk() which is filtered through the
+        // phantom heuristic and can sit at 0 while PX shows real open
+        // exposure (e.g., post-restart before the tracker catches up, or
+        // when phantom-flag false-positives mask real positions). That
+        // discrepancy made the mobile viewer's "Total" read as
+        // (Total Equity − Deployed) vs. the main dashboard's accurate
+        // Total Equity. Prefer PX-native when the px-ledger cache is warm;
+        // fall back to the tracker only on cold-start.
+        const pxOpenExposure = pxLedger.getCachedOpenExposure();
+        const effectiveRisk = pxOpenExposure != null ? pxOpenExposure : currentRisk;
+        const totalEquity = (accountValue != null) ? (accountValue + effectiveRisk) : null;
         return {
           bankroll: getBankroll(),
           balance: liveBal || getBankroll(),
