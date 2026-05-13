@@ -436,6 +436,23 @@ const config = {
     confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
     offerValidSeconds: parseInt(process.env.OFFER_VALID_SECONDS) || 60,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
+    // Raw vs probability-weighted per-team exposure measurement.
+    //
+    // FALSE (legacy): per-team exposure counted each parlay leg's
+    //   contribution as `payout × P(other legs win)`. A 4-leg parlay at
+    //   $5K max risk where the other 3 legs combined to ~25% fair contributed
+    //   only ~$1.25K to its team's bucket — so a $7K cap could hold many
+    //   such parlays.
+    // TRUE  (default 2026-05-13): each parlay contributes its FULL `payout`
+    //   (= max_risk) to every team it touches. Simpler, more conservative.
+    //   Operator request: "$10K raw risk across all parlays for any team."
+    //   With MAX_RISK_PER_PARLAY=5000 and MAX_EXPOSURE_PER_TEAM=10000, that
+    //   gates at exactly 2 parlays per team regardless of leg count or fair
+    //   prob of other legs.
+    //
+    // Toggle via USE_RAW_PER_TEAM_EXPOSURE=false to revert.
+    useRawPerTeamExposure:
+      process.env.USE_RAW_PER_TEAM_EXPOSURE !== 'false' && process.env.USE_RAW_PER_TEAM_EXPOSURE !== '0',
     // Per-team exposure overrides. JSON map of team/fighter name → cap dollars.
     // Looked up FIRST during exposure checks; falls back to maxExposurePerTeam
     // when a team has no entry. Use this to tighten exposure on specific

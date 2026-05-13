@@ -330,6 +330,18 @@ const stats = {
  */
 function buildPendingReservation(legs, worstCaseRisk, offerValidSeconds) {
   if (!legs || legs.length === 0) return null;
+  // Operator chose raw measurement for the per-team cap (2026-05-13):
+  // each parlay contributes its FULL worstCaseRisk to every team it
+  // touches, regardless of how the other legs project. Game-key risk
+  // stays weighted because the per-game cap continues to use the
+  // probability-weighted model (different semantics — game cap is a
+  // joint-outcome model, not a "max parlays per side" gate).
+  let useRawTeam = true;
+  try {
+    const { config } = require('../config');
+    if (config?.pricing?.useRawPerTeamExposure === false) useRawTeam = false;
+  } catch { /* default to raw */ }
+
   const teamKeys = [];
   const gameKeys = [];
   const pitcherKeys = [];
@@ -343,7 +355,8 @@ function buildPendingReservation(legs, worstCaseRisk, offerValidSeconds) {
       const opp = normalizeExposureKey((li.homeTeam || '') + (li.awayTeam || ''));
       eventSuffix = (opp || '') + '|' + (gameDate || 'noevent');
     }
-    // Weighted by other-legs fair prob, matching addExposure
+    // Weighted by other-legs fair prob — kept for the per-game cap path
+    // and for the legacy useRawPerTeamExposure=false branch.
     let otherProb = 1;
     for (let j = 0; j < legs.length; j++) {
       if (j === i) continue;
@@ -353,11 +366,15 @@ function buildPendingReservation(legs, worstCaseRisk, offerValidSeconds) {
     }
     const weightedRisk = worstCaseRisk * otherProb;
 
-    // Per-team key
+    // Per-team key — raw payout when flag on so the cap acts as a hard
+    // "max parlays per team" gate rather than a probability discount.
     const teamName = li.teamName || li.team || li.homeTeam || li.awayTeam || 'unknown';
     const teamKey = normalizeExposureKey(teamName);
     if (teamKey) {
-      teamKeys.push({ key: teamKey + '|' + eventSuffix, risk: weightedRisk });
+      teamKeys.push({
+        key: teamKey + '|' + eventSuffix,
+        risk: useRawTeam ? worstCaseRisk : weightedRisk,
+      });
     }
     // Per-game key
     const gameKey = eventId ? (eventId + '|' + gameDate) : ('syn_' + eventSuffix);
@@ -2994,9 +3011,15 @@ function addExposure(order) {
           sport: leg.sport || null,
           notionalPayout: 0,
           netExposure: 0,
+          // Raw (un-weighted) per-team risk. Sum of full payouts for each
+          // parlay touching this team — drives the
+          // useRawPerTeamExposure=true cap path. Parallel to the
+          // probability-weighted `risk` field so we keep both views.
+          rawRisk: 0,
         };
       }
       exposure[key].risk += payout * otherProb;
+      exposure[key].rawRisk += payout;
       exposure[key].parlays += 1;
       exposure[key].notionalPayout += payout;
     }
@@ -3081,6 +3104,11 @@ function removeExposure(order) {
         otherProb *= legEffectiveProb(legs[j]);
       }
       exposure[key].risk -= payout * otherProb;
+      // Mirror addExposure: decrement raw accumulator the same way.
+      // Defensive `|| 0` for entries created before this field existed
+      // (long-running processes, hot-reload scenarios).
+      exposure[key].rawRisk = (exposure[key].rawRisk || 0) - payout;
+      if (exposure[key].rawRisk < 0) exposure[key].rawRisk = 0;
       exposure[key].parlays -= 1;
       exposure[key].notionalPayout -= payout;
       if (exposure[key].parlays <= 0) delete exposure[key];
@@ -3622,10 +3650,17 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
   // risk during bootstrap. Default to 1.0 (no discount) if config is missing.
   let discount = 1.0;
   let overridesByKey = {};
+  // Raw-vs-weighted measurement toggle (operator default: raw, 2026-05-13).
+  // When true: each parlay's contribution to the per-team bucket is its
+  // FULL payout, and we compare against exposure[key].rawRisk + pending raw
+  // + new raw. When false: legacy weighted path (payout × otherProb vs
+  // netExposure).
+  let useRawTeam = true;
   try {
     const { config } = require('../config');
     const d = config?.pricing?.pendingReservationDiscount;
     if (Number.isFinite(d) && d > 0 && d <= 1) discount = d;
+    if (config?.pricing?.useRawPerTeamExposure === false) useRawTeam = false;
     // Pre-normalize override keys with the SAME function the exposure
     // map uses — without this, "Islam Makhachev" in env wouldn't match
     // legs that arrive with whitespace/case variations.
@@ -3667,13 +3702,26 @@ function checkExposureLimits(legs, payout, maxNetExposure) {
 
     // Raw values (for logging + UI transparency) and effective values (the
     // ones actually compared to the limit). Discount applies only to
-    // quote-time projections — confirmed exposure (currentNet) stays raw.
-    const newRiskRaw = payout * otherProb;
+    // quote-time projections — confirmed exposure stays un-discounted.
+    //
+    // RAW path (useRawTeam=true, default): newRiskRaw = full payout; the
+    //   current confirmed bucket = exposure[key].rawRisk; pending reservations
+    //   were already stored raw by buildPendingReservation. Caps act as a hard
+    //   "max parlays × max_risk per team" gate.
+    // WEIGHTED path (useRawTeam=false, legacy): newRiskRaw = payout × otherProb;
+    //   compare against exposure[key].netExposure (which nets out opposing
+    //   stakes). Lets long parlays accumulate more raw dollar risk before the
+    //   cap binds.
+    const newRiskRaw = useRawTeam ? payout : payout * otherProb;
     const newRiskEff = newRiskRaw * discount;
-    const currentNet = exposure[key]?.netExposure || 0;
+    const currentNet = useRawTeam
+      ? (exposure[key]?.rawRisk || 0)
+      : (exposure[key]?.netExposure || 0);
     // Pending = in-flight reservations from quotes not yet confirmed.
     // Including this closes the race window where N concurrent RFQs for the
-    // same team all pass because none has been confirmed yet.
+    // same team all pass because none has been confirmed yet. In raw mode,
+    // getPendingTeamRisk returns the sum of raw payouts (set up that way by
+    // buildPendingReservation), so this stays consistent.
     const pendingNetRaw = getPendingTeamRisk(key);
     const pendingNetEff = pendingNetRaw * discount;
     const afterAdd = currentNet + pendingNetEff + newRiskEff;
@@ -3721,15 +3769,27 @@ function getExposureForTeam(teamName) {
  * Get full exposure snapshot — all teams with net exposure.
  */
 function getExposureSnapshot() {
+  // When useRawPerTeamExposure is on (the new default), the per-team cap
+  // gates on rawRisk — so the dashboard's primary sort and the most useful
+  // "current vs limit" comparison is against rawRisk. Fall back to
+  // netExposure / risk ordering on the legacy weighted path.
+  let useRawTeam = true;
+  try {
+    const { config } = require('../config');
+    if (config?.pricing?.useRawPerTeamExposure === false) useRawTeam = false;
+  } catch { /* default to raw */ }
   return Object.entries(exposure)
     .map(([key, val]) => ({
       key,
       ...val,
       risk: Math.round(val.risk * 100) / 100,
+      rawRisk: Math.round((val.rawRisk || 0) * 100) / 100,
       netExposure: Math.round((val.netExposure || 0) * 100) / 100,
       notionalPayout: Math.round((val.notionalPayout || 0) * 100) / 100,
     }))
-    .sort((a, b) => (b.netExposure || b.risk) - (a.netExposure || a.risk));
+    .sort((a, b) => useRawTeam
+      ? ((b.rawRisk || 0) - (a.rawRisk || 0))
+      : ((b.netExposure || b.risk) - (a.netExposure || a.risk)));
 }
 
 /**
