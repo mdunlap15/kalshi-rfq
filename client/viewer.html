@@ -854,7 +854,7 @@
     <!-- Notification subscribe button. Hidden if the browser doesn't
          support the Notifications/Push APIs or the user is already
          subscribed. Tap → request permission → POST to /push/subscribe. -->
-    <button id="viewer-notif-btn" onclick="toggleViewerNotifications()" style="display:none; background:transparent; border:1px solid var(--border); color:var(--text2); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit;" title="Toggle push notifications for new fills + settlements">🔔 Enable</button>
+    <button id="viewer-notif-btn" onclick="toggleViewerNotifications()" style="display:none; background:transparent; border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit; -webkit-appearance:none; appearance:none;" title="Toggle push notifications for new fills + settlements">🔔 Enable</button>
     <!-- Sign-out: HTTP Basic Auth credentials are cached by the browser
          until the tab/process closes. There's no clean server-side
          logout. Closing the tab signs out. -->
@@ -12893,8 +12893,10 @@
     if (!btn) return;
     btn.disabled = false;
     btn.textContent = '🔔 Enable';
-    btn.style.color = '';
-    btn.style.borderColor = '';
+    // Explicit white instead of clearing the style — iOS Safari was
+    // falling back to user-agent black button text after the unset.
+    btn.style.color = 'var(--text)';
+    btn.style.borderColor = 'var(--border)';
     btn.title = 'Click to enable push notifications for new fills + settlements';
   }
 
