@@ -3586,7 +3586,7 @@
               const st = getLegResult(l);
               if (st === 'lost') return 1;
               if (st === 'won') continue;
-              hp *= (l.liveFairProb || l.fairProb || 0.5);
+              hp *= ((l.liveFairProb || l.currentFairProb || l.fairProb || 0.5));
             }
             return 1 - hp;
           };
@@ -3761,7 +3761,7 @@
         const ls = getLegResult(l);
         if (ls === 'lost') { posDead = true; break; }
         if (ls === 'won') continue;
-        const prob = l.liveFairProb || l.fairProb || 0.5;
+        const prob = (l.liveFairProb || l.currentFairProb || l.fairProb || 0.5);
         posHitProb *= prob;
         if (l.liveFairProb) posHasLive = true;
       }
@@ -4441,7 +4441,7 @@
         const market = l.market || l.marketType;
         const line = (market === 'spread' || market === 'total') && l.line != null ? Math.abs(l.line) : '';
         const mKey = (l.pxEventId || '?') + '|' + market + '|' + line;
-        const prob = (l.liveFairProb != null ? l.liveFairProb : l.fairProb) || 0.5;
+        const prob = (l.liveFairProb != null ? l.liveFairProb : (l.currentFairProb != null ? l.currentFairProb : l.fairProb)) || 0.5;
         const selection = l.selection || l.oddsApiSelection || 'home';
         // Determine "reference" side: home for ml/spread, over for total
         const refSide = market === 'total' ? 'over' : 'home';
@@ -5608,7 +5608,7 @@
         for (const l of legs) {
           const lr = getLegResult(l);
           if (lr === 'won') continue;
-          hitProb *= (l.liveFairProb || l.fairProb || 0.5);
+          hitProb *= ((l.liveFairProb || l.currentFairProb || l.fairProb || 0.5));
         }
         const winProb = 1 - hitProb;
         const exp = (winProb * spProfit) - (hitProb * spLoss);
@@ -6249,7 +6249,7 @@
               const ls = getLegResult(l);
               if (ls === 'lost') return 1;
               if (ls === 'won') continue;
-              hitProb *= (l.liveFairProb || l.fairProb || 0.5);
+              hitProb *= ((l.liveFairProb || l.currentFairProb || l.fairProb || 0.5));
             }
             return 1 - hitProb;
           };
@@ -6350,7 +6350,7 @@
         if (ls === 'lost') { alreadyDead = true; break; } // bettor leg failed → parlay dead → SP wins
         if (ls === 'won') continue; // bettor leg hit → still alive, skip (prob=1 for this leg)
         // Use live prob if available, otherwise pre-game
-        const prob = l.liveFairProb || l.fairProb || 0.5;
+        const prob = (l.liveFairProb || l.currentFairProb || l.fairProb || 0.5);
         parlayHitProb *= prob;
         if (l.liveFairProb) hasLiveData = true;
       }

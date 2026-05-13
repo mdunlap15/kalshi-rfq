@@ -564,6 +564,18 @@ const config = {
     // caps still active in checkExposureLimits / checkGameExposure /
     // checkPlayerExposure. Re-add this field if absolute-tail bounding is
     // ever needed again.
+
+    // Periodic refresh of fair probs for PRE-GAME legs on confirmed parlays.
+    // refreshLiveOdds handles in-progress legs only; without this, the
+    // dashboard Risk Simulation and other consumers read fair probs frozen
+    // at QUOTE TIME for legs whose markets may have moved since.
+    //
+    // When true (default), order-tracker.refreshPreGameOdds runs every 60s
+    // alongside refreshLiveOdds; it re-projects oddsFeed.getFairProb onto
+    // each pre-game leg as `currentFairProb`, preserving the original
+    // `fairProb` for audit. legEffectiveProb prefers liveFairProb >
+    // currentFairProb > fairProb.
+    refreshPreGameOddsEnabled: process.env.REFRESH_PRE_GAME_ODDS !== '0',
     // Per-event aggregate cap. Sums SP-risk across ALL legs touching one
     // pxEventId (regardless of team or market), preventing two-sided
     // event stacking that the per-team cap can't see — e.g. Lakers spread

@@ -2791,12 +2791,22 @@ function getLegsForExposure(order) {
 }
 
 /**
- * Effective probability for a leg — prefers live odds if available.
- * liveFairProb is set by refreshLiveOdds for legs of in-progress games.
- * Falls back to the pre-game fairProb, then 0.5 if neither exists.
+ * Effective probability for a leg — prefers live odds first, then the
+ * latest pre-game refresh, then the quote-time fair as a fallback.
+ *
+ *   liveFairProb     — refreshed by refreshLiveOdds for IN-PROGRESS legs
+ *   currentFairProb  — refreshed by refreshPreGameOdds for PRE-GAME legs
+ *                       (uses current odds-cache state, so market moves
+ *                       between quote and game-start get reflected)
+ *   fairProb         — quote-time snapshot; immutable post-quote so we
+ *                       can audit EV against the price we sold at
+ *
+ * Each tier is gated on a sanity range (0,1) — a corrupted entry won't
+ * mask a healthy lower-tier value.
  */
 function legEffectiveProb(leg) {
   if (leg.liveFairProb != null && leg.liveFairProb > 0 && leg.liveFairProb < 1) return leg.liveFairProb;
+  if (leg.currentFairProb != null && leg.currentFairProb > 0 && leg.currentFairProb < 1) return leg.currentFairProb;
   if (leg.fairProb != null && leg.fairProb > 0 && leg.fairProb < 1) return leg.fairProb;
   return 0.5;
 }
@@ -3945,6 +3955,123 @@ async function refreshLiveOdds(oddsFeed) {
 
   log.info('LiveOdds', `Refreshed ${sportsRefreshed}/${sports.length} sports, updated ${legsUpdated} legs across ${inProgressGames} in-progress games`);
   return { sportsRefreshed, legsUpdated, inProgressGames, sportsWithInProgress: sports };
+}
+
+// ---------------------------------------------------------------------------
+// PRE-GAME ODDS REFRESH — companion to refreshLiveOdds for legs whose game
+// hasn't started yet. Re-projects oddsFeed.getFairProb onto each pre-game
+// leg as `currentFairProb`, preserving the immutable `fairProb` (quote-time
+// snapshot) for EV audit. Risk Simulation, Live P&L Outlook, and any other
+// dashboard reader of legEffectiveProb will automatically prefer the
+// refreshed value once it lands.
+//
+// No network fetch happens here — the odds cache is already refreshed
+// periodically by oddsFeed.refreshAllOdds (configured via
+// refreshIntervalMinutes). This function only WRITES from cache → leg.
+// That keeps it cheap to call every 60s with no quota cost.
+//
+// Operator caught (2026-05-13) that the Risk Sim was reading 12:34 PM
+// fair probs for parlays whose 7pm tip-off was still hours away, while
+// the market had moved on the underlying lines. After this lands, the
+// Risk Sim re-projects the latest fair every minute.
+// ---------------------------------------------------------------------------
+function refreshPreGameOdds(oddsFeed) {
+  if (!config.pricing.refreshPreGameOddsEnabled) {
+    return { skipped: true, reason: 'disabled via REFRESH_PRE_GAME_ODDS=0' };
+  }
+  const now = Date.now();
+  // Window: only refresh legs whose game starts within 24h. Beyond that the
+  // odds cache is less reliable (line discovery is sparse) and the EV
+  // sensitivity is dominated by future news anyway. Inside 24h, market is
+  // actively discovering the line.
+  const MAX_LOOKAHEAD_MS = 24 * 60 * 60 * 1000;
+  let legsTouched = 0;
+  let legsRefreshed = 0;
+  let ordersTouched = 0;
+
+  for (const order of Object.values(orders)) {
+    if (order.status !== 'confirmed') continue;
+    if (isOrderStalePhantom(order)) continue;
+    const primaryLegs = order.legs || [];
+    const metaLegs = order.meta?.legs || [];
+    const sourceLegs = primaryLegs.length ? primaryLegs : metaLegs;
+    if (sourceLegs.length === 0) continue;
+    let orderHadUpdate = false;
+    for (let i = 0; i < sourceLegs.length; i++) {
+      const leg = sourceLegs[i];
+      const startMs = leg.startTime ? new Date(leg.startTime).getTime() : null;
+      if (!startMs || isNaN(startMs)) continue;
+      if (startMs <= now) continue; // in-progress; refreshLiveOdds owns this
+      if (startMs - now > MAX_LOOKAHEAD_MS) continue;
+
+      legsTouched++;
+
+      // Resolve fields needed by getFairProb. Confirmed-parlay legs are
+      // built from a few sources (line-manager registration, RFQ snapshot,
+      // PX reconcile) so field names vary — fall back through each form.
+      const sport = leg.oddsApiSport || leg.sport;
+      const homeTeam = leg.homeTeam;
+      const awayTeam = leg.awayTeam;
+      const oddsApiMarket = leg.oddsApiMarket
+        || _translateMarketTypeForOddsApi(leg.market || leg.marketType);
+      const oddsApiSelection = leg.oddsApiSelection || leg.selection;
+      const line = leg.line;
+      if (!sport || !homeTeam || !awayTeam || !oddsApiMarket || !oddsApiSelection) {
+        continue;
+      }
+
+      // Skip player props — getFairProb is game-line keyed; props have a
+      // separate lookup path (oddsFeed.lookupTheOddsApiPlayerProp). Future
+      // enhancement: extend this to props using the prop fair lookup.
+      if (typeof oddsApiMarket === 'string' && /^player_/.test(oddsApiMarket)) {
+        continue;
+      }
+
+      let fair = null;
+      try {
+        fair = oddsFeed.getFairProb(sport, homeTeam, awayTeam, oddsApiMarket, oddsApiSelection, line, leg.startTime);
+      } catch (_) { fair = null; }
+      if (fair != null && fair > 0 && fair < 1) {
+        leg.currentFairProb = fair;
+        leg.currentFairProbUpdatedAt = new Date().toISOString();
+        // Mirror onto the OTHER lane (meta or legs) so client-side mergedLegs
+        // sees the same value regardless of which source it reads.
+        const otherLegs = sourceLegs === primaryLegs ? metaLegs : primaryLegs;
+        if (otherLegs[i]) {
+          otherLegs[i].currentFairProb = fair;
+          otherLegs[i].currentFairProbUpdatedAt = leg.currentFairProbUpdatedAt;
+        }
+        legsRefreshed++;
+        orderHadUpdate = true;
+      }
+    }
+    if (orderHadUpdate) ordersTouched++;
+  }
+
+  // Rebuild exposure when any pre-game probs moved — the per-team and
+  // per-game cap arithmetic uses legEffectiveProb, so a market move on a
+  // pre-game leg should reflect in the cap utilization immediately.
+  if (legsRefreshed > 0) {
+    rebuildAllExposure();
+  }
+  return { legsTouched, legsRefreshed, ordersTouched, ranAt: new Date().toISOString() };
+}
+
+// Translate PX-style market types to the canonical odds-feed keys that
+// getFairProb expects. Confirmed-parlay legs sometimes store the raw PX
+// market name (moneyline / spread / total) rather than the odds-feed form
+// (h2h / spreads / totals), depending on which code path stored them.
+function _translateMarketTypeForOddsApi(m) {
+  if (!m) return null;
+  const s = String(m).toLowerCase();
+  if (s === 'h2h' || s === 'spreads' || s === 'totals' || s === 'team_totals') return s;
+  if (s === 'moneyline') return 'h2h';
+  if (s === 'spread' || s === 'run_line' || s === 'puck_line') return 'spreads';
+  if (s === 'total') return 'totals';
+  if (s === 'team_total') return 'team_totals';
+  // F5 / H1 / series variants — leave as-is for the lookup to try (mostly
+  // these have their own dedicated lookup paths and shouldn't end up here).
+  return s;
 }
 
 // ---------------------------------------------------------------------------
@@ -6103,6 +6230,7 @@ module.exports = {
   getExposureLimitStats,
   recordExposureRejection,
   refreshLiveOdds,
+  refreshPreGameOdds,
   rebuildAllExposure,
   enrichReconstructedOrders,
   enrichReconstructedFromPx,

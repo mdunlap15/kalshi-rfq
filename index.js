@@ -478,11 +478,25 @@ async function startup() {
   // fair probs. Run unconditionally on the server at 60s cadence;
   // refreshLiveOdds itself cheaply early-exits when there are no
   // in-progress legs in confirmed parlays.
+  //
+  // refreshPreGameOdds runs alongside it for legs whose game hasn't
+  // started yet — re-projects current oddsFeed.getFairProb onto each
+  // pre-game leg so Risk Sim / Exposure reflect market moves between
+  // quote and game-start. No network fetch; reads from oddsCache which
+  // is itself refreshed periodically. Toggle via REFRESH_PRE_GAME_ODDS=0.
   setInterval(async () => {
     try {
       await orderTracker.refreshLiveOdds(oddsFeed);
     } catch (err) {
       log.debug('LiveOdds', `Refresh failed: ${err.message}`);
+    }
+    try {
+      const r = orderTracker.refreshPreGameOdds(oddsFeed);
+      if (r && r.legsRefreshed > 0) {
+        log.info('PreGameOdds', `Refreshed ${r.legsRefreshed} pre-game legs across ${r.ordersTouched} orders (${r.legsTouched} considered)`);
+      }
+    } catch (err) {
+      log.debug('PreGameOdds', `Refresh failed: ${err.message}`);
     }
   }, 60 * 1000);
 

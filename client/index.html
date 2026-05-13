@@ -3918,7 +3918,7 @@
               const st = getLegResult(l);
               if (st === 'lost') return 1;
               if (st === 'won') continue;
-              hp *= (l.liveFairProb || l.fairProb || 0.5);
+              hp *= ((l.liveFairProb || l.currentFairProb || l.fairProb || 0.5));
             }
             return 1 - hp;
           };
@@ -4106,7 +4106,7 @@
         const ls = getLegResult(l);
         if (ls === 'lost') { posDead = true; break; }
         if (ls === 'won') continue;
-        const prob = l.liveFairProb || l.fairProb || 0.5;
+        const prob = (l.liveFairProb || l.currentFairProb || l.fairProb || 0.5);
         posHitProb *= prob;
         if (l.liveFairProb) posHasLive = true;
       }
@@ -4769,6 +4769,8 @@
 
     // Merge helper: combine o.legs with o.meta.legs so sim sees both
     // fairProb (only in meta.legs) and liveFairProb (may be in either).
+    // 2026-05-13: also merge currentFairProb (refreshPreGameOdds output)
+    // so pre-game line moves between quote and game-start get reflected.
     const mergedLegs = (o) => {
       const primary = o.legs || [];
       const fallback = o.meta?.legs || [];
@@ -4780,6 +4782,7 @@
           ...l,
           fairProb: l.fairProb != null ? l.fairProb : m.fairProb,
           liveFairProb: l.liveFairProb != null ? l.liveFairProb : m.liveFairProb,
+          currentFairProb: l.currentFairProb != null ? l.currentFairProb : m.currentFairProb,
           pxEventId: l.pxEventId || m.pxEventId,
           selection: l.selection || m.selection,
           market: l.market || l.marketType || m.market || m.marketType,
@@ -4797,7 +4800,14 @@
         const market = l.market || l.marketType;
         const line = (market === 'spread' || market === 'total') && l.line != null ? Math.abs(l.line) : '';
         const mKey = (l.pxEventId || '?') + '|' + market + '|' + line;
-        const prob = (l.liveFairProb != null ? l.liveFairProb : l.fairProb) || 0.5;
+        // Prob precedence: live (in-progress) > current (pre-game refreshed)
+        // > fairProb (quote-time, immutable for audit). Mirrors server-side
+        // legEffectiveProb in services/order-tracker.js.
+        const prob = (
+          l.liveFairProb != null ? l.liveFairProb :
+          l.currentFairProb != null ? l.currentFairProb :
+          l.fairProb
+        ) || 0.5;
         const selection = l.selection || l.oddsApiSelection || 'home';
         // Determine "reference" side: home for ml/spread, over for total
         const refSide = market === 'total' ? 'over' : 'home';
@@ -5964,7 +5974,7 @@
         for (const l of legs) {
           const lr = getLegResult(l);
           if (lr === 'won') continue;
-          hitProb *= (l.liveFairProb || l.fairProb || 0.5);
+          hitProb *= ((l.liveFairProb || l.currentFairProb || l.fairProb || 0.5));
         }
         const winProb = 1 - hitProb;
         const exp = (winProb * spProfit) - (hitProb * spLoss);
@@ -6605,7 +6615,7 @@
               const ls = getLegResult(l);
               if (ls === 'lost') return 1;
               if (ls === 'won') continue;
-              hitProb *= (l.liveFairProb || l.fairProb || 0.5);
+              hitProb *= ((l.liveFairProb || l.currentFairProb || l.fairProb || 0.5));
             }
             return 1 - hitProb;
           };
@@ -6706,7 +6716,7 @@
         if (ls === 'lost') { alreadyDead = true; break; } // bettor leg failed → parlay dead → SP wins
         if (ls === 'won') continue; // bettor leg hit → still alive, skip (prob=1 for this leg)
         // Use live prob if available, otherwise pre-game
-        const prob = l.liveFairProb || l.fairProb || 0.5;
+        const prob = (l.liveFairProb || l.currentFairProb || l.fairProb || 0.5);
         parlayHitProb *= prob;
         if (l.liveFairProb) hasLiveData = true;
       }
