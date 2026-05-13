@@ -7042,13 +7042,24 @@ function getAlerts() {
     return true;
   });
 
-  // Group declines by reason
+  // Group declines by reason. Also keep up to 10 most-recent examples per
+  // bucket so the dashboard bullet can render a hover-tooltip listing the
+  // individual declined RFQs (operator complaint 2026-05-13: the bullet
+  // only showed lastDetail, so on a 24-decline banner you couldn't see
+  // which other 23 teams hit the limit).
   const byReason = {};
   for (const d of recentLimitDeclines) {
-    if (!byReason[d.reason]) byReason[d.reason] = { count: 0, lastDetail: null, lastTime: null };
+    if (!byReason[d.reason]) byReason[d.reason] = { count: 0, lastDetail: null, lastTime: null, examples: [] };
     byReason[d.reason].count++;
     if (!byReason[d.reason].lastDetail) byReason[d.reason].lastDetail = d.detail;
     if (!byReason[d.reason].lastTime) byReason[d.reason].lastTime = d.time;
+    if (byReason[d.reason].examples.length < 10) {
+      byReason[d.reason].examples.push({
+        time: d.time,
+        detail: d.detail,
+        parlayId: d.parlayId,
+      });
+    }
   }
 
   // Group rejections by bucket

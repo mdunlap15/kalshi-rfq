@@ -1888,12 +1888,28 @@
     }
     parts.push(`<div style="font-weight:600; color:${headerColor}; margin-bottom:6px;"><span style="font-size:16px;">${headerIcon}</span> ${headerText}</div>`);
 
-    // Decline reason breakdown
+    // Decline reason breakdown. Hover the bullet to see up to the 10 most
+    // recent declined RFQs for this reason (timestamp + per-violation
+    // detail). info.examples is populated by getAlerts() server-side.
     const lines = [];
     if (alerts.declineByReason) {
       for (const [reason, info] of Object.entries(alerts.declineByReason)) {
         const detailStr = info.lastDetail ? ` &mdash; <span style="color:var(--text3);">${escapeHtml(info.lastDetail)}</span>` : '';
-        lines.push(`<li><strong>${escapeHtml(capFirst(reason))}</strong>: ${info.count}${detailStr}</li>`);
+        let titleAttr = '';
+        let cursorStyle = '';
+        if (Array.isArray(info.examples) && info.examples.length > 0) {
+          const tipLines = info.examples.map(ex => {
+            const t = ex.time ? new Date(ex.time).toLocaleTimeString() : '?';
+            const detail = ex.detail || ex.parlayId || '(no detail)';
+            return `${t}  ${detail}`;
+          });
+          if (info.count > info.examples.length) {
+            tipLines.push(`+ ${info.count - info.examples.length} more`);
+          }
+          titleAttr = ` title="${escapeHtml(tipLines.join('\n'))}"`;
+          cursorStyle = ' style="cursor:help;"';
+        }
+        lines.push(`<li${titleAttr}${cursorStyle}><strong>${escapeHtml(capFirst(reason))}</strong>: ${info.count}${detailStr}</li>`);
       }
     }
     if (alerts.rejectByBucket) {
