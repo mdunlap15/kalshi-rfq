@@ -12935,8 +12935,15 @@
     }
     html += '</div>';
 
-    // Top Recovery Opportunities — the primary decision surface. Goes at
-    // the top so operators see ranked actions before the breakdown tables.
+    // Tightest losses goes FIRST — operator specifically wants specific
+    // examples to investigate before any aggregations or recovery panels.
+    // Interactive table: sort by clicking any header, filter via the sport /
+    // market / search inputs at the top. State persists on window so refreshes
+    // during a session keep the filters in place.
+    html += _renderTightestLossesPanel(data.tightestLosses || []);
+
+    // Top Recovery Opportunities — ranked actions panel. Demoted to second
+    // position so the specific examples (above) lead the page.
     html += _renderTopOpportunitiesPanel(data, 'lost');
 
     // Aggregation tables — demoted to an expandable "Advanced breakdowns"
@@ -12968,12 +12975,6 @@
     html += '</div>';
 
     html += '</div></details>';
-
-    // Tightest losses — interactive table. Sort by clicking any header
-    // (column key in `data-sort`); filter via the sport / market /
-    // search inputs above. State persists on window so refreshes during
-    // a session keep the operator's filters in place.
-    html += _renderTightestLossesPanel(data.tightestLosses || []);
 
     // Partial-fill leakage section — distinct from LOST. These are won
     // auctions where our exposure caps limited our take; PX routed the
