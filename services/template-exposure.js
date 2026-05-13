@@ -229,13 +229,15 @@ function checkTeamCooldown(legs, parlayId, nowMs = null, opts = {}) {
     const sinceMs = now - last.confirmedAt;
     if (sinceMs < cooldownSec * 1000) {
       const remainSec = Math.ceil((cooldownSec * 1000 - sinceMs) / 1000);
-      // Bump the confirm-time counter only for confirm-stage callers.
-      // The quote-time caller (getRampDecision) bumps its own rampHits
-      // counter and would double-count if we bumped here too.
+      // Track last firing team + timestamp regardless of stage so the
+      // dashboard tile always has a current value to surface. Bumping
+      // the confirm-time counter is gated on opts.source to avoid
+      // double-counting with getRampDecision's own rampHits.team_cooldown
+      // counter (which fires from the quote-time call site).
+      _stats.lastTeamCooldownTeam = team;
+      _stats.lastTeamCooldownAt = new Date(now).toISOString();
       if (opts.source === 'confirm') {
         _stats.confirmHits.team_cooldown++;
-        _stats.lastTeamCooldownTeam = team;
-        _stats.lastTeamCooldownAt = new Date(now).toISOString();
       }
       return {
         block: true,
