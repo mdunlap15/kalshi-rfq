@@ -781,6 +781,7 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
     order.confirmedOdds = confirmedOdds;
     order.confirmedStake = confirmedStake;
     order.orderUuid = orderUuid;
+    _invalidatePortfolioRiskCache();
 
     // Compute Expected Value at confirmation time (SP perspective):
     //   EV = P(bettor_loses) * bettor_wager   - P(bettor_wins) * confirmedStake
@@ -1001,6 +1002,7 @@ function importPxBookedOrder(parlayId, orderUuid, confirmedStake, confirmedOdds)
   if (orderUuid) order.orderUuid = orderUuid;
   if (confirmedStake != null && Number.isFinite(+confirmedStake)) order.confirmedStake = +confirmedStake;
   if (confirmedOdds != null && Number.isFinite(+confirmedOdds)) order.confirmedOdds = +confirmedOdds;
+  _invalidatePortfolioRiskCache();
 
   // Clear rejection metadata so the startup self-heal at loadFromDb()
   // doesn't demote this order back to rejected on the next restart.
@@ -1330,6 +1332,7 @@ function recordSettlement(orderUuid, result, payout, opts = {}) {
     removeExposure(order);
 
     order.status = `settled_${result}`;
+    _invalidatePortfolioRiskCache();
     log.info('Orders', `Settled: order=${orderUuid}, result=${result}, pnl=$${order.pnl?.toFixed(2)}, running=$${stats.runningPnL.toFixed(2)}`);
     // Critical — log errors on settlement saves so we never silently lose a settled order
     db.saveOrder(order).catch(err => log.error('DB', `CRITICAL: saveOrder(settlement) failed for ${order.parlayId}: ${err.message}`));
@@ -2670,20 +2673,24 @@ function getTotalPortfolioRisk() {
 }
 
 // TTL-cached variant for the RFQ hot path. The uncached version walks
-// Object.values(orders) (200k entries after Supabase hydration) and calls
-// isOrderStalePhantom per row — which itself iterates each order's legs
-// and does Date.parse per leg. Per-RFQ cost was ~1-2ms before this cache,
-// driving the shouldDecline stage from <0.5ms to 2.6ms after Mike enabled
-// MAX_GROSS_PORTFOLIO_RISK=15000 (which made checkPortfolioRisk fire on
-// every RFQ instead of returning early as a no-op).
+// Object.values(orders) (up to 200k entries after Supabase hydration) and
+// calls isOrderStalePhantom per row — which iterates each order's legs
+// and does Date.parse per leg. Measured cost: 2.22ms p50 per call after
+// Mike enabled MAX_GROSS_PORTFOLIO_RISK=15000 (which made the check fire
+// on every RFQ instead of returning early as a no-op).
 //
-// 250ms TTL is safe because the portfolio cap is a coarse safety bound,
-// not a precision instrument — being 250ms stale just means we might
-// approve one extra parlay riding the edge. Cache is invalidated
-// proactively when confirmedStake changes (status → 'confirmed' or back)
-// so the common case (a fill just happened) sees a fresh number.
+// First attempt at 250ms TTL didn't move p50 because production RFQ
+// arrival is bursty AND sparse — at typical 1 RFQ every 4-60s the cache
+// always expired between calls. Bumped to 30s and added explicit
+// invalidation on the four status='confirmed' transition sites so the
+// cache stays fresh after real fills while serving cheap hits on the
+// repeated-quote hot path.
+//
+// Drift bound: at Mike's portfolio cap $15k, confirm rate ~0.7%, and
+// 15 RFQs/min peak, expected confirms per 30s window = ~0.05 × $7k =
+// ~$350 max overshoot. Well inside the cap's headroom.
 let _portfolioRiskCache = null; // { fetchedAt: number, value: number }
-const PORTFOLIO_RISK_CACHE_TTL_MS = 250;
+const PORTFOLIO_RISK_CACHE_TTL_MS = 30 * 1000;
 
 function getTotalPortfolioRiskCached() {
   const now = Date.now();
@@ -4353,6 +4360,7 @@ async function pollOrderSettlements(px) {
         stats.totalSettlements--;
         order.status = 'confirmed';
         order.pnl = null;
+        _invalidatePortfolioRiskCache();
       }
 
       // Backfill stake/odds from PX if missing (critical for recovering lost settlements)
@@ -5131,6 +5139,7 @@ async function fullPxReconcile(px) {
     if (order.status?.startsWith('settled_')) {
       order.status = 'confirmed';
       order.pnl = null;
+      _invalidatePortfolioRiskCache();
     }
 
     // Record the settlement. recordSettlement will update status, pnl,
