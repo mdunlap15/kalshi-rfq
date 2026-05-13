@@ -1062,6 +1062,7 @@
               </span>
               <span style="color:var(--text3); font-size:12px; margin-left:8px;">Window:</span>
               <select id="lost-window" onchange="reloadLostOrMissed()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:12px;">
+                <option value="1">Last 24 hours</option>
                 <option value="7">7 days</option>
                 <option value="14">14 days</option>
                 <option value="30" selected>30 days</option>
@@ -12488,7 +12489,8 @@
     if (!el) return;
     const daysSel = document.getElementById('lost-window');
     const days = daysSel ? Number(daysSel.value) || 30 : 30;
-    el.innerHTML = '<div class="empty-state"><div class="icon">…</div><div>Loading lost-analysis data for last ' + days + ' days…</div></div>';
+    const windowLabel = days === 1 ? 'last 24 hours' : ('last ' + days + ' days');
+    el.innerHTML = '<div class="empty-state"><div class="icon">…</div><div>Loading lost-analysis data for ' + windowLabel + '…</div></div>';
     window._lostAnalysisLoaded = true;
     try {
       const r = await fetch('/lost-analysis?days=' + days);
@@ -12507,7 +12509,8 @@
     if (!el) return;
     const daysSel = document.getElementById('lost-window');
     const days = daysSel ? Number(daysSel.value) || 30 : 30;
-    el.innerHTML = '<div class="empty-state"><div class="icon">…</div><div>Loading missed-analysis data for last ' + days + ' days (may take 30-60s on long windows)…</div></div>';
+    const missedWindowLabel = days === 1 ? 'last 24 hours' : ('last ' + days + ' days');
+    el.innerHTML = '<div class="empty-state"><div class="icon">…</div><div>Loading missed-analysis data for ' + missedWindowLabel + ' (may take 30-60s on long windows)…</div></div>';
     try {
       const r = await fetch('/missed-analysis?days=' + days);
       if (!r.ok) {
