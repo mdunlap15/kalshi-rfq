@@ -622,6 +622,13 @@
         <span class="stat-item" title="Parlays the bettor accepted (orderUuid present). Excludes 'Offered' state where PX matched our quote but the bettor walked away during final review."><span class="stat-label">Accepted:</span> <span class="stat-val" id="stat-confirmed">0</span></span>
         <span class="stat-item"><span class="stat-label">Settled:</span> <span class="stat-val" id="stat-settled">0</span></span>
         <span class="stat-item"><span class="stat-label">P&L:</span> <span class="stat-val" id="stat-pnl">$0.00</span></span>
+        <!-- Bot-defense cooldown counter. Q = quote-time declines (template
+             + team cooldowns combined); C = confirm-time walk-aways (race
+             window cases). Hover for the full breakdown. -->
+        <span class="stat-item" id="stat-cooldown-wrap" title="Click for details" style="display:none; cursor:help;">
+          <span class="stat-label">Cooldown:</span>
+          <span class="stat-val" id="stat-cooldown">0 / 0</span>
+        </span>
         <span class="stat-item">
           <span id="countdown-display" style="font-size:11px; color:var(--text3);">-</span>
           <div class="refresh-indicator" id="refresh-indicator" style="display:none;"><div class="spinner"></div></div>
@@ -1494,6 +1501,38 @@
     const svc = data.service || {};
     document.getElementById('uptime').textContent = svc.ready ?
       'Up ' + formatDuration(svc.uptime) : 'Not ready';
+
+    // Cooldown activity tile — shows bot-defense firing counts since boot.
+    // Q = quote-time declines (template + team cooldowns combined; we
+    // declined before pricing). C = confirm-time walk-aways (race-window
+    // cases where we already quoted and PX wanted to book, but we backed
+    // out after a same-template/same-team confirm landed first).
+    const cd = data.cooldownActivity;
+    const wrap = document.getElementById('stat-cooldown-wrap');
+    if (cd && wrap) {
+      const qt = (cd.quoteTime?.template || 0) + (cd.quoteTime?.team || 0);
+      const ct = (cd.confirmTime?.template || 0) + (cd.confirmTime?.team || 0);
+      const total = qt + ct;
+      if (total > 0) {
+        wrap.style.display = 'inline-flex';
+        document.getElementById('stat-cooldown').textContent = qt + ' / ' + ct;
+        // Build a rich tooltip with the breakdown
+        const lastTeam = cd.lastTeamCooldownTeam
+          ? '\nLast team-cooldown: ' + cd.lastTeamCooldownTeam + (cd.lastTeamCooldownAt ? ' at ' + cd.lastTeamCooldownAt.replace('T', ' ').slice(0, 19) : '')
+          : '';
+        wrap.title = 'Cooldown firing counts since boot.\n'
+          + 'Quote-time (Q): template=' + (cd.quoteTime?.template || 0) + ', team=' + (cd.quoteTime?.team || 0) + '\n'
+          + 'Confirm-time (C): template=' + (cd.confirmTime?.template || 0) + ', team=' + (cd.confirmTime?.team || 0) + '\n'
+          + 'Window: template=' + (cd.cooldownSeconds?.template || '?') + 's, team=' + (cd.cooldownSeconds?.team || '?') + 's'
+          + lastTeam;
+        // Amber if confirm-time hits > 0 (means race window is firing —
+        // expected occasionally, but worth eyeballing if it climbs fast).
+        const el = document.getElementById('stat-cooldown');
+        if (el) el.style.color = ct > 0 ? 'var(--amber)' : 'var(--text)';
+      } else {
+        wrap.style.display = 'none';
+      }
+    }
 
     // Stats
     const o = data.orders || {};

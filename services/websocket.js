@@ -1480,7 +1480,7 @@ async function handleConfirm(data) {
         }
         return;
       }
-      const teamCd = templateExposure.checkTeamCooldown(legsForTemplate, parlayId);
+      const teamCd = templateExposure.checkTeamCooldown(legsForTemplate, parlayId, null, { source: 'confirm' });
       if (teamCd.block) {
         log.warn('Confirm', `Rejecting: ${teamCd.reason} (parlay=${parlayId.substring(0, 8)})`);
         orderTracker.recordRejection(parlayId, teamCd.reason);

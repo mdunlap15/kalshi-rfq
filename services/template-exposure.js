@@ -75,7 +75,15 @@ let _stats = {
   releasedPending: 0,
   signaturesActive: 0,
   lastPrunedAt: null,
-  rampHits: { tier2: 0, tier3: 0, tier4: 0, decline: 0, cooldown: 0 },
+  rampHits: { tier2: 0, tier3: 0, tier4: 0, decline: 0, cooldown: 0, team_cooldown: 0 },
+  // Confirm-time gate hits — bumped by checkConfirmCooldown / checkTeamCooldown
+  // callers in websocket.handleConfirm when a race-window block fires.
+  // Separate from rampHits so we can distinguish quote-time declines (no
+  // commitment made) from confirm-time walk-aways (we already quoted and
+  // PX wanted to book it, but we backed out).
+  confirmHits: { template_cooldown: 0, team_cooldown: 0 },
+  lastTeamCooldownTeam: null,
+  lastTeamCooldownAt: null,
 };
 
 // --------------------------------------------------------------------
@@ -205,7 +213,7 @@ const _lastConfirmedAtByTeam = new Map(); // teamKey -> { confirmedAt, parlayId 
  *
  * `legs` shape: array of { team | teamName, market | marketType, line }.
  */
-function checkTeamCooldown(legs, parlayId, nowMs = null) {
+function checkTeamCooldown(legs, parlayId, nowMs = null, opts = {}) {
   if (!ENABLED) return { block: false, reason: null };
   const cooldownSec = config.pricing.teamCooldownSeconds;
   if (!cooldownSec || cooldownSec <= 0) return { block: false, reason: null };
@@ -221,6 +229,14 @@ function checkTeamCooldown(legs, parlayId, nowMs = null) {
     const sinceMs = now - last.confirmedAt;
     if (sinceMs < cooldownSec * 1000) {
       const remainSec = Math.ceil((cooldownSec * 1000 - sinceMs) / 1000);
+      // Bump the confirm-time counter only for confirm-stage callers.
+      // The quote-time caller (getRampDecision) bumps its own rampHits
+      // counter and would double-count if we bumped here too.
+      if (opts.source === 'confirm') {
+        _stats.confirmHits.team_cooldown++;
+        _stats.lastTeamCooldownTeam = team;
+        _stats.lastTeamCooldownAt = new Date(now).toISOString();
+      }
       return {
         block: true,
         team,
@@ -512,6 +528,7 @@ function checkConfirmCooldown(legs, parlayId, nowMs = null) {
   const sinceMs = now - lastConfirmedMs;
   if (sinceMs < cooldownSec * 1000) {
     const remainSec = Math.ceil((cooldownSec * 1000 - sinceMs) / 1000);
+    _stats.confirmHits.template_cooldown++;
     return {
       block: true,
       reason: `template_cooldown_at_confirm: same parlay confirmed ${Math.round(sinceMs / 1000)}s ago — cooldown ${cooldownSec}s, ${remainSec}s remaining`,

@@ -920,6 +920,34 @@ function startStatusServer() {
       })(),
       alerts: orderTracker.getAlerts(),
       exposureLimits: orderTracker.getExposureLimitStats(),
+      // Cooldown activity — surface template + team cooldown firing
+      // counts so the dashboard can show bot-defense activity in real-time.
+      // Quote-time hits (rampHits.cooldown / rampHits.team_cooldown) come
+      // from RFQs declined before pricing. Confirm-time hits
+      // (confirmHits.*) come from quotes we already sent that PX wanted to
+      // book; we walked away at confirm because the race window allowed
+      // multiple in-flight quotes on the same signature/team.
+      cooldownActivity: (() => {
+        try {
+          const s = require('./services/template-exposure').getStats();
+          return {
+            quoteTime: {
+              template: s.rampHits?.cooldown || 0,
+              team:     s.rampHits?.team_cooldown || 0,
+            },
+            confirmTime: {
+              template: s.confirmHits?.template_cooldown || 0,
+              team:     s.confirmHits?.team_cooldown || 0,
+            },
+            lastTeamCooldownTeam: s.lastTeamCooldownTeam || null,
+            lastTeamCooldownAt: s.lastTeamCooldownAt || null,
+            cooldownSeconds: {
+              template: require('./config').config.pricing.templateRampCooldownSeconds,
+              team: require('./config').config.pricing.teamCooldownSeconds,
+            },
+          };
+        } catch (_) { return null; }
+      })(),
     });
   });
 
