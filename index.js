@@ -2506,11 +2506,59 @@ function startStatusServer() {
         topPartials: partials.slice(0, 15),
       };
 
-      // Top 15 tightest auction losses (sub-1pp, sorted by stake)
+      // Tightest auction losses (sub-1pp, sorted by stake). Bumped from
+      // top 15 → top 500 so the dashboard can offer interactive sort /
+      // filter / search across a meaningful sample. Each row carries
+      // enough metadata for client-side filtering by sport, market mix,
+      // and leg text — no need to re-roundtrip on every filter change.
       const tightestLosses = [...enriched]
         .filter(e => e.gapPp != null && Math.abs(e.gapPp) < 1)
         .sort((a, b) => b.matchedStake - a.matchedStake)
-        .slice(0, 15);
+        .slice(0, 500)
+        .map(e => {
+          // Derive bettor wager from SP-side matched_stake. PX's
+          // payload.matched_stake is the WINNING SP's risk (laid amount).
+          // Bettor's wager:
+          //   negative odds (favorite chalk): wager = stake × 100/|odds|
+          //   positive odds (dog):            wager = stake × 100/odds
+          // i.e. always bettor wager = stake × 100 / |odds|.
+          const am = Number(e.matchedOdds);
+          const bettorWager = (Number.isFinite(am) && am !== 0 && e.matchedStake)
+            ? Math.round((e.matchedStake * 100 / Math.abs(am)) * 100) / 100
+            : null;
+          // Pre-compute a coarse sport + market-mix label for client
+          // filtering. Same logic as scatterData below.
+          const sports = [...new Set((e.legs || []).map(l => l.sport).filter(Boolean))];
+          const primarySport = sports.length === 1 ? sports[0]
+            : sports.length > 1 ? 'MULTI' : 'unknown';
+          const cms = [...new Set((e.legs || []).map(l => {
+            const m = String(l.market || l.marketType || '').toLowerCase();
+            if (m.startsWith('player_')) return 'prop';
+            if (m.startsWith('series_')) return 'series';
+            if (m.startsWith('first_5')) return 'F5';
+            if (m.startsWith('first_half') || m.includes('1st_half')) return 'H1';
+            if (m.includes('moneyline') || m === 'h2h') return 'moneyline';
+            if (m.includes('spread') || m.includes('run_line') || m.includes('puck_line')) return 'spread';
+            if (m.includes('total') || m.includes('team_total')) return 'total';
+            return m;
+          }).filter(Boolean))].sort();
+          const marketCategory = cms.length === 0 ? 'unknown'
+            : cms.length === 1 ? cms[0] : 'mixed';
+          return {
+            parlayId: e.parlayId,
+            matchedAt: e.matchedAt,
+            ourBetAm: e.ourBetAm,
+            winBetAm: e.winBetAm,
+            gapPp: e.gapPp,
+            gapAm: e.gapAm,
+            matchedStake: e.matchedStake,
+            bettorWager,
+            legs: e.legs,
+            legCount: e.legCount,
+            sport: primarySport,
+            marketCategory,
+          };
+        });
 
       // Scatter data for the "Lost Auction Bid Comparison" chart in
       // Analytics. Per-parlay rows with enough metadata to plot gap vs

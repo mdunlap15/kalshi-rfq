@@ -12499,6 +12499,9 @@
         return;
       }
       const data = await r.json();
+      // Stash response for client-side re-renders (tightest-losses filter
+      // reset rebuilds the panel from cached data without a refetch).
+      window._lastLostAnalysisData = data;
       el.innerHTML = renderLostAnalysis(data);
     } catch (err) {
       el.innerHTML = '<div class="empty-state"><div class="icon">⚠</div><div>Failed to load: ' + err.message + '</div></div>';
@@ -12543,6 +12546,191 @@
     if (n == null || !Number.isFinite(n)) return '-';
     return n.toFixed(1) + '%';
   }
+
+  // -------------------------------------------------------------------------
+  // Tightest Losses — interactive table.
+  // -------------------------------------------------------------------------
+  // The static "top 15" version got replaced (2026-05-13) so the operator can
+  // search/sort/filter across up to 500 rows that the backend now ships. Sort
+  // state + filter inputs persist on window so refresh polls during a session
+  // preserve them. Re-render is sync (no fetch) — the data is already in
+  // memory from /lost-analysis.
+  const _tlState = {
+    raw: [],
+    sortKey: 'matchedStake',
+    sortDir: -1, // -1 desc, +1 asc
+    filters: { search: '', sport: '', market: '', minStake: '', maxStake: '', maxGapPp: '' },
+  };
+
+  function _renderTightestLossesPanel(rows) {
+    _tlState.raw = Array.isArray(rows) ? rows : [];
+    // Build unique sport + market option lists from the data so the
+    // dropdowns only show categories that actually appear.
+    const sports = [...new Set(_tlState.raw.map(r => r.sport).filter(s => s && s !== 'unknown'))].sort();
+    const markets = [...new Set(_tlState.raw.map(r => r.marketCategory).filter(m => m && m !== 'unknown'))].sort();
+
+    let html = '<div style="padding:12px 8px 4px;">';
+    html += '<div style="font-weight:600; font-size:14px; color:var(--text); margin-bottom:8px;">Tightest losses by stake (sub-1pp gap)</div>';
+    html += '<div style="font-size:11px; color:var(--text3); margin-bottom:10px;">The auction losses where we were closest on price. ' + _tlState.raw.length + ' rows. Click column headers to sort; use the controls below to filter.</div>';
+
+    // Filter bar
+    html += '<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; font-size:12px; align-items:center;">';
+    html += '<input type="text" id="tl-filter-search" placeholder="Search (parlay / team / leg)" value="' + _escAttr(_tlState.filters.search) + '" oninput="_onTlFilterChange()" style="flex:1; min-width:180px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
+
+    html += '<select id="tl-filter-sport" onchange="_onTlFilterChange()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
+    html += '<option value="">All sports</option>';
+    for (const s of sports) {
+      const sel = (s === _tlState.filters.sport) ? ' selected' : '';
+      html += '<option value="' + _escAttr(s) + '"' + sel + '>' + s + '</option>';
+    }
+    html += '</select>';
+
+    html += '<select id="tl-filter-market" onchange="_onTlFilterChange()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
+    html += '<option value="">All markets</option>';
+    for (const m of markets) {
+      const sel = (m === _tlState.filters.market) ? ' selected' : '';
+      html += '<option value="' + _escAttr(m) + '"' + sel + '>' + m + '</option>';
+    }
+    html += '</select>';
+
+    html += '<input type="number" id="tl-filter-min-stake" placeholder="Min stake $" value="' + _escAttr(_tlState.filters.minStake) + '" oninput="_onTlFilterChange()" style="width:120px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
+    html += '<input type="number" id="tl-filter-max-stake" placeholder="Max stake $" value="' + _escAttr(_tlState.filters.maxStake) + '" oninput="_onTlFilterChange()" style="width:120px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
+    html += '<input type="number" id="tl-filter-max-gap" placeholder="Max gap pp" step="0.1" value="' + _escAttr(_tlState.filters.maxGapPp) + '" oninput="_onTlFilterChange()" style="width:110px; background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:12px;">';
+    html += '<button onclick="_resetTlFilters()" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; font-size:12px; cursor:pointer;">Clear</button>';
+    html += '</div>';
+
+    html += '<div id="tl-table-host">' + _renderTightestLossesBody() + '</div>';
+    html += '</div>';
+    return html;
+  }
+
+  function _escAttr(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function _filteredTightestRows() {
+    const f = _tlState.filters;
+    const search = (f.search || '').toLowerCase().trim();
+    const minStake = parseFloat(f.minStake);
+    const maxStake = parseFloat(f.maxStake);
+    const maxGap = parseFloat(f.maxGapPp);
+    return _tlState.raw.filter(r => {
+      if (f.sport && r.sport !== f.sport) return false;
+      if (f.market && r.marketCategory !== f.market) return false;
+      if (Number.isFinite(minStake) && (!Number.isFinite(r.matchedStake) || r.matchedStake < minStake)) return false;
+      if (Number.isFinite(maxStake) && (!Number.isFinite(r.matchedStake) || r.matchedStake > maxStake)) return false;
+      if (Number.isFinite(maxGap) && (!Number.isFinite(r.gapPp) || Math.abs(r.gapPp) > maxGap)) return false;
+      if (search) {
+        const hay = (r.parlayId || '').toLowerCase() + ' ' +
+          (r.legs || []).map(l => ((l.team || '') + ' ' + (l.selection || '') + ' ' + (l.market || l.marketType || '') + ' ' + (l.sport || ''))).join(' ').toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    });
+  }
+
+  function _renderTightestLossesBody() {
+    const rows = _filteredTightestRows();
+    const key = _tlState.sortKey;
+    const dir = _tlState.sortDir;
+    rows.sort((a, b) => {
+      const va = a[key], vb = b[key];
+      if (va == null && vb == null) return 0;
+      if (va == null) return 1;
+      if (vb == null) return -1;
+      if (typeof va === 'string') return va.localeCompare(vb) * dir;
+      return (va - vb) * dir;
+    });
+
+    const cols = [
+      { key: 'matchedAt',    label: 'WHEN',     align: 'left',  width: 'auto' },
+      { key: 'parlayId',     label: 'PARLAY',   align: 'left',  width: 'auto' },
+      { key: 'sport',        label: 'SPORT',    align: 'left',  width: 'auto' },
+      { key: 'marketCategory', label: 'MARKET', align: 'left',  width: 'auto' },
+      { key: 'ourBetAm',     label: 'MY ODDS',  align: 'right' },
+      { key: 'winBetAm',     label: 'WINNER',   align: 'right' },
+      { key: 'gapPp',        label: 'GAP PP',   align: 'right' },
+      { key: 'gapAm',        label: 'GAP',      align: 'right' },
+      { key: 'matchedStake', label: 'MATCHED STAKE', align: 'right' },
+      { key: 'bettorWager',  label: 'BETTOR WAGER',  align: 'right' },
+      { key: 'legCount',     label: 'LEGS',     align: 'left' },
+    ];
+
+    let h = '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">Showing ' + rows.length + ' of ' + _tlState.raw.length + ' rows.</div>';
+    h += '<div style="overflow-x:auto;"><table style="font-size:11px; width:100%; border-collapse:collapse; min-width:1100px;">';
+    h += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);">';
+    for (const c of cols) {
+      const arrow = key === c.key ? (dir === -1 ? ' ▼' : ' ▲') : '';
+      const cursor = 'cursor:pointer; user-select:none;';
+      h += '<th style="text-align:' + c.align + '; padding:6px 8px; ' + cursor + '" onclick="_onTlSortClick(\'' + c.key + '\')">' + c.label + arrow + '</th>';
+    }
+    h += '</tr>';
+    for (const item of rows) {
+      const legBlurb = (item.legs || []).slice(0, 3).map(l =>
+        (l.sport || '?').replace(/^.*_/, '').slice(0, 4) + ':' +
+        (l.team || l.selection || '?').slice(0, 16) +
+        (l.line != null ? ' ' + l.line : '')
+      ).join(' / ');
+      const moreLegs = (item.legs || []).length > 3 ? ' +' + ((item.legs || []).length - 3) : '';
+      h += '<tr style="border-bottom:1px solid var(--surface2);">';
+      h += '<td style="padding:4px 8px; font-family:monospace; color:var(--text3); font-size:10px;">' + (item.matchedAt ? item.matchedAt.slice(5, 16).replace('T', ' ') : '-') + '</td>';
+      h += '<td style="padding:4px 8px; font-family:monospace; color:var(--text3); font-size:10px;">' + (item.parlayId || '').slice(0, 8) + '</td>';
+      h += '<td style="padding:4px 8px; color:var(--text2);">' + (item.sport || '-') + '</td>';
+      h += '<td style="padding:4px 8px; color:var(--text2);">' + (item.marketCategory || '-') + '</td>';
+      h += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + _lpFmtAm(item.ourBetAm) + '</td>';
+      h += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:var(--text2);">' + _lpFmtAm(item.winBetAm) + '</td>';
+      h += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:' + (item.gapPp > 1 ? 'var(--amber)' : 'var(--text3)') + ';">' + _lpFmtPp(item.gapPp) + '</td>';
+      h += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:var(--text3);">' + _lpFmtAm(item.gapAm) + '</td>';
+      h += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + _lpFmt$(item.matchedStake) + '</td>';
+      h += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + _lpFmt$(item.bettorWager) + '</td>';
+      h += '<td style="padding:4px 8px; font-size:10px; color:var(--text3); max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="' + _escAttr(legBlurb + moreLegs) + '">' + (item.legCount || 0) + ' · ' + legBlurb + moreLegs + '</td>';
+      h += '</tr>';
+    }
+    h += '</table></div>';
+    return h;
+  }
+
+  window._onTlSortClick = function(key) {
+    if (_tlState.sortKey === key) {
+      _tlState.sortDir = -_tlState.sortDir;
+    } else {
+      _tlState.sortKey = key;
+      // First-click default: numerical columns desc, text columns asc.
+      const textCols = ['matchedAt', 'parlayId', 'sport', 'marketCategory'];
+      _tlState.sortDir = textCols.includes(key) ? 1 : -1;
+    }
+    const host = document.getElementById('tl-table-host');
+    if (host) host.innerHTML = _renderTightestLossesBody();
+  };
+
+  window._onTlFilterChange = function() {
+    _tlState.filters.search = document.getElementById('tl-filter-search')?.value || '';
+    _tlState.filters.sport = document.getElementById('tl-filter-sport')?.value || '';
+    _tlState.filters.market = document.getElementById('tl-filter-market')?.value || '';
+    _tlState.filters.minStake = document.getElementById('tl-filter-min-stake')?.value || '';
+    _tlState.filters.maxStake = document.getElementById('tl-filter-max-stake')?.value || '';
+    _tlState.filters.maxGapPp = document.getElementById('tl-filter-max-gap')?.value || '';
+    const host = document.getElementById('tl-table-host');
+    if (host) host.innerHTML = _renderTightestLossesBody();
+  };
+
+  window._resetTlFilters = function() {
+    _tlState.filters = { search: '', sport: '', market: '', minStake: '', maxStake: '', maxGapPp: '' };
+    // Re-render the whole panel so the filter input values reset visually.
+    const lostBody = document.getElementById('lost-analysis-body');
+    if (!lostBody) return;
+    const old = document.querySelector('#lost-analysis-body div[style*="border:1px solid var(--accent)"]');
+    // Simpler: trigger full reload — the data is cached on _tlState.raw anyway
+    // but the input DOM values need a re-render.
+    if (typeof renderLostAnalysis === 'function' && window._lastLostAnalysisData) {
+      lostBody.innerHTML = renderLostAnalysis(window._lastLostAnalysisData);
+    } else {
+      // Fallback: just re-render the table body (filter inputs keep their
+      // stale values until next load).
+      const host = document.getElementById('tl-table-host');
+      if (host) host.innerHTML = _renderTightestLossesBody();
+    }
+  };
 
   // Tables with > maxRows are abbreviated to top N (rows sorted by stake
   // descending by the backend). A "Show all N more" button reveals the
@@ -12781,43 +12969,11 @@
 
     html += '</div></details>';
 
-    // Worst + tightest losses
-    function _renderLossList(title, items) {
-      let h = '<div style="padding:8px;"><div style="font-weight:600; font-size:13px; color:var(--text2); margin-bottom:6px;">' + title + '</div>';
-      h += '<table style="font-size:11px; width:100%; border-collapse:collapse;">';
-      h += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);">';
-      h += '<th style="text-align:left; padding:4px 8px;">When</th>';
-      h += '<th style="text-align:left; padding:4px 8px;">Parlay</th>';
-      h += '<th style="text-align:right; padding:4px 8px;">MY ODDS</th>';
-      h += '<th style="text-align:right; padding:4px 8px;">WINNER</th>';
-      h += '<th style="text-align:right; padding:4px 8px;">GAP PP</th>';
-      h += '<th style="text-align:right; padding:4px 8px;">GAP</th>';
-      h += '<th style="text-align:right; padding:4px 8px;">Bettor $</th>';
-      h += '<th style="text-align:left; padding:4px 8px;">Legs</th>';
-      h += '</tr>';
-      for (const item of items) {
-        const legBlurb = (item.legs || []).slice(0, 3).map(l =>
-          (l.sport || '?').replace(/^.*_/, '').slice(0, 4) + ':' +
-          (l.team || l.selection || '?').slice(0, 16) +
-          (l.line != null ? ' ' + l.line : '')
-        ).join(' / ');
-        const moreLegs = (item.legs || []).length > 3 ? ' +' + ((item.legs || []).length - 3) : '';
-        h += '<tr style="border-bottom:1px solid var(--surface2);">';
-        h += '<td style="padding:4px 8px; font-family:monospace; color:var(--text3); font-size:10px;">' + (item.matchedAt ? item.matchedAt.slice(5, 16).replace('T', ' ') : '-') + '</td>';
-        h += '<td style="padding:4px 8px; font-family:monospace; color:var(--text3); font-size:10px;">' + item.parlayId.slice(0, 8) + '</td>';
-        h += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + _lpFmtAm(item.ourBetAm) + '</td>';
-        h += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:var(--text2);">' + _lpFmtAm(item.winBetAm) + '</td>';
-        h += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:' + (item.gapPp > 1 ? 'var(--amber)' : 'var(--text3)') + ';">' + _lpFmtPp(item.gapPp) + '</td>';
-        h += '<td style="text-align:right; padding:4px 8px; font-family:monospace; color:var(--text3);">' + _lpFmtAm(item.gapAm) + '</td>';
-        h += '<td style="text-align:right; padding:4px 8px; font-family:monospace;">' + _lpFmt$(item.matchedStake) + '</td>';
-        h += '<td style="padding:4px 8px; font-size:10px; color:var(--text3); max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + legBlurb + moreLegs + '</td>';
-        h += '</tr>';
-      }
-      h += '</table></div>';
-      return h;
-    }
-    html += _renderLossList('Top losses by EV impact (gap × stake)', data.worstLosses || []);
-    html += _renderLossList('Top tightest losses by stake (sub-1pp gap)', data.tightestLosses || []);
+    // Tightest losses — interactive table. Sort by clicking any header
+    // (column key in `data-sort`); filter via the sport / market /
+    // search inputs above. State persists on window so refreshes during
+    // a session keep the operator's filters in place.
+    html += _renderTightestLossesPanel(data.tightestLosses || []);
 
     // Partial-fill leakage section — distinct from LOST. These are won
     // auctions where our exposure caps limited our take; PX routed the
