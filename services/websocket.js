@@ -1452,15 +1452,18 @@ async function handleConfirm(data) {
     // quotes, which is what we want to include in the cap.
     orderTracker.releasePending(parlayId);
 
-    // Template-cooldown confirm-time gate. The RFQ-quote-time cooldown in
-    // template-exposure.getRampDecision intentionally ignores pending
-    // reservations — so multiple RFQs on the SAME signature can quote out
-    // before any of them confirm. Operator caught (2026-05-13) three
-    // identical Seattle Storm + Detroit Pistons parlays confirming within
-    // 30 seconds. This re-check at confirm time closes the race: if
-    // another parlay on the same signature has already confirmed within
-    // cooldownSec, walk away from this one. First fill wins; rapid
-    // copies decline.
+    // Template + per-team cooldown gates at confirm time. Quote-time
+    // template-exposure ignores pending reservations (so a bettor's retry
+    // isn't blocked by their own in-flight quote), opening a race window
+    // where multiple parlays can quote out before any confirm. Operator
+    // caught (2026-05-13) three Seattle Storm parlays confirming within
+    // 30 seconds — signature-level cooldown didn't catch them because the
+    // 2nd legs rotated (Det -4, Det -4, Cle +4). Two checks here:
+    //   1. checkConfirmCooldown: exact same signature confirmed within
+    //      template cooldown window
+    //   2. checkTeamCooldown: ANY team in this parlay was present in a
+    //      recently-confirmed parlay (broader, catches the rotation)
+    // First fill wins; rapid copies of either kind decline.
     try {
       const templateExposure = require('./template-exposure');
       const legsForTemplate = legsForCheck.map(l => ({
@@ -1477,10 +1480,19 @@ async function handleConfirm(data) {
         }
         return;
       }
+      const teamCd = templateExposure.checkTeamCooldown(legsForTemplate, parlayId);
+      if (teamCd.block) {
+        log.warn('Confirm', `Rejecting: ${teamCd.reason} (parlay=${parlayId.substring(0, 8)})`);
+        orderTracker.recordRejection(parlayId, teamCd.reason);
+        if (callbackUrl) {
+          await px.confirmOrder(callbackUrl, orderUuid, 'reject');
+        }
+        return;
+      }
     } catch (err) {
       // Don't break the confirm path on template-exposure errors —
       // log and continue. Worst case: rapid-duplicate squeaks through.
-      log.warn('Confirm', `template cooldown check errored: ${err.message}`);
+      log.warn('Confirm', `template/team cooldown check errored: ${err.message}`);
     }
 
     // Per-team exposure re-check — CRITICAL. shouldDecline ran at price time

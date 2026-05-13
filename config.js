@@ -220,6 +220,21 @@ const config = {
     // apart, before the per-template ramp's confirm-feedback can catch up.
     // Set to 0 to disable.
     templateRampCooldownSeconds: parseInt(process.env.TEMPLATE_RAMP_COOLDOWN_SECONDS) || 60,
+    // Per-TEAM cooldown — broader gate than the template (same-signature)
+    // cooldown above. Triggers when any single team in a new RFQ was already
+    // present in a recently-confirmed parlay, regardless of the other legs.
+    // Closes the bot pattern Mike caught 2026-05-13: same target team
+    // (Seattle Storm) rotated across multiple parlays in 30 seconds, paired
+    // with different 2nd legs (Det -4, then Det -4, then Cle +4). The
+    // signature-level cooldown didn't catch it because the leg-sets differed.
+    // Defaults to templateRampCooldownSeconds if TEAM_COOLDOWN_SECONDS is
+    // unset, so operators who already tuned the template cooldown get the
+    // team cooldown for free at the same window. Set 0 to disable.
+    teamCooldownSeconds: (() => {
+      const explicit = parseInt(process.env.TEAM_COOLDOWN_SECONDS);
+      if (Number.isFinite(explicit) && explicit >= 0) return explicit;
+      return parseInt(process.env.TEMPLATE_RAMP_COOLDOWN_SECONDS) || 60;
+    })(),
     // Block alt-spread quoting on listed sports. An "alt spread" is any
     // spread leg whose line value differs from the primary line:
     //   - MLB:  primary run line is always ±1.5 → anything else is alt

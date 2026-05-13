@@ -164,6 +164,72 @@ function recordConfirmation(legs, parlayId, stake, confirmedAt = null) {
   // so the parlay isn't counted twice on next exposure read.
   _exposure[sig].pending = _exposure[sig].pending.filter(p => p.parlayId !== parlayId);
   _stats.recordedConfirmations++;
+
+  // Update per-TEAM last-confirmed map. The signature-level confirmations[]
+  // above only catches exact same-leg duplicates; the team map below catches
+  // the broader bot pattern where the same target team is rotated through
+  // different secondary legs (Mike caught 2026-05-13: Seattle Storm in
+  // S+Det, S+Det, S+Cle within 30s). One entry per team in the parlay.
+  for (const leg of legs) {
+    const tk = normalizeTeam(leg.team || leg.teamName || '');
+    if (!tk || tk === '?') continue;
+    const existing = _lastConfirmedAtByTeam.get(tk);
+    if (!existing || existing.confirmedAt < ts) {
+      _lastConfirmedAtByTeam.set(tk, { confirmedAt: ts, parlayId });
+    }
+  }
+}
+
+// Per-team last-confirmed map. Independent dimension from the signature-
+// keyed _exposure store: tracks the wall-clock timestamp of the most
+// recent confirmed parlay that contained each team. Used by
+// checkTeamCooldown to gate new RFQs on rapid-succession bot patterns.
+//
+// Memory bounded by the universe of distinct team names we ever quote,
+// which is small (a few thousand teams + players across all sports/
+// seasons). No pruning needed — stale entries are cheap and the
+// cooldown check naturally ignores anything past cooldownSec.
+const _lastConfirmedAtByTeam = new Map(); // teamKey -> { confirmedAt, parlayId }
+
+/**
+ * Per-team cooldown check. Returns { block: true, ... } if any team in
+ * `legs` was present in another parlay that confirmed within
+ * teamCooldownSeconds. Excludes self by parlayId so confirm-time
+ * idempotency doesn't self-block.
+ *
+ * Designed to fire at BOTH quote time (in getRampDecision) and confirm
+ * time (called from handleConfirm). Quote-time blocks make us appear
+ * unresponsive to the bot's templated rotations; confirm-time blocks
+ * close the race window where the first parlay hasn't confirmed yet
+ * when later RFQs land.
+ *
+ * `legs` shape: array of { team | teamName, market | marketType, line }.
+ */
+function checkTeamCooldown(legs, parlayId, nowMs = null) {
+  if (!ENABLED) return { block: false, reason: null };
+  const cooldownSec = config.pricing.teamCooldownSeconds;
+  if (!cooldownSec || cooldownSec <= 0) return { block: false, reason: null };
+  if (!Array.isArray(legs) || legs.length === 0) return { block: false, reason: null };
+  const now = nowMs || Date.now();
+  for (const leg of legs) {
+    const team = leg.team || leg.teamName || '';
+    const tk = normalizeTeam(team);
+    if (!tk || tk === '?') continue;
+    const last = _lastConfirmedAtByTeam.get(tk);
+    if (!last) continue;
+    if (last.parlayId === parlayId) continue; // self-exclusion
+    const sinceMs = now - last.confirmedAt;
+    if (sinceMs < cooldownSec * 1000) {
+      const remainSec = Math.ceil((cooldownSec * 1000 - sinceMs) / 1000);
+      return {
+        block: true,
+        team,
+        reason: `team_cooldown: "${team}" confirmed in another parlay ${Math.round(sinceMs / 1000)}s ago — cooldown ${cooldownSec}s, ${remainSec}s remaining`,
+        sinceMs,
+      };
+    }
+  }
+  return { block: false, reason: null };
 }
 
 /**
@@ -348,6 +414,25 @@ function getRampDecision(legs, opts = {}) {
         };
       }
     }
+  }
+
+  // Per-team cooldown — broader than signature-level above. Catches bot
+  // rotations where the same target team appears with different 2nd legs.
+  // Returns early before the ramp-tier vig add, so a rotation hit is
+  // declined entirely rather than just priced wider.
+  const teamCd = checkTeamCooldown(legs, opts ? opts.parlayId : null);
+  if (teamCd.block) {
+    _stats.rampHits.team_cooldown = (_stats.rampHits.team_cooldown || 0) + 1;
+    return {
+      extraVig: 0, decline: true,
+      reason: teamCd.reason,
+      count: priorCount,
+      confirmedCount: exp.confirmedCount,
+      pendingCount: exp.pendingCount,
+      totalStake: exp.totalStake,
+      teamCooldownActive: true,
+      teamCooldownTeam: teamCd.team,
+    };
   }
 
   if (declineAt > 0 && priorCount >= declineAt) {
@@ -548,6 +633,7 @@ module.exports = {
   getExposure,
   getRampDecision,
   checkConfirmCooldown,
+  checkTeamCooldown,
   prune,
   startPruneLoop,
   rebuildFromOrders,
