@@ -12667,7 +12667,6 @@
             fmt: r => _lpFmtPp(r.medianGapPp) },
           { label: 'Within 1pp', align: 'right', font: 'monospace',
             fmt: r => _lpFmt$(r.stakeWithin_1pp) },
-          { label: 'Suggested action', key: 'suggestedAction', color: 'var(--accent)' },
           { label: 'Est. recoverable', align: 'right', font: 'monospace', color: 'var(--green)',
             fmt: r => _lpFmt$(r.estRecoverableAt_1pp) },
         ]
@@ -12684,7 +12683,6 @@
           { label: 'Total stake', align: 'right', font: 'monospace',
             fmt: r => _lpFmt$(r.totalStake) },
           { label: 'Env var', key: 'envVar', font: 'monospace', color: 'var(--text2)' },
-          { label: 'Suggested action', key: 'suggestedAction', color: 'var(--accent)' },
           { label: 'Est. recoverable', align: 'right', font: 'monospace', color: 'var(--green)',
             fmt: r => _lpFmt$(r.estRecoverable) },
         ]
@@ -12701,7 +12699,6 @@
           { label: 'Total stake', align: 'right', font: 'monospace',
             fmt: r => _lpFmt$(r.totalStake) },
           { label: 'Env var', key: 'envVar', font: 'monospace', color: 'var(--text2)' },
-          { label: 'Suggested action', key: 'suggestedAction', color: 'var(--accent)' },
           { label: 'Capture rate', align: 'right', font: 'monospace',
             fmt: r => (r.captureRate * 100).toFixed(0) + '%' },
           { label: 'Est. recoverable', align: 'right', font: 'monospace', color: 'var(--green)',
@@ -12722,29 +12719,31 @@
     // Headline
     html += '<div style="padding:12px 8px; font-size:12px; color:var(--text3);">Window: last ' + data.windowDays + ' days · ' + data.uniqueLostCount + ' unique LOST parlays · ' + data.rawRowCount + ' raw rows (deduped by parlay_id)</div>';
 
-    html += '<div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; padding:0 8px;">';
+    // Compact inline summary — single-line list of label:value pairs.
+    // Replaces the prior 8-tile grid that ate ~140px of vertical real
+    // estate before the operator could even see the Recovery panel.
     const tiles = [
       { label: 'Lost parlays', value: s.totalLost.toLocaleString() },
       { label: 'Bettor wager $ lost', value: _lpFmt$(s.totalStake) },
       { label: 'Avg bettor wager', value: _lpFmt$(s.avgStake) },
-      { label: 'Mean gap (pp)', value: _lpFmtPp(s.meanGapPp), cls: s.meanGapPp > 1 ? 'negative' : '' },
-      { label: 'Median gap (pp)', value: _lpFmtPp(s.medianGapPp) },
+      { label: 'Mean gap', value: _lpFmtPp(s.meanGapPp), cls: s.meanGapPp > 1 ? 'negative' : '' },
+      { label: 'Median gap', value: _lpFmtPp(s.medianGapPp) },
       { label: 'Sub-1pp losses', value: _lpFmtPct(s.subOnePpPct) + ' (' + s.subOnePpCount + ')' },
-      { label: 'Exact ties (lost on FIFO)', value: _lpFmtPct(s.tiePct) + ' (' + s.tieCount + ')' },
-      // Walked-away tile: parlays where we won the auction but rejected
-      // the confirmation (drift check, exposure cap, paused). Distinct
-      // recoverable bucket — surface alongside the tie/gap headline metrics.
+      { label: 'Exact ties', value: _lpFmtPct(s.tiePct) + ' (' + s.tieCount + ')' },
+      // Walked-away: parlays where we won the auction but rejected the
+      // confirmation (drift check, exposure cap, paused).
       {
         label: 'Walked away at confirm',
         value: (s.walkedAwayCount || 0).toLocaleString()
           + (s.walkedAwayStake ? ' (' + _lpFmt$(s.walkedAwayStake) + ')' : ''),
       },
     ];
+    html += '<div style="display:flex; flex-wrap:wrap; gap:6px 16px; padding:6px 8px 0; font-size:12px;">';
     for (const t of tiles) {
-      html += '<div style="background:var(--surface2); border-radius:6px; padding:10px 12px;">'
-        + '<div style="font-size:10px; color:var(--text3); text-transform:uppercase;">' + t.label + '</div>'
-        + '<div style="font-size:18px; font-weight:600; margin-top:2px;" class="' + (t.cls || '') + '">' + t.value + '</div>'
-        + '</div>';
+      html += '<span>'
+        + '<span style="color:var(--text3);">' + t.label + ':</span> '
+        + '<span style="font-weight:600;" class="' + (t.cls || '') + '">' + t.value + '</span>'
+        + '</span>';
     }
     html += '</div>';
 
