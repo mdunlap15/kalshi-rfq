@@ -728,6 +728,16 @@ async function handleRFQ(data) {
     // Quick decline check
     const declineCheck = pricer.shouldDecline(legs);
     stageTimings.decline = elapsedMs();
+    // 2026-05-12: temporary instrumentation. Surface per-section timings
+    // captured inside shouldDecline so we can drill into the 1.99ms p50
+    // regression that the portfolio-risk cache didn't fully fix.
+    const _sdCheckpoints = (declineCheck && declineCheck._shouldDeclineCheckpoints)
+      || (pricer.shouldDecline.timings && pricer.shouldDecline.timings._last);
+    if (_sdCheckpoints) {
+      for (const [name, ms] of Object.entries(_sdCheckpoints)) {
+        stageTimings['sd_' + name] = ms;
+      }
+    }
     if (declineCheck && declineCheck.declined) {
       const lineManager = require('./line-manager');
       const knownLegs = [];

@@ -2535,19 +2535,35 @@ function computeCorrelationBoost(pricedLegs) {
   return boost;
 }
 
+// 2026-05-12: TEMPORARY instrumentation. p50 latency went from 0.7ms to
+// 3.42ms despite the portfolio-risk cache landing. Capture per-section
+// timings inside shouldDecline so we can identify the actual bottleneck.
+// shouldDeclineTimings._last carries the most-recent call's checkpoints;
+// websocket.js spreads it into stageTimings if present. Remove once root
+// cause is fixed.
+shouldDecline.timings = { _last: null };
+function _shouldDeclineMark(checkpoints, name, hrStart) {
+  const ms = Number(process.hrtime.bigint() - hrStart) / 1e6;
+  checkpoints[name] = Math.round(ms * 1000) / 1000;
+}
+
 /**
  * Quick check if we should even attempt to price this parlay.
  */
 function shouldDecline(legs) {
+  const _hrStart = process.hrtime.bigint();
+  const _checkpoints = {};
   if (!legs || legs.length === 0) return { declined: true, reason: 'empty parlay', detail: null };
   if (legs.length > config.pricing.maxLegs) {
     return { declined: true, reason: 'too many legs', detail: `${legs.length} legs > max ${config.pricing.maxLegs}` };
   }
+  _shouldDeclineMark(_checkpoints, 'entry', _hrStart);
 
   // Dedup: decline if we just quoted this exact leg-set within the window.
   // Bettors can submit the same parlay repeatedly faster than our exposure
   // state updates (race between quote and confirm). Say no on the repeats.
   const dup = orderTracker.checkRecentDuplicate(legs);
+  _shouldDeclineMark(_checkpoints, 'dup_check', _hrStart);
   if (dup) {
     return {
       declined: true,
@@ -2678,6 +2694,8 @@ function shouldDecline(legs) {
       }
     }
   }
+
+  _shouldDeclineMark(_checkpoints, 'prop_corr_prepass', _hrStart);
 
   // Check all legs are known and events haven't started.
   // Uses pre-computed lineInfo.startTimeMs (parsed lazily on first lookupLine
@@ -3042,6 +3060,8 @@ function shouldDecline(legs) {
     }
   }
 
+  _shouldDeclineMark(_checkpoints, 'after_correlation', _hrStart);
+
   // Check team-level exposure limits.
   // Use maxRiskPerParlay as the estimate. The confirm-time re-check in
   // handleConfirm is the real safety net (checks actual stake against both
@@ -3075,9 +3095,11 @@ function shouldDecline(legs) {
       awayTeam: l.lineInfo.awayTeam,
     };
   });
+  _shouldDeclineMark(_checkpoints, 'after_fairprob_lookup', _hrStart);
   const exposureCheck = orderTracker.checkExposureLimits(
     legsWithProb, estPayout, config.pricing.maxExposurePerTeam
   );
+  _shouldDeclineMark(_checkpoints, 'after_team_exposure', _hrStart);
   if (!exposureCheck.allowed) {
     log.info('Pricing', `Exposure limit: ${exposureCheck.reason}`);
     try {
@@ -3098,6 +3120,7 @@ function shouldDecline(legs) {
   const gameCheck = orderTracker.checkGameExposure(
     legsWithProb, estPayout, config.pricing.maxExposurePerGame
   );
+  _shouldDeclineMark(_checkpoints, 'after_game_exposure', _hrStart);
   if (!gameCheck.allowed) {
     log.info('Pricing', `Game exposure limit: ${gameCheck.reason}`);
     try {
@@ -3122,6 +3145,7 @@ function shouldDecline(legs) {
   const portfolioCap = config.pricing.maxGrossPortfolioRisk;
   if (portfolioCap > 0) {
     const portfolioCheck = orderTracker.checkPortfolioRisk(estPayout, portfolioCap);
+    _shouldDeclineMark(_checkpoints, 'after_portfolio_risk', _hrStart);
     if (!portfolioCheck.allowed) {
       const detail = `current $${portfolioCheck.current.toFixed(0)} + $${portfolioCheck.additional.toFixed(0)} > cap $${portfolioCheck.limit}`;
       log.info('Pricing', `Portfolio gross cap: ${detail}`);
@@ -3206,13 +3230,17 @@ function shouldDecline(legs) {
     }
   }
 
+  _shouldDeclineMark(_checkpoints, 'after_all_exposure_checks', _hrStart);
+
   // On success, surface the resolved lineInfos keyed by lineId so the caller
   // can pass them to priceParlay and skip redundant lookupLine() calls.
   // Also surface the classified SGP combo (if any) so priceParlay can stamp
   // it on meta for order-tracking and per-combo analytics.
   const resolvedLineInfos = new Map();
   for (const r of resolvedLegs) resolvedLineInfos.set(r.lineId, r.lineInfo);
-  return { declined: false, resolvedLineInfos, sgpCombo, sgpEventId };
+  _shouldDeclineMark(_checkpoints, 'final', _hrStart);
+  shouldDecline.timings._last = _checkpoints;
+  return { declined: false, resolvedLineInfos, sgpCombo, sgpEventId, _shouldDeclineCheckpoints: _checkpoints };
 }
 
 /**
