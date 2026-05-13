@@ -12557,7 +12557,9 @@
   // memory from /lost-analysis.
   const _tlState = {
     raw: [],
-    sortKey: 'matchedStake',
+    // Default: most-recent first. Operator's primary lens is "what
+    // happened in the last hour" rather than "biggest stake of the week".
+    sortKey: 'matchedAt',
     sortDir: -1, // -1 desc, +1 asc
     filters: { search: '', sport: '', market: '', minStake: '', maxStake: '', maxGapPp: '' },
     page: 1,
@@ -12740,9 +12742,11 @@
       _tlState.sortDir = -_tlState.sortDir;
     } else {
       _tlState.sortKey = key;
-      // First-click default: numerical columns desc, text columns asc.
-      const textCols = ['matchedAt', 'parlayId', 'sport', 'marketCategory'];
-      _tlState.sortDir = textCols.includes(key) ? 1 : -1;
+      // First-click default: numbers + matchedAt → desc (largest/newest first,
+      // since that's the operator's intuitive expectation). Other text columns
+      // → asc (alphabetical).
+      const ascCols = ['parlayId', 'sport', 'marketCategory'];
+      _tlState.sortDir = ascCols.includes(key) ? 1 : -1;
     }
     // Reset to page 1 — a new sort makes prior page positions meaningless.
     _tlState.page = 1;
