@@ -1452,6 +1452,37 @@ async function handleConfirm(data) {
     // quotes, which is what we want to include in the cap.
     orderTracker.releasePending(parlayId);
 
+    // Template-cooldown confirm-time gate. The RFQ-quote-time cooldown in
+    // template-exposure.getRampDecision intentionally ignores pending
+    // reservations — so multiple RFQs on the SAME signature can quote out
+    // before any of them confirm. Operator caught (2026-05-13) three
+    // identical Seattle Storm + Detroit Pistons parlays confirming within
+    // 30 seconds. This re-check at confirm time closes the race: if
+    // another parlay on the same signature has already confirmed within
+    // cooldownSec, walk away from this one. First fill wins; rapid
+    // copies decline.
+    try {
+      const templateExposure = require('./template-exposure');
+      const legsForTemplate = legsForCheck.map(l => ({
+        team: l.team || l.teamName,
+        market: l.market || l.marketType,
+        line: l.line,
+      }));
+      const cooldown = templateExposure.checkConfirmCooldown(legsForTemplate, parlayId);
+      if (cooldown.block) {
+        log.warn('Confirm', `Rejecting: ${cooldown.reason} (parlay=${parlayId.substring(0, 8)})`);
+        orderTracker.recordRejection(parlayId, cooldown.reason);
+        if (callbackUrl) {
+          await px.confirmOrder(callbackUrl, orderUuid, 'reject');
+        }
+        return;
+      }
+    } catch (err) {
+      // Don't break the confirm path on template-exposure errors —
+      // log and continue. Worst case: rapid-duplicate squeaks through.
+      log.warn('Confirm', `template cooldown check errored: ${err.message}`);
+    }
+
     // Per-team exposure re-check — CRITICAL. shouldDecline ran at price time
     // with stale exposure data; by confirm time other parlays may have pushed
     // real exposure past the cap. Without this check, 5 concurrent quotes all

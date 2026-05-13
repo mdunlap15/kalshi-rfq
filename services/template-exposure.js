@@ -385,6 +385,57 @@ function getRampDecision(legs, opts = {}) {
   };
 }
 
+/**
+ * Confirm-time template-cooldown gate. The quote-time check in
+ * getRampDecision intentionally ignores pending reservations (so a
+ * bettor's retry isn't blocked by their own in-flight quote). That
+ * trade-off opens a race window: multiple RFQs on the same signature
+ * can quote out before any of them confirm, and PX can then book all
+ * of them — exactly the rapid-duplicate pattern Mike caught
+ * (2026-05-13: three Seattle Storm +3.5 + Detroit Pistons -4 confirms
+ * within 30 seconds at +278 each).
+ *
+ * This gate runs in handleConfirm BEFORE recordConfirmation. If
+ * another parlay on the same signature has already confirmed within
+ * cooldownSec, we walk away from the new one. The first parlay still
+ * fills; only the rapid copies decline. Bettor sees a rejected
+ * confirm — annoying but the correct outcome since they shouldn't
+ * have been able to fill that fast in the first place.
+ *
+ * Excludes the parlay being confirmed itself from the lookup so
+ * recordConfirmation idempotency (re-running on the same parlayId)
+ * doesn't accidentally self-block.
+ *
+ * Returns { block: bool, reason: string|null, sinceMs: number|null }.
+ */
+function checkConfirmCooldown(legs, parlayId, nowMs = null) {
+  if (!ENABLED) return { block: false, reason: null, sinceMs: null };
+  const cooldownSec = config.pricing.templateRampCooldownSeconds;
+  if (!cooldownSec || cooldownSec <= 0) return { block: false, reason: null, sinceMs: null };
+  const sig = canonicalSignature(legs);
+  if (!sig) return { block: false, reason: null, sinceMs: null };
+  const entry = _exposure[sig];
+  if (!entry || !entry.confirmations || entry.confirmations.length === 0) {
+    return { block: false, reason: null, sinceMs: null };
+  }
+  const now = nowMs || Date.now();
+  // Exclude self if this parlay's confirmation has already been recorded
+  // (paranoid — confirmer should call this BEFORE recordConfirmation).
+  const others = entry.confirmations.filter(c => c.parlayId !== parlayId);
+  if (others.length === 0) return { block: false, reason: null, sinceMs: null };
+  const lastConfirmedMs = Math.max(...others.map(c => c.confirmedAt));
+  const sinceMs = now - lastConfirmedMs;
+  if (sinceMs < cooldownSec * 1000) {
+    const remainSec = Math.ceil((cooldownSec * 1000 - sinceMs) / 1000);
+    return {
+      block: true,
+      reason: `template_cooldown_at_confirm: same parlay confirmed ${Math.round(sinceMs / 1000)}s ago — cooldown ${cooldownSec}s, ${remainSec}s remaining`,
+      sinceMs,
+    };
+  }
+  return { block: false, reason: null, sinceMs };
+}
+
 // --------------------------------------------------------------------
 // Maintenance
 // --------------------------------------------------------------------
@@ -496,6 +547,7 @@ module.exports = {
   releasePending,
   getExposure,
   getRampDecision,
+  checkConfirmCooldown,
   prune,
   startPruneLoop,
   rebuildFromOrders,
