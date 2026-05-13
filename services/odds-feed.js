@@ -4518,7 +4518,12 @@ let _warmLoopTimer = null;
 // API quota — it just shortens the new-event coverage gap. With soccer now
 // in the pre-warm set (see SPORTS_WITH_ALT_MARKETS), 15s is a better
 // match to how quickly soccer RFQ flow can hit a freshly-registered game.
-const WARM_LOOP_INTERVAL_MS = 15 * 1000;
+// Tightened 15s → 8s (2026-05-13): the warm loop is the safety net that
+// catches events PX has registered but resolveUnknownLine hasn't yet
+// touched. Shorter interval = newer events get pre-warmed faster.
+// TTL gating (10 min) means fresh entries skip the actual fetch, so the
+// effective Odds API cost increase is limited to new-event coverage.
+const WARM_LOOP_INTERVAL_MS = parseInt(process.env.WARM_LOOP_INTERVAL_MS) || 8 * 1000;
 
 /**
  * Start the background warm loop. Safe to call multiple times — second calls
@@ -4781,7 +4786,14 @@ function startBovadaAltLoop() {
 //
 // Fire-and-forget contract: callers don't await — they pass through the
 // promise (or ignore it) and let the queue drain in background.
-const JIT_WARM_CONCURRENCY = 2;
+//
+// Bumped 2 → 5 (2026-05-13): at concurrency 2, a fresh seed of ~200
+// events takes ~200×RTT/2 ≈ 5s to fully drain, during which RFQs on
+// not-yet-warmed events stall ~40ms in getFairProbAsync. Bumping to 5
+// shaves the drain time to ~2s. The Odds API quota cost is unchanged —
+// same total fetches, just dispatched in larger parallel waves. TOA's
+// per-account rate limit handles 5-wide concurrency comfortably.
+const JIT_WARM_CONCURRENCY = parseInt(process.env.JIT_WARM_CONCURRENCY) || 5;
 const _jitInFlight = new Map(); // normalizedKey -> Promise
 let _jitRunning = 0;
 const _jitPending = []; // [{task, resolve, reject}]

@@ -1228,6 +1228,16 @@ async function handleRFQ(data) {
       const insideDur = t.totalInternalMs;
       stageTimings.price_awaitOverheadMs = Math.round(Math.max(0, outsideDur - insideDur) * 100) / 100;
       stageTimings.price_outsideDurationMs = Math.round(outsideDur * 100) / 100;
+      // 2026-05-13 instrumentation: phase2-await breakdown so we can see
+      // how much of phase2 time is the actual async wait vs. how many legs
+      // contributed. async = getFairProbAsync (TOA alt-line fetch); verify =
+      // verifyLineWithPinnacle (Odds API events fetch).
+      const p2 = pricer.priceParlay._lastPhase2Diag;
+      if (p2) {
+        stageTimings.price_p2_awaitMs = p2.awaitMs;
+        stageTimings.price_p2_asyncFairCount = p2.asyncFairCount;
+        stageTimings.price_p2_verifyCount = p2.verifyCount;
+      }
     }
     if (!result) {
       // Near miss — all legs known but couldn't price. Get the specific blocker.

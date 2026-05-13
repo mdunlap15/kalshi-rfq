@@ -948,6 +948,11 @@ function priceParlay(legs, opts = {}) {
   // ASYNC PATH: only enter when something actually needs async work.
   // Wraps the post-await wire-up + phase-3 call in a .then() so the
   // function still returns the same shape (Promise resolves to result).
+  //
+  // 2026-05-13: temporary instrumentation — capture how many legs needed
+  // async fair-prob fetch vs Pinnacle-verify, and the total await time.
+  // Surfaced in stageTimings as price_p2_asyncFairCount / p2_verifyCount /
+  // p2_awaitMs so we can drill the 30-55ms tail to the right culprit.
   if (pendingAsyncFair || pendingVerifyIdx) {
     const proms = [];
     if (pendingAsyncFair) {
@@ -962,7 +967,16 @@ function priceParlay(legs, opts = {}) {
         ));
       }
     }
+    const _phase2AwaitStart = performance.now();
+    const _asyncFairCount = pendingAsyncFair ? pendingAsyncFair.length : 0;
+    const _verifyCount = pendingVerifyIdx ? pendingVerifyIdx.length : 0;
     return Promise.all(proms).then(settled => {
+      // Stash phase2 await breakdown on the function for caller to pick up.
+      priceParlay._lastPhase2Diag = {
+        awaitMs: Math.round((performance.now() - _phase2AwaitStart) * 100) / 100,
+        asyncFairCount: _asyncFairCount,
+        verifyCount: _verifyCount,
+      };
       let k = 0;
       if (pendingAsyncFair) {
         for (const [idx] of pendingAsyncFair) fairProbs[idx] = settled[k++];
@@ -973,6 +987,9 @@ function priceParlay(legs, opts = {}) {
       return _doPhase3();
     });
   }
+  // Sync-only path — no phase2 await happened. Clear the diag so we don't
+  // mis-attribute a prior call's slow await to this RFQ.
+  priceParlay._lastPhase2Diag = null;
   // SYNC FAST PATH: all leg fair-probs already populated. Call _doPhase3
   // directly and return the result object — NOT a Promise. Caller's
   // sync-or-await branch returns it without microtask overhead.
