@@ -12560,6 +12560,8 @@
     sortKey: 'matchedStake',
     sortDir: -1, // -1 desc, +1 asc
     filters: { search: '', sport: '', market: '', minStake: '', maxStake: '', maxGapPp: '' },
+    page: 1,
+    pageSize: 25,
   };
 
   function _renderTightestLossesPanel(rows) {
@@ -12642,6 +12644,18 @@
       return (va - vb) * dir;
     });
 
+    // Pagination — slice the sorted/filtered rows. Clamp current page in
+    // case filter changes shrank the result set below the prior position.
+    const total = rows.length;
+    const pageSize = Math.max(1, _tlState.pageSize || 25);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (_tlState.page > totalPages) _tlState.page = totalPages;
+    if (_tlState.page < 1) _tlState.page = 1;
+    const page = _tlState.page;
+    const startIdx = (page - 1) * pageSize;
+    const endIdx = Math.min(startIdx + pageSize, total);
+    const pageRows = rows.slice(startIdx, endIdx);
+
     const cols = [
       { key: 'matchedAt',    label: 'WHEN',     align: 'left',  width: 'auto' },
       { key: 'parlayId',     label: 'PARLAY',   align: 'left',  width: 'auto' },
@@ -12656,7 +12670,23 @@
       { key: 'legCount',     label: 'LEGS',     align: 'left' },
     ];
 
-    let h = '<div style="font-size:11px; color:var(--text3); margin-bottom:6px;">Showing ' + rows.length + ' of ' + _tlState.raw.length + ' rows.</div>';
+    // Header status line + page-size selector (the latter only shows if
+    // there's more than one possible page at the smallest size).
+    let h = '<div style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:6px;">';
+    if (total === 0) {
+      h += '<div style="font-size:11px; color:var(--text3);">No rows match the current filters.</div>';
+    } else {
+      h += '<div style="font-size:11px; color:var(--text3);">Showing ' + (startIdx + 1) + '–' + endIdx + ' of ' + total + ' (filtered from ' + _tlState.raw.length + ' total).</div>';
+    }
+    h += '<div style="font-size:11px; color:var(--text3); margin-left:auto;">Per page:';
+    h += ' <select onchange="_onTlPageSizeChange(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:2px 6px; border-radius:4px; font-size:11px; margin-left:4px;">';
+    for (const sz of [10, 25, 50, 100]) {
+      const sel = (sz === pageSize) ? ' selected' : '';
+      h += '<option value="' + sz + '"' + sel + '>' + sz + '</option>';
+    }
+    h += '</select></div>';
+    h += '</div>';
+
     h += '<div style="overflow-x:auto;"><table style="font-size:11px; width:100%; border-collapse:collapse; min-width:1100px;">';
     h += '<tr style="color:var(--text3); border-bottom:1px solid var(--border);">';
     for (const c of cols) {
@@ -12665,7 +12695,7 @@
       h += '<th style="text-align:' + c.align + '; padding:6px 8px; ' + cursor + '" onclick="_onTlSortClick(\'' + c.key + '\')">' + c.label + arrow + '</th>';
     }
     h += '</tr>';
-    for (const item of rows) {
+    for (const item of pageRows) {
       const legBlurb = (item.legs || []).slice(0, 3).map(l =>
         (l.sport || '?').replace(/^.*_/, '').slice(0, 4) + ':' +
         (l.team || l.selection || '?').slice(0, 16) +
@@ -12687,6 +12717,21 @@
       h += '</tr>';
     }
     h += '</table></div>';
+
+    // Pagination controls. Hidden when only one page so single-page filtered
+    // views aren't cluttered with disabled buttons.
+    if (totalPages > 1) {
+      const btnStyle = 'background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; font-size:12px; cursor:pointer;';
+      const disStyle = 'background:var(--surface2); border:1px solid var(--border); color:var(--text3); padding:4px 10px; border-radius:4px; font-size:12px; cursor:not-allowed; opacity:0.5;';
+      h += '<div style="display:flex; gap:8px; align-items:center; justify-content:center; margin-top:10px; font-size:12px;">';
+      h += '<button onclick="_onTlPageChange(1)" style="' + (page === 1 ? disStyle : btnStyle) + '"' + (page === 1 ? ' disabled' : '') + '>« First</button>';
+      h += '<button onclick="_onTlPageChange(' + (page - 1) + ')" style="' + (page === 1 ? disStyle : btnStyle) + '"' + (page === 1 ? ' disabled' : '') + '>‹ Prev</button>';
+      h += '<span style="color:var(--text2); padding:0 8px;">Page ' + page + ' of ' + totalPages + '</span>';
+      h += '<button onclick="_onTlPageChange(' + (page + 1) + ')" style="' + (page === totalPages ? disStyle : btnStyle) + '"' + (page === totalPages ? ' disabled' : '') + '>Next ›</button>';
+      h += '<button onclick="_onTlPageChange(' + totalPages + ')" style="' + (page === totalPages ? disStyle : btnStyle) + '"' + (page === totalPages ? ' disabled' : '') + '>Last »</button>';
+      h += '</div>';
+    }
+
     return h;
   }
 
@@ -12699,6 +12744,8 @@
       const textCols = ['matchedAt', 'parlayId', 'sport', 'marketCategory'];
       _tlState.sortDir = textCols.includes(key) ? 1 : -1;
     }
+    // Reset to page 1 — a new sort makes prior page positions meaningless.
+    _tlState.page = 1;
     const host = document.getElementById('tl-table-host');
     if (host) host.innerHTML = _renderTightestLossesBody();
   };
@@ -12710,6 +12757,29 @@
     _tlState.filters.minStake = document.getElementById('tl-filter-min-stake')?.value || '';
     _tlState.filters.maxStake = document.getElementById('tl-filter-max-stake')?.value || '';
     _tlState.filters.maxGapPp = document.getElementById('tl-filter-max-gap')?.value || '';
+    // Reset to page 1 — filter changes typically shrink the row count and
+    // it's confusing to land mid-deep on a now-tiny result set.
+    _tlState.page = 1;
+    const host = document.getElementById('tl-table-host');
+    if (host) host.innerHTML = _renderTightestLossesBody();
+  };
+
+  window._onTlPageChange = function(newPage) {
+    const n = Number(newPage);
+    if (!Number.isFinite(n) || n < 1) return;
+    _tlState.page = n;
+    const host = document.getElementById('tl-table-host');
+    if (host) host.innerHTML = _renderTightestLossesBody();
+    // Scroll the table into view so the operator doesn't have to scroll
+    // back up after clicking Next on a long page.
+    if (host) host.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  };
+
+  window._onTlPageSizeChange = function(newSize) {
+    const sz = parseInt(newSize, 10);
+    if (!Number.isFinite(sz) || sz < 1) return;
+    _tlState.pageSize = sz;
+    _tlState.page = 1;
     const host = document.getElementById('tl-table-host');
     if (host) host.innerHTML = _renderTightestLossesBody();
   };
