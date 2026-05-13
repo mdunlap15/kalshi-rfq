@@ -2674,23 +2674,21 @@ function getTotalPortfolioRisk() {
 
 // TTL-cached variant for the RFQ hot path. The uncached version walks
 // Object.values(orders) (up to 200k entries after Supabase hydration) and
-// calls isOrderStalePhantom per row — which iterates each order's legs
-// and does Date.parse per leg. Measured cost: 2.22ms p50 per call after
-// Mike enabled MAX_GROSS_PORTFOLIO_RISK=15000 (which made the check fire
-// on every RFQ instead of returning early as a no-op).
+// calls isOrderStalePhantom per confirmed row — measured at 2.22-2.70ms
+// p50 per call. Mike enabled MAX_GROSS_PORTFOLIO_RISK=15000 so this
+// check fires on every RFQ; previously a no-op early return.
 //
-// First attempt at 250ms TTL didn't move p50 because production RFQ
-// arrival is bursty AND sparse — at typical 1 RFQ every 4-60s the cache
-// always expired between calls. Bumped to 30s and added explicit
-// invalidation on the four status='confirmed' transition sites so the
-// cache stays fresh after real fills while serving cheap hits on the
-// repeated-quote hot path.
+// TTL evolution:
+//   250ms — too short; inter-RFQ gap ~4-60s always expired the cache
+//   30s   — covered peak burst but missed at low traffic (1 RFQ/100s)
+//   5 min — current. Explicit invalidation hooks on all 4 status='confirmed'
+//           transitions, settlement, and admin-delete handle correctness;
+//           the TTL is just a backstop for phantom-aging drift (12h cutoff).
 //
-// Drift bound: at Mike's portfolio cap $15k, confirm rate ~0.7%, and
-// 15 RFQs/min peak, expected confirms per 30s window = ~0.05 × $7k =
-// ~$350 max overshoot. Well inside the cap's headroom.
+// Drift bound: between manual invalidations only phantom-aging changes the
+// answer, and phantom transitions happen on the 12h scale — 5min is noise.
 let _portfolioRiskCache = null; // { fetchedAt: number, value: number }
-const PORTFOLIO_RISK_CACHE_TTL_MS = 30 * 1000;
+const PORTFOLIO_RISK_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function getTotalPortfolioRiskCached() {
   const now = Date.now();
@@ -5516,6 +5514,7 @@ async function deleteUnknownSettledOrders() {
     // Remove from in-memory stores
     if (order.orderUuid) delete ordersByUuid[order.orderUuid];
     delete orders[parlayId];
+    _invalidatePortfolioRiskCache();
     parlayIds.push(parlayId);
     deleted++;
   }
@@ -5572,6 +5571,7 @@ async function deleteOrdersByParlayIds(parlayIds) {
     }
     if (order.orderUuid) delete ordersByUuid[order.orderUuid];
     delete orders[parlayId];
+    _invalidatePortfolioRiskCache();
     found.push(parlayId);
     deleted++;
   }
