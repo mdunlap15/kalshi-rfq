@@ -542,20 +542,13 @@ const config = {
     // PROP_TRUSTED_SINGLE_BOOKS (comma-separated, lowercase book keys).
     propTrustedSingleBooks: (process.env.PROP_TRUSTED_SINGLE_BOOKS || 'pinnacle,fanduel,draftkings,betmgm,betrivers')
       .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
-    // Portfolio-level GROSS open-risk cap. Hard ceiling on the sum of
-    // confirmedStake (= bettor's to-win = our SP-side max loss per parlay)
-    // across all currently-open parlays. Bounds absolute worst-case loss
-    // if every open parlay hits, regardless of how unlikely. Independent
-    // of probability-weighted per-team / per-game / per-player caps,
-    // which protect EV but don't bound the tail.
-    //
-    // Tunable via MAX_GROSS_PORTFOLIO_RISK env. Set 0 to disable (off by
-    // default — operator must opt in by setting a positive value).
-    //
-    // Sizing guidance: as a fraction of total equity, this caps your
-    // absolute worst-case drawdown. 1/3 of bankroll is a conservative
-    // bound; 1/2 is moderate; full bankroll = no protection.
-    maxGrossPortfolioRisk: parseFloat(process.env.MAX_GROSS_PORTFOLIO_RISK) || 0,
+    // (Removed 2026-05-13) MAX_GROSS_PORTFOLIO_RISK — operator confirmed
+    // the per-team / per-game / per-player concentration caps cover the
+    // intended risk control, and a portfolio-wide gross-stake ceiling was
+    // throttling fully-diversified quoting at peak hours. Per-team etc.
+    // caps still active in checkExposureLimits / checkGameExposure /
+    // checkPlayerExposure. Re-add this field if absolute-tail bounding is
+    // ever needed again.
     // Per-event aggregate cap. Sums SP-risk across ALL legs touching one
     // pxEventId (regardless of team or market), preventing two-sided
     // event stacking that the per-team cap can't see — e.g. Lakers spread

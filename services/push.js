@@ -321,7 +321,7 @@ function notifySettlement(order) {
 
 /**
  * Send notification when an exposure cap blocks an RFQ.
- * Categories: 'team', 'player', 'game', 'parlay_risk', 'portfolio'.
+ * Categories: 'team', 'player', 'game', 'parlay_risk'.
  * Debounced 5 min per (cap_type) so a fast RFQ flow doesn't spam.
  */
 function notifyCapHit(capType, details) {
@@ -346,10 +346,6 @@ function notifyCapHit(capType, details) {
     case 'parlay_risk':
       title = `Parlay Risk Cap`;
       body = `Single-parlay risk ${current} > ${limit}`;
-      break;
-    case 'portfolio':
-      title = `Portfolio Drawdown`;
-      body = `Open exposure hit drawdown limit ${limit}`;
       break;
     default:
       title = `Cap Hit: ${capType}`;

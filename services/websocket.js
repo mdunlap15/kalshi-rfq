@@ -1489,27 +1489,6 @@ async function handleConfirm(data) {
       return;
     }
 
-    // Portfolio gross-risk hard cap. Bounds absolute worst-case loss if
-    // every open parlay hits. Re-checked at confirm time so a race
-    // between many concurrent quotes confirming doesn't push us past the
-    // ceiling. Off when maxGrossPortfolioRisk is unset / 0.
-    const portfolioCap = config.pricing.maxGrossPortfolioRisk;
-    if (portfolioCap > 0) {
-      const portfolioCheck = orderTracker.checkPortfolioRisk(ourRisk, portfolioCap);
-      if (!portfolioCheck.allowed) {
-        const reason = `portfolio gross cap: $${(portfolioCheck.current + portfolioCheck.additional).toFixed(0)} > $${portfolioCheck.limit}`;
-        log.warn('Confirm', `Rejecting: ${reason}`);
-        orderTracker.recordRejection(parlayId, reason);
-        orderTracker.recordExposureRejection(parlayId, ourRisk, 'portfolio gross limit', [{
-          team: 'portfolio', wouldBe: portfolioCheck.current + portfolioCheck.additional, limit: portfolioCheck.limit,
-        }]);
-        if (callbackUrl) {
-          await px.confirmOrder(callbackUrl, orderUuid, 'reject');
-        }
-        return;
-      }
-    }
-
     // Series gross-exposure re-check. Same rationale as the team check:
     // a race between quote and confirm could push a series event over
     // the $1K cap. Uses actual ourRisk now that the stake is known.

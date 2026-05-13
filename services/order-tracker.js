@@ -781,7 +781,6 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
     order.confirmedOdds = confirmedOdds;
     order.confirmedStake = confirmedStake;
     order.orderUuid = orderUuid;
-    _invalidatePortfolioRiskCache();
 
     // Compute Expected Value at confirmation time (SP perspective):
     //   EV = P(bettor_loses) * bettor_wager   - P(bettor_wins) * confirmedStake
@@ -1002,7 +1001,6 @@ function importPxBookedOrder(parlayId, orderUuid, confirmedStake, confirmedOdds)
   if (orderUuid) order.orderUuid = orderUuid;
   if (confirmedStake != null && Number.isFinite(+confirmedStake)) order.confirmedStake = +confirmedStake;
   if (confirmedOdds != null && Number.isFinite(+confirmedOdds)) order.confirmedOdds = +confirmedOdds;
-  _invalidatePortfolioRiskCache();
 
   // Clear rejection metadata so the startup self-heal at loadFromDb()
   // doesn't demote this order back to rejected on the next restart.
@@ -1332,7 +1330,6 @@ function recordSettlement(orderUuid, result, payout, opts = {}) {
     removeExposure(order);
 
     order.status = `settled_${result}`;
-    _invalidatePortfolioRiskCache();
     log.info('Orders', `Settled: order=${orderUuid}, result=${result}, pnl=$${order.pnl?.toFixed(2)}, running=$${stats.runningPnL.toFixed(2)}`);
     // Critical — log errors on settlement saves so we never silently lose a settled order
     db.saveOrder(order).catch(err => log.error('DB', `CRITICAL: saveOrder(settlement) failed for ${order.parlayId}: ${err.message}`));
@@ -2672,37 +2669,12 @@ function getTotalPortfolioRisk() {
   return total;
 }
 
-// TTL-cached variant for the RFQ hot path. The uncached version walks
-// Object.values(orders) (up to 200k entries after Supabase hydration) and
-// calls isOrderStalePhantom per confirmed row — measured at 2.22-2.70ms
-// p50 per call. Mike enabled MAX_GROSS_PORTFOLIO_RISK=15000 so this
-// check fires on every RFQ; previously a no-op early return.
-//
-// TTL evolution:
-//   250ms — too short; inter-RFQ gap ~4-60s always expired the cache
-//   30s   — covered peak burst but missed at low traffic (1 RFQ/100s)
-//   5 min — current. Explicit invalidation hooks on all 4 status='confirmed'
-//           transitions, settlement, and admin-delete handle correctness;
-//           the TTL is just a backstop for phantom-aging drift (12h cutoff).
-//
-// Drift bound: between manual invalidations only phantom-aging changes the
-// answer, and phantom transitions happen on the 12h scale — 5min is noise.
-let _portfolioRiskCache = null; // { fetchedAt: number, value: number }
-const PORTFOLIO_RISK_CACHE_TTL_MS = 5 * 60 * 1000;
-
-function getTotalPortfolioRiskCached() {
-  const now = Date.now();
-  if (_portfolioRiskCache && (now - _portfolioRiskCache.fetchedAt) < PORTFOLIO_RISK_CACHE_TTL_MS) {
-    return _portfolioRiskCache.value;
-  }
-  const value = getTotalPortfolioRisk();
-  _portfolioRiskCache = { fetchedAt: now, value };
-  return value;
-}
-
-function _invalidatePortfolioRiskCache() {
-  _portfolioRiskCache = null;
-}
+// (Removed 2026-05-13) getTotalPortfolioRiskCached + invalidation hooks.
+// These existed to keep the per-RFQ checkPortfolioRisk call cheap when
+// MAX_GROSS_PORTFOLIO_RISK was enabled. The cap was removed; the cache
+// + 6 invalidation sites are now dead. getTotalPortfolioRisk (uncached)
+// is still used by /status for Deployed display — that's fine, it's
+// not on the RFQ hot path.
 
 /**
  * Sum of SP profit across all live (non-phantom) confirmed orders.
@@ -2719,24 +2691,6 @@ function getTotalToWin() {
     if (stake > 0 && odds >= 100) total += stake * 100 / odds;
   }
   return total;
-}
-
-/**
- * Check if adding a new parlay would exceed the portfolio drawdown limit.
- * @param {number} additionalRisk - payout of the new parlay
- * @param {number} maxDrawdown - max allowed total portfolio risk
- * @returns {{ allowed: boolean, current: number, limit: number }}
- */
-function checkPortfolioRisk(additionalRisk, maxDrawdown) {
-  if (!maxDrawdown || maxDrawdown <= 0) return { allowed: true, current: 0, limit: 0 };
-  // Hot path: TTL-cached read. Walks 200k orders + per-order date parses
-  // when uncached, so caching brings per-RFQ cost from ~1-2ms down to a
-  // hash-lookup.
-  const current = getTotalPortfolioRiskCached();
-  if (current + additionalRisk > maxDrawdown) {
-    return { allowed: false, current, additional: additionalRisk, limit: maxDrawdown };
-  }
-  return { allowed: true, current, limit: maxDrawdown };
 }
 
 function findByOrderUuid(uuid) {
@@ -4358,7 +4312,6 @@ async function pollOrderSettlements(px) {
         stats.totalSettlements--;
         order.status = 'confirmed';
         order.pnl = null;
-        _invalidatePortfolioRiskCache();
       }
 
       // Backfill stake/odds from PX if missing (critical for recovering lost settlements)
@@ -5137,7 +5090,6 @@ async function fullPxReconcile(px) {
     if (order.status?.startsWith('settled_')) {
       order.status = 'confirmed';
       order.pnl = null;
-      _invalidatePortfolioRiskCache();
     }
 
     // Record the settlement. recordSettlement will update status, pnl,
@@ -5514,7 +5466,6 @@ async function deleteUnknownSettledOrders() {
     // Remove from in-memory stores
     if (order.orderUuid) delete ordersByUuid[order.orderUuid];
     delete orders[parlayId];
-    _invalidatePortfolioRiskCache();
     parlayIds.push(parlayId);
     deleted++;
   }
@@ -5571,7 +5522,6 @@ async function deleteOrdersByParlayIds(parlayIds) {
     }
     if (order.orderUuid) delete ordersByUuid[order.orderUuid];
     delete orders[parlayId];
-    _invalidatePortfolioRiskCache();
     found.push(parlayId);
     deleted++;
   }
@@ -6113,7 +6063,6 @@ module.exports = {
   // that getTotalPortfolioRisk uses — keeps the Open Positions table's
   // sum of My Risk aligned with the Deployed figure on the dashboard.
   isOrderStalePhantom,
-  checkPortfolioRisk,
   getGameExposureSnapshot,
   checkGameExposure,
   getSeriesEventRisk,
