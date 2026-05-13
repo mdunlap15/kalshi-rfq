@@ -855,11 +855,30 @@
          support the Notifications/Push APIs or the user is already
          subscribed. Tap → request permission → POST to /push/subscribe. -->
     <button id="viewer-notif-btn" onclick="toggleViewerNotifications()" style="display:none; background:transparent; border:1px solid var(--border); color:var(--text); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-family:inherit; -webkit-appearance:none; appearance:none;" title="Toggle push notifications for new fills + settlements">🔔 Enable</button>
+    <!-- Per-category notification settings. Visible only once the device
+         is subscribed (the bell shows "🔔 On"); flips the per-category
+         mute popover open/closed. Each toggle persists to localStorage
+         + POSTs the mute list to /push/mute-prefs so the server filters
+         before sending. -->
+    <button id="viewer-notif-settings-btn" onclick="toggleViewerNotifSettings()" style="display:none; background:transparent; border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:4px; font-size:13px; cursor:pointer; font-family:inherit; -webkit-appearance:none; appearance:none;" title="Notification settings">&#9881;</button>
     <!-- Sign-out: HTTP Basic Auth credentials are cached by the browser
          until the tab/process closes. There's no clean server-side
          logout. Closing the tab signs out. -->
   </div>
 </header>
+
+<!-- Notification settings popover. Position fixed under the header, right-
+     aligned to the gear button. Toggles persist to localStorage; each flip
+     also POSTs the full muted-category list to /push/mute-prefs so the
+     server-side filter sees the current state. -->
+<div id="viewer-notif-settings-popover" style="display:none; position:fixed; top:56px; right:8px; z-index:1000; background:var(--surface2); border:1px solid var(--border); border-radius:8px; box-shadow:0 4px 20px rgba(0,0,0,0.4); padding:12px; min-width:280px; max-width:92vw;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+    <div style="font-weight:600; font-size:13px; color:var(--text);">Notification settings</div>
+    <button onclick="closeViewerNotifSettings()" style="background:transparent; border:0; color:var(--text2); font-size:18px; cursor:pointer; padding:0 4px; -webkit-appearance:none; appearance:none;" title="Close">&times;</button>
+  </div>
+  <div id="viewer-notif-cats-list" style="font-size:12px;"></div>
+  <div style="font-size:10px; color:var(--text3); margin-top:8px; line-height:1.4;">Disabling a category stops the server from sending that type of push. Re-enabling syncs immediately.</div>
+</div>
 
 <main class="viewer-main" id="viewer-main">
   <!-- Pull-to-refresh indicator. Height animates from 0 → ~60px as the
@@ -12898,7 +12917,120 @@
     btn.style.color = 'var(--text)';
     btn.style.borderColor = 'var(--border)';
     btn.title = 'Click to enable push notifications for new fills + settlements';
+    // Hide the gear button — settings only meaningful when subscribed.
+    const sBtn = document.getElementById('viewer-notif-settings-btn');
+    if (sBtn) sBtn.style.display = 'none';
+    closeViewerNotifSettings();
   }
+
+  // -------------------------------------------------------------------------
+  // Per-category notification settings. Lets the user mute specific categories
+  // (e.g. "I want fills but not cap-hits"). Mirrors client/app.html's pattern
+  // but lives in a popover instead of a full Settings screen since viewer.html
+  // doesn't have a settings page. Persists to localStorage and POSTs the mute
+  // list to /push/mute-prefs — the server is the authoritative filter (the
+  // service worker no longer reads its own copy after the iOS PWA-update
+  // reliability issues).
+  // -------------------------------------------------------------------------
+  const VIEWER_NOTIFY_CATEGORIES = [
+    { key: 'confirmation',  label: 'Parlay confirmed',  desc: 'New parlay accepted' },
+    { key: 'settlement',    label: 'Parlay settled',    desc: 'Won / Lost / Push' },
+    { key: 'cap_hit',       label: 'Exposure cap hit',  desc: 'Team / player / game / portfolio' },
+    { key: 'connection',    label: 'Connection state',  desc: 'Disconnect / reconnect / pause' },
+    { key: 'daily_summary', label: 'Daily summary',     desc: 'End-of-day P&L wrap' },
+  ];
+  const VIEWER_MUTE_LS_KEY = 'viewer.notif.muted';
+
+  function _getViewerMutedSet() {
+    try {
+      const raw = localStorage.getItem(VIEWER_MUTE_LS_KEY);
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw);
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch { return new Set(); }
+  }
+  function _saveViewerMutedSet(set) {
+    try { localStorage.setItem(VIEWER_MUTE_LS_KEY, JSON.stringify([...set])); } catch {}
+  }
+  // POST the current mute list to the server. Best-effort — if the call
+  // fails the local toggle still applies for next time. Called on every
+  // flip plus once after a fresh subscribe (so a brand-new device picks
+  // up the prior prefs immediately).
+  async function _syncViewerMutePrefs() {
+    try {
+      const reg = await navigator.serviceWorker.getRegistration('/viewer');
+      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      if (!sub) return;
+      const muted = [...(_getViewerMutedSet())];
+      await fetch('/push/mute-prefs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: sub.endpoint, mutedCategories: muted }),
+      });
+    } catch (e) {
+      console.warn('[viewer push] mute-prefs sync failed:', e);
+    }
+  }
+  window._syncViewerMutePrefs = _syncViewerMutePrefs;
+
+  function _renderViewerNotifCats() {
+    const muted = _getViewerMutedSet();
+    const host = document.getElementById('viewer-notif-cats-list');
+    if (!host) return;
+    let html = '';
+    for (const c of VIEWER_NOTIFY_CATEGORIES) {
+      const enabled = !muted.has(c.key);
+      html += '<label style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0; border-bottom:1px solid var(--border); cursor:pointer;">';
+      html += '<span style="flex:1;">';
+      html += '<div style="color:var(--text); font-weight:500;">' + c.label + '</div>';
+      html += '<div style="color:var(--text3); font-size:10px; margin-top:2px;">' + c.desc + '</div>';
+      html += '</span>';
+      html += '<input type="checkbox" ' + (enabled ? 'checked' : '')
+        + ' data-cat="' + c.key + '"'
+        + ' onchange="onViewerNotifCatToggle(this)"'
+        + ' style="width:18px; height:18px; cursor:pointer; accent-color:var(--accent);">';
+      html += '</label>';
+    }
+    host.innerHTML = html;
+  }
+
+  window.onViewerNotifCatToggle = function(input) {
+    const cat = input.getAttribute('data-cat');
+    const enabled = input.checked;
+    const set = _getViewerMutedSet();
+    if (enabled) set.delete(cat); else set.add(cat);
+    _saveViewerMutedSet(set);
+    _syncViewerMutePrefs();
+  };
+
+  window.toggleViewerNotifSettings = function() {
+    const pop = document.getElementById('viewer-notif-settings-popover');
+    if (!pop) return;
+    if (pop.style.display === 'none') {
+      _renderViewerNotifCats();
+      pop.style.display = 'block';
+    } else {
+      pop.style.display = 'none';
+    }
+  };
+  window.closeViewerNotifSettings = function() {
+    const pop = document.getElementById('viewer-notif-settings-popover');
+    if (pop) pop.style.display = 'none';
+  };
+
+  // Wire the gear button visibility into _setNotifBtnOn. Done as a wrapper
+  // hook so the original function stays compact and the gear-button logic
+  // colocates with the rest of the settings code.
+  const _origSetNotifBtnOn = _setNotifBtnOn;
+  _setNotifBtnOn = function(btn) {
+    _origSetNotifBtnOn(btn);
+    const sBtn = document.getElementById('viewer-notif-settings-btn');
+    if (sBtn) sBtn.style.display = 'inline-block';
+    // Sync local mute prefs to the server on every (re)subscribe — covers
+    // the case where the local set has entries but the server doesn't yet
+    // (fresh subscribe, or a redeploy that wiped the server's mute map).
+    _syncViewerMutePrefs();
+  };
 
   // VAPID public keys are URL-safe base64 — convert to Uint8Array for the
   // PushManager. Standard helper from web-push docs.
@@ -12938,6 +13070,19 @@
       }
     } catch (_) { /* default text already set */ }
   }
+
+  // Auto-close the notification settings popover when the user clicks
+  // anywhere outside it (or outside the gear button itself). Tap-outside-
+  // to-dismiss is the standard mobile pattern; without this the popover
+  // sticks open until the explicit × close.
+  document.addEventListener('click', function(e) {
+    const pop = document.getElementById('viewer-notif-settings-popover');
+    if (!pop || pop.style.display === 'none') return;
+    const gearBtn = document.getElementById('viewer-notif-settings-btn');
+    if (pop.contains(e.target)) return;
+    if (gearBtn && gearBtn.contains(e.target)) return;
+    pop.style.display = 'none';
+  });
 
   // Clear the home-screen icon badge when the viewer becomes visible —
   // tells the SW to call navigator.clearAppBadge.
