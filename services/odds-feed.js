@@ -5493,14 +5493,37 @@ const _pinVerifyCache = {};
 const _pinVerifyInFlight = {};
 const PIN_VERIFY_TTL_MS = 30 * 1000;
 
+// Stretched TTL accepted for the fast-fail path. The PIN_VERIFY_TTL_MS (30s)
+// is the threshold for "definitely fresh"; entries older than that but
+// under FAST_FAIL_STALE_OK_MS (10 min) are served back if the warmer
+// is mid-fetch — better than blocking the RFQ for a TOA RTT.
+const PIN_VERIFY_FAST_FAIL_STALE_OK_MS = 10 * 60 * 1000;
+let _pinVerifyFastFailStats = { stale_served: 0, miss_skipped: 0, hits: 0 };
+
 async function _fetchPinVerifyEvents(oddsApiSport, market, theOddsApiKey) {
   const cacheKey = oddsApiSport + '|' + market;
   const cached = _pinVerifyCache[cacheKey];
-  if (cached && (Date.now() - cached.fetchedAt) < PIN_VERIFY_TTL_MS) {
+  const now = Date.now();
+  if (cached && (now - cached.fetchedAt) < PIN_VERIFY_TTL_MS) {
+    _pinVerifyFastFailStats.hits++;
     return cached.events;
   }
   // Coalesce concurrent fetches on the same key.
   if (_pinVerifyInFlight[cacheKey]) {
+    // 2026-05-13: don't await an in-flight fetch on the RFQ hot path. If
+    // the warmer / a sibling RFQ already kicked off a fetch, we serve
+    // stale-or-null and let the in-flight request populate cache for the
+    // NEXT call. The await was costing 30-55ms p95 phase2 stalls on MLB/
+    // NHL verify (sports that ARE in the always-warm set but where the
+    // cycle hadn't completed before this RFQ landed).
+    if (process.env.PINNACLE_VERIFY_FAST_FAIL_ON_MISS !== '0') {
+      if (cached && (now - cached.fetchedAt) < PIN_VERIFY_FAST_FAIL_STALE_OK_MS) {
+        _pinVerifyFastFailStats.stale_served++;
+        return cached.events;
+      }
+      _pinVerifyFastFailStats.miss_skipped++;
+      return null; // verifyLineWithPinnacle falls through to { ok: true } allow
+    }
     return _pinVerifyInFlight[cacheKey];
   }
   const url = `https://api.the-odds-api.com/v4/sports/${oddsApiSport}/odds`
@@ -5524,8 +5547,25 @@ async function _fetchPinVerifyEvents(oddsApiSport, market, theOddsApiKey) {
     }
   })();
   _pinVerifyInFlight[cacheKey] = promise;
+  // 2026-05-13 hot-path bypass: don't await the fresh fetch — fire and
+  // forget so the cache populates for the NEXT RFQ. Serve stale data if
+  // we have it (within FAST_FAIL_STALE_OK_MS), else return null which
+  // verifyLineWithPinnacle treats as "allow (can't verify)". The verify
+  // is a safety check for >1pt line drift; accepting a 30s-10min stale
+  // view is preferable to losing the auction by waiting 40ms.
+  if (process.env.PINNACLE_VERIFY_FAST_FAIL_ON_MISS !== '0') {
+    promise.catch(() => { /* warm-only; ignore errors */ });
+    if (cached && (now - cached.fetchedAt) < PIN_VERIFY_FAST_FAIL_STALE_OK_MS) {
+      _pinVerifyFastFailStats.stale_served++;
+      return cached.events;
+    }
+    _pinVerifyFastFailStats.miss_skipped++;
+    return null;
+  }
   return promise;
 }
+
+function getPinVerifyFastFailStats() { return { ..._pinVerifyFastFailStats }; }
 
 async function verifyLineWithPinnacle(sport, homeTeam, awayTeam, marketType, cachedLine) {
   const theOddsApiKey = process.env.THE_ODDS_API_KEY;
@@ -8405,6 +8445,7 @@ module.exports = {
   getJitWarmStats,
   getSupplementRetryStats,
   getPinVerifyWarmStats,
+  getPinVerifyFastFailStats,
   getEventMarkets,
   getGolfMatchupEvent,
   getLiveEventMarkets,
