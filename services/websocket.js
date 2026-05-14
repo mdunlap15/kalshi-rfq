@@ -710,17 +710,42 @@ async function handleRFQ(data) {
 
     // Attempt on-demand resolution of any unknown lines where the event IS known
     // (e.g., alt spreads/totals not pre-registered at startup).
+    //
+    // Two modes:
+    //   - inline (default, config.pricing.resolveInlineOnRfq=true):
+    //     AWAIT the resolution promises so we can quote this RFQ once the
+    //     line is resolved. Costs ~50-150ms per slow resolve.
+    //   - fast (resolveInlineOnRfq=false): kick off resolution
+    //     async (fire-and-forget) and continue immediately. This RFQ
+    //     will likely decline as unknown_legs, but the cache gets
+    //     warmed for the next RFQ on the same line. Trade ~5% miss
+    //     rate (first hit on each new line) for ~95ms p95 latency win.
     const lineManagerEarly = require('./line-manager');
     const unknownAtStart = legs.filter(l => {
       const lid = l.line_id || l.lineId || l;
       return !lineManagerEarly.lookupLine(lid);
     });
     if (unknownAtStart.length > 0) {
-      const resolvePromises = unknownAtStart.map(leg => lineManagerEarly.resolveUnknownLine(leg));
-      const resolved = await Promise.all(resolvePromises);
-      const resolvedCount = resolved.filter(Boolean).length;
-      if (resolvedCount > 0) {
-        log.info('RFQ', `On-demand resolved ${resolvedCount}/${unknownAtStart.length} unknown lines for parlay=${parlayId}`);
+      if (config.pricing.resolveInlineOnRfq === false) {
+        // Fast mode — kick off async, don't await.
+        for (const leg of unknownAtStart) {
+          // Promise rejection handler to prevent unhandled-rejection
+          // log spam; the resolver already records per-lineId failures
+          // via _recordResolveFailure so we don't need the return value.
+          lineManagerEarly.resolveUnknownLine(leg).catch(err => {
+            log.debug('Resolve', `async resolve failed: ${err.message}`);
+          });
+        }
+        // No log line — this fires on every RFQ with unknown legs
+        // (high volume), so muting it keeps stdout clean.
+      } else {
+        // Legacy inline mode — await each resolution.
+        const resolvePromises = unknownAtStart.map(leg => lineManagerEarly.resolveUnknownLine(leg));
+        const resolved = await Promise.all(resolvePromises);
+        const resolvedCount = resolved.filter(Boolean).length;
+        if (resolvedCount > 0) {
+          log.info('RFQ', `On-demand resolved ${resolvedCount}/${unknownAtStart.length} unknown lines for parlay=${parlayId}`);
+        }
       }
     }
     stageTimings.resolve = elapsedMs();

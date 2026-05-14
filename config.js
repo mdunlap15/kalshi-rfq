@@ -235,6 +235,22 @@ const config = {
       if (Number.isFinite(explicit) && explicit >= 0) return explicit;
       return parseInt(process.env.TEMPLATE_RAMP_COOLDOWN_SECONDS) || 60;
     })(),
+    // On-demand line resolution at RFQ time.
+    // TRUE  (default, legacy): when an RFQ has legs we haven't seeded,
+    //   AWAIT resolveUnknownLine() for each unknown leg before pricing.
+    //   This lets us quote the RFQ if the resolve succeeds — but it costs
+    //   ~50-150ms inline per slow resolve, which loses timestamp
+    //   tiebreakers against SPs whose cache is warm.
+    // FALSE (fast mode): KICK OFF resolveUnknownLine() async (fire-and-
+    //   forget) so the cache gets warmed for the NEXT RFQ on the same
+    //   line, but DECLINE this RFQ immediately (no inline wait). p95
+    //   latency drops from ~96ms to <5ms; we miss the very first RFQ
+    //   on each new line as unknown_legs, but subsequent RFQs on the
+    //   same line price normally once the async resolve completes.
+    //
+    // Set RESOLVE_INLINE_ON_RFQ=false to enable fast mode.
+    resolveInlineOnRfq:
+      process.env.RESOLVE_INLINE_ON_RFQ !== 'false' && process.env.RESOLVE_INLINE_ON_RFQ !== '0',
     // Large-parlay team freeze: when a confirmed parlay's SP-side stake
     // exceeds `largeParlayFreezeSize`, freeze every team in that parlay
     // for `largeParlayFreezeSeconds`. New RFQs touching any of those
