@@ -1106,6 +1106,176 @@ function startStatusServer() {
     }
   });
 
+  // Risk-threshold declines — focused view on RFQs we declined because
+  // they would exceed a configured cap (team / game / per-parlay risk /
+  // series / pitcher / player / cooldown / freeze / disabled). Excludes
+  // upstream-filtering declines (unknown legs, event started, etc).
+  //
+  // Returns: per-reason counts (today + 1h + 15m), top entities being
+  // throttled, recent samples for context, and the configured limits so
+  // a live console tracker can correlate "wouldBe: $X / max: $Y" against
+  // the current ceiling.
+  //
+  // Counts come from Supabase declines table (today). Entity aggregation
+  // + recent samples come from the in-memory recentDeclineEvents buffer
+  // (rolling, ~last few hours of high-volume traffic).
+  app.get('/risk-declines', async (req, res) => {
+    try {
+      // Reasons that map to operator-configured risk thresholds.
+      // (As opposed to upstream filters like 'unknown legs' / 'event started'.)
+      const RISK_REASONS = [
+        'team exposure limit',
+        'game exposure limit',
+        'series exposure limit',
+        'per-parlay risk cap',
+        'max risk exceeded',
+        'manually_disabled',
+        'template_cap',
+        'template_cooldown',
+        'team_cooldown',
+        'large_team_freeze',
+        'pitcher exposure',
+        'player exposure',
+        'too many legs',
+      ];
+
+      // Today-start in UTC (midnight ET, handles DST via Intl).
+      const now = new Date();
+      const etFmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+      });
+      const parts = Object.fromEntries(etFmt.formatToParts(now)
+        .filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+      const etH = parseInt(parts.hour), etM = parseInt(parts.minute), etS = parseInt(parts.second);
+      const msSinceEtMidnight = ((etH * 60 + etM) * 60 + etS) * 1000 + now.getMilliseconds();
+      const todayStart = new Date(now.getTime() - msSinceEtMidnight);
+      const todayStartIso = todayStart.toISOString();
+
+      // 1. Today counts per reason via Supabase head-count
+      const sb = db.getClient();
+      const todayByReason = {};
+      if (sb) {
+        const counts = await Promise.all(RISK_REASONS.map(async (reason) => {
+          const { count, error } = await sb.from('declines')
+            .select('*', { count: 'exact', head: true })
+            .eq('reason', reason)
+            .gte('declined_at', todayStartIso);
+          return { reason, count: error ? 0 : (count || 0) };
+        }));
+        for (const { reason, count } of counts) todayByReason[reason] = count;
+      }
+
+      // 2. In-memory recentDeclineEvents — for entities + recent samples.
+      const intel = orderTracker.getMarketIntel(10000);
+      const events = (intel.declines && intel.declines.recentDeclineEvents) || [];
+
+      const nowMs = Date.now();
+      const w15  = nowMs - 15 * 60 * 1000;
+      const w1h  = nowMs - 60 * 60 * 1000;
+      const tStart = todayStart.getTime();
+
+      // Per-reason rolling-window counts (in-memory)
+      const memCounts = {};       // reason → { c15m, c1h, cToday }
+      const byTeam   = {};        // team name → count
+      const byGame   = {};        // game name → count
+      const byPlayer = {};        // player name → count
+      const recentSamples = {};   // reason → [last 5 events]
+      let recentList = [];
+
+      for (const ev of events) {
+        if (!RISK_REASONS.includes(ev.reason)) continue;
+        const t = new Date(ev.time).getTime();
+        if (!Number.isFinite(t)) continue;
+        if (t < tStart) continue;
+        if (!memCounts[ev.reason]) memCounts[ev.reason] = { c15m: 0, c1h: 0, cToday: 0 };
+        memCounts[ev.reason].cToday++;
+        if (t >= w1h) memCounts[ev.reason].c1h++;
+        if (t >= w15) memCounts[ev.reason].c15m++;
+        // Per-reason sample (last 5)
+        if (!recentSamples[ev.reason]) recentSamples[ev.reason] = [];
+        if (recentSamples[ev.reason].length < 5) recentSamples[ev.reason].push({
+          time: ev.time, parlayId: ev.parlayId, detail: ev.detail,
+        });
+        // Extract entity from detail string. Patterns we record:
+        //   "exceeded: <Team> ($current/$max)"   → team
+        //   "Game \"<Name>\" net $a + pending $b" → game
+        //   "<Player> (<Event>) — manually disabled" → player or team
+        const d = ev.detail || '';
+        let m = d.match(/exceeded:\s*([^(]+)\s*\(/);
+        if (m) {
+          const name = m[1].trim();
+          byTeam[name] = (byTeam[name] || 0) + 1;
+        }
+        m = d.match(/Game\s*"([^"]+)"/);
+        if (m) byGame[m[1]] = (byGame[m[1]] || 0) + 1;
+        // freeze records: "large_team_freeze: \"<Team>\" frozen after $X parlay"
+        m = d.match(/large_team_freeze:\s*"([^"]+)"/);
+        if (m) byTeam[m[1]] = (byTeam[m[1]] || 0) + 1;
+        // cooldown records: "team_cooldown: \"<Team>\" confirmed..."
+        m = d.match(/team_cooldown:\s*"([^"]+)"/);
+        if (m) byTeam[m[1]] = (byTeam[m[1]] || 0) + 1;
+        // Pitcher/player exposure: detail often has the player name
+        m = d.match(/Pitcher\s+([^:]+?)\s*\(/) || d.match(/Player\s+([^:]+?)\s*\(/);
+        if (m) byPlayer[m[1].trim()] = (byPlayer[m[1].trim()] || 0) + 1;
+
+        recentList.push({
+          time: ev.time,
+          parlayId: ev.parlayId,
+          reason: ev.reason,
+          detail: ev.detail,
+          legCount: (ev.knownLegs || []).length + (ev.unknownCategories || []).length,
+        });
+      }
+      recentList.sort((a, b) => new Date(b.time) - new Date(a.time));
+
+      const topTeams  = Object.entries(byTeam).sort((a, b) => b[1] - a[1]).slice(0, 15);
+      const topGames  = Object.entries(byGame).sort((a, b) => b[1] - a[1]).slice(0, 10);
+      const topPlayers = Object.entries(byPlayer).sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+      // Build combined per-reason summary
+      const reasons = {};
+      for (const r of RISK_REASONS) {
+        const mem = memCounts[r] || { c15m: 0, c1h: 0, cToday: 0 };
+        reasons[r] = {
+          today: todayByReason[r] || 0,   // authoritative (Supabase)
+          today_mem: mem.cToday,          // in-memory (for cross-check)
+          last1h: mem.c1h,                // in-memory only
+          last15m: mem.c15m,              // in-memory only
+          samples: recentSamples[r] || [],
+        };
+      }
+
+      res.json({
+        ok: true,
+        asOfUtc: new Date().toISOString(),
+        todayStartUtc: todayStartIso,
+        configuredLimits: {
+          MAX_EXPOSURE_PER_TEAM: config.pricing.maxExposurePerTeam,
+          MAX_RAW_EXPOSURE_PER_TEAM: config.pricing.maxRawExposurePerTeam,
+          MAX_EXPOSURE_PER_GAME: config.pricing.maxExposurePerGame,
+          MAX_RISK_PER_PARLAY: config.pricing.maxRiskPerParlay,
+          MAX_RISK_PER_PARLAY_WITH_PROP: config.pricing.maxRiskPerParlayWithProp,
+          MAX_SERIES_RISK_PER_PARLAY: config.pricing.maxSeriesRiskPerParlay,
+          MAX_EXPOSURE_PER_PLAYER_DEFAULT: config.pricing.maxExposurePerPlayerDefault,
+          MAX_LEGS: config.pricing.maxLegs,
+          PENDING_RESERVATION_DISCOUNT: config.pricing.pendingReservationDiscount,
+          LARGE_PARLAY_FREEZE_SIZE: config.pricing.largeParlayFreezeSize,
+          LARGE_PARLAY_FREEZE_SECONDS: config.pricing.largeParlayFreezeSeconds,
+          TEMPLATE_RAMP_COOLDOWN_SECONDS: config.pricing.templateRampCooldownSeconds,
+          TEAM_COOLDOWN_SECONDS: config.pricing.teamCooldownSeconds,
+        },
+        reasons,
+        topTeams,
+        topGames,
+        topPlayers,
+        recent: recentList.slice(0, 30),
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    }
+  });
+
   // Balance
   app.get('/balance', async (req, res) => {
     try {
