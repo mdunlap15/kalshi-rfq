@@ -1489,6 +1489,18 @@ async function handleConfirm(data) {
         }
         return;
       }
+      // Large-parlay team freeze — stricter than the cooldown above.
+      // Set by a recent confirm with stake ≥ LARGE_PARLAY_FREEZE_SIZE.
+      // Cleared via /admin/clear-team-freeze when operator OKs more exposure.
+      const freeze = templateExposure.checkLargeTeamFreeze(legsForTemplate, parlayId, null, { source: 'confirm' });
+      if (freeze.block) {
+        log.warn('Confirm', `Rejecting: ${freeze.reason} (parlay=${parlayId.substring(0, 8)})`);
+        orderTracker.recordRejection(parlayId, freeze.reason);
+        if (callbackUrl) {
+          await px.confirmOrder(callbackUrl, orderUuid, 'reject');
+        }
+        return;
+      }
     } catch (err) {
       // Don't break the confirm path on template-exposure errors —
       // log and continue. Worst case: rapid-duplicate squeaks through.

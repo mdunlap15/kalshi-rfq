@@ -186,6 +186,41 @@ function recordConfirmation(legs, parlayId, stake, confirmedAt = null) {
       _lastConfirmedAtByTeam.set(tk, { confirmedAt: ts, parlayId });
     }
   }
+
+  // Large-parlay team freeze. When the confirmed parlay's SP-stake meets
+  // or exceeds largeParlayFreezeSize AND a positive freeze window is
+  // configured, stamp a freeze record on EVERY team in the parlay so
+  // subsequent RFQs touching any of those teams are declined until the
+  // window expires or the operator clears the freeze manually.
+  //
+  // This is a separate dimension from _lastConfirmedAtByTeam:
+  //   - The cooldown map fires for every confirm (size-agnostic).
+  //   - The freeze map fires only for confirms ≥ threshold, with a
+  //     typically longer window — gives the operator a review pause.
+  const freezeSize = config.pricing.largeParlayFreezeSize || 0;
+  const freezeSec  = config.pricing.largeParlayFreezeSeconds || 0;
+  if (freezeSize > 0 && freezeSec > 0 && stake >= freezeSize) {
+    const frozenUntil = ts + freezeSec * 1000;
+    for (const leg of legs) {
+      const team = leg.team || leg.teamName || '';
+      const tk = normalizeTeam(team);
+      if (!tk || tk === '?') continue;
+      const existing = _largeFreezeByTeam.get(tk);
+      // Extend (not replace) — if a later larger confirm lands, the new
+      // frozenUntil might be further out. Keep the FURTHER one.
+      if (!existing || existing.frozenUntil < frozenUntil) {
+        _largeFreezeByTeam.set(tk, {
+          team, parlayId, stake,
+          confirmedAt: ts,
+          frozenUntil,
+        });
+      }
+    }
+    _stats.largeFreezeStamps = (_stats.largeFreezeStamps || 0) + 1;
+    _stats.lastLargeFreezeAt = new Date(ts).toISOString();
+    _stats.lastLargeFreezeParlayId = parlayId;
+    _stats.lastLargeFreezeStake = stake;
+  }
 }
 
 // Per-team last-confirmed map. Independent dimension from the signature-
@@ -198,6 +233,13 @@ function recordConfirmation(legs, parlayId, stake, confirmedAt = null) {
 // seasons). No pruning needed — stale entries are cheap and the
 // cooldown check naturally ignores anything past cooldownSec.
 const _lastConfirmedAtByTeam = new Map(); // teamKey -> { confirmedAt, parlayId }
+// Per-team LARGE-parlay freeze map. Populated by recordConfirmation only
+// when the confirming parlay's SP-stake exceeds largeParlayFreezeSize.
+// Entry: { team, parlayId, stake, confirmedAt, frozenUntil }
+// Checked by checkLargeTeamFreeze on quote AND confirm paths.
+// Lives in-memory only — restart clears all freezes (matches the
+// review-pause semantics: a restart is a fresh start).
+const _largeFreezeByTeam = new Map(); // teamKey -> { team, parlayId, stake, confirmedAt, frozenUntil }
 
 /**
  * Per-team cooldown check. Returns { block: true, ... } if any team in
@@ -248,6 +290,106 @@ function checkTeamCooldown(legs, parlayId, nowMs = null, opts = {}) {
     }
   }
   return { block: false, reason: null };
+}
+
+/**
+ * Large-parlay team freeze check. Returns { block: true, ... } if any team
+ * in `legs` is currently frozen because a recent confirmed parlay's stake
+ * exceeded `largeParlayFreezeSize`. Self-excludes by parlayId.
+ *
+ * The freeze is stamped in recordConfirmation; this checks against
+ * _largeFreezeByTeam without mutating it (other than lazy expiry cleanup).
+ *
+ * Operates independently of checkTeamCooldown — both can fire on the
+ * same RFQ; the freeze takes precedence in reason text since it's the
+ * stricter / longer gate.
+ */
+function checkLargeTeamFreeze(legs, parlayId, nowMs = null, opts = {}) {
+  if (!ENABLED) return { block: false, reason: null };
+  if (!Array.isArray(legs) || legs.length === 0) return { block: false, reason: null };
+  if (_largeFreezeByTeam.size === 0) return { block: false, reason: null };
+  const now = nowMs || Date.now();
+  for (const leg of legs) {
+    const team = leg.team || leg.teamName || '';
+    const tk = normalizeTeam(team);
+    if (!tk || tk === '?') continue;
+    const entry = _largeFreezeByTeam.get(tk);
+    if (!entry) continue;
+    // Lazy expiry — drop stale freezes as we encounter them.
+    if (entry.frozenUntil <= now) {
+      _largeFreezeByTeam.delete(tk);
+      continue;
+    }
+    if (entry.parlayId === parlayId) continue; // self-exclusion
+    const remainSec = Math.ceil((entry.frozenUntil - now) / 1000);
+    _stats.lastLargeFreezeBlockTeam = team;
+    _stats.lastLargeFreezeBlockAt = new Date(now).toISOString();
+    if (opts.source === 'confirm') {
+      _stats.confirmHits.large_team_freeze = (_stats.confirmHits.large_team_freeze || 0) + 1;
+    } else {
+      _stats.rampHits.large_team_freeze = (_stats.rampHits.large_team_freeze || 0) + 1;
+    }
+    return {
+      block: true,
+      team,
+      triggeredByParlayId: entry.parlayId,
+      triggeringStake: entry.stake,
+      frozenUntil: new Date(entry.frozenUntil).toISOString(),
+      remainSec,
+      reason: `large_team_freeze: "${team}" frozen after $${Math.round(entry.stake)} parlay (${entry.parlayId?.slice(0, 8) || '?'}) — ${remainSec}s remaining, clear via /admin/clear-team-freeze to release early`,
+    };
+  }
+  return { block: false, reason: null };
+}
+
+/**
+ * Operator clear: drop the freeze for a single team key, or all teams
+ * when called with no args. Used by /admin/clear-team-freeze after the
+ * operator has reviewed the triggering parlay and decided more exposure
+ * on that team is acceptable.
+ *
+ * Returns { cleared: [team strings], remaining: count }.
+ */
+function clearLargeTeamFreeze(teamName = null) {
+  const cleared = [];
+  if (!teamName) {
+    for (const [k, v] of _largeFreezeByTeam.entries()) {
+      cleared.push(v.team || k);
+    }
+    _largeFreezeByTeam.clear();
+  } else {
+    const tk = normalizeTeam(teamName);
+    if (tk && _largeFreezeByTeam.has(tk)) {
+      cleared.push(_largeFreezeByTeam.get(tk).team || tk);
+      _largeFreezeByTeam.delete(tk);
+    }
+  }
+  return { cleared, remaining: _largeFreezeByTeam.size };
+}
+
+/**
+ * Snapshot of currently-active large-parlay freezes (excludes expired).
+ * Used by /status and the dashboard.
+ */
+function getLargeTeamFreezeSnapshot(nowMs = null) {
+  const now = nowMs || Date.now();
+  const out = [];
+  for (const [tk, entry] of _largeFreezeByTeam.entries()) {
+    if (entry.frozenUntil <= now) {
+      _largeFreezeByTeam.delete(tk);
+      continue;
+    }
+    out.push({
+      team: entry.team,
+      teamKey: tk,
+      triggeredByParlayId: entry.parlayId,
+      triggeringStake: entry.stake,
+      confirmedAt: new Date(entry.confirmedAt).toISOString(),
+      frozenUntil: new Date(entry.frozenUntil).toISOString(),
+      remainSec: Math.ceil((entry.frozenUntil - now) / 1000),
+    });
+  }
+  return out.sort((a, b) => b.remainSec - a.remainSec);
 }
 
 /**
@@ -432,6 +574,25 @@ function getRampDecision(legs, opts = {}) {
         };
       }
     }
+  }
+
+  // Large-parlay team FREEZE — stricter than the cooldown below. Fires only
+  // when a recent confirmed parlay on one of these teams exceeded the
+  // size threshold (largeParlayFreezeSize) AND the freeze window is still
+  // active. Operator clears manually via /admin/clear-team-freeze.
+  const freeze = checkLargeTeamFreeze(legs, opts ? opts.parlayId : null);
+  if (freeze.block) {
+    return {
+      extraVig: 0, decline: true,
+      reason: freeze.reason,
+      count: priorCount,
+      confirmedCount: exp.confirmedCount,
+      pendingCount: exp.pendingCount,
+      totalStake: exp.totalStake,
+      largeTeamFreezeActive: true,
+      largeTeamFreezeTeam: freeze.team,
+      largeTeamFreezeRemainSec: freeze.remainSec,
+    };
   }
 
   // Per-team cooldown — broader than signature-level above. Catches bot
@@ -653,6 +814,9 @@ module.exports = {
   getRampDecision,
   checkConfirmCooldown,
   checkTeamCooldown,
+  checkLargeTeamFreeze,
+  clearLargeTeamFreeze,
+  getLargeTeamFreezeSnapshot,
   prune,
   startPruneLoop,
   rebuildFromOrders,

@@ -943,21 +943,34 @@ function startStatusServer() {
       // multiple in-flight quotes on the same signature/team.
       cooldownActivity: (() => {
         try {
-          const s = require('./services/template-exposure').getStats();
+          const tex = require('./services/template-exposure');
+          const s = tex.getStats();
+          const cfg = require('./config').config.pricing;
           return {
             quoteTime: {
               template: s.rampHits?.cooldown || 0,
               team:     s.rampHits?.team_cooldown || 0,
+              largeFreeze: s.rampHits?.large_team_freeze || 0,
             },
             confirmTime: {
               template: s.confirmHits?.template_cooldown || 0,
               team:     s.confirmHits?.team_cooldown || 0,
+              largeFreeze: s.confirmHits?.large_team_freeze || 0,
             },
             lastTeamCooldownTeam: s.lastTeamCooldownTeam || null,
             lastTeamCooldownAt: s.lastTeamCooldownAt || null,
             cooldownSeconds: {
-              template: require('./config').config.pricing.templateRampCooldownSeconds,
-              team: require('./config').config.pricing.teamCooldownSeconds,
+              template: cfg.templateRampCooldownSeconds,
+              team: cfg.teamCooldownSeconds,
+            },
+            largeFreeze: {
+              size: cfg.largeParlayFreezeSize,
+              seconds: cfg.largeParlayFreezeSeconds,
+              activeFreezes: tex.getLargeTeamFreezeSnapshot(),
+              stamps: s.largeFreezeStamps || 0,
+              lastStampedAt: s.lastLargeFreezeAt || null,
+              lastBlockedTeam: s.lastLargeFreezeBlockTeam || null,
+              lastBlockedAt: s.lastLargeFreezeBlockAt || null,
             },
           };
         } catch (_) { return null; }
@@ -6924,6 +6937,34 @@ function startStatusServer() {
   });
   app.get('/admin/disabled', (req, res) => {
     res.json(lineManager.getDisabledSnapshot());
+  });
+
+  // Large-parlay team-freeze admin endpoints.
+  //   GET  /admin/team-freezes        — list active freezes
+  //   POST /admin/clear-team-freeze   — body { team: string } clears one,
+  //                                     body {} clears ALL freezes
+  // A freeze is set automatically by recordConfirmation when a parlay's
+  // SP-stake meets LARGE_PARLAY_FREEZE_SIZE. The freeze blocks all RFQs
+  // touching any team from that parlay for LARGE_PARLAY_FREEZE_SECONDS
+  // until manually cleared via the POST below.
+  app.get('/admin/team-freezes', (req, res) => {
+    try {
+      const tex = require('./services/template-exposure');
+      res.json({ ok: true, freezes: tex.getLargeTeamFreezeSnapshot() });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+  app.post('/admin/clear-team-freeze', (req, res) => {
+    try {
+      const tex = require('./services/template-exposure');
+      const team = req.body?.team;
+      const result = tex.clearLargeTeamFreeze(team || null);
+      log.warn('AdminFreeze', `Cleared team freeze(s): ${result.cleared.join(', ') || '(none)'} | remaining=${result.remaining}`);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: err.message });
+    }
   });
 
   // Admin: pin a fixed offered price (American odds) to a specific lineId.

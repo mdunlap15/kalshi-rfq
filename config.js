@@ -235,6 +235,31 @@ const config = {
       if (Number.isFinite(explicit) && explicit >= 0) return explicit;
       return parseInt(process.env.TEMPLATE_RAMP_COOLDOWN_SECONDS) || 60;
     })(),
+    // Large-parlay team freeze: when a confirmed parlay's SP-side stake
+    // exceeds `largeParlayFreezeSize`, freeze every team in that parlay
+    // for `largeParlayFreezeSeconds`. New RFQs touching any of those
+    // teams are declined as 'large_team_freeze' until the freeze expires
+    // OR an operator clears it manually via POST /admin/clear-team-freeze.
+    //
+    // Stricter version of teamCooldownSeconds (which fires on every confirm
+    // regardless of size). Gives the operator a review window before more
+    // exposure can pile onto teams that just took a big fill — useful
+    // when a sharp / bot lands a $5K+ parlay and you want to evaluate
+    // whether to keep quoting that template.
+    //
+    // Both knobs default to 0 = disabled. Set both > 0 to activate.
+    //   LARGE_PARLAY_FREEZE_SIZE     — minimum SP-stake threshold (USD)
+    //   LARGE_PARLAY_FREEZE_SECONDS  — freeze window length
+    largeParlayFreezeSize: (() => {
+      const v = parseFloat(process.env.LARGE_PARLAY_FREEZE_SIZE);
+      if (!Number.isFinite(v) || v < 0) return 0;
+      return v;
+    })(),
+    largeParlayFreezeSeconds: (() => {
+      const v = parseInt(process.env.LARGE_PARLAY_FREEZE_SECONDS);
+      if (!Number.isFinite(v) || v < 0) return 0;
+      return v;
+    })(),
     // Block alt-spread quoting on listed sports. An "alt spread" is any
     // spread leg whose line value differs from the primary line:
     //   - MLB:  primary run line is always ±1.5 → anything else is alt
