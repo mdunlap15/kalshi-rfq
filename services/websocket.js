@@ -1157,7 +1157,11 @@ async function handleRFQ(data) {
             // smaller soccer leagues, etc.). Pulled from resolveFailure
             // when present — falls back to the leg's own sport_event_id
             // if the resolver never recorded a failure (defensive).
-            pxEventId: (resolveFailure && resolveFailure.eventId) || leg.sport_event_id || null,
+            // NOTE: loop variable is `l`, not `leg` — using the wrong
+            // identifier here threw ReferenceError on every unknown-leg
+            // RFQ post-deploy 2026-05-14, knocking the bot into a restart
+            // loop. Fixed same day.
+            pxEventId: (resolveFailure && resolveFailure.eventId) || l.sport_event_id || null,
             // Surface the human-readable PX market name (e.g. "LeBron
             // James Made Threes", "1st Quarter Spread") when the resolver
             // captured one, so the dashboard can show *exactly* what
