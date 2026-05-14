@@ -978,6 +978,134 @@ function startStatusServer() {
     });
   });
 
+  // Today's performance — quote rate, fill rate, win rate, latency.
+  // Designed to be polled (every ~30s) by a console-snippet floating
+  // tracker. Day is bounded in ET (EDT during May = UTC-4); midnight ET
+  // is the start. All Supabase counts are server-side, no row transfer.
+  app.get('/today-stats', async (req, res) => {
+    try {
+      const sb = db.getClient();
+      if (!sb) return res.status(500).json({ ok: false, error: 'no DB' });
+
+      // Compute today's start in UTC, where "today" is in ET.
+      // EDT (DST) covers Mar 8 - Nov 1 in 2026 = UTC-4 → midnight ET = 04:00 UTC.
+      // Outside DST (EST) = UTC-5 → midnight ET = 05:00 UTC.
+      // Use Intl.DateTimeFormat to get ET's offset robustly.
+      const now = new Date();
+      const etFmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+      });
+      const parts = Object.fromEntries(etFmt.formatToParts(now).filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
+      // Get UTC ms for midnight ET of today by interpreting "YYYY-MM-DD 00:00 ET"
+      // and subtracting the offset. Easier: subtract today's hours/min/sec from now in ET.
+      const etHours = parseInt(parts.hour);
+      const etMins  = parseInt(parts.minute);
+      const etSecs  = parseInt(parts.second);
+      const msSinceEtMidnight = ((etHours * 60 + etMins) * 60 + etSecs) * 1000 + now.getMilliseconds();
+      const todayStart = new Date(now.getTime() - msSinceEtMidnight);
+      const todayStartIso = todayStart.toISOString();
+
+      async function countWhere(table, qbFn) {
+        const q = qbFn(sb.from(table).select('*', { count: 'exact', head: true }));
+        const { count, error } = await q;
+        if (error) throw new Error(error.message);
+        return count || 0;
+      }
+
+      // 1. Quotes sent today (parlay_orders rows with quoted_at >= todayStart)
+      const ourQuotes = await countWhere('parlay_orders',
+        q => q.gte('quoted_at', todayStartIso));
+
+      // 2. Fills today (parlay_orders with confirmed_at >= todayStart, in any post-confirm status)
+      const ourFills = await countWhere('parlay_orders',
+        q => q.gte('confirmed_at', todayStartIso)
+              .in('status', ['confirmed', 'settled_won', 'settled_lost', 'settled_push']));
+
+      // 3. Network matched parlays today — need pagination-aware count.
+      // Use head count for total rows, then a separate query for unique deduped count.
+      // For now, head-count of rows (matched_parlays can have duplicate parlay_id
+      // from PX rebroadcasts; the deduped count is approximate via DISTINCT-equivalent
+      // but Supabase PostgREST doesn't natively dedupe in count; we'll head-count
+      // and approximate by also counting our_odds populated.)
+      const networkMatchedRows = await countWhere('matched_parlays',
+        q => q.gte('matched_at', todayStartIso));
+      // We-quoted-on (our_odds populated in matched_parlays) — count rows where our_odds is not null
+      const weQuotedOnNetworkRows = await countWhere('matched_parlays',
+        q => q.gte('matched_at', todayStartIso).not('our_odds', 'is', null));
+
+      // 4. Get unique-parlay counts by pulling minimal projection (parlay_id only)
+      // — cheaper than full row pagination since we only need the IDs.
+      const matchedIds = new Set();
+      const matchedWithOurOddsIds = new Set();
+      let offset = 0;
+      while (true) {
+        const { data, error } = await sb.from('matched_parlays')
+          .select('parlay_id,our_odds')
+          .gte('matched_at', todayStartIso)
+          .range(offset, offset + 999);
+        if (error) break;
+        if (!data || data.length === 0) break;
+        for (const r of data) {
+          matchedIds.add(r.parlay_id);
+          if (r.our_odds != null) matchedWithOurOddsIds.add(r.parlay_id);
+        }
+        if (data.length < 1000) break;
+        offset += 1000;
+        if (offset > 20000) break; // safety
+      }
+      const networkMatched = matchedIds.size;
+      const weQuotedOnNetwork = matchedWithOurOddsIds.size;
+
+      // 5. Most recent fill
+      const { data: lastFillRow } = await sb.from('parlay_orders')
+        .select('parlay_id,confirmed_at,confirmed_stake')
+        .gte('confirmed_at', todayStartIso)
+        .in('status', ['confirmed', 'settled_won', 'settled_lost', 'settled_push'])
+        .order('confirmed_at', { ascending: false })
+        .limit(1);
+      const lastFillAt = lastFillRow?.[0]?.confirmed_at || null;
+      const minutesSinceLastFill = lastFillAt
+        ? Math.round((Date.now() - new Date(lastFillAt).getTime()) / 60000)
+        : null;
+
+      // 6. Live latency snapshot from websocket service
+      let latencyP50 = null, latencyP95 = null, latencyMax = null;
+      try {
+        const wsModule = require('./services/websocket');
+        if (wsModule.getResponseTimeStats) {
+          const ws = wsModule.getResponseTimeStats();
+          latencyP50 = ws?.median || null;
+          latencyP95 = ws?.p95 || null;
+          latencyMax = ws?.max || null;
+        }
+      } catch (_) { /* graceful */ }
+
+      // 7. Derived rates
+      const quoteRateOnNetwork = networkMatched ? weQuotedOnNetwork / networkMatched : null;
+      const winRateWhenQuoted = weQuotedOnNetwork ? ourFills / weQuotedOnNetwork : null;
+      const ourFillsAsNetworkPct = networkMatched ? ourFills / networkMatched : null;
+
+      res.json({
+        ok: true,
+        asOfUtc: new Date().toISOString(),
+        todayStartUtc: todayStartIso,
+        ourQuotes,
+        ourFills,
+        networkMatched,
+        weQuotedOnNetwork,
+        quoteRateOnNetwork,
+        winRateWhenQuoted,
+        ourFillsAsNetworkPct,
+        lastFillAt,
+        minutesSinceLastFill,
+        latency: { p50: latencyP50, p95: latencyP95, max: latencyMax },
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Balance
   app.get('/balance', async (req, res) => {
     try {
