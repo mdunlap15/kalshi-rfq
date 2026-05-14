@@ -5443,6 +5443,16 @@ function startStatusServer() {
             category: uc.category, sport: uc.sport, eventName: uc.eventName,
             marketName: uc.marketName, propType: uc.propType, line: uc.line,
             isKnownEvent: uc.isKnownEvent, resolveReason: uc.resolveReason,
+            // Diagnostic fields for unknown_event drill-down (added
+            // 2026-05-14). lineId is what PX referenced; pxEventId is the
+            // event the line belongs to; resolveDetail carries the
+            // resolver's free-text context (PX home/away teams, market
+            // types found, etc.) — together enough to query PX's API and
+            // identify the source bucket (futures, MiLB, off-list sport).
+            lineId: uc.lineId || null,
+            pxEventId: uc.pxEventId || null,
+            resolveDetail: uc.resolveDetail || null,
+            playerName: uc.playerName || null,
           })),
           detail: ev.detail,
         });

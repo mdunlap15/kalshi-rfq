@@ -1151,6 +1151,13 @@ async function handleRFQ(data) {
             isKnownEvent,
             resolveReason,
             resolveDetail,
+            // pxEventId: surfaces the raw PX event id for unknown_event
+            // declines so the operator can look it up against PX's API and
+            // identify the missing sport / event class (futures, MiLB,
+            // smaller soccer leagues, etc.). Pulled from resolveFailure
+            // when present — falls back to the leg's own sport_event_id
+            // if the resolver never recorded a failure (defensive).
+            pxEventId: (resolveFailure && resolveFailure.eventId) || leg.sport_event_id || null,
             // Surface the human-readable PX market name (e.g. "LeBron
             // James Made Threes", "1st Quarter Spread") when the resolver
             // captured one, so the dashboard can show *exactly* what
