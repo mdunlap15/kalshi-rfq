@@ -436,23 +436,43 @@ const config = {
     confirmationDriftThreshold: parseFloat(process.env.CONFIRMATION_DRIFT_THRESHOLD) || 0.03,
     offerValidSeconds: parseInt(process.env.OFFER_VALID_SECONDS) || 60,
     maxExposurePerTeam: parseFloat(process.env.MAX_EXPOSURE_PER_TEAM) || 5000,
-    // Raw vs probability-weighted per-team exposure measurement.
+    // Raw vs probability-weighted per-team exposure measurement (PRIMARY cap).
     //
-    // FALSE (legacy): per-team exposure counted each parlay leg's
+    // FALSE (default, 2026-05-14): per-team exposure counted each parlay leg's
     //   contribution as `payout × P(other legs win)`. A 4-leg parlay at
     //   $5K max risk where the other 3 legs combined to ~25% fair contributed
-    //   only ~$1.25K to its team's bucket — so a $7K cap could hold many
-    //   such parlays.
-    // TRUE  (default 2026-05-13): each parlay contributes its FULL `payout`
-    //   (= max_risk) to every team it touches. Simpler, more conservative.
-    //   Operator request: "$10K raw risk across all parlays for any team."
-    //   With MAX_RISK_PER_PARLAY=5000 and MAX_EXPOSURE_PER_TEAM=10000, that
-    //   gates at exactly 2 parlays per team regardless of leg count or fair
-    //   prob of other legs.
+    //   only ~$1.25K to its team's bucket. Tolerates more parlays per team
+    //   before the cap binds — favors fill velocity.
+    // TRUE  (2026-05-13 experiment, reverted 2026-05-14): each parlay
+    //   contributes its FULL `payout` (= max_risk) to every team it
+    //   touches. Simpler/more conservative but with MAX_RISK_PER_PARLAY=7000
+    //   it effectively gates at 1 parlay per team and was choking fill
+    //   velocity. Operator preferred to revert primary measurement to
+    //   weighted and use a separate RAW HARD-CAP for the worst-case bound.
     //
-    // Toggle via USE_RAW_PER_TEAM_EXPOSURE=false to revert.
+    // The raw hard-cap (`maxRawExposurePerTeam`) below operates
+    // INDEPENDENTLY of this flag — both gates are applied.
     useRawPerTeamExposure:
-      process.env.USE_RAW_PER_TEAM_EXPOSURE !== 'false' && process.env.USE_RAW_PER_TEAM_EXPOSURE !== '0',
+      process.env.USE_RAW_PER_TEAM_EXPOSURE === 'true' || process.env.USE_RAW_PER_TEAM_EXPOSURE === '1',
+    // Raw HARD CAP on per-team exposure — additional safety brake beyond
+    // the (weighted) `maxExposurePerTeam` cap. Each parlay's full
+    // `payout` (un-weighted) is summed per team; if the running total
+    // (confirmed + pending × discount + new) exceeds this number, the
+    // parlay is declined regardless of whether the weighted cap passed.
+    //
+    // Use when you want to keep weighted measurement (for fill velocity)
+    // but bound worst-case directional concentration. Set 0 to disable.
+    //
+    // Recommended sizing relative to MAX_RISK_PER_PARLAY:
+    //   3× → allows 3 fully-exposed parlays per team
+    //   4× → allows ~4 parlays per team
+    // With MAX_RISK_PER_PARLAY=7000, $25K-$30K is a sensible starting
+    // bound. Tune via MAX_RAW_EXPOSURE_PER_TEAM env var.
+    maxRawExposurePerTeam: (() => {
+      const v = parseFloat(process.env.MAX_RAW_EXPOSURE_PER_TEAM);
+      if (!Number.isFinite(v) || v < 0) return 0;
+      return v;
+    })(),
     // Per-team exposure overrides. JSON map of team/fighter name → cap dollars.
     // Looked up FIRST during exposure checks; falls back to maxExposurePerTeam
     // when a team has no entry. Use this to tighten exposure on specific
