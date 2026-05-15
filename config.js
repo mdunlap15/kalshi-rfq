@@ -85,6 +85,21 @@ const config = {
     // top of the normal baseVig + favorite ramp. Tunable via
     // VIG_MMA_MIN env var.
     vigMmaMin: parseFloat(process.env.VIG_MMA_MIN) || 0.03,
+    // Minimum per-leg vig for golf_matchups when sourcing fair from
+    // DataGolf (i.e., when no operator manual upload exists for the
+    // specific player+round). DataGolf publishes near-fair de-vigged
+    // probabilities, so the default base vig produces ~0.7% pair vig
+    // — too tight on a market where DataGolf's model has meaningful
+    // uncertainty round-to-round. Mike caught this 2026-05-14 on R2
+    // PGA Championship matchups quoted pre-upload at -106/+103 ties.
+    //
+    // Floor applies ONLY to DataGolf-sourced legs; manual uploads
+    // (via /betonline-zurich/upload) use bookPriceOverride and bypass
+    // vig entirely. Set 0 to disable the floor.
+    //
+    // 0.04 starting recommendation (= 4% per side, ~2% pair vig on
+    // coinflip matchups). Tune up if win-rate stays elevated.
+    vigGolfMatchupMin: parseFloat(process.env.VIG_GOLF_MATCHUP_MIN) || 0.04,
     // Longshot vig widening: add extra vig on low-PARLAY-fair-prob quotes
     // (long odds). Per-leg favorite ramp only fires above fairProb 0.5 —
     // it doesn't help multi-leg parlays made of dog legs, which hit a low

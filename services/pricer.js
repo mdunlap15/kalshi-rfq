@@ -858,23 +858,11 @@ function priceParlay(legs, opts = {}) {
       }
       continue;
     }
-    // STRICT MODE for golf_matchups (the function above intentionally
-    // returns null when no operator-validated manual upload exists for
-    // this player+round). Pre-fix the fall-through silently routed to
-    // oddsFeed.getFairProb which returns DataGolf's de-vigged fair —
-    // producing the near-zero-vig R2 quotes Mike caught 2026-05-14.
-    // Decline here so the round/tournament never quotes without an
-    // upload. Re-enabling DataGolf for golf matchups is an explicit
-    // operator decision (would require a config flag).
-    const sportKey = (s.lineInfo?.oddsApiSport || s.lineInfo?.sport || '').toLowerCase();
-    if (sportKey === 'golf_matchups' || sportKey.includes('golf')) {
-      priceParlay._lastFailure = {
-        reason: 'golf_matchup_strict_no_upload',
-        detail: `No manual upload for ${s.lineInfo.teamName || '?'} matchup (round ${s.lineInfo.roundNum ?? '?'})`,
-        blockerLeg: s.legDescriptor,
-      };
-      return null;
-    }
+    // No manual upload — fall through to oddsFeed.getFairProb (DataGolf
+    // path). Operator preference (2026-05-14): keep DataGolf as a
+    // legitimate fallback BUT apply a wider vig floor than the default
+    // 1.3% to compensate for the looser model fair. Floor enforced
+    // sport-specifically in getEffectiveVig via VIG_GOLF_MATCHUP_MIN.
     if (s.lineInfo.isDNB) {
       fairProbs[i] = oddsFeed.getDNBFairProb(
         s.lineInfo.oddsApiSport, s.lineInfo.homeTeam, s.lineInfo.awayTeam,
@@ -1603,6 +1591,18 @@ function priceParlay(legs, opts = {}) {
     const mmaMinVig = config.pricing.vigMmaMin || 0;
     if (sport === 'mma_mixed_martial_arts' && mmaMinVig > 0) {
       vig = Math.max(vig, mmaMinVig);
+    }
+    // Golf-matchup floor — applies whenever the leg is golf_matchups
+    // AND we DON'T have a manual upload (bookPriceOverride bypasses vig
+    // entirely, so this floor only fires on the DataGolf fallback
+    // path). DataGolf publishes near-fair de-vigged probabilities, so
+    // without a floor our default 1.3% vig produces ~0.7% pair vig
+    // (caught 2026-05-14 on R2 PGA Championship matchups pre-upload).
+    // Operator preference: keep DataGolf as a valid source but charge
+    // a wider margin to compensate for the model uncertainty.
+    const golfMatchupMinVig = config.pricing.vigGolfMatchupMin || 0;
+    if (sport === 'golf_matchups' && golfMatchupMinVig > 0) {
+      vig = Math.max(vig, golfMatchupMinVig);
     }
     // Per-leg vigBump from sub-pricing fallbacks (e.g. tennis totals
     // snap-to-nearest). Adds to the base vig BEFORE SGP multiplier so
