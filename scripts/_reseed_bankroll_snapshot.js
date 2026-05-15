@@ -7,11 +7,13 @@
 //   Rev 2: corrected the cash path — $5K external transfer from Mike's
 //     personal account, not a PX withdrawal. Re-pulled positions and
 //     captured 65 (one new parlay had landed between seeds).
-//   Rev 3 (THIS FILE): restores the redistribution point to the ORIGINAL
-//     timestamp + 64 preCohortIds — per Mike's clarification that "RIGHT
-//     NOW should be what it was when I first mentioned that above". The
-//     1 parlay that landed between snapshots therefore becomes part of
-//     the POST-cohort (settles under the new 67.514% / 32.486% ratios).
+//   Rev 3: restored the redistribution point to the ORIGINAL timestamp +
+//     64 preCohortIds — per Mike's clarification that "RIGHT NOW should
+//     be what it was when I first mentioned that above". The 1 parlay
+//     that landed between snapshots became part of the POST-cohort.
+//   Rev 4 (THIS FILE): transfer amount revised $5K → $2,500. Pre-cohort
+//     unchanged (64 original parlays); only the post-transfer Mike/Rick
+//     values and the post-cohort ratios update.
 //
 // Pre-cohort source: positions.json — the /px-positions response captured
 // at original snapshot time (16:09:55Z, 64 parlays, $14,473.65 stake).
@@ -25,13 +27,13 @@ const { createClient } = require('@supabase/supabase-js');
 // agreement effectively changed.
 const SNAPSHOT_AT = '2026-05-15T16:09:55.423Z';
 
-// Corrected post-transfer state for $5K external Mike→Rick:
+// Rev 4: transfer amount revised to $2,500 (was $5K in rev 3).
 //   Trading-account TE unchanged: $54,460.36
-//   Mike: $31,768.54 + $5,000 = $36,768.54  (he "bought" Rick's $5K stake)
-//   Rick: $22,691.82 - $5,000 = $17,691.82
+//   Mike: $31,768.54 + $2,500 = $34,268.54  (he "bought" Rick's $2.5K stake)
+//   Rick: $22,691.82 - $2,500 = $20,191.82
 const SNAPSHOT_EQUITY = 54460.36;
-const MIKE_POST       = 36768.54;
-const RICK_POST       = 17691.82;
+const MIKE_POST       = 34268.54;
+const RICK_POST       = 20191.82;
 
 const PRE_RATIO  = { mike: 7 / 12, rick: 5 / 12 };
 const POST_RATIO = {
@@ -65,7 +67,7 @@ const POST_RATIO = {
   console.log(`Live TE now: $${liveTE.toFixed(2)}  (snapshot anchor: $${SNAPSHOT_EQUITY.toFixed(2)})`);
 
   const snapshot = {
-    version: 3,
+    version: 4,
     snapshotAt: SNAPSHOT_AT,
     snapshotEquity: SNAPSHOT_EQUITY,
     snapshotMike: MIKE_POST,
@@ -80,19 +82,20 @@ const POST_RATIO = {
         type: 'external_transfer',
         from: 'mike',
         to: 'rick',
-        amount: 5000,
+        amount: 2500,
         at: SNAPSHOT_AT,
-        note: 'Mike paid Rick $5K from a separate personal account. PX untouched; ownership shifts in-account.',
+        note: 'Mike paid Rick $2,500 from a separate personal account. PX untouched; ownership shifts in-account.',
       },
     ],
     supersedes: [
-      { version: 1, snapshotAt: '2026-05-15T16:09:55.423Z', note: 'misread as $2K PX withdrawal' },
-      { version: 2, snapshotAt: '2026-05-15T16:31:31.422Z', note: '$5K external, but pre-cohort had drifted to 65' },
+      { version: 1, note: 'misread as $2K PX withdrawal' },
+      { version: 2, note: '$5K external, pre-cohort had drifted to 65' },
+      { version: 3, note: '$5K external, pre-cohort pinned to original 64' },
     ],
-    notes: 'Rev 3: redistribution point pinned to when Mike first raised the question (16:09:55Z). Pre-cohort = the 64 parlays open at that moment.',
+    notes: 'Rev 4: transfer amount $5K → $2,500 (Mike revised). Redistribution point + pre-cohort unchanged from rev 3 (16:09:55Z, 64 parlays).',
   };
 
-  console.log('\nRev 3 snapshot:');
+  console.log('\nRev 4 snapshot:');
   console.log('  at:', snapshot.snapshotAt);
   console.log('  equity:', snapshot.snapshotEquity);
   console.log('  mike:', snapshot.snapshotMike, `(${(snapshot.postRatio.mike*100).toFixed(3)}%)`);
