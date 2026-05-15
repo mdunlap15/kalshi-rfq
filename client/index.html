@@ -12157,6 +12157,24 @@
         }
       }
 
+      // Other 1v1 / matchup sports — tennis, MMA, boxing. Same intent as
+      // the golf branch above: showing just one competitor's name loses
+      // the matchup context. Append "vs Opponent" pulled from homeTeam /
+      // awayTeam (whichever isn't the selection). Tournament name added
+      // when present.
+      else if (l.sport === 'tennis' || l.sport === 'mma_mixed_martial_arts'
+               || l.sport === 'boxing_boxing') {
+        const self = l.team || l.teamName || '';
+        const opponent = (l.homeTeam && l.homeTeam !== self) ? l.homeTeam
+                       : (l.awayTeam && l.awayTeam !== self) ? l.awayTeam
+                       : null;
+        if (opponent) {
+          const tourn = l.tournamentName ? (' · ' + escapeHtml(l.tournamentName)) : '';
+          teamLabel += ' <span style="color:var(--text3); font-size:10px;">vs '
+                    + escapeHtml(opponent) + tourn + '</span>';
+        }
+      }
+
       // DNB badge for soccer 2-way moneyline legs so operators can tell
       // apart DNB vs 3-way at a glance. Pin/FD/DK odds columns
       // on this row are DNB-equivalent (renormalized to exclude the draw)
