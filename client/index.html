@@ -850,6 +850,50 @@
           </div>
         </div>
 
+        <!-- Network Volume & Share — daily comparison of our quote / fill
+             volume vs. the full PX network. Three views: bar-pair volume,
+             share trend line, summary table. Lazy-loaded on first expand. -->
+        <div class="card">
+          <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed'); if(!b.classList.contains('collapsed')) loadNetworkShareDaily();">
+            <span><span class="toggle-icon collapsed">&#9660;</span>Network Volume &amp; Share</span>
+            <span id="netshare-summary" style="color: var(--text3); font-weight: 400; font-size: 12px;"></span>
+          </div>
+          <div class="card-body collapsed" id="netshare-card">
+            <div style="padding:0 4px 10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:11px; color:var(--text3); border-bottom:1px solid var(--border); margin-bottom:12px;">
+              <span>Window:</span>
+              <span id="netshare-range-buttons" style="display:inline-flex; gap:0; border:1px solid var(--border); border-radius:4px; overflow:hidden;">
+                <button type="button" class="netshare-rng" data-days="7"  onclick="setNetshareRange(7)"  style="background:transparent; color:var(--text3); border:0; padding:4px 10px; font-size:11px; cursor:pointer;">7d</button>
+                <button type="button" class="netshare-rng" data-days="14" onclick="setNetshareRange(14)" style="background:var(--accent); color:var(--text); border:0; padding:4px 10px; font-size:11px; cursor:pointer;">14d</button>
+                <button type="button" class="netshare-rng" data-days="30" onclick="setNetshareRange(30)" style="background:transparent; color:var(--text3); border:0; padding:4px 10px; font-size:11px; cursor:pointer;">30d</button>
+                <button type="button" class="netshare-rng" data-days="60" onclick="setNetshareRange(60)" style="background:transparent; color:var(--text3); border:0; padding:4px 10px; font-size:11px; cursor:pointer;">60d</button>
+                <button type="button" class="netshare-rng" data-days="90" onclick="setNetshareRange(90)" style="background:transparent; color:var(--text3); border:0; padding:4px 10px; font-size:11px; cursor:pointer;">90d</button>
+              </span>
+              <button onclick="loadNetworkShareDaily(true)" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:3px 10px; border-radius:4px; font-size:11px; cursor:pointer; margin-left:6px;" title="Refresh (bypass 60s cache)">Refresh</button>
+              <span id="netshare-asof" style="margin-left:auto; color:var(--text3);"></span>
+            </div>
+
+            <div id="netshare-headline" style="margin-bottom:14px;"></div>
+
+            <div style="font-size:11px; color:var(--text2); font-weight:600; margin:8px 0 4px 4px;">Daily Quotes <span style="color:var(--text3); font-weight:400;">— RFQs PX broadcast vs. offers we submitted</span></div>
+            <div id="chart-netshare-quotes">
+              <div class="empty-state"><div class="icon">-</div><div>Expand to load daily volume data</div></div>
+            </div>
+
+            <div style="font-size:11px; color:var(--text2); font-weight:600; margin:18px 0 4px 4px;">Daily Confirmed Parlays <span style="color:var(--text3); font-weight:400;">— matched on network vs. matched by us</span></div>
+            <div id="chart-netshare-matched"></div>
+
+            <div style="font-size:11px; color:var(--text2); font-weight:600; margin:18px 0 4px 4px;">Daily Trend <span style="color:var(--text3); font-weight:400;">— our network share &amp; bid-win-rate over time</span></div>
+            <div id="chart-netshare-share"></div>
+
+            <div style="font-size:11px; color:var(--text2); font-weight:600; margin:18px 0 4px 4px;">Per-Day Breakdown</div>
+            <div id="netshare-table"></div>
+
+            <div style="font-size:10px; color:var(--text3); margin-top:10px; line-height:1.5;">
+              <b>Network demand</b> = RFQs PX broadcast to us (quoted + declined). <b>Network matched</b> = parlays any SP filled (deduped). <b>Network we bid on</b> = matched parlays where we submitted an offer. <b>Share of matched</b> = my fills / network matched (our slice of total demand satisfied). <b>Bid win rate</b> = my fills / network we bid on (how often we win the auctions we enter). Cached 60s server-side; days bucketed in US Eastern. <br><b>Caveat:</b> bid-win-rate before ~2026-05-12 is artificially high (often 100%) because <code>matched_parlays.we_quoted</code> wasn't being persisted reliably for lost auctions, so the denominator only counts wins. Recent days (5/12+) have honest numerator + denominator. Share-of-matched is reliable across the full window.
+            </div>
+          </div>
+        </div>
+
         <!-- Parlay Pricing vs. Books — collapsed -->
         <div class="card">
           <div class="card-header" onclick="const b=this.nextElementSibling; b.classList.toggle('collapsed'); this.querySelector('.toggle-icon').classList.toggle('collapsed');">
@@ -10168,8 +10212,358 @@
   // chalk losses (right) cluster separately.
   //
   // Goal: surface where in the (sport × market × probability-region)
-  // space the losses concentrate, so the operator can make targeted vig /
-  // cap / coverage adjustments.
+  // -----------------------------------------------------------------------
+  // NETWORK VOLUME & SHARE — Analytics tab
+  // -----------------------------------------------------------------------
+  // Three views built from /network-share-daily:
+  //   1) Daily Volume — paired bars (network demand / matched vs. our quotes /
+  //      fills) so the operator can eyeball how much of the network's activity
+  //      we participate in and fill.
+  //   2) Daily Trend — share-of-matched and bid-win-rate as percentage lines.
+  //   3) Per-Day Breakdown — table with raw counts + derived rates.
+  if (!window._netshareState) {
+    window._netshareState = { range: 14, loading: false, data: null };
+  }
+  async function loadNetworkShareDaily(force) {
+    const card = document.getElementById('netshare-card');
+    if (!card) return;
+    if (window._netshareState.loading) return;
+    const days = window._netshareState.range || 30;
+    window._netshareState.loading = true;
+    const quotesEl  = document.getElementById('chart-netshare-quotes');
+    const matchedEl = document.getElementById('chart-netshare-matched');
+    const shareEl   = document.getElementById('chart-netshare-share');
+    const tblEl     = document.getElementById('netshare-table');
+    if (!force && quotesEl) quotesEl.innerHTML = '<div class="empty-state"><div class="icon">⏳</div><div>Loading...</div></div>';
+    try {
+      const url = '/network-share-daily?days=' + days + (force ? '&_=' + Date.now() : '');
+      const r = await fetch(url, { credentials: 'include' });
+      const data = await r.json();
+      if (!data || !data.ok) throw new Error(data && data.error || ('HTTP ' + r.status));
+      window._netshareState.data = data;
+      renderNetshareCharts(data);
+    } catch (err) {
+      const msg = '<div class="empty-state"><div class="icon">!</div><div>Failed to load: ' + escapeHtml(err.message || String(err)) + '</div></div>';
+      if (quotesEl)  quotesEl.innerHTML  = msg;
+      if (matchedEl) matchedEl.innerHTML = '';
+      if (shareEl)   shareEl.innerHTML   = '';
+      if (tblEl)     tblEl.innerHTML     = '';
+    } finally {
+      window._netshareState.loading = false;
+    }
+  }
+  window.loadNetworkShareDaily = loadNetworkShareDaily;
+  window.setNetshareRange = function(d) {
+    const days = parseInt(d) || 30;
+    window._netshareState.range = days;
+    // Update button visual state
+    document.querySelectorAll('.netshare-rng').forEach(btn => {
+      const active = parseInt(btn.getAttribute('data-days')) === days;
+      btn.style.background = active ? 'var(--accent)' : 'transparent';
+      btn.style.color = active ? 'var(--text)' : 'var(--text3)';
+    });
+    loadNetworkShareDaily();
+  };
+
+  function _netshareFmtPct(v, digits) {
+    if (v == null || !Number.isFinite(v)) return '—';
+    return (v * 100).toFixed(digits == null ? 1 : digits) + '%';
+  }
+  function _netshareFmtN(v) {
+    if (v == null) return '—';
+    return Number(v).toLocaleString();
+  }
+  function _netshareEtDateLabel(yyyymmdd) {
+    // 'YYYY-MM-DD' → 'MM/DD'
+    if (!yyyymmdd || yyyymmdd.length < 10) return yyyymmdd || '';
+    return yyyymmdd.slice(5).replace('-', '/');
+  }
+
+  function renderNetshareCharts(data) {
+    const days = data.days;
+    const byDay = data.byDay || [];
+    const tot = data.totals || {};
+
+    // Headline + summary chips
+    const headEl = document.getElementById('netshare-headline');
+    const sumEl = document.getElementById('netshare-summary');
+    const asofEl = document.getElementById('netshare-asof');
+    if (asofEl && data.asOfUtc) {
+      const t = new Date(data.asOfUtc);
+      asofEl.textContent = 'as of ' + t.toLocaleString([], { month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit' });
+    }
+    if (sumEl) {
+      sumEl.textContent = days + 'd · ' + _netshareFmtN(tot.myFills) + ' fills · '
+        + _netshareFmtPct(tot.shareOfMatched) + ' share · '
+        + _netshareFmtPct(tot.bidWinRate) + ' bid-win';
+    }
+    if (headEl) {
+      const chip = (label, val, color) => '<div style="background:var(--surface3); border:1px solid var(--border); border-radius:6px; padding:10px 14px; min-width:140px;">'
+        + '<div style="font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px;">' + label + '</div>'
+        + '<div style="font-size:18px; font-weight:600; color:' + (color || 'var(--text)') + '; margin-top:2px;">' + val + '</div>'
+        + '</div>';
+      headEl.innerHTML = '<div style="display:flex; gap:10px; flex-wrap:wrap;">'
+        + chip('My Quotes',        _netshareFmtN(tot.myQuotes))
+        + chip('My Fills',         _netshareFmtN(tot.myFills), 'var(--green)')
+        + chip('Network Demand',   _netshareFmtN(tot.networkDemand), 'var(--text2)')
+        + chip('Network Matched',  _netshareFmtN(tot.networkMatched), 'var(--text2)')
+        + chip('Share of Matched', _netshareFmtPct(tot.shareOfMatched, 2), 'var(--amber)')
+        + chip('Bid Win Rate',     _netshareFmtPct(tot.bidWinRate, 1), 'var(--blue)')
+        + '</div>';
+    }
+
+    _netshareRenderPaired(byDay, 'chart-netshare-quotes',
+      [
+        { key: 'networkDemand', label: 'Network demand (RFQs)', color: '#5b6470' },
+        { key: 'myQuotes',      label: 'My quotes (offers submitted)', color: '#3b82f6' },
+      ]);
+    _netshareRenderPaired(byDay, 'chart-netshare-matched',
+      [
+        { key: 'networkMatched', label: 'Network matched (any SP)', color: '#5b6470' },
+        { key: 'networkWeBidOn', label: 'Auctions I entered',       color: '#a78bfa' },
+        { key: 'myFills',        label: 'My fills (I won)',         color: '#22c55e' },
+      ]);
+    _netshareRenderTrend(byDay);
+    _netshareRenderTable(byDay, tot);
+  }
+
+  // ----- Paired-bar chart: render N series per day side-by-side on a shared
+  // linear Y axis. Used twice — once for quotes (network demand vs my quotes,
+  // both in 10k-150k range) and once for matched (network matched vs my fills,
+  // both in 30-3000 range). Splitting like this keeps both bar heights legible
+  // instead of squashing the small-magnitude series to invisibility.
+  function _netshareRenderPaired(byDay, elId, series) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    if (!byDay.length) {
+      el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No data</div></div>';
+      return;
+    }
+
+    const W = 820, H = 280, pad = { l: 70, r: 18, t: 22, b: 60 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const colW = chartW / byDay.length;
+    const groupW = Math.min(72, colW - 6);
+    const barW = Math.max(3, (groupW - (series.length - 1) * 2) / series.length);
+
+    // Y max = max value across all series in this chart
+    const maxVal = Math.max(1, ...byDay.flatMap(d => series.map(s => d[s.key] || 0)));
+    const niceMax = (function(){
+      const m = Math.pow(10, Math.floor(Math.log10(maxVal)));
+      const n = maxVal / m;
+      const ceil = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+      return ceil * m;
+    })();
+    const scaleY = v => pad.t + chartH - (v / niceMax) * chartH;
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; height:auto; max-height:320px;">';
+
+    // Gridlines
+    for (let t = 0; t <= 5; t++) {
+      const v = niceMax * t / 5;
+      const y = scaleY(v);
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', t === 0 ? 0.8 : 0.3);
+      svg += svgText(pad.l - 6, y + 3, _netshareFmtN(Math.round(v)), { anchor: 'end', size: 9 });
+    }
+
+    for (let i = 0; i < byDay.length; i++) {
+      const d = byDay[i];
+      const cx = pad.l + (i + 0.5) * colW;
+      const groupLeft = cx - groupW / 2 + (groupW - series.length * barW - (series.length - 1) * 2) / 2;
+
+      for (let s = 0; s < series.length; s++) {
+        const value = d[series[s].key] || 0;
+        if (value <= 0) continue;
+        const x = groupLeft + s * (barW + 2);
+        const y = scaleY(value);
+        const h = Math.max(1, (pad.t + chartH) - y);
+        svg += '<rect x="' + x.toFixed(2) + '" y="' + y.toFixed(2)
+          + '" width="' + barW.toFixed(2) + '" height="' + h.toFixed(2)
+          + '" fill="' + series[s].color + '" rx="1.5">'
+          + '<title>' + d.date + ' · ' + series[s].label + ': ' + _netshareFmtN(value) + '</title>'
+          + '</rect>';
+      }
+
+      const dayLabel = _netshareEtDateLabel(d.date);
+      svg += '<text x="' + cx + '" y="' + (H - pad.b + 16)
+        + '" font-size="10" fill="var(--text2)" text-anchor="end" transform="rotate(-40 '
+        + cx + ' ' + (H - pad.b + 16) + ')">' + dayLabel + '</text>';
+    }
+
+    // Legend
+    let lx = pad.l + 4, ly = H - 8;
+    for (const s of series) {
+      svg += '<rect x="' + lx + '" y="' + (ly - 7) + '" width="10" height="10" fill="' + s.color + '" rx="2"/>';
+      svg += '<text x="' + (lx + 14) + '" y="' + ly + '" font-size="10" fill="var(--text2)">' + s.label + '</text>';
+      lx += 14 + (s.label.length * 6.2) + 18;
+    }
+
+    svg += '</svg>';
+    el.innerHTML = svg;
+  }
+
+  // ----- Trend chart: share-of-matched + bid-win-rate as two lines on a
+  // shared 0-100% Y axis. Days with no matched parlays plot null (line
+  // segment break) so weekends with sparse activity don't anchor the chart
+  // at zero.
+  function _netshareRenderTrend(byDay) {
+    const el = document.getElementById('chart-netshare-share');
+    if (!el) return;
+    if (!byDay.length) {
+      el.innerHTML = '';
+      return;
+    }
+
+    const W = 820, H = 240, pad = { l: 50, r: 50, t: 22, b: 64 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+
+    // Y axis — auto-scale to max value (with a min ceiling of 10%) so a low-
+    // share operator still sees meaningful resolution. Cap at 100%.
+    let yMax = 0;
+    for (const d of byDay) {
+      if (d.shareOfMatched != null) yMax = Math.max(yMax, d.shareOfMatched);
+      if (d.bidWinRate     != null) yMax = Math.max(yMax, d.bidWinRate);
+    }
+    yMax = Math.min(1, Math.max(0.1, yMax * 1.15));
+
+    const scaleX = i => pad.l + (byDay.length <= 1 ? chartW / 2 : (i / (byDay.length - 1)) * chartW);
+    const scaleY = v => pad.t + chartH - (v / yMax) * chartH;
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; height:auto; max-height:280px;">';
+
+    // Gridlines + Y labels (percentages)
+    const ticks = 5;
+    for (let t = 0; t <= ticks; t++) {
+      const v = yMax * t / ticks;
+      const y = scaleY(v);
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', t === 0 ? 0.8 : 0.3);
+      svg += svgText(pad.l - 6, y + 3, (v * 100).toFixed(v < 0.1 ? 1 : 0) + '%', { anchor: 'end', size: 9 });
+    }
+
+    // X-axis date labels — show ~8 ticks max so dense windows don't crowd
+    const labelStride = Math.max(1, Math.ceil(byDay.length / 8));
+    for (let i = 0; i < byDay.length; i++) {
+      if (i % labelStride !== 0 && i !== byDay.length - 1) continue;
+      const x = scaleX(i);
+      const dayLabel = _netshareEtDateLabel(byDay[i].date);
+      svg += '<text x="' + x + '" y="' + (H - pad.b + 16) + '" font-size="10" fill="var(--text2)" text-anchor="end" transform="rotate(-40 ' + x + ' ' + (H - pad.b + 16) + ')">' + dayLabel + '</text>';
+    }
+
+    // Build line paths, segmenting on null gaps. Each series → array of polylines.
+    function pathFromSeries(getter) {
+      const segments = [];
+      let cur = [];
+      for (let i = 0; i < byDay.length; i++) {
+        const v = getter(byDay[i]);
+        if (v == null) {
+          if (cur.length > 1) segments.push(cur);
+          cur = [];
+          continue;
+        }
+        cur.push({ x: scaleX(i), y: scaleY(v) });
+      }
+      if (cur.length > 1) segments.push(cur);
+      else if (cur.length === 1) segments.push([cur[0], cur[0]]); // single-point dot
+      return segments;
+    }
+
+    const shareSeg = pathFromSeries(d => d.shareOfMatched);
+    const winSeg   = pathFromSeries(d => d.bidWinRate);
+
+    // Draw share line (amber)
+    for (const seg of shareSeg) {
+      let p = '';
+      for (let i = 0; i < seg.length; i++) p += (i === 0 ? 'M' : ' L') + seg[i].x.toFixed(2) + ',' + seg[i].y.toFixed(2);
+      svg += '<path d="' + p + '" fill="none" stroke="#f5b942" stroke-width="2.2" />';
+    }
+    // Draw bid-win line (blue, dashed for visual distinction)
+    for (const seg of winSeg) {
+      let p = '';
+      for (let i = 0; i < seg.length; i++) p += (i === 0 ? 'M' : ' L') + seg[i].x.toFixed(2) + ',' + seg[i].y.toFixed(2);
+      svg += '<path d="' + p + '" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="6,4" />';
+    }
+    // Dots on the data points (helps for sparse data)
+    for (let i = 0; i < byDay.length; i++) {
+      const d = byDay[i];
+      const x = scaleX(i);
+      if (d.shareOfMatched != null) {
+        svg += '<circle cx="' + x + '" cy="' + scaleY(d.shareOfMatched) + '" r="3" fill="#f5b942">'
+          + '<title>' + d.date + ' · share ' + _netshareFmtPct(d.shareOfMatched, 2) + ' (' + d.myFills + '/' + d.networkMatched + ')</title></circle>';
+      }
+      if (d.bidWinRate != null) {
+        svg += '<circle cx="' + x + '" cy="' + scaleY(d.bidWinRate) + '" r="3" fill="#3b82f6">'
+          + '<title>' + d.date + ' · bid-win ' + _netshareFmtPct(d.bidWinRate, 1) + ' (' + d.myFills + '/' + d.networkWeBidOn + ')</title></circle>';
+      }
+    }
+
+    // Legend
+    const legendX = pad.l + 4, legendY = H - 8;
+    svg += '<rect x="' + legendX + '" y="' + (legendY - 7) + '" width="14" height="3" fill="#f5b942" />';
+    svg += '<text x="' + (legendX + 20) + '" y="' + legendY + '" font-size="10" fill="var(--text2)">Share of matched (my fills / network matched)</text>';
+    svg += '<rect x="' + (legendX + 280) + '" y="' + (legendY - 7) + '" width="14" height="3" fill="#3b82f6" />';
+    svg += '<text x="' + (legendX + 300) + '" y="' + legendY + '" font-size="10" fill="var(--text2)">Bid win rate (my fills / network we bid on)</text>';
+
+    svg += '</svg>';
+    el.innerHTML = svg;
+  }
+
+  // ----- Per-day table — raw counts + derived rates. Sort newest-first
+  // since the operator typically reads top-down for recent days.
+  function _netshareRenderTable(byDay, totals) {
+    const el = document.getElementById('netshare-table');
+    if (!el) return;
+    if (!byDay.length) { el.innerHTML = ''; return; }
+
+    const rows = [...byDay].reverse(); // newest first
+
+    let html = '<div style="overflow-x:auto;">';
+    html += '<table style="font-size:12px; width:100%; border-collapse:collapse;">';
+    html += '<thead><tr style="border-bottom:1px solid var(--border); color:var(--text3); font-size:11px;">'
+      + '<th style="text-align:left; padding:6px 8px;">Day (ET)</th>'
+      + '<th style="text-align:right; padding:6px 8px;">My Quotes</th>'
+      + '<th style="text-align:right; padding:6px 8px;">My Fills</th>'
+      + '<th style="text-align:right; padding:6px 8px;">Net Demand</th>'
+      + '<th style="text-align:right; padding:6px 8px;">Net Matched</th>'
+      + '<th style="text-align:right; padding:6px 8px;">Bid On</th>'
+      + '<th style="text-align:right; padding:6px 8px;">Share %</th>'
+      + '<th style="text-align:right; padding:6px 8px;">Bid Win %</th>'
+      + '</tr></thead><tbody>';
+    for (const d of rows) {
+      const isZero = !d.myFills && !d.myQuotes && !d.networkMatched;
+      const rowOpacity = isZero ? '0.45' : '1';
+      html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04); opacity:' + rowOpacity + ';">';
+      html += '<td style="padding:5px 8px; font-family:monospace; color:var(--text2);">' + d.date + '</td>';
+      html += '<td style="padding:5px 8px; text-align:right;">' + _netshareFmtN(d.myQuotes) + '</td>';
+      html += '<td style="padding:5px 8px; text-align:right; color:var(--green); font-weight:600;">' + _netshareFmtN(d.myFills) + '</td>';
+      html += '<td style="padding:5px 8px; text-align:right; color:var(--text3);">' + _netshareFmtN(d.networkDemand) + '</td>';
+      html += '<td style="padding:5px 8px; text-align:right; color:var(--text3);">' + _netshareFmtN(d.networkMatched) + '</td>';
+      html += '<td style="padding:5px 8px; text-align:right; color:var(--text3);">' + _netshareFmtN(d.networkWeBidOn) + '</td>';
+      html += '<td style="padding:5px 8px; text-align:right; color:var(--amber); font-weight:600;">' + _netshareFmtPct(d.shareOfMatched, 2) + '</td>';
+      html += '<td style="padding:5px 8px; text-align:right; color:var(--blue); font-weight:600;">' + _netshareFmtPct(d.bidWinRate, 1) + '</td>';
+      html += '</tr>';
+    }
+    // Totals footer
+    html += '<tr style="border-top:2px solid var(--border); color:var(--text); font-weight:600;">'
+      + '<td style="padding:8px;">Total</td>'
+      + '<td style="padding:8px; text-align:right;">' + _netshareFmtN(totals.myQuotes) + '</td>'
+      + '<td style="padding:8px; text-align:right; color:var(--green);">' + _netshareFmtN(totals.myFills) + '</td>'
+      + '<td style="padding:8px; text-align:right;">' + _netshareFmtN(totals.networkDemand) + '</td>'
+      + '<td style="padding:8px; text-align:right;">' + _netshareFmtN(totals.networkMatched) + '</td>'
+      + '<td style="padding:8px; text-align:right;">' + _netshareFmtN(totals.networkWeBidOn) + '</td>'
+      + '<td style="padding:8px; text-align:right; color:var(--amber);">' + _netshareFmtPct(totals.shareOfMatched, 2) + '</td>'
+      + '<td style="padding:8px; text-align:right; color:var(--blue);">' + _netshareFmtPct(totals.bidWinRate, 1) + '</td>'
+      + '</tr>';
+    html += '</tbody></table></div>';
+
+    el.innerHTML = html;
+  }
+
+  // -----------------------------------------------------------------------
+  // LOST AUCTION BID SCATTER — Analytics tab (existing). Shows the gap
+  // between our offer and the winning offer in points-pp + American odds,
+  // segmented by sport + market. Mike wants to spot the price-space and
+  // sport-space the losses concentrate, so the operator can make targeted
+  // vig / cap / coverage adjustments.
   if (!window._lostBidState) {
     window._lostBidState = {
       range: '7d',                    // '24h' | '3d' | '7d' | '14d' | '30d' | 'all'

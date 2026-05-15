@@ -1,0 +1,106 @@
+// Minimal server for previewing the new Analytics card visually.
+// Serves client/index.html at / and mounts the netshare endpoint stub.
+// Bypass auth — this is local dev only.
+
+require('dotenv').config();
+const path = require('path');
+const fs = require('fs');
+const express = require('express');
+const db = require('../services/db');
+
+const app = express();
+
+// Serve dashboard
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'client', 'index.html'));
+});
+app.use(express.static(path.join(__dirname, '..', 'client')));
+
+// Mock /me — viewer with full access for preview
+app.get('/me', (req, res) => res.json({ ok: true, role: 'admin', username: 'preview' }));
+
+// Mock /status — return enough to keep the dashboard happy
+app.get('/status', (req, res) => res.json({
+  ok: true, running: true, paused: false, isPaused: false,
+  config: {}, marketStats: {}, stats: {},
+  matchedParlays: 0, ordersCount: 0,
+  latency: { p50: 0, p95: 0, max: 0 },
+  startTime: new Date().toISOString(),
+}));
+
+// Catch-all stub for any dashboard polling endpoint — return empty data so
+// the polling storm doesn't generate 404s and suspend the browser.
+// The wildcard fallback is mounted at the BOTTOM (after /network-share-daily).
+const stubResponse = { ok: true, data: [], items: [], orders: [], byDay: {}, byReason: {}, byHour: {}, grandTotal: { count: 0, stake: 0 }, balance: 0, p50: 0, p95: 0, max: 0 };
+const stubEndpoints = ['/orders', '/market-intel', '/exposure', '/team-exposure',
+  '/series-exposure', '/game-exposure', '/risk-declines', '/today-stats',
+  '/cooldown-activity', '/prop-flow', '/lines', '/lost-analysis',
+  '/configured-knobs', '/portfolio', '/pitcher-exposure', '/player-exposure',
+  '/balance', '/drift-status', '/health/coverage', '/px-pnl', '/px-positions',
+  '/odds-events', '/health', '/limits', '/team-cooldowns', '/template-cooldowns',
+  '/recent-declines', '/lost-bid-scatter', '/prop-performance', '/win-rate-heatmap'];
+for (const r of stubEndpoints) {
+  app.get(r, (_, res) => res.json(stubResponse));
+}
+
+// /network-share-daily — same handler as in index.js (inlined). Validated.
+const _cache = { key: null, at: 0, data: null };
+app.get('/network-share-daily', async (req, res) => {
+  try {
+    const days = Math.max(1, Math.min(90, parseInt(req.query.days) || 30));
+    if (_cache.key === `d${days}` && (Date.now() - _cache.at) < 60_000) {
+      res.set('X-Cache', 'hit'); return res.json(_cache.data);
+    }
+    const sb = db.getClient();
+    if (!sb) return res.status(500).json({ ok: false, error: 'no DB' });
+    const startedAt = Date.now();
+    const ET_FMT = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year:'numeric', month:'2-digit', day:'2-digit' });
+    const ET_OFFSET_FMT = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'shortOffset', year:'numeric' });
+    const isoToEt = iso => { if (!iso) return null; const d = new Date(iso); return isNaN(d) ? null : ET_FMT.format(d); };
+    function etBounds(y) { const [yy,mm,dd] = y.split('-').map(Number); const m = ET_OFFSET_FMT.format(new Date(Date.UTC(yy,mm-1,dd,16))).match(/GMT([+-]\d+)/); const off = m ? parseInt(m[1]) : -5; const s = Date.UTC(yy,mm-1,dd) - off*3600000; return [new Date(s).toISOString(), new Date(s+86400000).toISOString()]; }
+    const todayEt = isoToEt(new Date().toISOString());
+    const [ty,tm,td] = todayEt.split('-').map(Number);
+    const noon = Date.UTC(ty,tm-1,td,12);
+    const dayList = [];
+    for (let i = days-1; i >= 0; i--) { const ds = ET_FMT.format(new Date(noon - i*86400000)); const [s,e] = etBounds(ds); dayList.push({date:ds, startIso:s, endIso:e}); }
+    async function hc(table, col, s, e, mode, sIn) { for (let a = 0; a < 2; a++) { try { let q = sb.from(table).select('*',{count:mode||'exact',head:true}).gte(col,s).lt(col,e); if (sIn) q = q.in('status',sIn); const r = await q; if (!r.error) return r.count||0; if (a===0) { await new Promise(rs=>setTimeout(rs,200)); continue; } return null; } catch(_) { if (a===0) { await new Promise(rs=>setTimeout(rs,200)); continue; } return null; } } return null; }
+    const cq = (s,e) => hc('parlay_orders','quoted_at',s,e,'estimated');
+    const cf = (s,e) => hc('parlay_orders','confirmed_at',s,e,'estimated',['confirmed','settled_won','settled_lost','settled_push']);
+    const cd = (s,e) => hc('declines','declined_at',s,e,'exact');
+    const dailyCounts = new Map();
+    for (let i = 0; i < dayList.length; i += 4) {
+      const slice = dayList.slice(i, i+4);
+      const r = await Promise.all(slice.flatMap(d => [cq(d.startIso,d.endIso), cf(d.startIso,d.endIso), cd(d.startIso,d.endIso)]));
+      for (let j = 0; j < slice.length; j++) dailyCounts.set(slice[j].date, { myQuotes: r[j*3]??0, myFills: r[j*3+1]??0, weDeclined: r[j*3+2]??0 });
+    }
+    const ourFills = new Map(); const fillStakeByDay = new Map();
+    { const ws=dayList[0].startIso, we=dayList[dayList.length-1].endIso; let off=0;
+      while (true) { const {data,error} = await sb.from('parlay_orders').select('parlay_id, confirmed_at, confirmed_stake').gte('confirmed_at',ws).lt('confirmed_at',we).in('status',['confirmed','settled_won','settled_lost','settled_push']).order('confirmed_at',{ascending:true}).range(off,off+999); if (error||!data||!data.length) break; for (const r of data) { const d = isoToEt(r.confirmed_at); if (!d) continue; ourFills.set(r.parlay_id, {confirmed_at:r.confirmed_at, confirmed_stake:r.confirmed_stake}); fillStakeByDay.set(d,(fillStakeByDay.get(d)||0)+(Number(r.confirmed_stake)||0)); } if (data.length<1000) break; off+=1000; } }
+    const matchedSeen = new Map();
+    { const ws=dayList[0].startIso, we=dayList[dayList.length-1].endIso; let off=0;
+      while (true) { const {data,error} = await sb.from('matched_parlays').select('parlay_id, matched_at, we_quoted, our_odds').gte('matched_at',ws).lt('matched_at',we).order('matched_at',{ascending:true}).range(off,off+999); if (error||!data||!data.length) break; for (const r of data) { const p = matchedSeen.get(r.parlay_id); if (!p) matchedSeen.set(r.parlay_id, {matched_at:r.matched_at, we_quoted:!!r.we_quoted, our_odds:r.our_odds}); else { if (r.matched_at && r.matched_at < p.matched_at) p.matched_at = r.matched_at; if (r.we_quoted) p.we_quoted = true; if (p.our_odds == null && r.our_odds != null) p.our_odds = r.our_odds; } } if (data.length<1000) break; off+=1000; } }
+    const quotedParlayIds = new Set();
+    { const ids = Array.from(matchedSeen.keys()); const tasks = []; for (let i=0;i<ids.length;i+=200) tasks.push(ids.slice(i,i+200));
+      for (let i=0;i<tasks.length;i+=4) { const wv = tasks.slice(i,i+4); const r = await Promise.all(wv.map(c=>sb.from('parlay_orders').select('parlay_id').in('parlay_id',c).then(r=>r,e=>({error:e})))); for (const x of r) { if (x.error) continue; for (const row of (x.data||[])) quotedParlayIds.add(row.parlay_id); } } }
+    for (const [pid,f] of ourFills) if (!matchedSeen.has(pid)) matchedSeen.set(pid, {matched_at:f.confirmed_at, we_quoted:true, our_odds:null});
+    const mbd = new Map();
+    for (const [pid,r] of matchedSeen) { const d = isoToEt(r.matched_at); if (!d) continue; let b = mbd.get(d); if (!b) { b = {networkMatched:0, networkWeBidOn:0}; mbd.set(d,b); } b.networkMatched++; if (r.we_quoted || r.our_odds != null || quotedParlayIds.has(pid) || ourFills.has(pid)) b.networkWeBidOn++; }
+    const byDay = dayList.map(d => { const c = dailyCounts.get(d.date)||{myQuotes:0,myFills:0,weDeclined:0}; const m = mbd.get(d.date)||{networkMatched:0,networkWeBidOn:0}; const st = fillStakeByDay.get(d.date)||0; return { date:d.date, myQuotes:c.myQuotes, myFills:c.myFills, myFillStake:st, weDeclined:c.weDeclined, networkDemand:c.myQuotes+c.weDeclined, networkMatched:m.networkMatched, networkWeBidOn:m.networkWeBidOn, shareOfMatched: m.networkMatched > 0 ? c.myFills/m.networkMatched : null, bidWinRate: m.networkWeBidOn > 0 ? Math.min(1, c.myFills/m.networkWeBidOn) : null }; });
+    const tot = byDay.reduce((a,d) => { a.myQuotes+=d.myQuotes; a.myFills+=d.myFills; a.myFillStake+=d.myFillStake; a.weDeclined+=d.weDeclined; a.networkDemand+=d.networkDemand; a.networkMatched+=d.networkMatched; a.networkWeBidOn+=d.networkWeBidOn; return a; }, {myQuotes:0,myFills:0,myFillStake:0,weDeclined:0,networkDemand:0,networkMatched:0,networkWeBidOn:0});
+    tot.shareOfMatched = tot.networkMatched > 0 ? tot.myFills/tot.networkMatched : null;
+    tot.bidWinRate = tot.networkWeBidOn > 0 ? Math.min(1, tot.myFills/tot.networkWeBidOn) : null;
+    const payload = { ok:true, days, windowStart:dayList[0].startIso, windowEnd:dayList[dayList.length-1].endIso, asOfUtc:new Date().toISOString(), elapsedMs:Date.now()-startedAt, byDay, totals:tot };
+    _cache.key = `d${days}`; _cache.at = Date.now(); _cache.data = payload;
+    res.set('X-Cache', 'miss'); res.json(payload);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Wildcard fallback — mounted LAST so all specific routes (especially
+// /network-share-daily) take precedence. Express matches in registration
+// order and the first match wins.
+app.get(/^\/[a-z0-9_/-]+$/i, (_, res) => res.json(stubResponse));
+
+const PORT = 4099;
+app.listen(PORT, () => console.log(`Preview server on http://localhost:${PORT}`));

@@ -1151,6 +1151,347 @@ function startStatusServer() {
     }
   });
 
+  // -----------------------------------------------------------------------
+  // /network-share-daily — Analytics tab "Network Volume & Share" card.
+  //
+  // For each calendar day (in ET) within the requested window, returns:
+  //   - myQuotes        : offers we submitted (parlay_orders.quoted_at)
+  //   - myFills         : auctions we won (parlay_orders.confirmed_at,
+  //                       status confirmed/settled_*)
+  //   - weDeclined      : RFQs we received but didn't quote on
+  //                       (declines.declined_at)
+  //   - networkDemand   : myQuotes + weDeclined ≈ total RFQs PX broadcast
+  //                       as visible to us
+  //   - networkMatched  : unique matched parlays across all SPs
+  //                       (matched_parlays.matched_at, deduped on parlay_id)
+  //   - networkWeBidOn  : matched parlays we submitted an offer on
+  //                       (matched_parlays.we_quoted=true OR our_odds!=null
+  //                        OR parlay_id ∈ parlay_orders quoted set)
+  //   - shareOfMatched  : myFills / networkMatched   (network share trend)
+  //   - bidWinRate      : myFills / networkWeBidOn   (% of auctions we won)
+  //
+  // Query params:
+  //   days  (default 30, max 90) — lookback window
+  //
+  // STRATEGY: parlay_orders and declines have very high volume (50k-100k
+  // rows/day combined), so a paginated full-row pull saturates Supabase's
+  // statement timeout. Instead, we issue ET-day-bounded head-count queries
+  // in parallel for those two tables — the database tallies server-side, no
+  // row transfer. matched_parlays is small enough (few k/day) to pull whole
+  // and dedup in Node. Cached 60s server-side; the Analytics tab polls
+  // every 5s so this keeps Supabase load bounded.
+  const _netShareCache = { key: null, at: 0, data: null };
+  app.get('/network-share-daily', async (req, res) => {
+    try {
+      const days = Math.max(1, Math.min(90, parseInt(req.query.days) || 30));
+      const cacheKey = `d${days}`;
+      const now = Date.now();
+      if (_netShareCache.key === cacheKey && (now - _netShareCache.at) < 60_000) {
+        res.set('X-Cache', 'hit');
+        return res.json(_netShareCache.data);
+      }
+
+      const sb = db.getClient();
+      if (!sb) return res.status(500).json({ ok: false, error: 'no DB' });
+
+      const startedAt = Date.now();
+
+      // ET-day boundary computation. Each calendar day in America/New_York maps
+      // to a 24h UTC slice. The offset is -4 during EDT (Mar–Nov 2026) and -5
+      // during EST. We probe the offset for each day's noon to stay robust at
+      // the DST transition (Mar 8 and Nov 1 in 2026).
+      const TZ = 'America/New_York';
+      const ET_FMT = new Intl.DateTimeFormat('en-CA', {
+        timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+      });
+      const ET_OFFSET_FMT = new Intl.DateTimeFormat('en-US', {
+        timeZone: TZ, timeZoneName: 'shortOffset',
+        year: 'numeric',
+      });
+      function isoToEt(iso) {
+        if (!iso) return null;
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return null;
+        return ET_FMT.format(d);
+      }
+      function etDayBoundsUtc(yyyymmdd) {
+        // Return [startIso, endIso] for the given ET calendar date as UTC ISO strings.
+        const [y, mo, d] = yyyymmdd.split('-').map(Number);
+        // Sample the ET offset at noon UTC of that day (always inside the ET day).
+        const noonUtc = new Date(Date.UTC(y, mo - 1, d, 16, 0, 0));
+        const fmtOut = ET_OFFSET_FMT.format(noonUtc);
+        const m = fmtOut.match(/GMT([+-]\d+)(?::(\d+))?/);
+        const offsetHrs = m ? parseInt(m[1]) : -5;
+        const startUtc = Date.UTC(y, mo - 1, d) - offsetHrs * 3600 * 1000;
+        return [new Date(startUtc).toISOString(), new Date(startUtc + 86400000).toISOString()];
+      }
+
+      // Build the N most recent ET calendar dates (today first → going back).
+      const todayEt = isoToEt(new Date().toISOString());
+      const [tyr, tmo, tday] = todayEt.split('-').map(Number);
+      const todayNoonMs = Date.UTC(tyr, tmo - 1, tday, 12, 0, 0);
+      const dayList = []; // [{ date: 'YYYY-MM-DD', startIso, endIso }]
+      for (let i = days - 1; i >= 0; i--) {
+        const dayStr = ET_FMT.format(new Date(todayNoonMs - i * 86400000));
+        const [s, e] = etDayBoundsUtc(dayStr);
+        dayList.push({ date: dayStr, startIso: s, endIso: e });
+      }
+
+      // Helpers: head-count queries with one retry. Returns null on persistent
+      // error so a per-day failure doesn't poison the whole window. We use
+      // count:'estimated' for parlay_orders because exact-count on that table
+      // is unindexed-scan slow (~5s per query), while estimated hits a fast
+      // statistics path for 1-day-or-wider windows (<1s). Estimated matches
+      // exact for these window sizes — verified locally. declines + matched
+      // are fast enough on exact.
+      async function headCount(opts) {
+        const { table, col, start, end, statusIn, mode } = opts;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            let q = sb.from(table).select('*', { count: mode || 'exact', head: true })
+              .gte(col, start).lt(col, end);
+            if (statusIn) q = q.in('status', statusIn);
+            const { count, error } = await q;
+            if (!error) return count || 0;
+            // Empty-message errors sometimes come back from Supabase under
+            // parallel load — retry once before giving up.
+            if (attempt === 0) {
+              await new Promise(r => setTimeout(r, 200));
+              continue;
+            }
+            log.warn('NetShare', `headCount ${table}/${col} ${start}: ${error.message || JSON.stringify(error)}`);
+            return null;
+          } catch (e) {
+            if (attempt === 0) { await new Promise(r => setTimeout(r, 200)); continue; }
+            log.warn('NetShare', `headCount ${table}/${col} ${start} threw: ${e.message}`);
+            return null;
+          }
+        }
+        return null;
+      }
+      const countQuotes   = (s, e) => headCount({ table: 'parlay_orders', col: 'quoted_at',    start: s, end: e, mode: 'estimated' });
+      const countFills    = (s, e) => headCount({ table: 'parlay_orders', col: 'confirmed_at', start: s, end: e, mode: 'estimated', statusIn: ['confirmed','settled_won','settled_lost','settled_push'] });
+      const countDeclines = (s, e) => headCount({ table: 'declines',      col: 'declined_at',  start: s, end: e, mode: 'exact' });
+
+      // Run all per-day counts in parallel. Keep concurrency modest (4) so
+      // Supabase doesn't return empty-error responses under socket pressure.
+      const CHUNK = 4;
+      const dailyCounts = new Map(); // date -> { myQuotes, myFills, weDeclined }
+      for (let i = 0; i < dayList.length; i += CHUNK) {
+        const slice = dayList.slice(i, i + CHUNK);
+        const results = await Promise.all(slice.flatMap(d => [
+          countQuotes(d.startIso, d.endIso),
+          countFills(d.startIso, d.endIso),
+          countDeclines(d.startIso, d.endIso),
+        ]));
+        for (let j = 0; j < slice.length; j++) {
+          dailyCounts.set(slice[j].date, {
+            myQuotes:   results[j*3]     ?? 0,
+            myFills:    results[j*3 + 1] ?? 0,
+            weDeclined: results[j*3 + 2] ?? 0,
+          });
+        }
+      }
+
+      // Pull our actual fills + stakes in window. This is the canonical source
+      // of "we won this auction" — matched_parlays is unreliable for our own
+      // wins because PX sometimes doesn't broadcast order.matched for the
+      // winning SP, or the save fails silently. We union our fills into the
+      // matched-parlays universe below so the network-share denominators are
+      // honest.
+      const ourFills = new Map(); // parlay_id -> { confirmed_at, confirmed_stake }
+      const fillStakeByDay = new Map();
+      {
+        const windowStart = dayList[0].startIso;
+        const windowEnd   = dayList[dayList.length - 1].endIso;
+        let offset = 0;
+        const MAX_PAGES = 50;
+        let pages = 0;
+        while (pages++ < MAX_PAGES) {
+          const { data, error } = await sb.from('parlay_orders')
+            .select('parlay_id, confirmed_at, confirmed_stake')
+            .gte('confirmed_at', windowStart).lt('confirmed_at', windowEnd)
+            .in('status', ['confirmed', 'settled_won', 'settled_lost', 'settled_push'])
+            .order('confirmed_at', { ascending: true })
+            .range(offset, offset + 999);
+          if (error) { log.warn('NetShare', `fill stake page ${pages}: ${error.message}`); break; }
+          if (!data || data.length === 0) break;
+          for (const r of data) {
+            const d = isoToEt(r.confirmed_at);
+            if (!d) continue;
+            ourFills.set(r.parlay_id, { confirmed_at: r.confirmed_at, confirmed_stake: r.confirmed_stake });
+            fillStakeByDay.set(d, (fillStakeByDay.get(d) || 0) + (Number(r.confirmed_stake) || 0));
+          }
+          if (data.length < 1000) break;
+          offset += 1000;
+        }
+      }
+
+      // matched_parlays in window — full pull (small table), dedup by parlay_id.
+      // Done FIRST so we have the parlay_id set we need to cross-reference.
+      const matchedSeen = new Map(); // parlay_id -> { matched_at, we_quoted, our_odds }
+      {
+        const windowStart = dayList[0].startIso;
+        const windowEnd   = dayList[dayList.length - 1].endIso;
+        let offset = 0;
+        const MAX_PAGES = 200;
+        let pages = 0;
+        while (pages++ < MAX_PAGES) {
+          const { data, error } = await sb.from('matched_parlays')
+            .select('parlay_id, matched_at, we_quoted, our_odds')
+            .gte('matched_at', windowStart).lt('matched_at', windowEnd)
+            .order('matched_at', { ascending: true })
+            .range(offset, offset + 999);
+          if (error) { log.warn('NetShare', `matched_parlays page ${pages}: ${error.message}`); break; }
+          if (!data || data.length === 0) break;
+          for (const r of data) {
+            const prev = matchedSeen.get(r.parlay_id);
+            if (!prev) {
+              matchedSeen.set(r.parlay_id, {
+                matched_at: r.matched_at,
+                we_quoted: !!r.we_quoted,
+                our_odds: r.our_odds,
+              });
+            } else {
+              if (r.matched_at && r.matched_at < prev.matched_at) prev.matched_at = r.matched_at;
+              if (r.we_quoted) prev.we_quoted = true;
+              if (prev.our_odds == null && r.our_odds != null) prev.our_odds = r.our_odds;
+            }
+          }
+          if (data.length < 1000) break;
+          offset += 1000;
+        }
+      }
+
+      // Cross-reference: of the matched parlay_ids, which ones do we have a
+      // parlay_orders row for? Query in chunks via .in('parlay_id', [...])
+      // which uses the parlay_orders primary-key index (fast — vs scanning
+      // by quoted_at which isn't well-indexed and times out at 14s for the
+      // OR clause we previously tried). Run batches in parallel groups of 4.
+      const quotedParlayIds = new Set();
+      {
+        const matchedIds = Array.from(matchedSeen.keys());
+        const BATCH = 200;
+        const PARALLEL = 4;
+        const tasks = [];
+        for (let i = 0; i < matchedIds.length; i += BATCH) {
+          tasks.push(matchedIds.slice(i, i + BATCH));
+        }
+        for (let i = 0; i < tasks.length; i += PARALLEL) {
+          const wave = tasks.slice(i, i + PARALLEL);
+          const results = await Promise.all(wave.map(chunk =>
+            sb.from('parlay_orders').select('parlay_id').in('parlay_id', chunk)
+              .then(r => r, e => ({ error: e }))
+          ));
+          for (const r of results) {
+            if (r.error) {
+              log.warn('NetShare', `quotedIds chunk: ${r.error.message || JSON.stringify(r.error)}`);
+              continue;
+            }
+            for (const row of (r.data || [])) quotedParlayIds.add(row.parlay_id);
+          }
+        }
+      }
+
+      // Union our fills into the matched-parlays universe. For every parlay we
+      // won that isn't already in matched_parlays (PX broadcast lost / save
+      // failed silently — observed for ~10% of our wins), synthesize an entry
+      // bucketed by confirmed_at. This makes the share-of-matched denominator
+      // honest: it counts every parlay that crossed the network, including the
+      // ones we filled.
+      for (const [pid, fill] of ourFills.entries()) {
+        if (matchedSeen.has(pid)) continue;
+        matchedSeen.set(pid, {
+          matched_at: fill.confirmed_at,
+          we_quoted: true,
+          our_odds: null, // synthetic — we know we bid, but not the SP-side number
+          _synthesizedFromFill: true,
+        });
+      }
+
+      // Bucket the unified set by ET-day. networkWeBidOn is incremented when
+      // any "we bid on this" signal fires: we_quoted=true, our_odds set,
+      // cross-ref hit, OR we have a fill for this parlay (the strongest
+      // proof of all).
+      const matchedByDay = new Map(); // date -> { networkMatched, networkWeBidOn }
+      for (const [parlayId, r] of matchedSeen.entries()) {
+        const d = isoToEt(r.matched_at);
+        if (!d) continue;
+        let bucket = matchedByDay.get(d);
+        if (!bucket) { bucket = { networkMatched: 0, networkWeBidOn: 0 }; matchedByDay.set(d, bucket); }
+        bucket.networkMatched++;
+        const weBid = r.we_quoted || r.our_odds != null
+          || quotedParlayIds.has(parlayId) || ourFills.has(parlayId);
+        if (weBid) bucket.networkWeBidOn++;
+      }
+
+      // Build the output array preserving ascending date order (oldest → newest).
+      // Days with zero activity still appear so the chart shows a continuous
+      // timeline rather than collapsing gaps.
+      const byDayArr = dayList.map(d => {
+        const counts  = dailyCounts.get(d.date) || { myQuotes: 0, myFills: 0, weDeclined: 0 };
+        const matched = matchedByDay.get(d.date) || { networkMatched: 0, networkWeBidOn: 0 };
+        const stake   = fillStakeByDay.get(d.date) || 0;
+        // Cap bidWinRate at 1.0 — networkWeBidOn can occasionally undercount
+        // (e.g. matched_parlays.we_quoted=false persisted before cross-ref
+        // backfilled). The denominator should always be ≥ numerator; clamp
+        // defensively so the UI doesn't render impossible >100% rates.
+        const sharePct = matched.networkMatched > 0 ? counts.myFills / matched.networkMatched : null;
+        const bidWin   = matched.networkWeBidOn > 0
+          ? Math.min(1, counts.myFills / matched.networkWeBidOn)
+          : null;
+        return {
+          date: d.date,
+          myQuotes: counts.myQuotes,
+          myFills: counts.myFills,
+          myFillStake: stake,
+          weDeclined: counts.weDeclined,
+          networkDemand: counts.myQuotes + counts.weDeclined,
+          networkMatched: matched.networkMatched,
+          networkWeBidOn: matched.networkWeBidOn,
+          shareOfMatched: sharePct,
+          bidWinRate: bidWin,
+        };
+      });
+
+      const totals = byDayArr.reduce((acc, d) => {
+        acc.myQuotes += d.myQuotes;
+        acc.myFills += d.myFills;
+        acc.myFillStake += d.myFillStake;
+        acc.weDeclined += d.weDeclined;
+        acc.networkDemand += d.networkDemand;
+        acc.networkMatched += d.networkMatched;
+        acc.networkWeBidOn += d.networkWeBidOn;
+        return acc;
+      }, { myQuotes:0, myFills:0, myFillStake:0, weDeclined:0, networkDemand:0, networkMatched:0, networkWeBidOn:0 });
+      totals.shareOfMatched = totals.networkMatched > 0 ? totals.myFills / totals.networkMatched : null;
+      totals.bidWinRate = totals.networkWeBidOn > 0
+        ? Math.min(1, totals.myFills / totals.networkWeBidOn) : null;
+
+      const elapsedMs = Date.now() - startedAt;
+      log.info('NetShare', `/network-share-daily days=${days}: ${totals.myFills} fills / ${totals.networkMatched} matched (${elapsedMs}ms)`);
+
+      const payload = {
+        ok: true,
+        days,
+        windowStart: dayList[0].startIso,
+        windowEnd: dayList[dayList.length - 1].endIso,
+        asOfUtc: new Date().toISOString(),
+        elapsedMs,
+        byDay: byDayArr,
+        totals,
+      };
+      _netShareCache.key = cacheKey;
+      _netShareCache.at = now;
+      _netShareCache.data = payload;
+      res.set('X-Cache', 'miss');
+      res.json(payload);
+    } catch (err) {
+      log.error('NetShare', `/network-share-daily error: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Risk-threshold declines — focused view on RFQs we declined because
   // they would exceed a configured cap (team / game / per-parlay risk /
   // series / pitcher / player / cooldown / freeze / disabled). Excludes

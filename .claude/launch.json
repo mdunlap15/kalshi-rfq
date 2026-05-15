@@ -7,6 +7,12 @@
       "runtimeArgs": ["index.js"],
       "port": 3001,
       "autoPort": true
+    },
+    {
+      "name": "preview",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/_preview_server.js"],
+      "port": 4099
     }
   ]
 }
