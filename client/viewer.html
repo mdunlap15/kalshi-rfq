@@ -13208,11 +13208,15 @@
       safeRender(() => renderBankrollSplit(_lastViewerStatus.portfolio || {}), 'bankrollSplit(cache)');
     }
 
-    // Fetch both in parallel. /status is the smaller payload — render its
+    // Fetch in parallel. /status is the smaller payload — render its
     // sections (bankroll, exposure) as soon as it lands, then a second
     // wave once the larger /orders response arrives (positions, P&L chart).
-    const statusP = fetchJSON('/status').catch(err => ({ _err: err }));
-    const ordersP = fetchJSON('/orders').catch(err => ({ _err: err }));
+    // /bankroll runs concurrently — when it lands, re-render the bankroll
+    // strip with dual-cohort numbers. The cached-status render path above
+    // gives us a fast first paint even before /bankroll resolves.
+    const statusP   = fetchJSON('/status').catch(err => ({ _err: err }));
+    const ordersP   = fetchJSON('/orders').catch(err => ({ _err: err }));
+    const bankrollP = fetchBankroll().catch(() => null);
 
     let statusOk = false, ordersOk = false;
     try {
@@ -13228,6 +13232,13 @@
     } catch (err) {
       console.warn('[viewer status]', err);
     }
+
+    // When /bankroll lands (typically faster than /orders), re-render the
+    // strip with the authoritative dual-cohort numbers. Quietly no-ops if
+    // the endpoint fails or returns a non-ok payload.
+    bankrollP.then(br => {
+      if (br) safeRender(() => renderBankrollSplit(_lastViewerStatus?.portfolio || {}), 'bankrollSplit(/bankroll)');
+    });
 
     try {
       const orders = await ordersP;
@@ -13271,35 +13282,52 @@
   /**
    * Render the bankroll split bar at the top of the viewer.
    *
-   * Mike's business arrangement with Rick uses a "snapshot reset" model:
-   * each time capital enters or leaves the account, the bases are reset to
-   * the equity values at that moment, and the marginal-share ratios are
-   * recomputed to match the new ownership percentages. Past gains stay
-   * allocated under whatever ratios were in effect when they were earned.
+   * Two data paths:
+   *   1. PRIMARY (dual-cohort): fetched from /bankroll. Each capital event
+   *      (withdrawal/deposit) snapshots the open-parlay set so those
+   *      "in-flight" positions settle under the ratios in force when they
+   *      were placed. Parlays placed after the snapshot use the new
+   *      post-event ratios. This keeps both partners whole on positions
+   *      they jointly committed capital to.
    *
-   * Formula (unchanged):
-   *   mike = mike_base + mike_share × (balance − base_total)
-   *   rick = rick_base + rick_share × (balance − base_total)
+   *   2. FALLBACK (legacy single-ratio): if /bankroll fails or the
+   *      snapshot isn't loaded yet, derives Mike/Rick from
+   *      portfolio.totalEquity using the post-event ratios as a single
+   *      flat split. Approximation only — used briefly during page boot.
    *
-   * Current state (post Rick's $2K withdrawal on 2026-05-15):
-   *   Snapshot equity      = $52,460.36
-   *   Mike                 = $31,768.54  (60.557%)
-   *   Rick                 = $20,691.82  (39.443%)
-   *
-   * History:
-   *   2026-05-15: Rick withdrew $2K. Snapshot reset; Mike's ownership %
-   *     ticked up from 58.333% to 60.557%, Rick's down to 39.443%. Future
-   *     P&L splits at the new ratios.
-   *   Original (account seed):
-   *     base_total = $30,000; Mike $17,500 (7/12); Rick $12,500 (5/12).
+   * History (most recent first):
+   *   2026-05-15: Rick withdrew $2,000. Snapshot captured 64 open parlays
+   *     ($14,473.65 stake) → pre-cohort, settles at 7/12 Mike / 5/12 Rick.
+   *     Post-cohort (everything new) at 60.557% Mike / 39.443% Rick.
+   *   Original seed: Mike $17,500 (7/12), Rick $12,500 (5/12),
+   *     base_total $30,000.
    */
-  const BANKROLL_BASE_TOTAL = 52460.36;
-  const BANKROLL_MIKE_BASE  = 31768.54;
-  const BANKROLL_RICK_BASE  = 20691.82;
-  // Shares derived from bases so the formula is internally consistent.
-  // Mike ≈ 0.605568, Rick ≈ 0.394432.
-  const BANKROLL_MIKE_SHARE = BANKROLL_MIKE_BASE / BANKROLL_BASE_TOTAL;
-  const BANKROLL_RICK_SHARE = BANKROLL_RICK_BASE / BANKROLL_BASE_TOTAL;
+  // Fallback formula constants — used only if /bankroll endpoint isn't
+  // reachable. Reflects the post-2026-05-15-withdrawal state.
+  const BANKROLL_FALLBACK = {
+    baseTotal: 52460.36,
+    mikeBase:  31768.54,
+    rickBase:  20691.82,
+    mikeShare: 31768.54 / 52460.36,
+    rickShare: 20691.82 / 52460.36,
+  };
+
+  // Cache the last successful /bankroll response so a transient endpoint
+  // failure during refresh doesn't blank out the strip.
+  window._lastBankrollData = null;
+
+  async function fetchBankroll() {
+    try {
+      const r = await fetch('/bankroll', { credentials: 'include' });
+      if (!r.ok) return null;
+      const j = await r.json();
+      if (j && j.ok) {
+        window._lastBankrollData = j;
+        return j;
+      }
+    } catch (_) { /* swallow */ }
+    return null;
+  }
 
   function renderBankrollSplit(portfolio) {
     const totalEl = document.getElementById('bankroll-total');
@@ -13307,10 +13335,32 @@
     const rickEl = document.getElementById('bankroll-rick');
     if (!totalEl) return;
 
-    // Total Equity = Cash Available + Deployed (matches the main dashboard's
-    // "Total Equity" stat). Server computes it in /status portfolio.totalEquity.
-    // Falls back to (accountValue + currentRisk) if the server hasn't been
-    // updated yet, then to balance for older deployments.
+    // Prefer the dual-cohort response from /bankroll when we have it.
+    const br = window._lastBankrollData;
+    if (br && Number.isFinite(br.mike) && Number.isFinite(br.rick)) {
+      const total = Number.isFinite(br.liveTotalEquity) ? br.liveTotalEquity : br.total;
+      totalEl.textContent = fmtDollar(total);
+      mikeEl.textContent  = fmtDollar(br.mike);
+      rickEl.textContent  = fmtDollar(br.rick);
+
+      // Pending-withdrawal indicator: surface "+$2K Rick pending" as a
+      // small chip next to the Rick label so the operator knows the cash
+      // hasn't physically moved yet. Lives in a sibling span on the same
+      // cell — added lazily here on first render.
+      const pending = br.pending;
+      const driftStr = (pending && pending.partner && !pending.cashMoved)
+        ? ' <span style="color:var(--text3); font-size:10px; margin-left:4px;">'
+          + '(−$' + Number(pending.amount).toLocaleString() + ' '
+          + escapeHtml(pending.partner) + ' withdraw pending)</span>'
+        : '';
+      if (driftStr) {
+        const partnerEl = (pending.partner === 'mike') ? mikeEl : rickEl;
+        partnerEl.innerHTML = fmtDollar(pending.partner === 'mike' ? br.mike : br.rick) + driftStr;
+      }
+      return;
+    }
+
+    // Fallback path: legacy single-ratio formula off portfolio.totalEquity.
     let balance = Number(portfolio && portfolio.totalEquity);
     if (!Number.isFinite(balance)) {
       const av = Number(portfolio && portfolio.accountValue);
@@ -13323,11 +13373,9 @@
       rickEl.textContent = '—';
       return;
     }
-
-    const gain = balance - BANKROLL_BASE_TOTAL;
-    const mikeShare = BANKROLL_MIKE_BASE + BANKROLL_MIKE_SHARE * gain;
-    const rickShare = BANKROLL_RICK_BASE + BANKROLL_RICK_SHARE * gain;
-
+    const gain = balance - BANKROLL_FALLBACK.baseTotal;
+    const mikeShare = BANKROLL_FALLBACK.mikeBase + BANKROLL_FALLBACK.mikeShare * gain;
+    const rickShare = BANKROLL_FALLBACK.rickBase + BANKROLL_FALLBACK.rickShare * gain;
     totalEl.textContent = fmtDollar(balance);
     mikeEl.textContent = fmtDollar(mikeShare);
     rickEl.textContent = fmtDollar(rickShare);

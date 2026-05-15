@@ -1492,6 +1492,166 @@ function startStatusServer() {
     }
   });
 
+  // -----------------------------------------------------------------------
+  // /bankroll — Mike + Rick partnership equity split (dual-cohort).
+  //
+  // Background: each time capital enters or leaves the partnership account,
+  // a "snapshot" is recorded. The set of parlays already open at that
+  // moment forms the "pre-cohort" — their P&L (as they settle) splits at
+  // the OLD ratios (the agreement that was in force when they were placed).
+  // Parlays placed after the snapshot form the "post-cohort" — their P&L
+  // splits at the NEW ratios. This keeps partners whole on positions they
+  // jointly committed capital to before a withdrawal/deposit changed the
+  // ownership %.
+  //
+  // Snapshot lives in Supabase kv_store["bankroll_state"]:
+  //   { snapshotAt, snapshotMike, snapshotRick, preCohortIds[],
+  //     preRatio: {mike, rick}, postRatio: {mike, rick}, pendingWithdrawal? }
+  //
+  // Computation per refresh:
+  //   1. Load snapshot from kv_store.
+  //   2. Pull settled parlay_orders since snapshotAt (pnl + parlay_id).
+  //   3. Partition by parlay_id ∈ preCohortIds.
+  //   4. Mike   = mikeAt + preRatio.mike   × Σpre_pnl + postRatio.mike   × Σpost_pnl
+  //      Rick   = rickAt + preRatio.rick   × Σpre_pnl + postRatio.rick   × Σpost_pnl
+  //   5. Drift = live_te − (Mike + Rick).  Surfaced; if there's a
+  //      pendingWithdrawal whose amount matches drift within tolerance,
+  //      flag it.
+  //
+  // 60s in-memory cache to bound Supabase load.
+  const _bankrollCache = { at: 0, data: null };
+  app.get('/bankroll', async (req, res) => {
+    try {
+      const now = Date.now();
+      const bypass = req.query.refresh === '1';
+      if (!bypass && _bankrollCache.data && (now - _bankrollCache.at) < 60_000) {
+        res.set('X-Cache', 'hit');
+        return res.json(_bankrollCache.data);
+      }
+
+      const sb = db.getClient();
+      if (!sb) return res.status(500).json({ ok: false, error: 'no DB' });
+
+      // 1. Load snapshot
+      const { data: kvRow, error: kvErr } = await sb.from('kv_store')
+        .select('value, updated_at').eq('key', 'bankroll_state').maybeSingle();
+      if (kvErr) {
+        log.warn('Bankroll', `kv_store read failed: ${kvErr.message}`);
+        return res.status(500).json({ ok: false, error: kvErr.message });
+      }
+      if (!kvRow || !kvRow.value) {
+        return res.status(404).json({ ok: false, error: 'no bankroll snapshot recorded' });
+      }
+      const snap = kvRow.value;
+      const preIds = new Set(snap.preCohortIds || []);
+
+      // 2. Pull settled parlay_orders since snapshotAt with non-null pnl.
+      //    Light projection — only parlay_id + pnl. status filter ensures
+      //    we count realized outcomes, not phantoms.
+      const settled = [];
+      {
+        let offset = 0;
+        const MAX_PAGES = 200;
+        let pages = 0;
+        while (pages++ < MAX_PAGES) {
+          const { data, error } = await sb.from('parlay_orders')
+            .select('parlay_id, pnl, status')
+            .gte('settled_at', snap.snapshotAt)
+            .in('status', ['settled_won', 'settled_lost', 'settled_push'])
+            .order('settled_at', { ascending: true })
+            .range(offset, offset + 999);
+          if (error) { log.warn('Bankroll', `settled fetch page ${pages}: ${error.message}`); break; }
+          if (!data || data.length === 0) break;
+          settled.push(...data);
+          if (data.length < 1000) break;
+          offset += 1000;
+        }
+      }
+
+      // 3. Partition
+      let prePnl = 0, postPnl = 0;
+      let preCount = 0, postCount = 0;
+      for (const r of settled) {
+        const pnl = Number(r.pnl);
+        if (!Number.isFinite(pnl)) continue;
+        if (preIds.has(r.parlay_id)) { prePnl += pnl; preCount++; }
+        else                          { postPnl += pnl; postCount++; }
+      }
+
+      // 4. Compute Mike / Rick equity per the dual-cohort formula
+      const mikeBooks = snap.snapshotMike + snap.preRatio.mike * prePnl + snap.postRatio.mike * postPnl;
+      const rickBooks = snap.snapshotRick + snap.preRatio.rick * prePnl + snap.postRatio.rick * postPnl;
+      const totalBooks = mikeBooks + rickBooks;
+
+      // 5. Live TE for drift check.  liveBankroll + open exposure.
+      //    Mirrors the portfolio.totalEquity computation in the main /status
+      //    handler (around line 920) — keeps the two views consistent.
+      let liveTotalEquity = null;
+      try {
+        const liveBal = config.pricing.liveBankroll;
+        const pxOpenExposure = (typeof pxLedger !== 'undefined' && pxLedger.getCachedOpenExposure)
+          ? pxLedger.getCachedOpenExposure() : null;
+        const fallbackRisk = orderTracker.getTotalPortfolioRisk();
+        const effectiveRisk = pxOpenExposure != null ? pxOpenExposure : fallbackRisk;
+        liveTotalEquity = (liveBal && liveBal > 0) ? (liveBal + effectiveRisk) : null;
+      } catch (_) { /* leave null */ }
+
+      const drift = (liveTotalEquity != null) ? (liveTotalEquity - totalBooks) : null;
+
+      // Pending-withdrawal heuristic. If drift is positive and roughly equal
+      // to a recorded pendingWithdrawal.amount, the cash hasn't physically
+      // moved yet — flag for the operator.
+      let pendingStatus = null;
+      if (snap.pendingWithdrawal && drift != null) {
+        const expected = snap.pendingWithdrawal.amount;
+        const matches = Math.abs(drift - expected) < 50;  // $50 tolerance
+        pendingStatus = {
+          partner: snap.pendingWithdrawal.partner,
+          amount: expected,
+          noticedAt: snap.pendingWithdrawal.noticedAt,
+          cashMoved: !matches,
+          driftDelta: drift,
+        };
+      }
+
+      const payload = {
+        ok: true,
+        snapshotAt: snap.snapshotAt,
+        snapshotEquity: snap.snapshotEquity,
+        snapshotMike: snap.snapshotMike,
+        snapshotRick: snap.snapshotRick,
+        preCohort: {
+          ids: snap.preCohortIds.length,
+          stakeAtSnapshot: snap.preCohortStakeAtSnapshot,
+          settled: preCount,
+          stillOpen: snap.preCohortIds.length - preCount,
+          realizedPnl: prePnl,
+          ratio: snap.preRatio,
+        },
+        postCohort: {
+          settled: postCount,
+          realizedPnl: postPnl,
+          ratio: snap.postRatio,
+        },
+        mike: mikeBooks,
+        rick: rickBooks,
+        total: totalBooks,
+        liveTotalEquity,
+        drift,
+        pending: pendingStatus,
+        asOfUtc: new Date().toISOString(),
+      };
+
+      _bankrollCache.at = now;
+      _bankrollCache.data = payload;
+      res.set('X-Cache', 'miss');
+      res.json(payload);
+    } catch (err) {
+      log.error('Bankroll', `/bankroll error: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Risk-threshold declines — focused view on RFQs we declined because
   // they would exceed a configured cap (team / game / per-parlay risk /
   // series / pitcher / player / cooldown / freeze / disabled). Excludes
