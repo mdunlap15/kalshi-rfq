@@ -13296,20 +13296,25 @@
    *      flat split. Approximation only — used briefly during page boot.
    *
    * History (most recent first):
-   *   2026-05-15: Rick withdrew $2,000. Snapshot captured 64 open parlays
-   *     ($14,473.65 stake) → pre-cohort, settles at 7/12 Mike / 5/12 Rick.
-   *     Post-cohort (everything new) at 60.557% Mike / 39.443% Rick.
+   *   2026-05-15 (rev 2): Mike paid Rick $5,000 from a separate personal
+   *     account. Trading-account total equity unchanged ($54,460.36).
+   *     Mike's claim grew by $5K, Rick's shrank by $5K. Snapshot captured
+   *     65 open parlays ($16,483.65 stake) → pre-cohort, settles at
+   *     7/12 Mike / 5/12 Rick. Post-cohort (everything new) at
+   *     67.514% Mike / 32.486% Rick.
+   *   2026-05-15 (rev 1, superseded): originally read as a $2K Rick
+   *     withdrawal from PX; corrected when Mike clarified the cash path.
    *   Original seed: Mike $17,500 (7/12), Rick $12,500 (5/12),
    *     base_total $30,000.
    */
   // Fallback formula constants — used only if /bankroll endpoint isn't
-  // reachable. Reflects the post-2026-05-15-withdrawal state.
+  // reachable. Reflects the post-2026-05-15 external-transfer state.
   const BANKROLL_FALLBACK = {
-    baseTotal: 52460.36,
-    mikeBase:  31768.54,
-    rickBase:  20691.82,
-    mikeShare: 31768.54 / 52460.36,
-    rickShare: 20691.82 / 52460.36,
+    baseTotal: 54460.36,
+    mikeBase:  36768.54,
+    rickBase:  17691.82,
+    mikeShare: 36768.54 / 54460.36,   // ≈ 0.67514
+    rickShare: 17691.82 / 54460.36,   // ≈ 0.32486
   };
 
   // Cache the last successful /bankroll response so a transient endpoint
