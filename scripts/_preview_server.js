@@ -85,11 +85,28 @@ app.get('/network-share-daily', async (req, res) => {
     for (const [pid,f] of ourFills) if (!matchedSeen.has(pid)) matchedSeen.set(pid, {matched_at:f.confirmed_at, we_quoted:true, our_odds:null});
     const mbd = new Map();
     for (const [pid,r] of matchedSeen) { const d = isoToEt(r.matched_at); if (!d) continue; let b = mbd.get(d); if (!b) { b = {networkMatched:0, networkWeBidOn:0}; mbd.set(d,b); } b.networkMatched++; if (r.we_quoted || r.our_odds != null || quotedParlayIds.has(pid) || ourFills.has(pid)) b.networkWeBidOn++; }
-    const byDay = dayList.map(d => { const c = dailyCounts.get(d.date)||{myQuotes:0,myFills:0,weDeclined:0}; const m = mbd.get(d.date)||{networkMatched:0,networkWeBidOn:0}; const st = fillStakeByDay.get(d.date)||0; return { date:d.date, myQuotes:c.myQuotes, myFills:c.myFills, myFillStake:st, weDeclined:c.weDeclined, networkDemand:c.myQuotes+c.weDeclined, networkMatched:m.networkMatched, networkWeBidOn:m.networkWeBidOn, shareOfMatched: m.networkMatched > 0 ? c.myFills/m.networkMatched : null, bidWinRate: m.networkWeBidOn > 0 ? Math.min(1, c.myFills/m.networkWeBidOn) : null }; });
+    const BID_WIN_RATE_RELIABLE_FROM = '2026-05-12';
+    const byDay = dayList.map(d => {
+      const c = dailyCounts.get(d.date)||{myQuotes:0,myFills:0,weDeclined:0};
+      const m = mbd.get(d.date)||{networkMatched:0,networkWeBidOn:0};
+      const st = fillStakeByDay.get(d.date)||0;
+      const reliable = d.date >= BID_WIN_RATE_RELIABLE_FROM;
+      return {
+        date:d.date, myQuotes:c.myQuotes, myFills:c.myFills, myFillStake:st, weDeclined:c.weDeclined,
+        networkDemand:c.myQuotes+c.weDeclined,
+        networkMatched:m.networkMatched, networkWeBidOn:m.networkWeBidOn,
+        shareOfMatched: m.networkMatched > 0 ? c.myFills/m.networkMatched : null,
+        bidWinRate: (m.networkWeBidOn > 0 && reliable) ? Math.min(1, c.myFills/m.networkWeBidOn) : null,
+        bidWinRateReliable: reliable,
+      };
+    });
     const tot = byDay.reduce((a,d) => { a.myQuotes+=d.myQuotes; a.myFills+=d.myFills; a.myFillStake+=d.myFillStake; a.weDeclined+=d.weDeclined; a.networkDemand+=d.networkDemand; a.networkMatched+=d.networkMatched; a.networkWeBidOn+=d.networkWeBidOn; return a; }, {myQuotes:0,myFills:0,myFillStake:0,weDeclined:0,networkDemand:0,networkMatched:0,networkWeBidOn:0});
     tot.shareOfMatched = tot.networkMatched > 0 ? tot.myFills/tot.networkMatched : null;
     tot.bidWinRate = tot.networkWeBidOn > 0 ? Math.min(1, tot.myFills/tot.networkWeBidOn) : null;
-    const payload = { ok:true, days, windowStart:dayList[0].startIso, windowEnd:dayList[dayList.length-1].endIso, asOfUtc:new Date().toISOString(), elapsedMs:Date.now()-startedAt, byDay, totals:tot };
+    const reliableTotals = byDay.filter(d => d.bidWinRateReliable).reduce((a,d) => { a.myFills += d.myFills; a.networkWeBidOn += d.networkWeBidOn; return a; }, { myFills:0, networkWeBidOn:0 });
+    reliableTotals.bidWinRate = reliableTotals.networkWeBidOn > 0 ? Math.min(1, reliableTotals.myFills / reliableTotals.networkWeBidOn) : null;
+    reliableTotals.days = byDay.filter(d => d.bidWinRateReliable).length;
+    const payload = { ok:true, days, windowStart:dayList[0].startIso, windowEnd:dayList[dayList.length-1].endIso, bidWinRateReliableFrom: BID_WIN_RATE_RELIABLE_FROM, asOfUtc:new Date().toISOString(), elapsedMs:Date.now()-startedAt, byDay, totals:tot, reliableTotals };
     _cache.key = `d${days}`; _cache.at = Date.now(); _cache.data = payload;
     res.set('X-Cache', 'miss'); res.json(payload);
   } catch (e) {

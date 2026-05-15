@@ -1425,6 +1425,15 @@ function startStatusServer() {
         if (weBid) bucket.networkWeBidOn++;
       }
 
+      // Bid-win-rate data quality cutoff. Prior to 2026-05-12, matched_parlays
+      // didn't reliably persist we_quoted=true for parlays we BID ON BUT LOST
+      // — the denominator (networkWeBidOn) only captured our wins, so the
+      // ratio comes out artificially near 100%. The matched_parlays insert
+      // path was hardened around that date; from there forward we capture
+      // losing-bid records correctly. Flag this in the response and zero
+      // out bidWinRate on unreliable days so the UI doesn't show fake 100%s.
+      const BID_WIN_RATE_RELIABLE_FROM = '2026-05-12';
+
       // Build the output array preserving ascending date order (oldest → newest).
       // Days with zero activity still appear so the chart shows a continuous
       // timeline rather than collapsing gaps.
@@ -1437,7 +1446,8 @@ function startStatusServer() {
         // backfilled). The denominator should always be ≥ numerator; clamp
         // defensively so the UI doesn't render impossible >100% rates.
         const sharePct = matched.networkMatched > 0 ? counts.myFills / matched.networkMatched : null;
-        const bidWin   = matched.networkWeBidOn > 0
+        const reliable = d.date >= BID_WIN_RATE_RELIABLE_FROM;
+        const bidWin   = (matched.networkWeBidOn > 0 && reliable)
           ? Math.min(1, counts.myFills / matched.networkWeBidOn)
           : null;
         return {
@@ -1451,6 +1461,7 @@ function startStatusServer() {
           networkWeBidOn: matched.networkWeBidOn,
           shareOfMatched: sharePct,
           bidWinRate: bidWin,
+          bidWinRateReliable: reliable,
         };
       });
 
@@ -1465,8 +1476,25 @@ function startStatusServer() {
         return acc;
       }, { myQuotes:0, myFills:0, myFillStake:0, weDeclined:0, networkDemand:0, networkMatched:0, networkWeBidOn:0 });
       totals.shareOfMatched = totals.networkMatched > 0 ? totals.myFills / totals.networkMatched : null;
+      // Window-wide totals (kept for back-compat; treat as approximate due to
+      // pre-cutoff data quality).
       totals.bidWinRate = totals.networkWeBidOn > 0
         ? Math.min(1, totals.myFills / totals.networkWeBidOn) : null;
+
+      // RELIABLE-DAYS totals — used by the headline chip + UI summary so the
+      // bid-win-rate displayed isn't dragged toward 100% by pre-cutoff rows.
+      // shareOfMatched stays computed across the full window because that
+      // metric isn't affected by the we_quoted bug.
+      const reliableTotals = byDayArr
+        .filter(d => d.bidWinRateReliable)
+        .reduce((acc, d) => {
+          acc.myFills += d.myFills;
+          acc.networkWeBidOn += d.networkWeBidOn;
+          return acc;
+        }, { myFills: 0, networkWeBidOn: 0 });
+      reliableTotals.bidWinRate = reliableTotals.networkWeBidOn > 0
+        ? Math.min(1, reliableTotals.myFills / reliableTotals.networkWeBidOn) : null;
+      reliableTotals.days = byDayArr.filter(d => d.bidWinRateReliable).length;
 
       const elapsedMs = Date.now() - startedAt;
       log.info('NetShare', `/network-share-daily days=${days}: ${totals.myFills} fills / ${totals.networkMatched} matched (${elapsedMs}ms)`);
@@ -1476,10 +1504,12 @@ function startStatusServer() {
         days,
         windowStart: dayList[0].startIso,
         windowEnd: dayList[dayList.length - 1].endIso,
+        bidWinRateReliableFrom: BID_WIN_RATE_RELIABLE_FROM,
         asOfUtc: new Date().toISOString(),
         elapsedMs,
         byDay: byDayArr,
         totals,
+        reliableTotals,
       };
       _netShareCache.key = cacheKey;
       _netShareCache.at = now;

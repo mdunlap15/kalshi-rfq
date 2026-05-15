@@ -889,7 +889,9 @@
             <div id="netshare-table"></div>
 
             <div style="font-size:10px; color:var(--text3); margin-top:10px; line-height:1.5;">
-              <b>Network demand</b> = RFQs PX broadcast to us (quoted + declined). <b>Network matched</b> = parlays any SP filled (deduped). <b>Network we bid on</b> = matched parlays where we submitted an offer. <b>Share of matched</b> = my fills / network matched (our slice of total demand satisfied). <b>Bid win rate</b> = my fills / network we bid on (how often we win the auctions we enter). Cached 60s server-side; days bucketed in US Eastern. <br><b>Caveat:</b> bid-win-rate before ~2026-05-12 is artificially high (often 100%) because <code>matched_parlays.we_quoted</code> wasn't being persisted reliably for lost auctions, so the denominator only counts wins. Recent days (5/12+) have honest numerator + denominator. Share-of-matched is reliable across the full window.
+              <b>Network demand</b> = RFQs PX broadcast to us (quoted + declined). <b>Network matched</b> = parlays any SP filled (deduped). <b>Network we bid on</b> = matched parlays where we submitted an offer. <b>Share of matched</b> = my fills / network matched (our slice of total demand satisfied). <b>Bid win rate</b> = my fills / network we bid on (how often we win the auctions we enter).
+              <br>The volume charts use <b>two Y-axes</b> per chart: left (network-scale) and right (our-scale). Bars are auto-sized against their own axis so the trends in each series stay readable despite the ~10× magnitude gap.
+              <br>Bid-win-rate before ~2026-05-12 is omitted — <code>matched_parlays.we_quoted</code> wasn't reliably persisted for lost auctions before then, so older numbers would be artificially near 100%. The trend chart's vertical divider marks where honest data starts. Share-of-matched is reliable across the full window. Cached 60s server-side; days bucketed in US Eastern.
             </div>
           </div>
         </div>
@@ -10283,6 +10285,14 @@
     const days = data.days;
     const byDay = data.byDay || [];
     const tot = data.totals || {};
+    // Reliable-only totals — use these for bid-win-rate displays so the
+    // headline isn't dragged toward 100% by pre-cutoff rows where
+    // matched_parlays.we_quoted wasn't reliably persisted for lost bids.
+    const reliable = data.reliableTotals || null;
+    const bidWinForDisplay = reliable && reliable.bidWinRate != null
+      ? reliable.bidWinRate
+      : tot.bidWinRate;
+    const reliableFrom = data.bidWinRateReliableFrom || null;
 
     // Headline + summary chips
     const headEl = document.getElementById('netshare-headline');
@@ -10295,43 +10305,54 @@
     if (sumEl) {
       sumEl.textContent = days + 'd · ' + _netshareFmtN(tot.myFills) + ' fills · '
         + _netshareFmtPct(tot.shareOfMatched) + ' share · '
-        + _netshareFmtPct(tot.bidWinRate) + ' bid-win';
+        + _netshareFmtPct(bidWinForDisplay) + ' bid-win';
     }
     if (headEl) {
-      const chip = (label, val, color) => '<div style="background:var(--surface3); border:1px solid var(--border); border-radius:6px; padding:10px 14px; min-width:140px;">'
+      const chip = (label, val, color, tooltip) => '<div style="background:var(--surface3); border:1px solid var(--border); border-radius:6px; padding:10px 14px; min-width:140px;"' + (tooltip ? ' title="' + escapeHtml(tooltip) + '"' : '') + '>'
         + '<div style="font-size:10px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px;">' + label + '</div>'
         + '<div style="font-size:18px; font-weight:600; color:' + (color || 'var(--text)') + '; margin-top:2px;">' + val + '</div>'
         + '</div>';
+      const bidWinTooltip = reliableFrom
+        ? `Computed only from days ≥ ${reliableFrom} (${reliable?.days || 0} reliable days, ${reliable?.networkWeBidOn || 0} auctions entered). Pre-cutoff days had patchy we_quoted persistence.`
+        : '';
       headEl.innerHTML = '<div style="display:flex; gap:10px; flex-wrap:wrap;">'
         + chip('My Quotes',        _netshareFmtN(tot.myQuotes))
         + chip('My Fills',         _netshareFmtN(tot.myFills), 'var(--green)')
         + chip('Network Demand',   _netshareFmtN(tot.networkDemand), 'var(--text2)')
         + chip('Network Matched',  _netshareFmtN(tot.networkMatched), 'var(--text2)')
         + chip('Share of Matched', _netshareFmtPct(tot.shareOfMatched, 2), 'var(--amber)')
-        + chip('Bid Win Rate',     _netshareFmtPct(tot.bidWinRate, 1), 'var(--blue)')
+        + chip('Bid Win Rate',     _netshareFmtPct(bidWinForDisplay, 1), 'var(--blue)', bidWinTooltip)
         + '</div>';
     }
 
+    // Dual-Y-axis volume charts. Each series declares which axis it lives on
+    // (left = network-scale values, right = my-volume values) so the bars
+    // render at comparable visual heights even though absolute magnitudes
+    // differ by ~10-30×. Without dual-axis, the small bars vanish.
     _netshareRenderPaired(byDay, 'chart-netshare-quotes',
       [
-        { key: 'networkDemand', label: 'Network demand (RFQs)', color: '#5b6470' },
-        { key: 'myQuotes',      label: 'My quotes (offers submitted)', color: '#3b82f6' },
+        { key: 'networkDemand', label: 'Network demand (RFQs broadcast)', color: '#5b6470', axis: 'left' },
+        { key: 'myQuotes',      label: 'My quotes (offers submitted)',    color: '#3b82f6', axis: 'right' },
       ]);
     _netshareRenderPaired(byDay, 'chart-netshare-matched',
       [
-        { key: 'networkMatched', label: 'Network matched (any SP)', color: '#5b6470' },
-        { key: 'networkWeBidOn', label: 'Auctions I entered',       color: '#a78bfa' },
-        { key: 'myFills',        label: 'My fills (I won)',         color: '#22c55e' },
+        { key: 'networkMatched', label: 'Network matched (any SP)', color: '#5b6470', axis: 'left' },
+        { key: 'networkWeBidOn', label: 'Auctions I entered',       color: '#a78bfa', axis: 'right' },
+        { key: 'myFills',        label: 'My fills (I won)',         color: '#22c55e', axis: 'right' },
       ]);
-    _netshareRenderTrend(byDay);
-    _netshareRenderTable(byDay, tot);
+    _netshareRenderTrend(byDay, reliableFrom);
+    _netshareRenderTable(byDay, tot, reliableFrom);
   }
 
-  // ----- Paired-bar chart: render N series per day side-by-side on a shared
-  // linear Y axis. Used twice — once for quotes (network demand vs my quotes,
-  // both in 10k-150k range) and once for matched (network matched vs my fills,
-  // both in 30-3000 range). Splitting like this keeps both bar heights legible
-  // instead of squashing the small-magnitude series to invisibility.
+  // ----- Paired-bar chart with DUAL Y-AXIS.
+  // Each series declares which axis it belongs to (left or right). The two
+  // axes auto-scale independently so a series with values in the
+  // 10k-200k range (network) sits at a comparable bar height to a series
+  // with values in the 50-15k range (mine) — without this, the smaller
+  // bars get squashed to invisibility on a shared axis.
+  // Series with axis='left' use the left Y-axis (drawn in gray). Series
+  // with axis='right' use the right Y-axis (drawn in the first right-side
+  // series color so the axis-color → series-color mapping is obvious).
   function _netshareRenderPaired(byDay, elId, series) {
     const el = document.getElementById(elId);
     if (!el) return;
@@ -10340,30 +10361,53 @@
       return;
     }
 
-    const W = 820, H = 280, pad = { l: 70, r: 18, t: 22, b: 60 };
+    const W = 860, H = 280, pad = { l: 70, r: 70, t: 22, b: 60 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
     const colW = chartW / byDay.length;
     const groupW = Math.min(72, colW - 6);
     const barW = Math.max(3, (groupW - (series.length - 1) * 2) / series.length);
 
-    // Y max = max value across all series in this chart
-    const maxVal = Math.max(1, ...byDay.flatMap(d => series.map(s => d[s.key] || 0)));
-    const niceMax = (function(){
+    // Partition series by axis. Default everything to 'left' for back-compat.
+    const leftSeries  = series.filter(s => (s.axis || 'left') === 'left');
+    const rightSeries = series.filter(s => s.axis === 'right');
+
+    function maxFor(items) {
+      return Math.max(1, ...byDay.flatMap(d => items.map(s => d[s.key] || 0)));
+    }
+    function niceCeil(maxVal) {
       const m = Math.pow(10, Math.floor(Math.log10(maxVal)));
       const n = maxVal / m;
       const ceil = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
       return ceil * m;
-    })();
-    const scaleY = v => pad.t + chartH - (v / niceMax) * chartH;
+    }
+    const leftMax  = niceCeil(maxFor(leftSeries));
+    const rightMax = rightSeries.length > 0 ? niceCeil(maxFor(rightSeries)) : null;
+
+    const scaleLeft  = v => pad.t + chartH - (v / leftMax)  * chartH;
+    const scaleRight = v => pad.t + chartH - (v / rightMax) * chartH;
+
+    // Pick representative colors for the axis tick labels — uses the FIRST
+    // series tied to each axis, so the operator can immediately see which
+    // tick column belongs to which series.
+    const leftAxisColor  = (leftSeries[0]  && leftSeries[0].color)  || 'var(--text3)';
+    const rightAxisColor = (rightSeries[0] && rightSeries[0].color) || 'var(--text3)';
 
     let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; height:auto; max-height:320px;">';
 
-    // Gridlines
+    // Left axis gridlines + labels
     for (let t = 0; t <= 5; t++) {
-      const v = niceMax * t / 5;
-      const y = scaleY(v);
+      const v = leftMax * t / 5;
+      const y = scaleLeft(v);
       svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', t === 0 ? 0.8 : 0.3);
-      svg += svgText(pad.l - 6, y + 3, _netshareFmtN(Math.round(v)), { anchor: 'end', size: 9 });
+      svg += svgText(pad.l - 6, y + 3, _netshareFmtN(Math.round(v)), { anchor: 'end', size: 9, fill: leftAxisColor });
+    }
+    // Right axis labels
+    if (rightSeries.length > 0) {
+      for (let t = 0; t <= 5; t++) {
+        const v = rightMax * t / 5;
+        const y = scaleRight(v);
+        svg += svgText(W - pad.r + 6, y + 3, _netshareFmtN(Math.round(v)), { anchor: 'start', size: 9, fill: rightAxisColor });
+      }
     }
 
     for (let i = 0; i < byDay.length; i++) {
@@ -10374,8 +10418,9 @@
       for (let s = 0; s < series.length; s++) {
         const value = d[series[s].key] || 0;
         if (value <= 0) continue;
+        const axis = series[s].axis || 'left';
         const x = groupLeft + s * (barW + 2);
-        const y = scaleY(value);
+        const y = axis === 'right' ? scaleRight(value) : scaleLeft(value);
         const h = Math.max(1, (pad.t + chartH) - y);
         svg += '<rect x="' + x.toFixed(2) + '" y="' + y.toFixed(2)
           + '" width="' + barW.toFixed(2) + '" height="' + h.toFixed(2)
@@ -10390,12 +10435,15 @@
         + cx + ' ' + (H - pad.b + 16) + ')">' + dayLabel + '</text>';
     }
 
-    // Legend
+    // Legend — axis suffix in subscript-style so the operator can see
+    // which side scale each series uses without reading the tooltip.
     let lx = pad.l + 4, ly = H - 8;
     for (const s of series) {
+      const axisLabel = (s.axis === 'right') ? ' (R)' : ' (L)';
       svg += '<rect x="' + lx + '" y="' + (ly - 7) + '" width="10" height="10" fill="' + s.color + '" rx="2"/>';
-      svg += '<text x="' + (lx + 14) + '" y="' + ly + '" font-size="10" fill="var(--text2)">' + s.label + '</text>';
-      lx += 14 + (s.label.length * 6.2) + 18;
+      const text = s.label + axisLabel;
+      svg += '<text x="' + (lx + 14) + '" y="' + ly + '" font-size="10" fill="var(--text2)">' + text + '</text>';
+      lx += 14 + (text.length * 6.2) + 18;
     }
 
     svg += '</svg>';
@@ -10406,7 +10454,14 @@
   // shared 0-100% Y axis. Days with no matched parlays plot null (line
   // segment break) so weekends with sparse activity don't anchor the chart
   // at zero.
-  function _netshareRenderTrend(byDay) {
+  //
+  // bid-win-rate is plotted only on RELIABLE days (date >= reliableFrom);
+  // pre-cutoff days had patchy we_quoted persistence for losing bids, so
+  // their bid-win values are artificially near 100% and would mislead the
+  // trend. A vertical reliability-divider with a "bid-win data starts" tag
+  // marks the cutoff so the operator knows why the dashed-blue line begins
+  // where it does.
+  function _netshareRenderTrend(byDay, reliableFrom) {
     const el = document.getElementById('chart-netshare-share');
     if (!el) return;
     if (!byDay.length) {
@@ -10418,11 +10473,15 @@
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
 
     // Y axis — auto-scale to max value (with a min ceiling of 10%) so a low-
-    // share operator still sees meaningful resolution. Cap at 100%.
+    // share operator still sees meaningful resolution. Cap at 100%. Only
+    // reliable bid-win values participate so a single pre-cutoff 100% row
+    // doesn't anchor yMax to 100%.
     let yMax = 0;
     for (const d of byDay) {
       if (d.shareOfMatched != null) yMax = Math.max(yMax, d.shareOfMatched);
-      if (d.bidWinRate     != null) yMax = Math.max(yMax, d.bidWinRate);
+      if (d.bidWinRate != null && d.bidWinRateReliable !== false) {
+        yMax = Math.max(yMax, d.bidWinRate);
+      }
     }
     yMax = Math.min(1, Math.max(0.1, yMax * 1.15));
 
@@ -10449,6 +10508,22 @@
       svg += '<text x="' + x + '" y="' + (H - pad.b + 16) + '" font-size="10" fill="var(--text2)" text-anchor="end" transform="rotate(-40 ' + x + ' ' + (H - pad.b + 16) + ')">' + dayLabel + '</text>';
     }
 
+    // Reliability divider — vertical line at the first reliable day so the
+    // operator can see at a glance where honest bid-win data starts. Only
+    // drawn if there's at least one pre-cutoff day in the window (otherwise
+    // it would sit on the left edge, no information value).
+    let firstReliableIdx = -1;
+    if (reliableFrom) {
+      for (let i = 0; i < byDay.length; i++) {
+        if (byDay[i].bidWinRateReliable !== false) { firstReliableIdx = i; break; }
+      }
+      if (firstReliableIdx > 0) {
+        const xDiv = scaleX(firstReliableIdx) - (scaleX(firstReliableIdx) - scaleX(firstReliableIdx - 1)) / 2;
+        svg += '<line x1="' + xDiv + '" y1="' + pad.t + '" x2="' + xDiv + '" y2="' + (pad.t + chartH) + '" stroke="#3b82f6" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>';
+        svg += '<text x="' + (xDiv + 4) + '" y="' + (pad.t + 10) + '" font-size="9" fill="#3b82f6" opacity="0.8">← bid-win data starts</text>';
+      }
+    }
+
     // Build line paths, segmenting on null gaps. Each series → array of polylines.
     function pathFromSeries(getter) {
       const segments = [];
@@ -10468,7 +10543,10 @@
     }
 
     const shareSeg = pathFromSeries(d => d.shareOfMatched);
-    const winSeg   = pathFromSeries(d => d.bidWinRate);
+    // Only reliable bid-win values are plotted. Backend already nulls out
+    // unreliable rows, but double-gate here in case an older /network-share-
+    // daily response (pre-cutoff-aware) is in cache.
+    const winSeg   = pathFromSeries(d => d.bidWinRateReliable !== false ? d.bidWinRate : null);
 
     // Draw share line (amber)
     for (const seg of shareSeg) {
@@ -10482,7 +10560,7 @@
       for (let i = 0; i < seg.length; i++) p += (i === 0 ? 'M' : ' L') + seg[i].x.toFixed(2) + ',' + seg[i].y.toFixed(2);
       svg += '<path d="' + p + '" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="6,4" />';
     }
-    // Dots on the data points (helps for sparse data)
+    // Dots on the data points
     for (let i = 0; i < byDay.length; i++) {
       const d = byDay[i];
       const x = scaleX(i);
@@ -10490,7 +10568,7 @@
         svg += '<circle cx="' + x + '" cy="' + scaleY(d.shareOfMatched) + '" r="3" fill="#f5b942">'
           + '<title>' + d.date + ' · share ' + _netshareFmtPct(d.shareOfMatched, 2) + ' (' + d.myFills + '/' + d.networkMatched + ')</title></circle>';
       }
-      if (d.bidWinRate != null) {
+      if (d.bidWinRate != null && d.bidWinRateReliable !== false) {
         svg += '<circle cx="' + x + '" cy="' + scaleY(d.bidWinRate) + '" r="3" fill="#3b82f6">'
           + '<title>' + d.date + ' · bid-win ' + _netshareFmtPct(d.bidWinRate, 1) + ' (' + d.myFills + '/' + d.networkWeBidOn + ')</title></circle>';
       }
@@ -10501,7 +10579,7 @@
     svg += '<rect x="' + legendX + '" y="' + (legendY - 7) + '" width="14" height="3" fill="#f5b942" />';
     svg += '<text x="' + (legendX + 20) + '" y="' + legendY + '" font-size="10" fill="var(--text2)">Share of matched (my fills / network matched)</text>';
     svg += '<rect x="' + (legendX + 280) + '" y="' + (legendY - 7) + '" width="14" height="3" fill="#3b82f6" />';
-    svg += '<text x="' + (legendX + 300) + '" y="' + legendY + '" font-size="10" fill="var(--text2)">Bid win rate (my fills / network we bid on)</text>';
+    svg += '<text x="' + (legendX + 300) + '" y="' + legendY + '" font-size="10" fill="var(--text2)">Bid win rate (reliable days only)</text>';
 
     svg += '</svg>';
     el.innerHTML = svg;
@@ -10509,12 +10587,18 @@
 
   // ----- Per-day table — raw counts + derived rates. Sort newest-first
   // since the operator typically reads top-down for recent days.
-  function _netshareRenderTable(byDay, totals) {
+  // On rows where bid-win is unreliable (pre-cutoff), display "—" with a
+  // tooltip explaining why — matches the trend chart, which also skips
+  // plotting those points.
+  function _netshareRenderTable(byDay, totals, reliableFrom) {
     const el = document.getElementById('netshare-table');
     if (!el) return;
     if (!byDay.length) { el.innerHTML = ''; return; }
 
     const rows = [...byDay].reverse(); // newest first
+    const unreliableTooltip = reliableFrom
+      ? `pre-${reliableFrom} bid-win is unreliable (matched_parlays.we_quoted wasn't persisted for lost bids)`
+      : 'bid-win is unreliable on this day';
 
     let html = '<div style="overflow-x:auto;">';
     html += '<table style="font-size:12px; width:100%; border-collapse:collapse;">';
@@ -10531,6 +10615,10 @@
     for (const d of rows) {
       const isZero = !d.myFills && !d.myQuotes && !d.networkMatched;
       const rowOpacity = isZero ? '0.45' : '1';
+      const reliable = d.bidWinRateReliable !== false;
+      const bidWinCell = reliable
+        ? '<td style="padding:5px 8px; text-align:right; color:var(--blue); font-weight:600;">' + _netshareFmtPct(d.bidWinRate, 1) + '</td>'
+        : '<td style="padding:5px 8px; text-align:right; color:var(--text3);" title="' + escapeHtml(unreliableTooltip) + '">—</td>';
       html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04); opacity:' + rowOpacity + ';">';
       html += '<td style="padding:5px 8px; font-family:monospace; color:var(--text2);">' + d.date + '</td>';
       html += '<td style="padding:5px 8px; text-align:right;">' + _netshareFmtN(d.myQuotes) + '</td>';
@@ -10539,10 +10627,13 @@
       html += '<td style="padding:5px 8px; text-align:right; color:var(--text3);">' + _netshareFmtN(d.networkMatched) + '</td>';
       html += '<td style="padding:5px 8px; text-align:right; color:var(--text3);">' + _netshareFmtN(d.networkWeBidOn) + '</td>';
       html += '<td style="padding:5px 8px; text-align:right; color:var(--amber); font-weight:600;">' + _netshareFmtPct(d.shareOfMatched, 2) + '</td>';
-      html += '<td style="padding:5px 8px; text-align:right; color:var(--blue); font-weight:600;">' + _netshareFmtPct(d.bidWinRate, 1) + '</td>';
+      html += bidWinCell;
       html += '</tr>';
     }
-    // Totals footer
+    // Totals footer. The bid-win-rate column here uses the window-wide
+    // totals (which DOES include pre-cutoff numerator inflation). To
+    // surface the honest figure based on reliable days only, use the
+    // bid-win-rate chip in the headline (it reads from reliableTotals).
     html += '<tr style="border-top:2px solid var(--border); color:var(--text); font-weight:600;">'
       + '<td style="padding:8px;">Total</td>'
       + '<td style="padding:8px; text-align:right;">' + _netshareFmtN(totals.myQuotes) + '</td>'
@@ -10551,7 +10642,7 @@
       + '<td style="padding:8px; text-align:right;">' + _netshareFmtN(totals.networkMatched) + '</td>'
       + '<td style="padding:8px; text-align:right;">' + _netshareFmtN(totals.networkWeBidOn) + '</td>'
       + '<td style="padding:8px; text-align:right; color:var(--amber);">' + _netshareFmtPct(totals.shareOfMatched, 2) + '</td>'
-      + '<td style="padding:8px; text-align:right; color:var(--blue);">' + _netshareFmtPct(totals.bidWinRate, 1) + '</td>'
+      + '<td style="padding:8px; text-align:right; color:var(--text3);" title="Window-wide; for the honest figure see the Bid Win Rate chip at top (reliable days only).">' + _netshareFmtPct(totals.bidWinRate, 1) + '*</td>'
       + '</tr>';
     html += '</tbody></table></div>';
 
