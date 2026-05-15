@@ -858,6 +858,23 @@ function priceParlay(legs, opts = {}) {
       }
       continue;
     }
+    // STRICT MODE for golf_matchups (the function above intentionally
+    // returns null when no operator-validated manual upload exists for
+    // this player+round). Pre-fix the fall-through silently routed to
+    // oddsFeed.getFairProb which returns DataGolf's de-vigged fair —
+    // producing the near-zero-vig R2 quotes Mike caught 2026-05-14.
+    // Decline here so the round/tournament never quotes without an
+    // upload. Re-enabling DataGolf for golf matchups is an explicit
+    // operator decision (would require a config flag).
+    const sportKey = (s.lineInfo?.oddsApiSport || s.lineInfo?.sport || '').toLowerCase();
+    if (sportKey === 'golf_matchups' || sportKey.includes('golf')) {
+      priceParlay._lastFailure = {
+        reason: 'golf_matchup_strict_no_upload',
+        detail: `No manual upload for ${s.lineInfo.teamName || '?'} matchup (round ${s.lineInfo.roundNum ?? '?'})`,
+        blockerLeg: s.legDescriptor,
+      };
+      return null;
+    }
     if (s.lineInfo.isDNB) {
       fairProbs[i] = oddsFeed.getDNBFairProb(
         s.lineInfo.oddsApiSport, s.lineInfo.homeTeam, s.lineInfo.awayTeam,
