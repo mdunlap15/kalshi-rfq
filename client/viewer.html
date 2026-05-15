@@ -13271,20 +13271,35 @@
   /**
    * Render the bankroll split bar at the top of the viewer.
    *
-   * Split is fixed (Mike's business arrangement with Rick):
-   *   Total starting bankroll = $30,000
-   *   Mike: $17,500 base + 58.333% of (current balance − $30,000)
-   *   Rick: $12,500 base + 41.667% of (current balance − $30,000)
+   * Mike's business arrangement with Rick uses a "snapshot reset" model:
+   * each time capital enters or leaves the account, the bases are reset to
+   * the equity values at that moment, and the marginal-share ratios are
+   * recomputed to match the new ownership percentages. Past gains stay
+   * allocated under whatever ratios were in effect when they were earned.
    *
-   * Same proportions apply to losses — if balance drops below $30k,
-   * each share moves down by their respective percentage of the loss.
-   * Mike + Rick always sum to the live balance.
+   * Formula (unchanged):
+   *   mike = mike_base + mike_share × (balance − base_total)
+   *   rick = rick_base + rick_share × (balance − base_total)
+   *
+   * Current state (post Rick's $2K withdrawal on 2026-05-15):
+   *   Snapshot equity      = $52,460.36
+   *   Mike                 = $31,768.54  (60.557%)
+   *   Rick                 = $20,691.82  (39.443%)
+   *
+   * History:
+   *   2026-05-15: Rick withdrew $2K. Snapshot reset; Mike's ownership %
+   *     ticked up from 58.333% to 60.557%, Rick's down to 39.443%. Future
+   *     P&L splits at the new ratios.
+   *   Original (account seed):
+   *     base_total = $30,000; Mike $17,500 (7/12); Rick $12,500 (5/12).
    */
-  const BANKROLL_BASE_TOTAL = 30000;
-  const BANKROLL_MIKE_BASE = 17500;
-  const BANKROLL_RICK_BASE = 12500;
-  const BANKROLL_MIKE_SHARE = 7 / 12;   // 0.58333…
-  const BANKROLL_RICK_SHARE = 5 / 12;   // 0.41666…
+  const BANKROLL_BASE_TOTAL = 52460.36;
+  const BANKROLL_MIKE_BASE  = 31768.54;
+  const BANKROLL_RICK_BASE  = 20691.82;
+  // Shares derived from bases so the formula is internally consistent.
+  // Mike ≈ 0.605568, Rick ≈ 0.394432.
+  const BANKROLL_MIKE_SHARE = BANKROLL_MIKE_BASE / BANKROLL_BASE_TOTAL;
+  const BANKROLL_RICK_SHARE = BANKROLL_RICK_BASE / BANKROLL_BASE_TOTAL;
 
   function renderBankrollSplit(portfolio) {
     const totalEl = document.getElementById('bankroll-total');
