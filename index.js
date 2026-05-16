@@ -1523,6 +1523,285 @@ function startStatusServer() {
   });
 
   // -----------------------------------------------------------------------
+  // /network-share-hourly — same metrics as /network-share-daily but
+  // bucketed by hour with a trailing rolling-average overlay so the
+  // operator can spot trend shifts in near-real-time.
+  //
+  // Query params:
+  //   hours (default 24, max 48) — lookback window
+  //   rolling (default 6, min 2, max 12) — trailing-MA window size in hours
+  //
+  // Returns per-hour: { hourIso, myQuotes, myFills, weDeclined, networkMatched,
+  //   networkWeBidOn, shareOfMatched, bidWinRate, rollingShare, rollingBidWin }
+  //
+  // STRATEGY: small window (≤48h) → just paginate-pull all rows from each
+  // table once, bucket in Node. Faster than per-hour head-counts for hourly
+  // granularity. Cached 30s server-side.
+  const _netShareHourlyCache = { key: null, at: 0, data: null };
+  app.get('/network-share-hourly', async (req, res) => {
+    try {
+      const hours = Math.max(1, Math.min(48, parseInt(req.query.hours) || 24));
+      const rolling = Math.max(2, Math.min(12, parseInt(req.query.rolling) || 6));
+      const cacheKey = `h${hours}_r${rolling}`;
+      const now = Date.now();
+      if (_netShareHourlyCache.key === cacheKey && (now - _netShareHourlyCache.at) < 30_000) {
+        res.set('X-Cache', 'hit');
+        return res.json(_netShareHourlyCache.data);
+      }
+
+      const sb = db.getClient();
+      if (!sb) return res.status(500).json({ ok: false, error: 'no DB' });
+
+      const startedAt = Date.now();
+      // Hour-aligned window. Round end to top of current hour; start = end - N hours.
+      const endMs = Math.floor(now / 3_600_000) * 3_600_000;
+      const startMs = endMs - hours * 3_600_000;
+      const startIso = new Date(startMs).toISOString();
+      const endIso = new Date(endMs).toISOString();
+
+      // Build the bucket list (hour-aligned UTC timestamps). Each bucket
+      // covers [hourMs, hourMs + 1h). Show ET label for the operator.
+      const ET_FMT = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit',
+        month: 'numeric', day: 'numeric', hour12: false,
+      });
+      const buckets = [];
+      for (let i = 0; i < hours; i++) {
+        const ms = startMs + i * 3_600_000;
+        buckets.push({
+          hourMs: ms,
+          hourIso: new Date(ms).toISOString(),
+          etLabel: ET_FMT.format(new Date(ms)),
+          myQuotes: 0, myFills: 0, weDeclined: 0,
+          networkMatched: 0, networkWeBidOn: 0,
+        });
+      }
+      const bucketForMs = (ms) => {
+        if (ms < startMs || ms >= endMs) return null;
+        return buckets[Math.floor((ms - startMs) / 3_600_000)];
+      };
+
+      // --- parlay_orders for quotes + fills ---
+      // Split into TWO single-column-indexed queries (quoted_at, then
+      // confirmed_at) and union in Node. The combined OR query
+      // postgres can't index efficiently — observed 40s+ for 24h window
+      // because the OR predicate forces a sequential scan despite both
+      // columns being indexed individually.
+      const ourOrderIds = new Set();
+      const ourFills = new Map();
+      async function pullParlayOrders(tsColumn, handler) {
+        let offset = 0;
+        const MAX_PAGES = 50;
+        let pages = 0;
+        while (pages++ < MAX_PAGES) {
+          const { data, error } = await sb.from('parlay_orders')
+            .select('parlay_id, status, quoted_at, confirmed_at, meta')
+            .gte(tsColumn, startIso).lt(tsColumn, endIso)
+            .order(tsColumn, { ascending: true })
+            .range(offset, offset + 999);
+          if (error) { log.warn('NetShare', `hourly parlay_orders.${tsColumn} page ${pages}: ${error.message}`); break; }
+          if (!data || data.length === 0) break;
+          for (const r of data) handler(r);
+          if (data.length < 1000) break;
+          offset += 1000;
+        }
+      }
+      // Quotes pass: bucket all quoted_at hits + collect parlay_ids for cross-ref
+      await pullParlayOrders('quoted_at', (r) => {
+        if (r.meta && r.meta.phantom) return;
+        if (r.meta && r.meta.reconstructed && !r.quoted_at) return;
+        ourOrderIds.add(r.parlay_id);
+        if (r.quoted_at) {
+          const b = bucketForMs(new Date(r.quoted_at).getTime());
+          if (b) b.myQuotes++;
+        }
+      });
+      // Fills pass: bucket confirmed_at hits for won-status rows
+      await pullParlayOrders('confirmed_at', (r) => {
+        if (r.meta && r.meta.phantom) return;
+        ourOrderIds.add(r.parlay_id);
+        const isWonStatus = r.status === 'confirmed' || (typeof r.status === 'string' && r.status.startsWith('settled_'));
+        if (isWonStatus && r.confirmed_at) {
+          const b = bucketForMs(new Date(r.confirmed_at).getTime());
+          if (b) { b.myFills++; ourFills.set(r.parlay_id, true); }
+        }
+      });
+
+      // --- declines ---
+      {
+        let offset = 0;
+        const MAX_PAGES = 200; // 200k rows safety cap (24-48h x 50k/day ≈ 50-100k)
+        let pages = 0;
+        while (pages++ < MAX_PAGES) {
+          const { data, error } = await sb.from('declines')
+            .select('declined_at')
+            .gte('declined_at', startIso).lt('declined_at', endIso)
+            .order('declined_at', { ascending: true })
+            .range(offset, offset + 999);
+          if (error) { log.warn('NetShare', `hourly declines page ${pages}: ${error.message}`); break; }
+          if (!data || data.length === 0) break;
+          for (const r of data) {
+            const ms = new Date(r.declined_at).getTime();
+            const b = bucketForMs(ms);
+            if (b) b.weDeclined++;
+          }
+          if (data.length < 1000) break;
+          offset += 1000;
+        }
+      }
+
+      // --- matched_parlays (dedup by parlay_id) ---
+      const matchedSeen = new Map();
+      {
+        let offset = 0;
+        const MAX_PAGES = 200;
+        let pages = 0;
+        while (pages++ < MAX_PAGES) {
+          const { data, error } = await sb.from('matched_parlays')
+            .select('parlay_id, matched_at, we_quoted, our_odds')
+            .gte('matched_at', startIso).lt('matched_at', endIso)
+            .order('matched_at', { ascending: true })
+            .range(offset, offset + 999);
+          if (error) { log.warn('NetShare', `hourly matched_parlays page ${pages}: ${error.message}`); break; }
+          if (!data || data.length === 0) break;
+          for (const r of data) {
+            const prev = matchedSeen.get(r.parlay_id);
+            if (!prev) matchedSeen.set(r.parlay_id, { matched_at: r.matched_at, we_quoted: !!r.we_quoted, our_odds: r.our_odds });
+            else {
+              if (r.matched_at && r.matched_at < prev.matched_at) prev.matched_at = r.matched_at;
+              if (r.we_quoted) prev.we_quoted = true;
+              if (prev.our_odds == null && r.our_odds != null) prev.our_odds = r.our_odds;
+            }
+          }
+          if (data.length < 1000) break;
+          offset += 1000;
+        }
+        for (const [pid, r] of matchedSeen.entries()) {
+          const ms = new Date(r.matched_at).getTime();
+          const b = bucketForMs(ms);
+          if (!b) continue;
+          b.networkMatched++;
+          if (r.we_quoted || r.our_odds != null || ourOrderIds.has(pid)) b.networkWeBidOn++;
+        }
+      }
+
+      // --- Derive per-hour ratios ---
+      // bidWinRate is the only metric subject to the pre-2026-05-12 we_quoted
+      // data-quality gate. For an hourly view that's typically last 24-48h,
+      // we're always past the cutoff; flag anyway for safety.
+      const BID_WIN_RATE_RELIABLE_FROM = '2026-05-12';
+      for (const b of buckets) {
+        b.networkDemand = b.myQuotes + b.weDeclined;
+        b.shareOfMatched = b.networkMatched > 0 ? b.myFills / b.networkMatched : null;
+        const dayKey = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit',
+        }).format(new Date(b.hourMs));
+        b.bidWinRateReliable = dayKey >= BID_WIN_RATE_RELIABLE_FROM;
+        b.bidWinRate = (b.networkWeBidOn > 0 && b.bidWinRateReliable)
+          ? Math.min(1, b.myFills / b.networkWeBidOn)
+          : null;
+      }
+
+      // --- Trailing N-hour rolling averages ---
+      // Centered MA would bias the latest hour because it has no future
+      // values. Trailing MA = average of last N COMPLETED hours including
+      // current. For the very-recent buckets, the denominator (totals over
+      // last N hours) is small but the math stays honest.
+      function trailingRolling(values, window) {
+        const out = new Array(values.length).fill(null);
+        for (let i = 0; i < values.length; i++) {
+          let sum = 0, cnt = 0;
+          for (let j = Math.max(0, i - window + 1); j <= i; j++) {
+            if (values[j] != null && Number.isFinite(values[j])) { sum += values[j]; cnt++; }
+          }
+          out[i] = cnt > 0 ? sum / cnt : null;
+        }
+        return out;
+      }
+      // For rates, we want a weighted rolling avg (ratio of sums, not avg of
+      // ratios) so hours with 0 denominator don't poison the average.
+      function trailingRollingRatio(numArr, denArr, window) {
+        const out = new Array(numArr.length).fill(null);
+        for (let i = 0; i < numArr.length; i++) {
+          let n = 0, d = 0;
+          for (let j = Math.max(0, i - window + 1); j <= i; j++) {
+            n += numArr[j] || 0;
+            d += denArr[j] || 0;
+          }
+          out[i] = d > 0 ? n / d : null;
+        }
+        return out;
+      }
+      const rollShare = trailingRollingRatio(
+        buckets.map(b => b.myFills),
+        buckets.map(b => b.networkMatched),
+        rolling);
+      const rollBidWin = trailingRollingRatio(
+        buckets.map(b => b.bidWinRateReliable ? b.myFills : 0),
+        buckets.map(b => b.bidWinRateReliable ? b.networkWeBidOn : 0),
+        rolling);
+      for (let i = 0; i < buckets.length; i++) {
+        buckets[i].rollingShare = rollShare[i];
+        buckets[i].rollingBidWin = rollBidWin[i] != null ? Math.min(1, rollBidWin[i]) : null;
+      }
+
+      // --- Totals (full window) ---
+      const tot = buckets.reduce((acc, b) => {
+        acc.myQuotes += b.myQuotes; acc.myFills += b.myFills;
+        acc.weDeclined += b.weDeclined; acc.networkDemand += b.networkDemand;
+        acc.networkMatched += b.networkMatched; acc.networkWeBidOn += b.networkWeBidOn;
+        return acc;
+      }, { myQuotes:0, myFills:0, weDeclined:0, networkDemand:0, networkMatched:0, networkWeBidOn:0 });
+      tot.shareOfMatched = tot.networkMatched > 0 ? tot.myFills / tot.networkMatched : null;
+      tot.bidWinRate = tot.networkWeBidOn > 0 ? Math.min(1, tot.myFills / tot.networkWeBidOn) : null;
+
+      // --- Headline summary: last 1h / 6h / 24h (or window-equivalent) windows ---
+      const headlineFor = (n) => {
+        const slice = buckets.slice(Math.max(0, buckets.length - n));
+        const s = slice.reduce((acc, b) => {
+          acc.myFills += b.myFills; acc.networkMatched += b.networkMatched;
+          acc.networkWeBidOn += b.networkWeBidOn; acc.myQuotes += b.myQuotes;
+          acc.weDeclined += b.weDeclined; return acc;
+        }, { myFills:0, networkMatched:0, networkWeBidOn:0, myQuotes:0, weDeclined:0 });
+        s.shareOfMatched = s.networkMatched > 0 ? s.myFills / s.networkMatched : null;
+        s.bidWinRate = s.networkWeBidOn > 0 ? Math.min(1, s.myFills / s.networkWeBidOn) : null;
+        s.hours = slice.length;
+        return s;
+      };
+      const headline = {
+        last1h:  headlineFor(1),
+        last6h:  headlineFor(6),
+        last24h: headlineFor(Math.min(24, hours)),
+        full:    { ...tot, hours },
+      };
+
+      const elapsedMs = Date.now() - startedAt;
+      log.info('NetShare', `/network-share-hourly hours=${hours} roll=${rolling}: ${tot.myFills} fills / ${tot.networkMatched} matched (${elapsedMs}ms)`);
+
+      const payload = {
+        ok: true,
+        hours,
+        rollingWindow: rolling,
+        startIso, endIso,
+        bidWinRateReliableFrom: BID_WIN_RATE_RELIABLE_FROM,
+        asOfUtc: new Date().toISOString(),
+        elapsedMs,
+        buckets,
+        totals: tot,
+        headline,
+      };
+      _netShareHourlyCache.key = cacheKey;
+      _netShareHourlyCache.at = now;
+      _netShareHourlyCache.data = payload;
+      res.set('X-Cache', 'miss');
+      res.json(payload);
+    } catch (err) {
+      log.error('NetShare', `/network-share-hourly error: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // -----------------------------------------------------------------------
   // /bankroll — Mike + Rick partnership equity split (dual-cohort).
   //
   // Background: each time capital enters or leaves the partnership account,

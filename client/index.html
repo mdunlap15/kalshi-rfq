@@ -874,6 +874,32 @@
 
             <div id="netshare-headline" style="margin-bottom:14px;"></div>
 
+            <!-- HOURLY TREND — near-real-time view for active monitoring.
+                 Updates on its own refresh cycle (every 60s) independent of
+                 the daily view, since hourly data has its own 30s cache. -->
+            <div style="border:1px solid var(--border); border-radius:6px; padding:10px 12px; margin:0 0 14px 0; background:var(--surface3);">
+              <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:11px;">
+                <span style="font-weight:600; color:var(--text2);">Hourly Trend</span>
+                <span style="color:var(--text3);">— live view to spot adjustments needed</span>
+                <span id="netshare-hourly-range-buttons" style="display:inline-flex; gap:0; border:1px solid var(--border); border-radius:4px; overflow:hidden; margin-left:auto;">
+                  <button type="button" class="netshare-hr" data-hours="6"  onclick="setNetshareHourlyRange(6)"  style="background:transparent; color:var(--text3); border:0; padding:3px 8px; font-size:11px; cursor:pointer;">6h</button>
+                  <button type="button" class="netshare-hr" data-hours="12" onclick="setNetshareHourlyRange(12)" style="background:transparent; color:var(--text3); border:0; padding:3px 8px; font-size:11px; cursor:pointer;">12h</button>
+                  <button type="button" class="netshare-hr" data-hours="24" onclick="setNetshareHourlyRange(24)" style="background:var(--accent); color:var(--text); border:0; padding:3px 8px; font-size:11px; cursor:pointer;">24h</button>
+                  <button type="button" class="netshare-hr" data-hours="48" onclick="setNetshareHourlyRange(48)" style="background:transparent; color:var(--text3); border:0; padding:3px 8px; font-size:11px; cursor:pointer;">48h</button>
+                </span>
+                <button onclick="loadNetworkShareHourly(true)" style="background:transparent; border:1px solid var(--border); color:var(--text3); padding:3px 8px; border-radius:4px; font-size:11px; cursor:pointer;" title="Refresh (bypass 30s cache)">↻</button>
+              </div>
+              <!-- Last 1h / 6h / 24h headline chips -->
+              <div id="netshare-hourly-headline" style="margin-bottom:8px;"></div>
+              <!-- Volume area chart (network matched + my fills) -->
+              <div id="chart-netshare-hourly-vol"></div>
+              <!-- Share & bid-win trend with rolling avg overlay -->
+              <div id="chart-netshare-hourly-trend" style="margin-top:8px;"></div>
+              <div style="font-size:10px; color:var(--text3); margin-top:6px;">
+                Each bar = 1 hour, ending at the top of the current hour (ET). Solid lines = per-hour raw values (noisy at low N). Dashed thick line = trailing <span id="netshare-hourly-rolling-label">6h</span> rolling weighted average (sum of fills ÷ sum of denominators across the window) — use this to spot trend shifts without per-hour noise.
+              </div>
+            </div>
+
             <div style="font-size:11px; color:var(--text2); font-weight:600; margin:8px 0 4px 4px;">Daily Quotes <span style="color:var(--text3); font-weight:400;">— RFQs PX broadcast vs. offers we submitted</span></div>
             <div id="chart-netshare-quotes">
               <div class="empty-state"><div class="icon">-</div><div>Expand to load daily volume data</div></div>
@@ -10268,6 +10294,246 @@
   if (!window._netshareState) {
     window._netshareState = { range: 14, loading: false, data: null };
   }
+  if (!window._netshareHourlyState) {
+    window._netshareHourlyState = { hours: 24, rolling: 6, loading: false, data: null };
+  }
+
+  // ----- Hourly view (live monitoring) -----
+  async function loadNetworkShareHourly(force) {
+    const s = window._netshareHourlyState;
+    if (s.loading) return;
+    s.loading = true;
+    try {
+      const url = '/network-share-hourly?hours=' + s.hours + '&rolling=' + s.rolling + (force ? '&_=' + Date.now() : '');
+      const r = await fetch(url, { credentials: 'include' });
+      const j = await r.json();
+      if (j && j.ok) {
+        s.data = j;
+        renderNetshareHourly(j);
+      }
+    } catch (_) { /* swallow */ }
+    finally { s.loading = false; }
+  }
+  window.loadNetworkShareHourly = loadNetworkShareHourly;
+  window.setNetshareHourlyRange = function(h) {
+    const hours = parseInt(h) || 24;
+    window._netshareHourlyState.hours = hours;
+    // Scale rolling window with view: ~25% of view
+    window._netshareHourlyState.rolling = Math.max(2, Math.min(12, Math.round(hours / 4)));
+    const rollEl = document.getElementById('netshare-hourly-rolling-label');
+    if (rollEl) rollEl.textContent = window._netshareHourlyState.rolling + 'h';
+    document.querySelectorAll('.netshare-hr').forEach(btn => {
+      const active = parseInt(btn.getAttribute('data-hours')) === hours;
+      btn.style.background = active ? 'var(--accent)' : 'transparent';
+      btn.style.color = active ? 'var(--text)' : 'var(--text3)';
+    });
+    loadNetworkShareHourly(true);
+  };
+
+  function renderNetshareHourly(data) {
+    const buckets = data.buckets || [];
+
+    // Headline chips: last 1h / 6h / 24h (or window)
+    const headEl = document.getElementById('netshare-hourly-headline');
+    if (headEl) {
+      const chip = (label, h, hours, color) => {
+        if (!h) return '';
+        return '<div style="background:var(--surface2); border:1px solid var(--border); border-radius:4px; padding:6px 10px; min-width:120px;">'
+          + '<div style="font-size:9px; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px;">' + label + ' (' + hours + 'h)</div>'
+          + '<div style="font-size:12px; color:var(--text2); margin-top:1px;">' + h.myFills + ' fills · ' + h.networkMatched + ' net</div>'
+          + '<div style="font-size:14px; font-weight:600; color:' + (color || 'var(--text)') + '; margin-top:1px;">'
+            + (h.shareOfMatched != null ? (h.shareOfMatched*100).toFixed(2) + '%' : '—') + ' share'
+            + ' · '
+            + (h.bidWinRate != null ? (h.bidWinRate*100).toFixed(1) + '%' : '—') + ' bidwin'
+          + '</div>'
+          + '</div>';
+      };
+      const hl = data.headline || {};
+      headEl.innerHTML = '<div style="display:flex; gap:8px; flex-wrap:wrap;">'
+        + chip('Last',  hl.last1h, 1,  'var(--blue)')
+        + chip('Last',  hl.last6h, 6,  'var(--blue)')
+        + chip('Last',  hl.last24h, hl.last24h?.hours || 24, 'var(--blue)')
+        + chip('Window', hl.full, data.hours, 'var(--amber)')
+        + '</div>';
+    }
+
+    _netshareRenderHourlyVolume(buckets);
+    _netshareRenderHourlyTrend(buckets, data.rollingWindow);
+  }
+
+  // Hourly volume — paired bars (network matched on left axis, my fills on right)
+  function _netshareRenderHourlyVolume(buckets) {
+    const el = document.getElementById('chart-netshare-hourly-vol');
+    if (!el) return;
+    if (!buckets.length) { el.innerHTML = ''; return; }
+
+    const W = 860, H = 180, pad = { l: 50, r: 50, t: 16, b: 40 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+    const colW = chartW / buckets.length;
+    const barW = Math.max(2, colW - 2);
+
+    const leftMax = Math.max(1, ...buckets.map(b => b.networkMatched || 0));
+    const rightMax = Math.max(1, ...buckets.map(b => b.myFills || 0));
+    const niceCeil = (v) => { const m = Math.pow(10, Math.floor(Math.log10(v))); const n = v / m; const c = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10; return c * m; };
+    const leftNice = niceCeil(leftMax);
+    const rightNice = niceCeil(rightMax);
+    const scaleLeft  = v => pad.t + chartH - (v / leftNice) * chartH;
+    const scaleRight = v => pad.t + chartH - (v / rightNice) * chartH;
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; height:auto; max-height:200px;">';
+    // Gridlines + axis labels
+    for (let t = 0; t <= 4; t++) {
+      const lv = leftNice * t / 4;
+      const rv = rightNice * t / 4;
+      const y = scaleLeft(lv);
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', t === 0 ? 0.8 : 0.3);
+      svg += svgText(pad.l - 6, y + 3, _netshareFmtN(Math.round(lv)), { anchor: 'end', size: 9, fill: '#5b6470' });
+      svg += svgText(W - pad.r + 6, y + 3, _netshareFmtN(Math.round(rv)), { anchor: 'start', size: 9, fill: '#22c55e' });
+    }
+
+    for (let i = 0; i < buckets.length; i++) {
+      const b = buckets[i];
+      const cx = pad.l + (i + 0.5) * colW;
+      // Network matched (left axis, gray, full bar)
+      if (b.networkMatched > 0) {
+        const y = scaleLeft(b.networkMatched);
+        const h = (pad.t + chartH) - y;
+        svg += '<rect x="' + (cx - barW/2) + '" y="' + y + '" width="' + barW + '" height="' + h + '" fill="#5b6470" fill-opacity="0.5" rx="1"><title>' + b.etLabel + ' · Network matched: ' + b.networkMatched + '</title></rect>';
+      }
+      // My fills (right axis, green, narrower bar overlaid)
+      if (b.myFills > 0) {
+        const y = scaleRight(b.myFills);
+        const h = (pad.t + chartH) - y;
+        const fw = Math.max(1, barW * 0.5);
+        svg += '<rect x="' + (cx - fw/2) + '" y="' + y + '" width="' + fw + '" height="' + h + '" fill="#22c55e" rx="1"><title>' + b.etLabel + ' · My fills: ' + b.myFills + '</title></rect>';
+      }
+    }
+
+    // X-axis: tick every ~6 hours
+    const stride = Math.max(1, Math.ceil(buckets.length / 8));
+    for (let i = 0; i < buckets.length; i += stride) {
+      const cx = pad.l + (i + 0.5) * colW;
+      // ET-hour from etLabel ("MM/DD, HH")
+      const label = (buckets[i].etLabel || '').split(',').pop().trim();
+      svg += svgText(cx, H - pad.b + 14, label + 'h', { size: 9, fill: 'var(--text3)' });
+    }
+    // Legend
+    svg += '<rect x="' + (pad.l + 4) + '" y="' + (H - 6) + '" width="10" height="3" fill="#5b6470" />';
+    svg += svgText(pad.l + 18, H - 3, 'Network matched (L)', { anchor: 'start', size: 9, fill: 'var(--text2)' });
+    svg += '<rect x="' + (pad.l + 180) + '" y="' + (H - 6) + '" width="10" height="3" fill="#22c55e" />';
+    svg += svgText(pad.l + 194, H - 3, 'My fills (R)', { anchor: 'start', size: 9, fill: 'var(--text2)' });
+    svg += '</svg>';
+    el.innerHTML = svg;
+  }
+
+  // Hourly share + bid-win trend with rolling avg overlay
+  function _netshareRenderHourlyTrend(buckets, rollingWindow) {
+    const el = document.getElementById('chart-netshare-hourly-trend');
+    if (!el) return;
+    if (!buckets.length) { el.innerHTML = ''; return; }
+
+    const W = 860, H = 200, pad = { l: 50, r: 50, t: 16, b: 40 };
+    const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
+
+    // Y max — auto-scale to max value across raw + rolling, capped at 100%
+    let yMax = 0;
+    for (const b of buckets) {
+      for (const v of [b.shareOfMatched, b.bidWinRate, b.rollingShare, b.rollingBidWin]) {
+        if (v != null) yMax = Math.max(yMax, v);
+      }
+    }
+    yMax = Math.min(1, Math.max(0.1, yMax * 1.15));
+
+    const scaleX = i => pad.l + (buckets.length <= 1 ? chartW / 2 : (i / (buckets.length - 1)) * chartW);
+    const scaleY = v => pad.t + chartH - (v / yMax) * chartH;
+
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; height:auto; max-height:220px;">';
+    // Gridlines
+    for (let t = 0; t <= 4; t++) {
+      const v = yMax * t / 4;
+      const y = scaleY(v);
+      svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', t === 0 ? 0.8 : 0.3);
+      svg += svgText(pad.l - 6, y + 3, (v * 100).toFixed(v < 0.1 ? 1 : 0) + '%', { anchor: 'end', size: 9 });
+    }
+
+    // X-axis ticks
+    const stride = Math.max(1, Math.ceil(buckets.length / 8));
+    for (let i = 0; i < buckets.length; i += stride) {
+      const x = scaleX(i);
+      const label = (buckets[i].etLabel || '').split(',').pop().trim();
+      svg += svgText(x, H - pad.b + 14, label + 'h', { size: 9, fill: 'var(--text3)' });
+    }
+
+    function pathFromSeries(getter) {
+      const segments = [];
+      let cur = [];
+      for (let i = 0; i < buckets.length; i++) {
+        const v = getter(buckets[i]);
+        if (v == null) {
+          if (cur.length > 1) segments.push(cur);
+          cur = [];
+          continue;
+        }
+        cur.push({ x: scaleX(i), y: scaleY(v) });
+      }
+      if (cur.length > 1) segments.push(cur);
+      return segments;
+    }
+
+    // Raw per-hour share (thin amber, low opacity)
+    for (const seg of pathFromSeries(b => b.shareOfMatched)) {
+      let p = '';
+      for (let i = 0; i < seg.length; i++) p += (i === 0 ? 'M' : ' L') + seg[i].x.toFixed(2) + ',' + seg[i].y.toFixed(2);
+      svg += '<path d="' + p + '" fill="none" stroke="#f5b942" stroke-width="1" opacity="0.45" />';
+    }
+    // Raw per-hour bid-win (thin blue, low opacity)
+    for (const seg of pathFromSeries(b => b.bidWinRate)) {
+      let p = '';
+      for (let i = 0; i < seg.length; i++) p += (i === 0 ? 'M' : ' L') + seg[i].x.toFixed(2) + ',' + seg[i].y.toFixed(2);
+      svg += '<path d="' + p + '" fill="none" stroke="#3b82f6" stroke-width="1" opacity="0.45" />';
+    }
+    // Rolling share (thick amber dashed)
+    for (const seg of pathFromSeries(b => b.rollingShare)) {
+      let p = '';
+      for (let i = 0; i < seg.length; i++) p += (i === 0 ? 'M' : ' L') + seg[i].x.toFixed(2) + ',' + seg[i].y.toFixed(2);
+      svg += '<path d="' + p + '" fill="none" stroke="#f5b942" stroke-width="2.5" stroke-dasharray="6,3" />';
+    }
+    // Rolling bid-win (thick blue dashed)
+    for (const seg of pathFromSeries(b => b.rollingBidWin)) {
+      let p = '';
+      for (let i = 0; i < seg.length; i++) p += (i === 0 ? 'M' : ' L') + seg[i].x.toFixed(2) + ',' + seg[i].y.toFixed(2);
+      svg += '<path d="' + p + '" fill="none" stroke="#3b82f6" stroke-width="2.5" stroke-dasharray="6,3" />';
+    }
+
+    // Dots on the rolling-avg points for hover tooltip
+    for (let i = 0; i < buckets.length; i++) {
+      const b = buckets[i];
+      const x = scaleX(i);
+      if (b.rollingShare != null) {
+        svg += '<circle cx="' + x + '" cy="' + scaleY(b.rollingShare) + '" r="2.5" fill="#f5b942"><title>'
+          + b.etLabel + ' · rolling share ' + (b.rollingShare*100).toFixed(2) + '%'
+          + (b.shareOfMatched != null ? ' (raw ' + (b.shareOfMatched*100).toFixed(2) + '%)' : '') + '</title></circle>';
+      }
+      if (b.rollingBidWin != null) {
+        svg += '<circle cx="' + x + '" cy="' + scaleY(b.rollingBidWin) + '" r="2.5" fill="#3b82f6"><title>'
+          + b.etLabel + ' · rolling bid-win ' + (b.rollingBidWin*100).toFixed(2) + '%'
+          + (b.bidWinRate != null ? ' (raw ' + (b.bidWinRate*100).toFixed(2) + '%)' : '') + '</title></circle>';
+      }
+    }
+
+    // Legend
+    let lx = pad.l + 4, ly = H - 6;
+    svg += '<rect x="' + lx + '" y="' + (ly - 5) + '" width="14" height="2" fill="#f5b942" opacity="0.45" />';
+    svg += svgText(lx + 18, ly, 'share raw', { anchor: 'start', size: 9, fill: 'var(--text2)' });
+    svg += '<rect x="' + (lx + 80) + '" y="' + (ly - 5) + '" width="14" height="2.5" fill="#f5b942" />';
+    svg += svgText(lx + 98, ly, 'share roll-avg', { anchor: 'start', size: 9, fill: 'var(--text2)' });
+    svg += '<rect x="' + (lx + 200) + '" y="' + (ly - 5) + '" width="14" height="2" fill="#3b82f6" opacity="0.45" />';
+    svg += svgText(lx + 218, ly, 'bidwin raw', { anchor: 'start', size: 9, fill: 'var(--text2)' });
+    svg += '<rect x="' + (lx + 290) + '" y="' + (ly - 5) + '" width="14" height="2.5" fill="#3b82f6" />';
+    svg += svgText(lx + 308, ly, 'bidwin roll-avg', { anchor: 'start', size: 9, fill: 'var(--text2)' });
+    svg += '</svg>';
+    el.innerHTML = svg;
+  }
   async function loadNetworkShareDaily(force) {
     const card = document.getElementById('netshare-card');
     if (!card) return;
@@ -10286,6 +10552,9 @@
       if (!data || !data.ok) throw new Error(data && data.error || ('HTTP ' + r.status));
       window._netshareState.data = data;
       renderNetshareCharts(data);
+      // Fire hourly view in parallel — has its own 30s cache so cheap on
+      // repeat polls. First-time load is the only meaningful cost.
+      loadNetworkShareHourly().catch(() => {});
     } catch (err) {
       const msg = '<div class="empty-state"><div class="icon">!</div><div>Failed to load: ' + escapeHtml(err.message || String(err)) + '</div></div>';
       if (quotesEl)  quotesEl.innerHTML  = msg;
@@ -10514,31 +10783,40 @@
     const W = 820, H = 240, pad = { l: 50, r: 50, t: 22, b: 64 };
     const chartW = W - pad.l - pad.r, chartH = H - pad.t - pad.b;
 
-    // Y axis — auto-scale to max value (with a min ceiling of 10%) so a low-
-    // share operator still sees meaningful resolution. Cap at 100%. Only
-    // reliable bid-win values participate so a single pre-cutoff 100% row
-    // doesn't anchor yMax to 100%.
-    let yMax = 0;
+    // DUAL Y-AXIS — share-of-matched on the LEFT (typically 2-15% range),
+    // bid-win-rate on the RIGHT (typically 30-90% range). Without dual axes
+    // a single shared scale either flattens the share line (when bid-win
+    // pulls yMax to ~90%) or pegs bid-win at 100% (when share is the lower
+    // value). Each axis auto-scales independently with a 15% headroom pad.
+    let shareMax = 0;
+    let bidwinMax = 0;
     for (const d of byDay) {
-      if (d.shareOfMatched != null) yMax = Math.max(yMax, d.shareOfMatched);
+      if (d.shareOfMatched != null) shareMax = Math.max(shareMax, d.shareOfMatched);
       if (d.bidWinRate != null && d.bidWinRateReliable !== false) {
-        yMax = Math.max(yMax, d.bidWinRate);
+        bidwinMax = Math.max(bidwinMax, d.bidWinRate);
       }
     }
-    yMax = Math.min(1, Math.max(0.1, yMax * 1.15));
+    // Nice ceiling: at least 10% so a low-share operator sees resolution;
+    // 100% cap to keep percentages physically meaningful.
+    shareMax  = Math.min(1, Math.max(0.10, shareMax  * 1.15));
+    bidwinMax = Math.min(1, Math.max(0.10, bidwinMax * 1.15));
 
     const scaleX = i => pad.l + (byDay.length <= 1 ? chartW / 2 : (i / (byDay.length - 1)) * chartW);
-    const scaleY = v => pad.t + chartH - (v / yMax) * chartH;
+    const scaleYshare  = v => pad.t + chartH - (v / shareMax)  * chartH;
+    const scaleYbidwin = v => pad.t + chartH - (v / bidwinMax) * chartH;
 
     let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%; height:auto; max-height:280px;">';
 
-    // Gridlines + Y labels (percentages)
+    // Gridlines + Y labels. Use LEFT axis (share, amber) for gridlines and
+    // amber tick labels. Right axis (bid-win, blue) just gets tick labels.
     const ticks = 5;
     for (let t = 0; t <= ticks; t++) {
-      const v = yMax * t / ticks;
-      const y = scaleY(v);
+      const lv = shareMax  * t / ticks;
+      const rv = bidwinMax * t / ticks;
+      const y  = scaleYshare(lv);
       svg += svgLine(pad.l, y, W - pad.r, y, 'var(--border)', t === 0 ? 0.8 : 0.3);
-      svg += svgText(pad.l - 6, y + 3, (v * 100).toFixed(v < 0.1 ? 1 : 0) + '%', { anchor: 'end', size: 9 });
+      svg += svgText(pad.l - 6, y + 3, (lv * 100).toFixed(lv < 0.1 ? 1 : 0) + '%', { anchor: 'end', size: 9, fill: '#f5b942' });
+      svg += svgText(W - pad.r + 6, y + 3, (rv * 100).toFixed(rv < 0.1 ? 1 : 0) + '%', { anchor: 'start', size: 9, fill: '#3b82f6' });
     }
 
     // X-axis date labels — show ~8 ticks max so dense windows don't crowd
@@ -10566,8 +10844,10 @@
       }
     }
 
-    // Build line paths, segmenting on null gaps. Each series → array of polylines.
-    function pathFromSeries(getter) {
+    // Build line paths, segmenting on null gaps. Each series → array of
+    // polylines. Pass the SCALE function so each series projects to its own
+    // axis (share = left, bid-win = right).
+    function pathFromSeries(getter, scaleFn) {
       const segments = [];
       let cur = [];
       for (let i = 0; i < byDay.length; i++) {
@@ -10577,51 +10857,51 @@
           cur = [];
           continue;
         }
-        cur.push({ x: scaleX(i), y: scaleY(v) });
+        cur.push({ x: scaleX(i), y: scaleFn(v) });
       }
       if (cur.length > 1) segments.push(cur);
       else if (cur.length === 1) segments.push([cur[0], cur[0]]); // single-point dot
       return segments;
     }
 
-    const shareSeg = pathFromSeries(d => d.shareOfMatched);
+    const shareSeg = pathFromSeries(d => d.shareOfMatched, scaleYshare);
     // Only reliable bid-win values are plotted. Backend already nulls out
     // unreliable rows, but double-gate here in case an older /network-share-
     // daily response (pre-cutoff-aware) is in cache.
-    const winSeg   = pathFromSeries(d => d.bidWinRateReliable !== false ? d.bidWinRate : null);
+    const winSeg   = pathFromSeries(d => d.bidWinRateReliable !== false ? d.bidWinRate : null, scaleYbidwin);
 
-    // Draw share line (amber)
+    // Draw share line (amber, left axis)
     for (const seg of shareSeg) {
       let p = '';
       for (let i = 0; i < seg.length; i++) p += (i === 0 ? 'M' : ' L') + seg[i].x.toFixed(2) + ',' + seg[i].y.toFixed(2);
       svg += '<path d="' + p + '" fill="none" stroke="#f5b942" stroke-width="2.2" />';
     }
-    // Draw bid-win line (blue, dashed for visual distinction)
+    // Draw bid-win line (blue dashed, right axis)
     for (const seg of winSeg) {
       let p = '';
       for (let i = 0; i < seg.length; i++) p += (i === 0 ? 'M' : ' L') + seg[i].x.toFixed(2) + ',' + seg[i].y.toFixed(2);
       svg += '<path d="' + p + '" fill="none" stroke="#3b82f6" stroke-width="2" stroke-dasharray="6,4" />';
     }
-    // Dots on the data points
+    // Dots on the data points — each projected to its own axis
     for (let i = 0; i < byDay.length; i++) {
       const d = byDay[i];
       const x = scaleX(i);
       if (d.shareOfMatched != null) {
-        svg += '<circle cx="' + x + '" cy="' + scaleY(d.shareOfMatched) + '" r="3" fill="#f5b942">'
+        svg += '<circle cx="' + x + '" cy="' + scaleYshare(d.shareOfMatched) + '" r="3" fill="#f5b942">'
           + '<title>' + d.date + ' · share ' + _netshareFmtPct(d.shareOfMatched, 2) + ' (' + d.myFills + '/' + d.networkMatched + ')</title></circle>';
       }
       if (d.bidWinRate != null && d.bidWinRateReliable !== false) {
-        svg += '<circle cx="' + x + '" cy="' + scaleY(d.bidWinRate) + '" r="3" fill="#3b82f6">'
+        svg += '<circle cx="' + x + '" cy="' + scaleYbidwin(d.bidWinRate) + '" r="3" fill="#3b82f6">'
           + '<title>' + d.date + ' · bid-win ' + _netshareFmtPct(d.bidWinRate, 1) + ' (' + d.myFills + '/' + d.networkWeBidOn + ')</title></circle>';
       }
     }
 
-    // Legend
+    // Legend — note each series tied to its axis
     const legendX = pad.l + 4, legendY = H - 8;
     svg += '<rect x="' + legendX + '" y="' + (legendY - 7) + '" width="14" height="3" fill="#f5b942" />';
-    svg += '<text x="' + (legendX + 20) + '" y="' + legendY + '" font-size="10" fill="var(--text2)">Share of matched (my fills / network matched)</text>';
-    svg += '<rect x="' + (legendX + 280) + '" y="' + (legendY - 7) + '" width="14" height="3" fill="#3b82f6" />';
-    svg += '<text x="' + (legendX + 300) + '" y="' + legendY + '" font-size="10" fill="var(--text2)">Bid win rate (reliable days only)</text>';
+    svg += '<text x="' + (legendX + 20) + '" y="' + legendY + '" font-size="10" fill="var(--text2)">Share of matched (L axis · my fills / network matched)</text>';
+    svg += '<rect x="' + (legendX + 320) + '" y="' + (legendY - 7) + '" width="14" height="3" fill="#3b82f6" />';
+    svg += '<text x="' + (legendX + 340) + '" y="' + legendY + '" font-size="10" fill="var(--text2)">Bid win rate (R axis · reliable days only)</text>';
 
     svg += '</svg>';
     el.innerHTML = svg;

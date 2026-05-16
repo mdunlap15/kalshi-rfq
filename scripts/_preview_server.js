@@ -119,5 +119,97 @@ app.get('/network-share-daily', async (req, res) => {
 // order and the first match wins.
 app.get(/^\/[a-z0-9_/-]+$/i, (_, res) => res.json(stubResponse));
 
+// ---- /network-share-hourly stub for the preview server ----
+const _hourlyCache = { key: null, at: 0, data: null };
+app.get('/network-share-hourly', async (req, res) => {
+  try {
+    const hours = Math.max(1, Math.min(48, parseInt(req.query.hours) || 24));
+    const rolling = Math.max(2, Math.min(12, parseInt(req.query.rolling) || 6));
+    const cacheKey = `h${hours}_r${rolling}`;
+    const now = Date.now();
+    if (_hourlyCache.key === cacheKey && (now - _hourlyCache.at) < 30000) {
+      res.set('X-Cache', 'hit'); return res.json(_hourlyCache.data);
+    }
+    const sb = db.getClient();
+    if (!sb) return res.status(500).json({ ok: false, error: 'no DB' });
+    const endMs = Math.floor(now / 3_600_000) * 3_600_000;
+    const startMs = endMs - hours * 3_600_000;
+    const startIso = new Date(startMs).toISOString();
+    const endIso = new Date(endMs).toISOString();
+    const ET_FMT = new Intl.DateTimeFormat('en-US', { timeZone:'America/New_York', hour:'2-digit', minute:'2-digit', month:'numeric', day:'numeric', hour12: false });
+    const buckets = [];
+    for (let i = 0; i < hours; i++) { const ms = startMs + i * 3600000; buckets.push({ hourMs: ms, hourIso: new Date(ms).toISOString(), etLabel: ET_FMT.format(new Date(ms)), myQuotes:0, myFills:0, weDeclined:0, networkMatched:0, networkWeBidOn:0 }); }
+    const bucketForMs = (ms) => { if (ms < startMs || ms >= endMs) return null; return buckets[Math.floor((ms - startMs) / 3600000)]; };
+    const ourOrderIds = new Set();
+    async function pull(col, handler) {
+      let offset = 0;
+      while (true) {
+        const { data, error } = await sb.from('parlay_orders').select('parlay_id, status, quoted_at, confirmed_at, meta').gte(col, startIso).lt(col, endIso).order(col, { ascending: true }).range(offset, offset+999);
+        if (error || !data || !data.length) break;
+        for (const r of data) handler(r);
+        if (data.length < 1000) break; offset += 1000;
+      }
+    }
+    await pull('quoted_at', (r) => { if (r.meta?.phantom) return; if (r.meta?.reconstructed && !r.quoted_at) return; ourOrderIds.add(r.parlay_id); if (r.quoted_at) { const b = bucketForMs(new Date(r.quoted_at).getTime()); if (b) b.myQuotes++; } });
+    await pull('confirmed_at', (r) => { if (r.meta?.phantom) return; ourOrderIds.add(r.parlay_id); const isWon = r.status === 'confirmed' || (typeof r.status === 'string' && r.status.startsWith('settled_')); if (isWon && r.confirmed_at) { const b = bucketForMs(new Date(r.confirmed_at).getTime()); if (b) b.myFills++; } });
+    {
+      let offset = 0;
+      while (true) {
+        const { data, error } = await sb.from('declines').select('declined_at').gte('declined_at', startIso).lt('declined_at', endIso).order('declined_at', { ascending: true }).range(offset, offset+999);
+        if (error || !data || !data.length) break;
+        for (const r of data) { const b = bucketForMs(new Date(r.declined_at).getTime()); if (b) b.weDeclined++; }
+        if (data.length < 1000) break; offset += 1000;
+      }
+    }
+    const seen = new Map();
+    {
+      let offset = 0;
+      while (true) {
+        const { data, error } = await sb.from('matched_parlays').select('parlay_id, matched_at, we_quoted, our_odds').gte('matched_at', startIso).lt('matched_at', endIso).order('matched_at', { ascending: true }).range(offset, offset+999);
+        if (error || !data || !data.length) break;
+        for (const r of data) {
+          const p = seen.get(r.parlay_id);
+          if (!p) seen.set(r.parlay_id, { matched_at: r.matched_at, we_quoted: !!r.we_quoted, our_odds: r.our_odds });
+          else { if (r.we_quoted) p.we_quoted = true; if (p.our_odds == null && r.our_odds != null) p.our_odds = r.our_odds; }
+        }
+        if (data.length < 1000) break; offset += 1000;
+      }
+      for (const [pid, r] of seen.entries()) {
+        const b = bucketForMs(new Date(r.matched_at).getTime());
+        if (!b) continue;
+        b.networkMatched++;
+        if (r.we_quoted || r.our_odds != null || ourOrderIds.has(pid)) b.networkWeBidOn++;
+      }
+    }
+    const BID_RELIABLE_FROM = '2026-05-12';
+    for (const b of buckets) {
+      b.networkDemand = b.myQuotes + b.weDeclined;
+      b.shareOfMatched = b.networkMatched > 0 ? b.myFills / b.networkMatched : null;
+      const dayKey = new Intl.DateTimeFormat('en-CA', { timeZone:'America/New_York', year:'numeric', month:'2-digit', day:'2-digit' }).format(new Date(b.hourMs));
+      b.bidWinRateReliable = dayKey >= BID_RELIABLE_FROM;
+      b.bidWinRate = (b.networkWeBidOn > 0 && b.bidWinRateReliable) ? Math.min(1, b.myFills / b.networkWeBidOn) : null;
+    }
+    function rrRatio(numA, denA, w) {
+      const o = new Array(numA.length).fill(null);
+      for (let i = 0; i < numA.length; i++) {
+        let n = 0, d = 0;
+        for (let j = Math.max(0, i - w + 1); j <= i; j++) { n += numA[j] || 0; d += denA[j] || 0; }
+        o[i] = d > 0 ? n / d : null;
+      }
+      return o;
+    }
+    const rs = rrRatio(buckets.map(b => b.myFills), buckets.map(b => b.networkMatched), rolling);
+    const rb = rrRatio(buckets.map(b => b.bidWinRateReliable ? b.myFills : 0), buckets.map(b => b.bidWinRateReliable ? b.networkWeBidOn : 0), rolling);
+    for (let i = 0; i < buckets.length; i++) { buckets[i].rollingShare = rs[i]; buckets[i].rollingBidWin = rb[i] != null ? Math.min(1, rb[i]) : null; }
+    const tot = buckets.reduce((a, b) => { a.myQuotes+=b.myQuotes; a.myFills+=b.myFills; a.weDeclined+=b.weDeclined; a.networkDemand+=b.networkDemand; a.networkMatched+=b.networkMatched; a.networkWeBidOn+=b.networkWeBidOn; return a; }, {myQuotes:0, myFills:0, weDeclined:0, networkDemand:0, networkMatched:0, networkWeBidOn:0});
+    tot.shareOfMatched = tot.networkMatched > 0 ? tot.myFills / tot.networkMatched : null;
+    tot.bidWinRate = tot.networkWeBidOn > 0 ? Math.min(1, tot.myFills / tot.networkWeBidOn) : null;
+    const headlineFor = (n) => { const s = buckets.slice(Math.max(0, buckets.length - n)).reduce((a,b) => { a.myFills+=b.myFills; a.networkMatched+=b.networkMatched; a.networkWeBidOn+=b.networkWeBidOn; a.myQuotes+=b.myQuotes; a.weDeclined+=b.weDeclined; return a; }, {myFills:0, networkMatched:0, networkWeBidOn:0, myQuotes:0, weDeclined:0}); s.shareOfMatched = s.networkMatched > 0 ? s.myFills / s.networkMatched : null; s.bidWinRate = s.networkWeBidOn > 0 ? Math.min(1, s.myFills / s.networkWeBidOn) : null; s.hours = Math.min(n, buckets.length); return s; };
+    const payload = { ok:true, hours, rollingWindow: rolling, startIso, endIso, bidWinRateReliableFrom: BID_RELIABLE_FROM, asOfUtc: new Date().toISOString(), elapsedMs: 0, buckets, totals: tot, headline: { last1h: headlineFor(1), last6h: headlineFor(6), last24h: headlineFor(Math.min(24, hours)), full: { ...tot, hours } } };
+    _hourlyCache.key = cacheKey; _hourlyCache.at = now; _hourlyCache.data = payload;
+    res.set('X-Cache', 'miss'); res.json(payload);
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 const PORT = 4099;
 app.listen(PORT, () => console.log(`Preview server on http://localhost:${PORT}`));

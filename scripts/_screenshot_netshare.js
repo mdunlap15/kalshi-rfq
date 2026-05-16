@@ -43,8 +43,10 @@ const path = require('path');
     return !!document.querySelector('#chart-netshare-quotes svg')
         && !!document.querySelector('#chart-netshare-matched svg')
         && !!document.querySelector('#chart-netshare-share svg')
-        && !!document.querySelector('#netshare-table table');
-  }, { timeout: 90000 });
+        && !!document.querySelector('#netshare-table table')
+        && !!document.querySelector('#chart-netshare-hourly-vol svg')
+        && !!document.querySelector('#chart-netshare-hourly-trend svg');
+  }, { timeout: 180000 });
   console.log('Charts rendered');
 
   // Scroll the card into view
