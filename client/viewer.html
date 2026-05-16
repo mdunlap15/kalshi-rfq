@@ -7776,16 +7776,31 @@
     const rows = getFilteredExportRows();
     if (rows.length === 0) return;
 
-    const headers = ['Type','Parlay ID','Date','Legs','SGP','PROP','Selections','Sports',
-      'Offered Odds','Pinnacle Odds','FanDuel Odds','DraftKings Odds','My Risk','To Win',
-      'Status','P&L','ROI %'];
+    // Pre-compute cumulative P&L over settled rows in chronological order so
+    // the CSV's "Cumulative P&L" column matches the Cumul. column in the
+    // Settled Positions table.
+    const cumulMap = {};
+    {
+      const settledSorted = rows
+        .filter(o => o.status && o.status.startsWith('settled_') && o.pnl != null)
+        .sort((a, b) => (a.settledAt || a.quotedAt || '').localeCompare(b.settledAt || b.quotedAt || ''));
+      let running = 0;
+      for (const o of settledSorted) {
+        running += (o.pnl || 0);
+        if (o.parlayId) cumulMap[o.parlayId] = running;
+      }
+    }
+
+    const headers = ['Type','Parlay ID','Confirmed At','Settled At','Legs','SGP','PROP',
+      'Selections','Sports','Offered Odds','Pinnacle Odds','FanDuel Odds','DraftKings Odds',
+      'My Risk','To Win','Fair Parlay Prob','SP Win Prob %','Theo Edge %','Theo EV $',
+      'Status','SP Result','P&L','ROI %','Cumulative P&L'];
 
     const csvRows = [headers.join(',')];
     for (const o of rows) {
       const legs = o.legs || o.meta?.legs || [];
       const isSettled = o.status && o.status.startsWith('settled_');
       const type = isSettled ? 'Settled' : 'Open';
-      const date = (isSettled ? o.settledAt : o.confirmedAt) || o.quotedAt || '';
       const selections = formatParlaySelections(legs);
       const sports = [...new Set(legs.map(l => sportLabel(l.sport)).filter(Boolean))].join(' / ');
       const sgpFlag = isSameGameParlay(legs) ? 'Y' : '';
@@ -7794,7 +7809,8 @@
       const fdOdds = compoundParlayOdds(legs, 'fanduelOdds') || '';
       const dkOdds = compoundParlayOdds(legs, 'draftkingsOdds') || '';
       const risk = o.confirmedStake || '';
-      const toWin = (o.confirmedStake && o.offeredOdds) ? calcSpProfit(o.confirmedStake, o.offeredOdds).toFixed(2) : '';
+      const toWinNum = (o.confirmedStake && o.offeredOdds) ? calcSpProfit(o.confirmedStake, o.offeredOdds) : null;
+      const toWin = toWinNum != null ? toWinNum.toFixed(2) : '';
       let status = '';
       if (isSettled) {
         status = o.settlementResult || o.status.replace('settled_', '');
@@ -7803,17 +7819,37 @@
         const sd = orderStatusDisplay(o);
         status = sd ? sd.text : 'Open';
       }
+      const spResult = isSettled
+        ? ((o.settlementResult || o.status.replace('settled_', '')) || '').replace(/^./, c => c.toUpperCase())
+        : '';
       const pnl = (isSettled && o.pnl != null) ? o.pnl.toFixed(2) : '';
       const roi = (isSettled && o.pnl != null && o.confirmedStake)
         ? (o.pnl / o.confirmedStake * 100).toFixed(2) : '';
+      const cumul = (isSettled && cumulMap[o.parlayId] != null) ? cumulMap[o.parlayId].toFixed(2) : '';
+      let theoEdge = '', theoEv = '', spWinProb = '', fairOut = '';
+      const bettorImplied = o.offeredOdds != null ? americanToProb(o.offeredOdds) : null;
+      const fair = (o.fairParlayProb != null) ? Number(o.fairParlayProb) : null;
+      if (Number.isFinite(fair)) {
+        fairOut = fair.toFixed(6);
+        spWinProb = ((1 - fair) * 100).toFixed(2);
+        if (Number.isFinite(bettorImplied) && bettorImplied > 0) {
+          theoEdge = ((1 - fair / bettorImplied) * 100).toFixed(2);
+          if (Number.isFinite(toWinNum) && Number.isFinite(Number(risk))) {
+            theoEv = ((1 - fair) * toWinNum - fair * Number(risk)).toFixed(2);
+          }
+        }
+      }
 
       csvRows.push([
-        type, o.parlayId || '', csvEscape(date), legs.length,
-        sgpFlag, propFlag,
+        type, o.parlayId || '',
+        csvEscape(o.confirmedAt || o.quotedAt || ''),
+        csvEscape(o.settledAt || ''),
+        legs.length, sgpFlag, propFlag,
         csvEscape(selections), csvEscape(sports),
         o.offeredOdds || '', pinOdds, fdOdds, dkOdds,
         risk ? Number(risk).toFixed(2) : '', toWin,
-        status, pnl, roi
+        fairOut, spWinProb, theoEdge, theoEv,
+        csvEscape(status), spResult, pnl, roi, cumul
       ].join(','));
     }
 
