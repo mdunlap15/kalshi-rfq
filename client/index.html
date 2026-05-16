@@ -11061,9 +11061,19 @@
       return;
     }
 
+    // Helper: does a sport key fall under the synthetic "Soccer (all)"
+    // bucket? Catches every soccer league plus the generic 'soccer' key.
+    const isSoccerSport = (sp) => typeof sp === 'string' && sp.startsWith('soccer');
+
     // Apply client-side filters
     const filtered = raw.filter(d => {
-      if (state.sportFilter !== 'all' && d.sport !== state.sportFilter) return false;
+      if (state.sportFilter !== 'all') {
+        if (state.sportFilter === 'soccer_all') {
+          if (!isSoccerSport(d.sport)) return false;
+        } else if (d.sport !== state.sportFilter) {
+          return false;
+        }
+      }
       if (state.marketFilter !== 'all' && d.marketCategory !== state.marketFilter) return false;
       return true;
     });
@@ -11072,6 +11082,13 @@
     const sportCounts = {};
     for (const d of raw) sportCounts[d.sport] = (sportCounts[d.sport] || 0) + 1;
     const sportOptions = Object.entries(sportCounts).sort((a, b) => b[1] - a[1]);
+    // Aggregate "Soccer (all)" count across every soccer league. Only
+    // surface the synthetic option if there are 2+ soccer leagues
+    // present — with just one, the per-league option already suffices.
+    const soccerCount = sportOptions
+      .filter(([s]) => isSoccerSport(s))
+      .reduce((sum, [, c]) => sum + c, 0);
+    const distinctSoccerLeagues = sportOptions.filter(([s]) => isSoccerSport(s)).length;
 
     // Build market list
     const marketCounts = {};
@@ -11089,8 +11106,17 @@
     html += '<span style="margin-left:12px; color:var(--text3);">Sport:</span>';
     html += '<select onchange="setLostBidSport(this.value)" style="background:var(--surface3); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:4px; font-size:12px;">';
     html += '<option value="all"' + (state.sportFilter === 'all' ? ' selected' : '') + '>All (' + raw.length + ')</option>';
+    // Synthetic "Soccer (all)" aggregate — matches every sport key starting
+    // with 'soccer'. Only shown if 2+ distinct soccer leagues are present.
+    if (distinctSoccerLeagues >= 2) {
+      html += '<option value="soccer_all"' + (state.sportFilter === 'soccer_all' ? ' selected' : '') + '>Soccer (all) (' + soccerCount + ')</option>';
+    }
+    // Display friendly sport names (NBA, MMA, MLS, etc.) instead of the raw
+    // API keys (basketball_nba, mma_mixed_martial_arts, soccer_usa_mls)
+    // while keeping the API key as the option value so the filter logic
+    // continues to match on the canonical key.
     for (const [s, c] of sportOptions) {
-      html += '<option value="' + s + '"' + (state.sportFilter === s ? ' selected' : '') + '>' + s + ' (' + c + ')</option>';
+      html += '<option value="' + s + '"' + (state.sportFilter === s ? ' selected' : '') + '>' + sportLabel(s) + ' (' + c + ')</option>';
     }
     html += '</select>';
     html += '<span style="margin-left:12px; color:var(--text3);">Market:</span>';
