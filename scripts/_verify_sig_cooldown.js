@@ -92,11 +92,28 @@ test('shouldDecline no longer blocks after clearSignature',
   `reason=${r.reason}`);
 
 console.log('\n=== Test 8: db.saveOrder hook arms the lock for status=confirmed writes ===');
-// Simulate the saveOrder path: a write with status=confirmed should arm
-// the lock for the row's legs.
+// DEFAULT: do NOT exercise the real db.saveOrder path. The hook is a
+// single line inside saveOrder ("if status==='confirmed', call
+// lockSignature") and is statically verifiable by inspection. Running
+// it for real means writing a fake confirmed-status row to whatever
+// Supabase the env vars point at — which previously leaked a
+// fixture row into production's parlay_orders and surfaced as an open
+// position in the dashboard.
+//
+// Pass --include-db-write ONLY when running against a sidecar /
+// dev Supabase. The fixture is auto-deleted at the end either way.
+const includeDbWrite = process.argv.includes('--include-db-write');
+if (!includeDbWrite) {
+  console.log('  ⚠ skipped (default — pass --include-db-write to enable; only safe against a non-production Supabase)');
+  console.log('\n=== Summary ===');
+  console.log(`  ${passed} passed, ${failed} failed`);
+  process.exit(failed === 0 ? 0 : 1);
+}
+// --include-db-write path: explicit opt-in. Still cleans up after itself.
 const db = require('../services/db');
+const fixtureId = 'fixture-saveorder-test-' + Date.now();
 const fakeOrder = {
-  parlayId: 'fixture-saveorder-test-' + Date.now(),
+  parlayId: fixtureId,
   status: 'confirmed',
   legs: legs1,
   offeredOdds: 200,
@@ -108,23 +125,27 @@ const fakeOrder = {
   meta: {},
 };
 (async () => {
-  // First: confirm the lock is empty
   sigCd.clearSignature(legs1);
   const preLock = sigCd.checkSignatureCooldown(legs1);
   test('lock empty before saveOrder', preLock === null);
-  // Trigger saveOrder. Even if the DB write fails (e.g. no SUPABASE_URL),
-  // the hook should still arm the lock — the hook fires only on success
-  // though, so this requires Supabase creds set. Skip silently if not.
-  if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+    console.log('  ⚠ no Supabase creds in env — skipping');
+  } else {
     await db.saveOrder(fakeOrder);
     const postLock = sigCd.checkSignatureCooldown(legs1);
     test('lock armed after db.saveOrder with status=confirmed',
       postLock && postLock.block === true,
       JSON.stringify(postLock));
-    // Cleanup
+    // ALWAYS delete the fixture row, even if assertion failed. Belt and
+    // suspenders: also delete any other fixture-saveorder-test rows
+    // that might have leaked from previous runs.
+    const { createClient } = require('@supabase/supabase-js');
+    const cleanup = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+    const { error: delErr } = await cleanup.from('parlay_orders')
+      .delete()
+      .like('parlay_id', 'fixture-saveorder-test-%');
+    test('fixture row cleaned up from Supabase', !delErr, delErr && delErr.message);
     sigCd.clearSignature(legs1);
-  } else {
-    console.log('  ⚠ skipped (no SUPABASE creds)');
   }
 
   console.log('\n=== Summary ===');
