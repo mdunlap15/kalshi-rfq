@@ -12893,6 +12893,11 @@
     h += '<th style="text-align:left; padding:' + pad + ';">Market</th>';
     h += '<th style="text-align:left; padding:' + pad + ';">Line</th>';
     h += '<th style="text-align:left; padding:' + pad + ';">Event Time</th>';
+    // Live game state (current score + period/clock + win-prob delta).
+    // Only populated for confirmed open positions where ESPN has a match
+    // and the in-play model produced a number. Empty for pre-game /
+    // post-final / sports without a model (tennis/soccer/MMA).
+    h += '<th style="text-align:left; padding:' + pad + '; color:var(--blue);" title="Current live game state from ESPN (~60s refresh): score + period/clock. Cell colors signal SP-perspective outcome: green=bettor leg likely lost (good for SP), red=bettor leg likely won (bad for SP), gray=close to coin flip.">Live</th>';
     if (showOdds) {
       h += '<th style="text-align:right; padding:' + pad + '; color:var(--purple);">Pinnacle</th>';
       h += '<th style="text-align:right; padding:' + pad + '; color:var(--blue);">FanDuel</th>';
@@ -13139,6 +13144,42 @@
       h += '<td style="padding:' + pad + ';"><span class="market-pill">' + (mkt || '-') + '</span>' + unregMktSuffix + '</td>';
       h += '<td style="padding:' + pad + '; color:var(--text2);">' + lineDisplay + '</td>';
       h += '<td style="padding:' + pad + '; white-space:nowrap; font-size:11px; color:var(--text3);">' + eventTime + '</td>';
+      // Live state cell. Shows live score + period/clock when ESPN has
+      // data, plus the live bettor-fair-prob → SP-prob delta vs static.
+      // Color-coded by SP perspective: SP win prob ≥ 80% green, ≤ 20% red,
+      // else neutral. Empty for unsupported / pre-game / unmatched legs.
+      let liveCell = '<span style="color:var(--text3);">-</span>';
+      const lgs = l.liveGameState;
+      if (lgs && typeof lgs.homeScore === 'number' && typeof lgs.awayScore === 'number') {
+        const home = lgs.homeScore;
+        const away = lgs.awayScore;
+        const period = lgs.period;
+        const clock = lgs.displayClock || lgs.shortDetail || '';
+        const isPost = lgs.state === 'post' || lgs.completed;
+        const isPre = lgs.state === 'pre' && (period == null || period < 1);
+        let scoreStr;
+        if (isPre) {
+          scoreStr = '<span style="color:var(--text3);">pre-game</span>';
+        } else {
+          scoreStr = '<span style="font-weight:600;">' + away + ' &mdash; ' + home + '</span>';
+        }
+        let stateStr = '';
+        if (isPost) stateStr = '<span style="color:var(--text3); font-size:10px;">FINAL</span>';
+        else if (!isPre && (period != null || clock)) {
+          const periodLabel = period != null ? ('P' + period) : '';
+          stateStr = '<span style="color:var(--text3); font-size:10px;">' + (periodLabel + (clock ? ' ' + clock : '')).trim() + '</span>';
+        }
+        // SP-perspective live prob (1 - bettor liveFairProb)
+        let probStr = '';
+        if (typeof l.liveFairProb === 'number') {
+          const spProb = 1 - l.liveFairProb;
+          const pct = (spProb * 100).toFixed(0) + '%';
+          const color = spProb >= 0.8 ? 'var(--green)' : (spProb <= 0.2 ? 'var(--red)' : 'var(--text2)');
+          probStr = ' <span style="color:' + color + '; font-weight:600; font-size:10px;" title="SP-perspective live win prob for this leg (1 − bettor live fair). ' + (l.liveConfidence || '') + ' confidence — model: ' + (l.liveModel || 'n/a') + '. Reason: ' + escapeHtml(l.liveReason || '') + '">' + pct + ' SP</span>';
+        }
+        liveCell = scoreStr + ' ' + stateStr + probStr;
+      }
+      h += '<td style="padding:' + pad + '; white-space:nowrap; font-size:11px;">' + liveCell + '</td>';
       if (showOdds) {
         h += '<td style="padding:' + pad + '; text-align:right; color:var(--purple);">' + pinOdds + '</td>';
         h += '<td style="padding:' + pad + '; text-align:right; color:var(--blue);">' + fdOdds + '</td>';

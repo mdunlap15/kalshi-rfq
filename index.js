@@ -3381,7 +3381,79 @@ function startStatusServer() {
     // Without this flag the Risk Simulation was counting ~120 no-UUID
     // ghosts as real positions, inflating Total SP risk to $22k when
     // actual deployed capital was $5-7k.
-    const stamp = (o) => ({ ...o, isStalePhantom: orderTracker.isOrderStalePhantom(o) });
+    //
+    // Also augment OPEN confirmed positions with live game state +
+    // live win-prob (per-leg ESPN data + in-play model). Saves the
+    // client from doing 50+ ESPN lookups itself. Skipped for settled /
+    // phantom rows where it's irrelevant.
+    const espnScores = require('./services/espn-scores');
+    const inPlay = require('./services/in-play-models');
+    /**
+     * Augment an OPEN confirmed order with live ESPN game state + in-play
+     * win-prob per leg. Mutates a SHALLOW COPY of each leg so existing
+     * dashboard render code (which looks at l.liveFairProb directly) picks
+     * up the new data automatically. Also exposes a parlay-level summary
+     * via out.liveState for any UI that wants the aggregate flags.
+     */
+    const stampLive = (o) => {
+      if (o.status !== 'confirmed') return null;
+      const srcLegs = (o.meta && o.meta.legs) || o.legs || [];
+      if (!Array.isArray(srcLegs) || !srcLegs.length) return null;
+      const liveLegs = srcLegs.map(l => {
+        const sport = l.sport || l.oddsApiSport;
+        const home = l.homeTeam;
+        const away = l.awayTeam;
+        const start = l.startTime;
+        const gameState = (sport && home && away)
+          ? espnScores.getEspnGameResult(sport, home, away, start)
+          : null;
+        if (!gameState) return { ...l }; // leave leg untouched; no live state available
+        const live = inPlay.computeLiveLegProb(l, gameState);
+        return {
+          ...l,
+          liveFairProb: live && live.liveFairProb != null ? live.liveFairProb : l.liveFairProb,
+          liveFetchedAt: Date.now(),
+          liveModel: live && live.model || null,
+          liveConfidence: live && live.confidence || null,
+          liveReason: live && live.reason || null,
+          // Compact in-play snapshot for the row tooltip / drill-down.
+          liveGameState: {
+            homeScore: gameState.homeScore,
+            awayScore: gameState.awayScore,
+            period: gameState.period,
+            displayClock: gameState.displayClock,
+            shortDetail: gameState.shortDetail,
+            state: gameState.state,
+            completed: !!gameState.completed,
+            statusName: gameState.statusName,
+          },
+        };
+      });
+      const legResults = liveLegs.map(l => l.liveFairProb != null ? { liveFairProb: l.liveFairProb, confidence: l.liveConfidence } : null).filter(Boolean);
+      const parlayLive = legResults.length ? inPlay.computeLiveParlayProb(legResults) : null;
+      return { liveLegs, parlay: parlayLive };
+    };
+    const stamp = (o) => {
+      const out = { ...o, isStalePhantom: orderTracker.isOrderStalePhantom(o) };
+      if (o.status === 'confirmed' && !out.isStalePhantom) {
+        try {
+          const live = stampLive(o);
+          if (live) {
+            // Splice the live-augmented legs onto BOTH common access paths
+            // so existing client code (some sites read order.legs, others
+            // read order.meta.legs) sees the same data.
+            out.legs = live.liveLegs;
+            if (out.meta) out.meta = { ...out.meta, legs: live.liveLegs };
+            out.liveState = live.parlay;
+          }
+        } catch (err) {
+          // Live-state augmentation is observability only — never let it
+          // break the orders endpoint.
+          log.warn('LiveState', `stamp failed for ${o.parlayId}: ${err.message}`);
+        }
+      }
+      return out;
+    };
     res.json({
       stats: orderTracker.getStats(),
       pnlBySport: orderTracker.getPnLBySport(),

@@ -124,6 +124,16 @@ function _parseGame(event, leagueLabel) {
     const awayRunsThru5 = (awayLinescores && awayLinescores.length >= 5)
       ? awayLinescores.slice(0, 5).reduce((s, v) => s + (v || 0), 0) : null;
     const f5Completed = homeRunsThru5 != null && awayRunsThru5 != null;
+    // Period (quarter / inning / set) and clock string. ESPN exposes these
+    // under status.period (1-based int) and status.displayClock ("5:23" /
+    // "Top 7th"-style for MLB). Used by the in-play win-prob models to
+    // compute time-remaining for basketball/hockey and inning state for
+    // MLB. shortDetail is a free-form string ("End 3rd Quarter", "5:23
+    // - 4th Quarter") good as a fallback display when period/clock parse
+    // ambiguously.
+    const period = (status && status.period != null) ? Number(status.period) : null;
+    const displayClock = (status && status.displayClock) || null;
+    const shortDetail = (status && status.shortDetail) || null;
     return {
       homeTeam: home.team?.displayName || home.team?.name || '',
       awayTeam: away.team?.displayName || away.team?.name || '',
@@ -137,6 +147,13 @@ function _parseGame(event, leagueLabel) {
       statusName: status?.name || status?.shortDetail || null,
       homeScore,
       awayScore,
+      // Live-play state: period (1-based) + remaining clock string. Both null
+      // pre-game / post-game. Models pull from these. Sport-specific
+      // semantics: basketball/football period = quarter, hockey = period,
+      // MLB = inning (note: status.shortDetail also encodes top/bottom).
+      period,
+      displayClock,
+      shortDetail,
       // Per-inning runs (MLB) and F5 (first-5-innings) summed runs.
       // f5Completed=true when both teams have batted 5+ times.
       homeLinescores,
@@ -386,6 +403,16 @@ function getEspnGameResult(sportKey, homeTeam, awayTeam, startTime) {
     winner,
     state: bestMatch.state,
     statusName: bestMatch.statusName,
+    // Live-play state — used by in-play-models.js to compute live win
+    // probabilities. period is sport-specific (quarter / inning / period),
+    // displayClock is the per-period remaining clock ("5:23"), shortDetail
+    // is a free-form string like "Bot 7th" or "End 3rd Quarter".
+    period: bestMatch.period != null ? bestMatch.period : null,
+    displayClock: bestMatch.displayClock || null,
+    shortDetail: bestMatch.shortDetail || null,
+    // For team-perspective consumers: indicate whether we flipped home/away
+    // during matching so they can correctly map "home"/"away" semantics.
+    homeAwayFlipped: bestFlipped,
     league: bestMatch.league,
     source: 'espn',
   };
