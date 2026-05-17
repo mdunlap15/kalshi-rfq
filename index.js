@@ -291,6 +291,20 @@ async function startup() {
   } catch (err) {
     log.warn('Startup', `    ⚠ Template-cap override hydrate failed: ${err.message}`);
   }
+  // Hydrate the signature-cooldown lock map from Supabase, then start the
+  // periodic DB-sync loop. MUST run before websocket.connect so the first
+  // RFQs after restart respect any cooldowns from parlays that confirmed
+  // pre-restart. The sync loop continues to re-poll every N seconds (default
+  // 30s) so any status='confirmed' write that bypasses the in-memory hooks
+  // (saveOrder hook, recordConfirmation hook, matched-path hook) still
+  // arms the lock from the persisted truth within that window.
+  try {
+    const sigCd = require('./services/sig-cooldown');
+    await sigCd.startBackgroundSync();
+    log.info('Startup', `    ✓ Signature-cooldown sync started`);
+  } catch (err) {
+    log.warn('Startup', `    ⚠ Signature-cooldown sync failed to start: ${err.message}`);
+  }
   // Restore operator's manual line-odds overrides — the fixed offered prices
   // operator pinned via the Lines table edit affordance. Same restart-safety
   // rationale as the disabled-lines hydrate above.

@@ -131,6 +131,86 @@ function clearSignature(legs) {
   return _locks.delete(sig);
 }
 
+/**
+ * Authoritative DB sync — read parlay_orders for any confirmed parlay
+ * in the last COOLDOWN_MS window and arm the lock for its signature.
+ * Runs at boot AND on a periodic schedule. This is the bulletproof
+ * layer: even if a status='confirmed' write skips the in-memory hook
+ * (some unhooked path we haven't audited), the next DB sync catches
+ * it and arms the lock from the persisted truth. Worst-case exposure
+ * window = the sync interval (30s by default).
+ *
+ * Also runs at BOOT so a Railway restart can't expose a 0-50s gap
+ * during which the lock map is empty for parlays that confirmed pre-
+ * restart but are still within the cooldown window.
+ */
+async function hydrateFromDb() {
+  if (!ENABLED) return { restored: 0 };
+  let db;
+  try { db = require('./db'); }
+  catch (_) { return { restored: 0, error: 'db module unavailable' }; }
+  const client = db.getClient && db.getClient();
+  if (!client) return { restored: 0, error: 'no DB client' };
+  const sinceIso = new Date(Date.now() - COOLDOWN_MS).toISOString();
+  try {
+    const { data, error } = await client
+      .from('parlay_orders')
+      .select('parlay_id, confirmed_at, legs, meta')
+      .gte('confirmed_at', sinceIso)
+      .order('confirmed_at', { ascending: false })
+      .limit(500);
+    if (error) return { restored: 0, error: error.message };
+    let n = 0;
+    for (const row of (data || [])) {
+      const legs = row.legs || (row.meta && row.meta.legs) || [];
+      if (!Array.isArray(legs) || !legs.length) continue;
+      const sig = buildSigKey(legs);
+      if (!sig) continue;
+      const ts = new Date(row.confirmed_at).getTime();
+      if (!Number.isFinite(ts)) continue;
+      const existing = _locks.get(sig);
+      // Only update if the DB row is more recent than the in-memory ts
+      // (rare in practice; defensive).
+      if (!existing || existing < ts) {
+        _locks.set(sig, ts);
+        n++;
+      }
+    }
+    return { restored: n };
+  } catch (err) {
+    return { restored: 0, error: err.message };
+  }
+}
+
+let _syncTimer = null;
+/**
+ * Start the periodic DB hydration loop. Default 30s. Boot also runs an
+ * immediate sync. Idempotent — safe to call multiple times. Disabled
+ * when COOLDOWN_MS=0.
+ */
+async function startBackgroundSync() {
+  if (!ENABLED) return;
+  if (_syncTimer) return; // already running
+  // Immediate boot hydrate so the first RFQs after restart are covered.
+  try {
+    const r = await hydrateFromDb();
+    if (r.restored > 0) {
+      log.info('SigCooldown', `Hydrated ${r.restored} signatures from DB on boot`);
+    }
+  } catch (_) { /* startBackgroundSync must not throw */ }
+  const intervalSec = parseInt(process.env.SIGNATURE_COOLDOWN_SYNC_SECONDS, 10) || 30;
+  _syncTimer = setInterval(async () => {
+    try {
+      const r = await hydrateFromDb();
+      if (r.error) log.warn('SigCooldown', `Background sync error: ${r.error}`);
+      else if (r.restored > 0) log.debug('SigCooldown', `Background sync restored ${r.restored} locks`);
+    } catch (err) {
+      log.warn('SigCooldown', `Background sync threw: ${err.message}`);
+    }
+  }, intervalSec * 1000);
+  log.info('SigCooldown', `Background DB sync started (every ${intervalSec}s)`);
+}
+
 function getActiveLocks() {
   const now = Date.now();
   const out = [];
@@ -156,5 +236,7 @@ module.exports = {
   clearSignature,
   getActiveLocks,
   getStats,
+  hydrateFromDb,
+  startBackgroundSync,
   buildSigKey, // exported for tests
 };

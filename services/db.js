@@ -76,6 +76,19 @@ async function saveOrder(order) {
 
     if (error) {
       log.error('DB', `Failed to save order ${order.parlayId}: ${error.message}`);
+    } else if (order.status === 'confirmed') {
+      // Belt-and-suspenders for the signature cooldown: EVERY code path
+      // that confirms a parlay must end up calling saveOrder() to persist
+      // the row. Hooking here guarantees the cooldown lock is armed
+      // regardless of which upstream path (recordConfirmation, order.matched
+      // side-channel, importPxBookedOrder, settlement repair, etc.) wrote
+      // the status. The explicit lockSignature() calls in order-tracker.js
+      // remain (faster — arm BEFORE the DB write completes) but this catch-
+      // all closes any hook-coverage gaps.
+      try {
+        const sigCd = require('./sig-cooldown');
+        sigCd.lockSignature(row.legs, order.parlayId);
+      } catch (_) { /* observability path must never break DB writes */ }
     }
   } catch (err) {
     log.error('DB', `saveOrder error: ${err.message}`);
