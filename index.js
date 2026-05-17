@@ -1574,11 +1574,29 @@ function startStatusServer() {
           etLabel: ET_FMT.format(new Date(ms)),
           myQuotes: 0, myFills: 0, weDeclined: 0,
           networkMatched: 0, networkWeBidOn: 0,
+          // bySport: { [sportKey]: { networkMatched, networkWeBidOn, myFills } }
+          // Lets the client re-aggregate when the operator picks a sport.
+          bySport: {},
         });
       }
       const bucketForMs = (ms) => {
         if (ms < startMs || ms >= endMs) return null;
         return buckets[Math.floor((ms - startMs) / 3_600_000)];
+      };
+
+      // Classify a row by its legs[].sport list. Single distinct sport →
+      // that sport. Mixed → 'multi'. None → 'unknown'.
+      const sportOf = (legs) => {
+        if (!Array.isArray(legs) || !legs.length) return 'unknown';
+        const seen = new Set();
+        for (const l of legs) if (l && l.sport) seen.add(l.sport);
+        if (seen.size === 0) return 'unknown';
+        if (seen.size === 1) return [...seen][0];
+        return 'multi';
+      };
+      const bumpSport = (bucket, sport, field) => {
+        if (!bucket.bySport[sport]) bucket.bySport[sport] = { networkMatched: 0, networkWeBidOn: 0, myFills: 0 };
+        bucket.bySport[sport][field]++;
       };
 
       // --- parlay_orders for quotes + fills ---
@@ -1651,6 +1669,9 @@ function startStatusServer() {
       }
 
       // --- matched_parlays (dedup by parlay_id) ---
+      // Pulls `legs` so we can sport-tag each matched parlay for the
+      // client-side sport filter. Legs JSON is small (≤8 leg objects), so the
+      // payload overhead is modest even at 24K rows/24h.
       const matchedSeen = new Map();
       {
         let offset = 0;
@@ -1658,7 +1679,7 @@ function startStatusServer() {
         let pages = 0;
         while (pages++ < MAX_PAGES) {
           const { data, error } = await sb.from('matched_parlays')
-            .select('parlay_id, matched_at, we_quoted, our_odds')
+            .select('parlay_id, matched_at, we_quoted, our_odds, legs')
             .gte('matched_at', startIso).lt('matched_at', endIso)
             .order('matched_at', { ascending: true })
             .range(offset, offset + 999);
@@ -1666,11 +1687,12 @@ function startStatusServer() {
           if (!data || data.length === 0) break;
           for (const r of data) {
             const prev = matchedSeen.get(r.parlay_id);
-            if (!prev) matchedSeen.set(r.parlay_id, { matched_at: r.matched_at, we_quoted: !!r.we_quoted, our_odds: r.our_odds });
+            if (!prev) matchedSeen.set(r.parlay_id, { matched_at: r.matched_at, we_quoted: !!r.we_quoted, our_odds: r.our_odds, legs: r.legs });
             else {
               if (r.matched_at && r.matched_at < prev.matched_at) prev.matched_at = r.matched_at;
               if (r.we_quoted) prev.we_quoted = true;
               if (prev.our_odds == null && r.our_odds != null) prev.our_odds = r.our_odds;
+              if (!prev.legs && r.legs) prev.legs = r.legs;
             }
           }
           if (data.length < 1000) break;
@@ -1680,8 +1702,22 @@ function startStatusServer() {
           const ms = new Date(r.matched_at).getTime();
           const b = bucketForMs(ms);
           if (!b) continue;
+          const sport = sportOf(r.legs);
+          const weBidOn = r.we_quoted || r.our_odds != null || ourOrderIds.has(pid);
+          const weWon = ourFills.has(pid);
           b.networkMatched++;
-          if (r.we_quoted || r.our_odds != null || ourOrderIds.has(pid)) b.networkWeBidOn++;
+          bumpSport(b, sport, 'networkMatched');
+          if (weBidOn) {
+            b.networkWeBidOn++;
+            bumpSport(b, sport, 'networkWeBidOn');
+          }
+          // Per-sport myFills derived from matched ∩ ourFills (since ourFills
+          // alone doesn't carry sport info, and parlay_orders.legs would be
+          // a huge payload to pull). May drift by a few rows from the
+          // parlay_orders-derived `b.myFills` total in edge cases where a
+          // confirmed parlay isn't in matched_parlays yet, but the "All"
+          // view still uses the canonical `b.myFills` number.
+          if (weWon) bumpSport(b, sport, 'myFills');
         }
       }
 
@@ -1778,6 +1814,20 @@ function startStatusServer() {
       const elapsedMs = Date.now() - startedAt;
       log.info('NetShare', `/network-share-hourly hours=${hours} roll=${rolling}: ${tot.myFills} fills / ${tot.networkMatched} matched (${elapsedMs}ms)`);
 
+      // List of sport keys observed in the window — fuels the client-side
+      // sport-filter dropdown. Sorted by total networkMatched DESC so the
+      // most active sports surface first.
+      const sportTotals = new Map();
+      for (const b of buckets) {
+        for (const [sp, s] of Object.entries(b.bySport)) {
+          const prev = sportTotals.get(sp) || 0;
+          sportTotals.set(sp, prev + (s.networkMatched || 0));
+        }
+      }
+      const sports = [...sportTotals.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([sp, n]) => ({ key: sp, networkMatched: n }));
+
       const payload = {
         ok: true,
         hours,
@@ -1789,6 +1839,7 @@ function startStatusServer() {
         buckets,
         totals: tot,
         headline,
+        sports,
       };
       _netShareHourlyCache.key = cacheKey;
       _netShareHourlyCache.at = now;

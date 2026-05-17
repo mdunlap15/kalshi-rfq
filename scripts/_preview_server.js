@@ -114,11 +114,6 @@ app.get('/network-share-daily', async (req, res) => {
   }
 });
 
-// Wildcard fallback — mounted LAST so all specific routes (especially
-// /network-share-daily) take precedence. Express matches in registration
-// order and the first match wins.
-app.get(/^\/[a-z0-9_/-]+$/i, (_, res) => res.json(stubResponse));
-
 // ---- /network-share-hourly stub for the preview server ----
 const _hourlyCache = { key: null, at: 0, data: null };
 app.get('/network-share-hourly', async (req, res) => {
@@ -138,9 +133,12 @@ app.get('/network-share-hourly', async (req, res) => {
     const endIso = new Date(endMs).toISOString();
     const ET_FMT = new Intl.DateTimeFormat('en-US', { timeZone:'America/New_York', hour:'2-digit', minute:'2-digit', month:'numeric', day:'numeric', hour12: false });
     const buckets = [];
-    for (let i = 0; i < hours; i++) { const ms = startMs + i * 3600000; buckets.push({ hourMs: ms, hourIso: new Date(ms).toISOString(), etLabel: ET_FMT.format(new Date(ms)), myQuotes:0, myFills:0, weDeclined:0, networkMatched:0, networkWeBidOn:0 }); }
+    for (let i = 0; i < hours; i++) { const ms = startMs + i * 3600000; buckets.push({ hourMs: ms, hourIso: new Date(ms).toISOString(), etLabel: ET_FMT.format(new Date(ms)), myQuotes:0, myFills:0, weDeclined:0, networkMatched:0, networkWeBidOn:0, bySport: {} }); }
     const bucketForMs = (ms) => { if (ms < startMs || ms >= endMs) return null; return buckets[Math.floor((ms - startMs) / 3600000)]; };
+    const sportOf = (legs) => { if (!Array.isArray(legs) || !legs.length) return 'unknown'; const seen = new Set(); for (const l of legs) if (l && l.sport) seen.add(l.sport); if (seen.size === 0) return 'unknown'; if (seen.size === 1) return [...seen][0]; return 'multi'; };
+    const bumpSport = (b, sp, field) => { if (!b.bySport[sp]) b.bySport[sp] = { networkMatched: 0, networkWeBidOn: 0, myFills: 0 }; b.bySport[sp][field]++; };
     const ourOrderIds = new Set();
+    const ourFills = new Map();
     async function pull(col, handler) {
       let offset = 0;
       while (true) {
@@ -151,7 +149,7 @@ app.get('/network-share-hourly', async (req, res) => {
       }
     }
     await pull('quoted_at', (r) => { if (r.meta?.phantom) return; if (r.meta?.reconstructed && !r.quoted_at) return; ourOrderIds.add(r.parlay_id); if (r.quoted_at) { const b = bucketForMs(new Date(r.quoted_at).getTime()); if (b) b.myQuotes++; } });
-    await pull('confirmed_at', (r) => { if (r.meta?.phantom) return; ourOrderIds.add(r.parlay_id); const isWon = r.status === 'confirmed' || (typeof r.status === 'string' && r.status.startsWith('settled_')); if (isWon && r.confirmed_at) { const b = bucketForMs(new Date(r.confirmed_at).getTime()); if (b) b.myFills++; } });
+    await pull('confirmed_at', (r) => { if (r.meta?.phantom) return; ourOrderIds.add(r.parlay_id); const isWon = r.status === 'confirmed' || (typeof r.status === 'string' && r.status.startsWith('settled_')); if (isWon && r.confirmed_at) { const b = bucketForMs(new Date(r.confirmed_at).getTime()); if (b) { b.myFills++; ourFills.set(r.parlay_id, true); } } });
     {
       let offset = 0;
       while (true) {
@@ -165,20 +163,25 @@ app.get('/network-share-hourly', async (req, res) => {
     {
       let offset = 0;
       while (true) {
-        const { data, error } = await sb.from('matched_parlays').select('parlay_id, matched_at, we_quoted, our_odds').gte('matched_at', startIso).lt('matched_at', endIso).order('matched_at', { ascending: true }).range(offset, offset+999);
+        const { data, error } = await sb.from('matched_parlays').select('parlay_id, matched_at, we_quoted, our_odds, legs').gte('matched_at', startIso).lt('matched_at', endIso).order('matched_at', { ascending: true }).range(offset, offset+999);
         if (error || !data || !data.length) break;
         for (const r of data) {
           const p = seen.get(r.parlay_id);
-          if (!p) seen.set(r.parlay_id, { matched_at: r.matched_at, we_quoted: !!r.we_quoted, our_odds: r.our_odds });
-          else { if (r.we_quoted) p.we_quoted = true; if (p.our_odds == null && r.our_odds != null) p.our_odds = r.our_odds; }
+          if (!p) seen.set(r.parlay_id, { matched_at: r.matched_at, we_quoted: !!r.we_quoted, our_odds: r.our_odds, legs: r.legs });
+          else { if (r.we_quoted) p.we_quoted = true; if (p.our_odds == null && r.our_odds != null) p.our_odds = r.our_odds; if (!p.legs && r.legs) p.legs = r.legs; }
         }
         if (data.length < 1000) break; offset += 1000;
       }
       for (const [pid, r] of seen.entries()) {
         const b = bucketForMs(new Date(r.matched_at).getTime());
         if (!b) continue;
+        const sp = sportOf(r.legs);
+        const weBidOn = r.we_quoted || r.our_odds != null || ourOrderIds.has(pid);
+        const weWon = ourFills.has(pid);
         b.networkMatched++;
-        if (r.we_quoted || r.our_odds != null || ourOrderIds.has(pid)) b.networkWeBidOn++;
+        bumpSport(b, sp, 'networkMatched');
+        if (weBidOn) { b.networkWeBidOn++; bumpSport(b, sp, 'networkWeBidOn'); }
+        if (weWon) bumpSport(b, sp, 'myFills');
       }
     }
     const BID_RELIABLE_FROM = '2026-05-12';
@@ -205,11 +208,18 @@ app.get('/network-share-hourly', async (req, res) => {
     tot.shareOfMatched = tot.networkMatched > 0 ? tot.myFills / tot.networkMatched : null;
     tot.bidWinRate = tot.networkWeBidOn > 0 ? Math.min(1, tot.myFills / tot.networkWeBidOn) : null;
     const headlineFor = (n) => { const s = buckets.slice(Math.max(0, buckets.length - n)).reduce((a,b) => { a.myFills+=b.myFills; a.networkMatched+=b.networkMatched; a.networkWeBidOn+=b.networkWeBidOn; a.myQuotes+=b.myQuotes; a.weDeclined+=b.weDeclined; return a; }, {myFills:0, networkMatched:0, networkWeBidOn:0, myQuotes:0, weDeclined:0}); s.shareOfMatched = s.networkMatched > 0 ? s.myFills / s.networkMatched : null; s.bidWinRate = s.networkWeBidOn > 0 ? Math.min(1, s.myFills / s.networkWeBidOn) : null; s.hours = Math.min(n, buckets.length); return s; };
-    const payload = { ok:true, hours, rollingWindow: rolling, startIso, endIso, bidWinRateReliableFrom: BID_RELIABLE_FROM, asOfUtc: new Date().toISOString(), elapsedMs: 0, buckets, totals: tot, headline: { last1h: headlineFor(1), last6h: headlineFor(6), last24h: headlineFor(Math.min(24, hours)), full: { ...tot, hours } } };
+    const sportTotals = new Map();
+    for (const b of buckets) for (const [sp, s] of Object.entries(b.bySport)) sportTotals.set(sp, (sportTotals.get(sp) || 0) + (s.networkMatched || 0));
+    const sports = [...sportTotals.entries()].sort((a, b) => b[1] - a[1]).map(([sp, n]) => ({ key: sp, networkMatched: n }));
+    const payload = { ok:true, hours, rollingWindow: rolling, startIso, endIso, bidWinRateReliableFrom: BID_RELIABLE_FROM, asOfUtc: new Date().toISOString(), elapsedMs: 0, buckets, totals: tot, headline: { last1h: headlineFor(1), last6h: headlineFor(6), last24h: headlineFor(Math.min(24, hours)), full: { ...tot, hours } }, sports };
     _hourlyCache.key = cacheKey; _hourlyCache.at = now; _hourlyCache.data = payload;
     res.set('X-Cache', 'miss'); res.json(payload);
   } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
 });
+
+// Wildcard fallback — mounted LAST so all specific routes (especially
+// /network-share-daily and /network-share-hourly) take precedence.
+app.get(/^\/[a-z0-9_/-]+$/i, (_, res) => res.json(stubResponse));
 
 const PORT = 4099;
 app.listen(PORT, () => console.log(`Preview server on http://localhost:${PORT}`));
