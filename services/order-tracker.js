@@ -823,6 +823,14 @@ function recordConfirmation(parlayId, orderUuid, confirmedOdds, confirmedStake) 
     order.confirmedOdds = confirmedOdds;
     order.confirmedStake = confirmedStake;
     order.orderUuid = orderUuid;
+    // Arm the standalone signature-cooldown lock the moment status flips
+    // to 'confirmed'. Independent from templateExposure.recordConfirmation
+    // (which is called below in a gated block). Belt-and-suspenders for
+    // the back-to-back same-signature bot pattern.
+    try {
+      const sigCd = require('./sig-cooldown');
+      sigCd.lockSignature(order.legs || (order.meta && order.meta.legs) || [], parlayId);
+    } catch (_) { /* never let observability path break confirmation */ }
 
     // Compute Expected Value at confirmation time (SP perspective):
     //   EV = P(bettor_loses) * bettor_wager   - P(bettor_wins) * confirmedStake
@@ -1593,6 +1601,15 @@ function recordMatchedParlay(parlayId, matchedOdds, matchedStake, legs, lineMana
       }
 
       ourQuote.status = 'confirmed';
+      // Arm signature-cooldown lock at this side-channel path too. This is
+      // the path that historically did NOT propagate to templateExposure's
+      // confirmation map, leaving the existing cooldown blind to recently-
+      // confirmed parlays. By locking here, the back-to-back same-sig
+      // pattern is blocked regardless of which path confirms first.
+      try {
+        const sigCd = require('./sig-cooldown');
+        sigCd.lockSignature(ourQuote.legs || (ourQuote.meta && ourQuote.meta.legs) || [], parlayId);
+      } catch (_) { /* never break the matched-path on observability errors */ }
       if (matchedOdds != null) {
         // PX sends matched_odds in bettor-side convention; our format is
         // SP-side (negated). Store the confirmed price in our format.

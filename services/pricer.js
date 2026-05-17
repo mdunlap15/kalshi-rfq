@@ -2576,6 +2576,28 @@ function shouldDecline(legs, parlayId) {
   // parlayId is OPTIONAL — only used by side-effect-free observability
   // hooks (e.g. SGP shadow logging). Pricing logic must NOT depend on it.
   if (!legs || legs.length === 0) return { declined: true, reason: 'empty parlay', detail: null };
+
+  // Signature cooldown — FIRST gate, independent of the existing template-
+  // exposure cooldown which has a state-propagation race. The standalone
+  // sig-cooldown module is armed unconditionally at every status='confirmed'
+  // assignment site, so once ANY parlay on this signature has confirmed
+  // (via order.matched OR order.finalized path) the next same-sig RFQ
+  // within SIGNATURE_COOLDOWN_SECONDS declines immediately. Cannot be
+  // bypassed by downstream logic.
+  try {
+    // Lazy-require so a missing module never crashes pricer init.
+    const sigCd = require('./sig-cooldown');
+    const cd = sigCd.checkSignatureCooldown(legs);
+    if (cd && cd.block) {
+      const remainSec = Math.ceil(cd.remainingMs / 1000);
+      return {
+        declined: true,
+        reason: 'signature_cooldown',
+        detail: `same parlay confirmed ${Math.round(cd.ageMs / 1000)}s ago — cooldown is ${remainSec + Math.round(cd.ageMs / 1000)}s, ${remainSec}s remaining`,
+      };
+    }
+  } catch (_) { /* never let a bug in the cooldown check break pricing */ }
+
   if (legs.length > config.pricing.maxLegs) {
     return { declined: true, reason: 'too many legs', detail: `${legs.length} legs > max ${config.pricing.maxLegs}` };
   }
