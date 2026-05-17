@@ -170,10 +170,20 @@ function recordUnsupportedMarket(info) {
     entry.sampleEvents.push(info.eventName);
   }
 }
-// Limit-related reasons — these are the ones we alert on (user-controllable)
+// Limit-related reasons — these are the ones we alert on (user-controllable).
+// Player/series/per-parlay added 2026-05-17 after a regression: the 2026-05-01
+// K-prop consolidation introduced the underscore-cased 'player_exposure_cap'
+// (since renamed to 'player exposure limit' to match the team/game pattern)
+// which never matched this set, so player-prop cap declines fired phone
+// notifications via push.notifyCapHit('player', …) but the web limit-alert
+// banner silently filtered them out. Series and per-parlay-risk were never
+// in the set at all — same gap, smaller blast radius.
 const LIMIT_REASONS = new Set([
   'team exposure limit',
   'game exposure limit',
+  'player exposure limit',
+  'series exposure limit',
+  'per-parlay risk limit',
   'portfolio drawdown limit',
   'too many legs',
 ]);

@@ -3206,7 +3206,7 @@ function shouldDecline(legs) {
       } catch (_) {}
       return {
         declined: true,
-        reason: 'player_exposure_cap',
+        reason: 'player exposure limit',
         detail: `${playerCheck.player} (${playerCheck.sport}): current $${playerCheck.current}${pendingTxt} + this parlay $${propParlayCap} = $${playerCheck.wouldBe} > cap $${playerCheck.max}`,
         violations: [{ team: playerCheck.player, wouldBe: playerCheck.wouldBe, limit: playerCheck.max }],
         estPayout: propParlayCap,
