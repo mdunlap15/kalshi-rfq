@@ -23,6 +23,19 @@ const _NBA_PROP_TO_TOA_MARKET = {
   rebounds: 'player_rebounds',
   assists: 'player_assists',
   threes_made: 'player_threes',
+  // Added 2026-05-17 after silent-decline audit showed ~25% of basketball
+  // player_prop unknowns were blocks/steals/PRA combos with no TOA mapping
+  // (classifier returned the propType but lookup short-circuited at
+  // `toaMarketKey = undefined`).
+  //
+  // pra_combo maps to the 3-stat TOA market. The classifyNbaProp pra_combo
+  // bucket also includes 2-stat combos (PR / PA / RA), which will silently
+  // fail the TOA lookup (no_line_match — PRA line ≠ 2-stat line) and decline
+  // cleanly via insufficient_books. Acceptable for now; a sub-classifier for
+  // 2-stat combos can come later if the volume justifies it.
+  blocks: 'player_blocks',
+  steals: 'player_steals',
+  pra_combo: 'player_points_rebounds_assists',
 };
 const _NHL_PROP_TO_TOA_MARKET = {
   shots_on_goal: 'player_shots_on_goal',
