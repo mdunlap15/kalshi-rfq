@@ -65,11 +65,22 @@ async function hydrateFromDb() {
   hydrated = true;
   try {
     const saved = await db.loadPushSubscriptions();
-    for (const sub of saved) {
-      if (sub && sub.endpoint) subscriptions.set(sub.endpoint, sub);
+    let mutesRestored = 0;
+    for (const row of saved) {
+      // loadPushSubscriptions now returns { subscription, mutedCategories }
+      // (the muted column is optional — null if the migration hasn't run yet).
+      // Stay backward-compatible if some caller passes the bare subscription.
+      const sub = row && row.subscription ? row.subscription : row;
+      if (!sub || !sub.endpoint) continue;
+      subscriptions.set(sub.endpoint, sub);
+      const muted = row && Array.isArray(row.mutedCategories) ? row.mutedCategories : null;
+      if (muted && muted.length) {
+        mutedByEndpoint.set(sub.endpoint, new Set(muted));
+        mutesRestored++;
+      }
     }
     if (saved.length > 0) {
-      log.info('Push', `Hydrated ${saved.length} subscriptions from Supabase`);
+      log.info('Push', `Hydrated ${saved.length} subscriptions from Supabase (${mutesRestored} with restored mute prefs)`);
     }
   } catch (err) {
     log.warn('Push', `Subscription hydrate failed: ${err.message}`);
@@ -105,9 +116,28 @@ function setMutedCategories(endpoint, categories) {
   if (!endpoint) return;
   if (!Array.isArray(categories) || categories.length === 0) {
     mutedByEndpoint.delete(endpoint);
-    return;
+  } else {
+    mutedByEndpoint.set(endpoint, new Set(categories));
   }
-  mutedByEndpoint.set(endpoint, new Set(categories));
+  // Persist to Supabase so the mute survives Railway redeploys (which
+  // previously reset every endpoint to "all categories enabled" silently).
+  // Fire-and-forget — the in-memory write is already authoritative for
+  // sends that happen before the DB write lands.
+  //
+  // If the subscription is in memory, do a full upsert (subscription +
+  // muted_categories together) — defeats the first-time-subscribe race
+  // where a bare UPDATE could match zero rows because the insert hasn't
+  // landed yet. Falls back to a bare update if the subscription isn't
+  // known (shouldn't happen in normal flow, defensive).
+  const arr = Array.isArray(categories) ? categories : [];
+  const sub = subscriptions.get(endpoint);
+  if (sub) {
+    db.savePushSubscription(sub, arr).catch(err =>
+      log.warn('Push', `savePushSubscription (mute) failed: ${err.message}`));
+  } else {
+    db.savePushMutePrefs(endpoint, arr).catch(err =>
+      log.warn('Push', `savePushMutePrefs failed: ${err.message}`));
+  }
 }
 
 function getMutedCategories(endpoint) {

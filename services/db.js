@@ -1005,15 +1005,34 @@ async function getTotalPnL() {
  *     created_at timestamptz default now()
  *   );
  *   alter table push_subscriptions enable row level security;
+ *
+ * Then to add per-endpoint mute persistence (one-time, run separately so
+ * existing deployments without the column degrade gracefully):
+ *
+ *   alter table push_subscriptions add column muted_categories jsonb;
+ *
+ * The save/load helpers below silently no-op on the muted_categories
+ * column if it doesn't exist yet — same warn-once pattern as the
+ * declines.unknown_categories migration.
  */
-async function savePushSubscription(sub) {
+async function savePushSubscription(sub, mutedCategories) {
   if (!isEnabled() || !sub || !sub.endpoint) return;
   const db = getClient();
+  const payload = { endpoint: sub.endpoint, subscription: sub };
+  // Include muted_categories if the caller passed it (e.g. setMutedCategories
+  // upserts the whole row to avoid a first-time-subscribe race where a bare
+  // UPDATE would match zero rows because the insert hasn't landed yet).
+  if (Array.isArray(mutedCategories)) payload.muted_categories = mutedCategories;
   try {
-    const { error } = await db.from('push_subscriptions').upsert({
-      endpoint: sub.endpoint,
-      subscription: sub,
-    }, { onConflict: 'endpoint' });
+    let { error } = await db.from('push_subscriptions').upsert(payload, { onConflict: 'endpoint' });
+    // If the migration hasn't been run yet the muted_categories column
+    // won't exist — retry without it so subscription persistence still
+    // works. The mute prefs just won't survive restarts until the column
+    // is added (warning already logged from loadPushSubscriptions).
+    if (error && /muted_categories/i.test(error.message) && 'muted_categories' in payload) {
+      delete payload.muted_categories;
+      ({ error } = await db.from('push_subscriptions').upsert(payload, { onConflict: 'endpoint' }));
+    }
     if (error) log.warn('DB', `savePushSubscription error: ${error.message}`);
   } catch (err) {
     log.warn('DB', `savePushSubscription exception: ${err.message}`);
@@ -1024,15 +1043,52 @@ async function loadPushSubscriptions() {
   if (!isEnabled()) return [];
   const db = getClient();
   try {
-    const { data, error } = await db.from('push_subscriptions').select('subscription');
+    // Try to read muted_categories too. If the column doesn't exist yet
+    // (operator hasn't run the migration), fall back to a column-less read
+    // so subscription hydration still works. Mute prefs simply stay empty
+    // until the column is added + repopulated by the client's next toggle.
+    let { data, error } = await db.from('push_subscriptions').select('subscription, muted_categories');
+    if (error && /muted_categories/i.test(error.message)) {
+      if (!loadPushSubscriptions._mutedWarned) {
+        log.warn('DB', 'push_subscriptions.muted_categories column missing — run: ALTER TABLE push_subscriptions ADD COLUMN muted_categories JSONB; (mute prefs will not persist until then)');
+        loadPushSubscriptions._mutedWarned = true;
+      }
+      ({ data, error } = await db.from('push_subscriptions').select('subscription'));
+    }
     if (error) {
       log.warn('DB', `loadPushSubscriptions error: ${error.message}`);
       return [];
     }
-    return (data || []).map(r => r.subscription).filter(s => s && s.endpoint);
+    return (data || [])
+      .map(r => ({ subscription: r.subscription, mutedCategories: Array.isArray(r.muted_categories) ? r.muted_categories : null }))
+      .filter(r => r.subscription && r.subscription.endpoint);
   } catch (err) {
     log.warn('DB', `loadPushSubscriptions exception: ${err.message}`);
     return [];
+  }
+}
+
+/**
+ * Persist per-endpoint mute prefs. Called by push.setMutedCategories
+ * whenever the client toggles a category. Silently no-ops if the
+ * muted_categories column hasn't been added yet (warn-once via the
+ * loadPushSubscriptions warning above).
+ */
+async function savePushMutePrefs(endpoint, mutedCategories) {
+  if (!isEnabled() || !endpoint) return;
+  const db = getClient();
+  try {
+    const arr = Array.isArray(mutedCategories) ? mutedCategories : [];
+    const { error } = await db.from('push_subscriptions').update({
+      muted_categories: arr,
+    }).eq('endpoint', endpoint);
+    if (error) {
+      // Column-missing → quiet no-op (already warned at load time).
+      if (/muted_categories/i.test(error.message)) return;
+      log.warn('DB', `savePushMutePrefs error: ${error.message}`);
+    }
+  } catch (err) {
+    log.warn('DB', `savePushMutePrefs exception: ${err.message}`);
   }
 }
 
@@ -1302,4 +1358,5 @@ module.exports = {
   savePushSubscription,
   loadPushSubscriptions,
   deletePushSubscription,
+  savePushMutePrefs,
 };
