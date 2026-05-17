@@ -1069,6 +1069,56 @@ async function loadPushSubscriptions() {
 }
 
 /**
+ * SGP Phase-0 audit log. Inserts one row per same-game-correlation
+ * decline so we can analyze the shape distribution before designing
+ * Phase-1 pricing. Silent no-op if the table doesn't exist (warn-once,
+ * caller is gated by SGP_SHADOW_LOGGING env anyway).
+ *
+ * One-time SQL migration (run in Supabase SQL editor):
+ *
+ *   CREATE TABLE IF NOT EXISTS sgp_audit (
+ *     parlay_id TEXT PRIMARY KEY,
+ *     seen_at TIMESTAMPTZ DEFAULT NOW(),
+ *     decline_reason TEXT NOT NULL,
+ *     px_event_id TEXT,
+ *     leg_count INT,
+ *     prop_count INT,
+ *     other_count INT,
+ *     combo_signature TEXT,
+ *     legs JSONB
+ *   );
+ *   CREATE INDEX IF NOT EXISTS idx_sgp_audit_seen_at ON sgp_audit (seen_at DESC);
+ *   CREATE INDEX IF NOT EXISTS idx_sgp_audit_combo_signature ON sgp_audit (combo_signature);
+ */
+async function saveSgpAudit(row) {
+  if (!isEnabled() || !row || !row.parlay_id) return;
+  const db = getClient();
+  try {
+    // Upsert on parlay_id so duplicate-decline RFQs (rare but possible
+    // when PX retries) don't error on PK collision.
+    const { error } = await db.from('sgp_audit').upsert(row, { onConflict: 'parlay_id' });
+    if (error) {
+      // Two possible "table missing" error strings depending on Supabase
+      // client version: Postgres native ("relation does not exist") and
+      // PostgREST cache ("Could not find the table 'public.X' in the
+      // schema cache"). Match both.
+      const missing = /sgp_audit/i.test(error.message)
+        && (/does not exist/i.test(error.message) || /not find the table/i.test(error.message));
+      if (missing) {
+        if (!saveSgpAudit._warned) {
+          log.warn('DB', 'sgp_audit table missing — run the CREATE TABLE migration in db.js comments; SGP shadow logging is no-op until then');
+          saveSgpAudit._warned = true;
+        }
+        return;
+      }
+      log.warn('DB', `saveSgpAudit error: ${error.message}`);
+    }
+  } catch (err) {
+    log.warn('DB', `saveSgpAudit exception: ${err.message}`);
+  }
+}
+
+/**
  * Persist per-endpoint mute prefs. Called by push.setMutedCategories
  * whenever the client toggles a category. Silently no-ops if the
  * muted_categories column hasn't been added yet (warn-once via the
@@ -1359,4 +1409,5 @@ module.exports = {
   loadPushSubscriptions,
   deletePushSubscription,
   savePushMutePrefs,
+  saveSgpAudit,
 };

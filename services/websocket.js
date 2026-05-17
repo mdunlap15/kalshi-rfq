@@ -750,8 +750,9 @@ async function handleRFQ(data) {
     }
     stageTimings.resolve = elapsedMs();
 
-    // Quick decline check
-    const declineCheck = pricer.shouldDecline(legs);
+    // Quick decline check. parlayId is an optional observability hook
+    // (used by SGP shadow logging) — pricing logic doesn't depend on it.
+    const declineCheck = pricer.shouldDecline(legs, parlayId);
     stageTimings.decline = elapsedMs();
     if (declineCheck && declineCheck.declined) {
       const lineManager = require('./line-manager');

@@ -2572,7 +2572,9 @@ function computeCorrelationBoost(pricedLegs) {
 /**
  * Quick check if we should even attempt to price this parlay.
  */
-function shouldDecline(legs) {
+function shouldDecline(legs, parlayId) {
+  // parlayId is OPTIONAL — only used by side-effect-free observability
+  // hooks (e.g. SGP shadow logging). Pricing logic must NOT depend on it.
   if (!legs || legs.length === 0) return { declined: true, reason: 'empty parlay', detail: null };
   if (legs.length > config.pricing.maxLegs) {
     return { declined: true, reason: 'too many legs', detail: `${legs.length} legs > max ${config.pricing.maxLegs}` };
@@ -2703,6 +2705,11 @@ function shouldDecline(legs) {
             `${li.teamName || '?'} ${li.marketType || ''}`.trim());
           const detail = `pxEventId=${eid}: ${group.props.length} prop leg(s) [${propLabels.join('; ')}]`
             + (group.others.length ? ` + ${group.others.length} same-game leg(s) [${otherLabels.join('; ')}]` : '');
+          // SGP Phase-0 shadow log. No-op unless SGP_SHADOW_LOGGING=true on Railway.
+          // Fire-and-forget; pricing behavior unchanged.
+          try {
+            require('./sgp-audit').logSgpDecline(parlayId, eid, group.props, group.others);
+          } catch (_) { /* defensive — observability must never break pricing */ }
           return {
             declined: true,
             reason: 'prop_correlation_same_game',
