@@ -69,6 +69,120 @@ const PENDING_TTL_MS = 5 * 60 * 1000;
 // }
 const _exposure = {};
 
+// Operator-set per-signature cap overrides. When templateRampDeclineAt
+// is hit on a signature, the operator can POST /admin/template-allow-more
+// with a count N to extend the cap by N for THIS signature only. The
+// override expires when the rolling window prunes the signature's
+// confirmations (so it doesn't accidentally relax future days).
+//
+// Shape: { [sigHash]: { extraAllowed: N, signature: <full_sig>, addedAt, reason } }
+// Keyed by short hash of the signature so the API surface stays small
+// (full signatures are long JSON strings).
+const _overrides = new Map();
+
+// Notification debounce — only fire one push per (sigHash) per 60s so a
+// bot hammering the same signature doesn't generate 50 phone alerts.
+const _capNotificationDebounce = new Map(); // sigHash -> lastNotifiedMs
+const CAP_NOTIFICATION_DEBOUNCE_MS = 60 * 1000;
+
+/**
+ * Short, stable hash of the canonical signature so we can use it as a
+ * URL/body parameter for the override endpoint. SHA-256 truncated to
+ * 12 hex chars — collision risk negligible (~10^-14 across 1000 active
+ * signatures) and the operator only ever interacts with the live set.
+ */
+function signatureHash(sig) {
+  if (!sig) return null;
+  const crypto = require('crypto');
+  return crypto.createHash('sha256').update(sig).digest('hex').slice(0, 12);
+}
+
+/**
+ * Human-readable summary of a parlay's legs for notifications and the
+ * /template-cap-state listing. "Atlanta Dream spread + Detroit Pistons ML"
+ * style — easy to recognize at a glance.
+ */
+function describeLegs(legs) {
+  if (!Array.isArray(legs) || !legs.length) return '(no legs)';
+  return legs.map(l => {
+    const team = l.team || l.teamName || '?';
+    const market = (l.market || l.marketType || '').toLowerCase();
+    const short = market === 'moneyline' ? 'ML'
+      : market === 'spread' ? 'spread'
+      : market === 'total' ? 'total'
+      : market === 'team_total' ? 'team total'
+      : market;
+    return `${team} ${short}`;
+  }).join(' + ');
+}
+
+function addOverride(sigHash, extraAllowed, reason) {
+  if (!sigHash || !(extraAllowed > 0)) return false;
+  const prev = _overrides.get(sigHash) || { extraAllowed: 0 };
+  _overrides.set(sigHash, {
+    extraAllowed: prev.extraAllowed + extraAllowed,
+    signature: prev.signature || null, // backfilled lazily when getRampDecision sees this sig
+    addedAt: new Date().toISOString(),
+    reason: reason || null,
+  });
+  _persistOverrides();
+  return true;
+}
+
+function clearOverride(sigHash) {
+  const removed = _overrides.delete(sigHash);
+  if (removed) _persistOverrides();
+  return removed;
+}
+
+const KV_OVERRIDES_KEY = 'template_cap_overrides';
+let _db = null;
+function _getDb() {
+  if (_db === null) {
+    try { _db = require('./db'); } catch (_) { _db = false; }
+  }
+  return _db || null;
+}
+function _persistOverrides() {
+  const db = _getDb();
+  if (!db || typeof db.saveKV !== 'function') return;
+  const arr = Array.from(_overrides.entries()).map(([sigHash, v]) => ({ sigHash, ...v }));
+  db.saveKV(KV_OVERRIDES_KEY, arr).catch(() => { /* logged by saveKV */ });
+}
+async function hydrateOverridesFromDb() {
+  const db = _getDb();
+  if (!db || typeof db.loadKV !== 'function') return { restored: 0 };
+  try {
+    const arr = await db.loadKV(KV_OVERRIDES_KEY);
+    if (!Array.isArray(arr)) return { restored: 0 };
+    let n = 0;
+    for (const entry of arr) {
+      if (entry && entry.sigHash && entry.extraAllowed > 0) {
+        _overrides.set(entry.sigHash, {
+          extraAllowed: entry.extraAllowed,
+          signature: entry.signature || null,
+          addedAt: entry.addedAt || null,
+          reason: entry.reason || null,
+        });
+        n++;
+      }
+    }
+    if (n > 0) log.info('TemplateCap', `Hydrated ${n} operator overrides from kv_store`);
+    return { restored: n };
+  } catch (err) {
+    log.warn('TemplateCap', `hydrateOverridesFromDb failed: ${err.message}`);
+    return { restored: 0 };
+  }
+}
+
+function getOverride(sigHash) {
+  return _overrides.get(sigHash) || null;
+}
+
+function getAllOverrides() {
+  return Array.from(_overrides.entries()).map(([sigHash, v]) => ({ sigHash, ...v }));
+}
+
 let _stats = {
   recordedConfirmations: 0,
   recordedPending: 0,
@@ -614,15 +728,52 @@ function getRampDecision(legs, opts = {}) {
     };
   }
 
-  if (declineAt > 0 && priorCount >= declineAt) {
+  // Effective declineAt: base declineAt + any operator-set override for
+  // this specific signature. Operator hits POST /admin/template-allow-more
+  // when they're OK taking more of a specific shape; we extend the cap
+  // for THAT signature only without globally relaxing the rule.
+  const sigHash = signatureHash(exp.signature);
+  const override = sigHash ? _overrides.get(sigHash) : null;
+  // Lazily backfill the full signature into the override entry so the
+  // /template-cap-state listing can show what shape was being relaxed
+  // (sigHash alone isn't human-readable).
+  if (override && !override.signature) override.signature = exp.signature;
+  const effectiveDeclineAt = declineAt > 0
+    ? declineAt + (override ? override.extraAllowed : 0)
+    : 0;
+
+  if (effectiveDeclineAt > 0 && priorCount >= effectiveDeclineAt) {
     _stats.rampHits.decline++;
+    const reason = `template_cap: ${priorCount} prior bets on this signature (${exp.confirmedCount} confirmed + ${exp.pendingCount} pending) in ${WINDOW_MS / 3600000}h window`
+      + (override ? ` (override +${override.extraAllowed} already applied)` : '');
+    // Notification — fire-and-forget, debounced per sigHash. Tells the
+    // operator a same-shape parlay was just blocked and gives them the
+    // hash to bump capacity if they want to allow more.
+    try {
+      const lastNotified = _capNotificationDebounce.get(sigHash) || 0;
+      if (Date.now() - lastNotified >= CAP_NOTIFICATION_DEBOUNCE_MS) {
+        _capNotificationDebounce.set(sigHash, Date.now());
+        const push = require('./push');
+        if (push && push.notifyTemplateCap) {
+          push.notifyTemplateCap({
+            sigHash,
+            description: describeLegs(legs),
+            priorCount,
+            effectiveDeclineAt,
+            totalPriorStake: exp.totalStake,
+            overrideApplied: override ? override.extraAllowed : 0,
+          });
+        }
+      }
+    } catch (_) { /* never let notification path break pricing */ }
     return {
       extraVig: 0, decline: true,
-      reason: `template_cap: ${priorCount} prior bets on this signature (${exp.confirmedCount} confirmed + ${exp.pendingCount} pending) in ${WINDOW_MS / 3600000}h window`,
+      reason,
       count: priorCount,
       confirmedCount: exp.confirmedCount,
       pendingCount: exp.pendingCount,
       totalStake: exp.totalStake,
+      sigHash, // expose so caller can include in logs / dashboard
     };
   }
 
@@ -821,4 +972,11 @@ module.exports = {
   startPruneLoop,
   rebuildFromOrders,
   getStats,
+  signatureHash,
+  describeLegs,
+  addOverride,
+  clearOverride,
+  getOverride,
+  getAllOverrides,
+  hydrateOverridesFromDb,
 };

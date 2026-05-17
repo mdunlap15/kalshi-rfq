@@ -276,6 +276,21 @@ async function startup() {
   } catch (err) {
     log.warn('Startup', `    ⚠ Disabled-lines hydrate failed: ${err.message}`);
   }
+  // Restore operator-set template-cap overrides (POST /admin/template-allow-more
+  // entries from before the restart). In-memory map; without hydration the
+  // override would silently vanish on every redeploy, forcing the operator
+  // to re-issue any "allow N more on this shape" decisions.
+  try {
+    const tx = require('./services/template-exposure');
+    const restored = await tx.hydrateOverridesFromDb();
+    if (restored.restored > 0) {
+      log.info('Startup', `    ✓ Template-cap overrides hydrated: ${restored.restored}`);
+    } else {
+      log.info('Startup', '    ✓ Template-cap overrides hydrated: none');
+    }
+  } catch (err) {
+    log.warn('Startup', `    ⚠ Template-cap override hydrate failed: ${err.message}`);
+  }
   // Restore operator's manual line-odds overrides — the fixed offered prices
   // operator pinned via the Lines table edit affordance. Same restart-safety
   // rationale as the disabled-lines hydrate above.
@@ -4395,6 +4410,99 @@ function startStatusServer() {
   app.get('/template-exposure-stats', (req, res) => {
     const templateExposure = require('./services/template-exposure');
     res.json(templateExposure.getStats());
+  });
+
+  // ---- Template-cap operator controls ----
+  // GET /template-cap-state — list every active signature with its
+  // current count, total prior stake, sample legs, and any operator
+  // override applied. Use to decide whether to bump capacity on a
+  // specific shape.
+  app.get('/template-cap-state', (req, res) => {
+    try {
+      const templateExposure = require('./services/template-exposure');
+      const stats = templateExposure.getStats();
+      const overrides = templateExposure.getAllOverrides();
+      const overrideBySigHash = new Map(overrides.map(o => [o.sigHash, o]));
+      // The internal _exposure map isn't exported. Use the stats
+      // top-signatures list — already sorted by count desc, capped at 10.
+      // That's enough for the operator decision flow (decide which of the
+      // top concentration risks to relax).
+      const sigs = (stats.topSignatures || []).map(s => {
+        const fullSig = s.signature.endsWith('…') ? null : s.signature;
+        const sigHash = fullSig ? templateExposure.signatureHash(fullSig) : null;
+        const override = sigHash ? overrideBySigHash.get(sigHash) : null;
+        return {
+          sigHash,
+          signaturePreview: s.signature,
+          count: s.count,
+          confirmedCount: s.confirmedCount,
+          pendingCount: s.pendingCount,
+          totalStake: s.totalStake,
+          override: override ? { extraAllowed: override.extraAllowed, addedAt: override.addedAt, reason: override.reason } : null,
+        };
+      });
+      // Include overrides for signatures NOT in the top-10 too (in case
+      // an old override exists for a shape that's since rolled off).
+      const seenHashes = new Set(sigs.map(s => s.sigHash).filter(Boolean));
+      const standaloneOverrides = overrides.filter(o => !seenHashes.has(o.sigHash));
+      res.json({
+        ok: true,
+        declineAt: require('./config').config.pricing.templateRampDeclineAt,
+        signatures: sigs,
+        orphanedOverrides: standaloneOverrides,
+      });
+    } catch (err) {
+      log.error('TemplateCap', `GET /template-cap-state failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // POST /admin/template-allow-more — operator override: extend the
+  // template_cap by N for a specific signature. Use case: a notification
+  // fired ("template cap hit") and you actually want to take more of
+  // this shape. Hit this endpoint with the sigHash and the count of
+  // additional bets to allow. Override persists for the life of the
+  // signature in the rolling window (auto-clears when the signature
+  // ages out of WINDOW_MS).
+  //
+  // Body: { sigHash: string, count: number, reason?: string }
+  app.post('/admin/template-allow-more', (req, res) => {
+    try {
+      const body = req.body || {};
+      const sigHash = String(body.sigHash || '').trim();
+      const count = parseInt(body.count, 10);
+      if (!sigHash || !sigHash.match(/^[a-f0-9]{8,32}$/i)) {
+        return res.status(400).json({ ok: false, error: 'sigHash required (8-32 hex chars)' });
+      }
+      if (!Number.isFinite(count) || count <= 0 || count > 50) {
+        return res.status(400).json({ ok: false, error: 'count must be a positive integer ≤ 50' });
+      }
+      const templateExposure = require('./services/template-exposure');
+      const ok = templateExposure.addOverride(sigHash, count, body.reason || 'manual');
+      if (!ok) return res.status(400).json({ ok: false, error: 'override rejected' });
+      log.info('TemplateCap', `Operator extended cap on sigHash=${sigHash} by ${count} (reason: ${body.reason || 'manual'})`);
+      const newState = templateExposure.getOverride(sigHash);
+      res.json({ ok: true, sigHash, override: newState });
+    } catch (err) {
+      log.error('TemplateCap', `POST /admin/template-allow-more failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // POST /admin/template-clear-override — remove an operator override.
+  // Reverts the signature to the global declineAt rule.
+  app.post('/admin/template-clear-override', (req, res) => {
+    try {
+      const sigHash = String((req.body && req.body.sigHash) || '').trim();
+      if (!sigHash) return res.status(400).json({ ok: false, error: 'sigHash required' });
+      const templateExposure = require('./services/template-exposure');
+      const removed = templateExposure.clearOverride(sigHash);
+      log.info('TemplateCap', `Operator cleared override on sigHash=${sigHash} (existed=${removed})`);
+      res.json({ ok: true, sigHash, removed });
+    } catch (err) {
+      log.error('TemplateCap', `POST /admin/template-clear-override failed: ${err.message}`);
+      res.status(500).json({ ok: false, error: err.message });
+    }
   });
 
   // ---- v2 pricing engine diagnostics (shadow-mode data) ----

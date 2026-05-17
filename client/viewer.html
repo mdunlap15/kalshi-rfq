@@ -12969,11 +12969,12 @@
   // reliability issues).
   // -------------------------------------------------------------------------
   const VIEWER_NOTIFY_CATEGORIES = [
-    { key: 'confirmation',  label: 'Parlay confirmed',  desc: 'New parlay accepted' },
-    { key: 'settlement',    label: 'Parlay settled',    desc: 'Won / Lost / Push' },
-    { key: 'cap_hit',       label: 'Exposure cap hit',  desc: 'Team / player / game / portfolio' },
-    { key: 'connection',    label: 'Connection state',  desc: 'Disconnect / reconnect / pause' },
-    { key: 'daily_summary', label: 'Daily summary',     desc: 'End-of-day P&L wrap' },
+    { key: 'confirmation',     label: 'Parlay confirmed',  desc: 'New parlay accepted' },
+    { key: 'settlement',       label: 'Parlay settled',    desc: 'Won / Lost / Push' },
+    { key: 'cap_hit',          label: 'Exposure cap hit',  desc: 'Team / player / game / portfolio' },
+    { key: 'template_cap_hit', label: 'Same-parlay cap',   desc: 'A repeated parlay shape was declined — tap to allow more' },
+    { key: 'connection',       label: 'Connection state',  desc: 'Disconnect / reconnect / pause' },
+    { key: 'daily_summary',    label: 'Daily summary',     desc: 'End-of-day P&L wrap' },
   ];
   const VIEWER_MUTE_LS_KEY = 'viewer.notif.muted';
 

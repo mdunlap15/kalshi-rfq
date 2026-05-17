@@ -437,6 +437,36 @@ function notifyConnectionState(state, reason) {
 }
 
 /**
+ * Template-cap notification — fires when the template-exposure ramp
+ * declines a same-signature parlay because priorCount >= effective
+ * declineAt. Lets the operator see when this is happening AND grab the
+ * sigHash to bump capacity via POST /admin/template-allow-more.
+ *
+ * Debouncing is handled UPSTREAM in template-exposure.js (per sigHash,
+ * 60s window) — caller already gated, no second filter needed here.
+ *
+ * Separate category 'template_cap_hit' so it can be muted independently
+ * of the existing 'cap_hit' (team/game/player exposure caps).
+ */
+function notifyTemplateCap(info) {
+  if (!info || !info.sigHash) return;
+  const desc = info.description || '(unknown shape)';
+  const stake = info.totalPriorStake != null ? '$' + Math.round(info.totalPriorStake) : '';
+  const title = `Template cap: ${info.priorCount}× same parlay`;
+  const body = `${desc}\n${info.priorCount} prior bets · ${stake} total stake\nsigHash: ${info.sigHash}`
+    + (info.overrideApplied ? `\noverride: +${info.overrideApplied} already applied` : '');
+  sendNotification({
+    title,
+    body,
+    tag: `template-cap-${info.sigHash}`,
+    category: 'template_cap_hit',
+    sigHash: info.sigHash,
+    url: '/app#template-caps',
+  });
+  return true;
+}
+
+/**
  * Send end-of-day summary notification with fills + P&L.
  */
 function notifyDailySummary(summary) {
@@ -489,6 +519,7 @@ module.exports = {
   notifyConfirmation,
   notifySettlement,
   notifyCapHit,
+  notifyTemplateCap,
   notifyConnectionState,
   notifyDailySummary,
   sendTestNotification,
