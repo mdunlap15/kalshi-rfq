@@ -4978,15 +4978,14 @@ async function checkLegResults() {
         } else if (market === 'first_5_innings_run_line') {
           const line = l.line != null ? Number(l.line) : null;
           if (line != null) {
-            const homeMargin = f5.homeRunsThru5 - f5.awayRunsThru5;
-            if (selection === 'home') {
-              const adjusted = homeMargin + line;
-              freshResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
-            } else {
-              const awayMargin = f5.awayRunsThru5 - f5.homeRunsThru5;
-              const adjusted = awayMargin + Math.abs(line);
-              freshResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
-            }
+            // Same fix as full-game spread branch — Math.abs(line) flipped
+            // sign on away-favorite F5 run lines. Unified to symmetric
+            // `selection_margin + line` form below.
+            const selectionMargin = selection === 'home'
+              ? (f5.homeRunsThru5 - f5.awayRunsThru5)
+              : (f5.awayRunsThru5 - f5.homeRunsThru5);
+            const adjusted = selectionMargin + line;
+            freshResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
           }
         } else if (market === 'first_5_innings_total') {
           const line = l.line != null ? Number(l.line) : null;
@@ -5038,15 +5037,22 @@ async function checkLegResults() {
       } else if (market === 'spread') {
         const line = l.line != null ? Number(l.line) : null;
         if (line != null) {
-          const homeMargin = result.homeScore - result.awayScore;
-          if (selection === 'home') {
-            const adjusted = homeMargin + line;
-            freshResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
-          } else {
-            const awayMargin = result.awayScore - result.homeScore;
-            const adjusted = awayMargin + Math.abs(line);
-            freshResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
-          }
+          // PX encodes `line` from the SELECTION's perspective: selection=
+          // home line=+3.5 means "home +3.5"; selection=away line=-3.5
+          // means "away -3.5" (away is the 3.5-point favorite). The
+          // formula is symmetric: bettor wins when (selection_margin +
+          // line) > 0.
+          //
+          // Bug 2026-05-17: away branch used Math.abs(line), which flips
+          // the sign on away-favorite legs. For LV Aces -3.5 winning by 1,
+          // the buggy formula computed awayMargin + |line| = 1 + 3.5 =
+          // 4.5 → 'won' when the leg actually LOST. Fix unifies both
+          // branches to the same `margin + line` form.
+          const selectionMargin = selection === 'home'
+            ? (result.homeScore - result.awayScore)
+            : (result.awayScore - result.homeScore);
+          const adjusted = selectionMargin + line;
+          freshResult = adjusted > 0 ? 'won' : adjusted < 0 ? 'lost' : 'push';
         }
       } else if (market === 'total') {
         const line = l.line != null ? Number(l.line) : null;

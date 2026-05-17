@@ -488,9 +488,56 @@ function computeLiveParlayProb(legResults) {
   return { liveFairProb: prob, perLeg: legResults, allFinal, anyLegLost, anyLegWon };
 }
 
+/**
+ * Augment a parlay's legs with live game state + per-leg liveFairProb.
+ * Called from /orders and /px-positions so both endpoints surface the
+ * same live data to the dashboard. Returns { liveLegs, parlay } or null
+ * when no legs / ESPN unavailable. Pure (does not mutate input).
+ */
+function augmentParlayLegs(legs, deps) {
+  if (!Array.isArray(legs) || !legs.length) return null;
+  const espnScores = deps && deps.espnScores;
+  if (!espnScores || typeof espnScores.getEspnGameResult !== 'function') return null;
+  const liveLegs = legs.map(l => {
+    const sport = l.sport || l.oddsApiSport;
+    const home = l.homeTeam;
+    const away = l.awayTeam;
+    const start = l.startTime;
+    const gameState = (sport && home && away)
+      ? espnScores.getEspnGameResult(sport, home, away, start)
+      : null;
+    if (!gameState) return { ...l };
+    const live = computeLiveLegProb(l, gameState);
+    return {
+      ...l,
+      liveFairProb: live && live.liveFairProb != null ? live.liveFairProb : l.liveFairProb,
+      liveFetchedAt: Date.now(),
+      liveModel: (live && live.model) || null,
+      liveConfidence: (live && live.confidence) || null,
+      liveReason: (live && live.reason) || null,
+      liveGameState: {
+        homeScore: gameState.homeScore,
+        awayScore: gameState.awayScore,
+        period: gameState.period,
+        displayClock: gameState.displayClock,
+        shortDetail: gameState.shortDetail,
+        state: gameState.state,
+        completed: !!gameState.completed,
+        statusName: gameState.statusName,
+      },
+    };
+  });
+  const legResults = liveLegs
+    .map(l => l.liveFairProb != null ? { liveFairProb: l.liveFairProb, confidence: l.liveConfidence } : null)
+    .filter(Boolean);
+  const parlayLive = legResults.length ? computeLiveParlayProb(legResults) : null;
+  return { liveLegs, parlay: parlayLive };
+}
+
 module.exports = {
   computeLiveLegProb,
   computeLiveParlayProb,
+  augmentParlayLegs,
   // exported for tests
   _internal: {
     normalCdf,

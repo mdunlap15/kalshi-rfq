@@ -3388,56 +3388,12 @@ function startStatusServer() {
     // phantom rows where it's irrelevant.
     const espnScores = require('./services/espn-scores');
     const inPlay = require('./services/in-play-models');
-    /**
-     * Augment an OPEN confirmed order with live ESPN game state + in-play
-     * win-prob per leg. Mutates a SHALLOW COPY of each leg so existing
-     * dashboard render code (which looks at l.liveFairProb directly) picks
-     * up the new data automatically. Also exposes a parlay-level summary
-     * via out.liveState for any UI that wants the aggregate flags.
-     */
-    const stampLive = (o) => {
-      if (o.status !== 'confirmed') return null;
-      const srcLegs = (o.meta && o.meta.legs) || o.legs || [];
-      if (!Array.isArray(srcLegs) || !srcLegs.length) return null;
-      const liveLegs = srcLegs.map(l => {
-        const sport = l.sport || l.oddsApiSport;
-        const home = l.homeTeam;
-        const away = l.awayTeam;
-        const start = l.startTime;
-        const gameState = (sport && home && away)
-          ? espnScores.getEspnGameResult(sport, home, away, start)
-          : null;
-        if (!gameState) return { ...l }; // leave leg untouched; no live state available
-        const live = inPlay.computeLiveLegProb(l, gameState);
-        return {
-          ...l,
-          liveFairProb: live && live.liveFairProb != null ? live.liveFairProb : l.liveFairProb,
-          liveFetchedAt: Date.now(),
-          liveModel: live && live.model || null,
-          liveConfidence: live && live.confidence || null,
-          liveReason: live && live.reason || null,
-          // Compact in-play snapshot for the row tooltip / drill-down.
-          liveGameState: {
-            homeScore: gameState.homeScore,
-            awayScore: gameState.awayScore,
-            period: gameState.period,
-            displayClock: gameState.displayClock,
-            shortDetail: gameState.shortDetail,
-            state: gameState.state,
-            completed: !!gameState.completed,
-            statusName: gameState.statusName,
-          },
-        };
-      });
-      const legResults = liveLegs.map(l => l.liveFairProb != null ? { liveFairProb: l.liveFairProb, confidence: l.liveConfidence } : null).filter(Boolean);
-      const parlayLive = legResults.length ? inPlay.computeLiveParlayProb(legResults) : null;
-      return { liveLegs, parlay: parlayLive };
-    };
     const stamp = (o) => {
       const out = { ...o, isStalePhantom: orderTracker.isOrderStalePhantom(o) };
       if (o.status === 'confirmed' && !out.isStalePhantom) {
         try {
-          const live = stampLive(o);
+          const srcLegs = (o.meta && o.meta.legs) || o.legs || [];
+          const live = inPlay.augmentParlayLegs(srcLegs, { espnScores });
           if (live) {
             // Splice the live-augmented legs onto BOTH common access paths
             // so existing client code (some sites read order.legs, others
@@ -5999,6 +5955,26 @@ function startStatusServer() {
         });
       }
       const merged = [...positions, ...trackerAdds];
+      // Augment each open position with live game state + per-leg
+      // liveFairProb (same as /orders does). Without this, the dashboard
+      // sees unstamped legs from /px-positions and the Live column +
+      // Win Probability stay frozen at the pre-game value. Wrapped in
+      // try/catch — observability path must never break the endpoint.
+      try {
+        const espnScores = require('./services/espn-scores');
+        const inPlay = require('./services/in-play-models');
+        for (const p of merged) {
+          const srcLegs = p.legs || (p.meta && p.meta.legs) || [];
+          const live = inPlay.augmentParlayLegs(srcLegs, { espnScores });
+          if (live) {
+            p.legs = live.liveLegs;
+            if (p.meta) p.meta = { ...p.meta, legs: live.liveLegs };
+            p.liveState = live.parlay;
+          }
+        }
+      } catch (err) {
+        log.warn('LiveState', `/px-positions augment failed: ${err.message}`);
+      }
       res.json({
         ok: true,
         count: merged.length,
