@@ -146,17 +146,38 @@ function basketballLiveProb(leg, state) {
     const settled = settledLegProb(leg, state);
     if (settled != null) return { liveFairProb: settled, model: 'basketball', confidence: 'final', reason: 'game completed' };
   }
-  if (!state.period || state.state === 'pre') {
+  // Only treat as pre-game when ESPN says so. period can be null at
+  // intermissions (Halftime / End of Quarter) while state remains 'in';
+  // we must NOT bail out then — the score and time-remaining estimate
+  // are still meaningful.
+  if (state.state === 'pre') {
     return { liveFairProb: leg.fairProb || null, model: 'basketball', confidence: 'pregame', reason: 'not started' };
   }
+  const detailStr = ((state.displayClock || '') + ' ' + (state.shortDetail || '')).toLowerCase();
+  let period = (state.period != null && Number.isFinite(Number(state.period))) ? Number(state.period) : null;
+  // Halftime detection — period set to ~ totalPeriods/2 (since the first
+  // half is complete). Works for NBA (Q2 done → period=2), WNBA same,
+  // NCAAB (1st half done → period=1).
+  const isHalftime = /halftime|half\s*time|\bht\b/.test(detailStr);
+  // "End {N}{st|nd|rd|th} Quarter" or "End of Period {N}" — period N just ended.
+  const endQuarterMatch = detailStr.match(/\bend\b[^0-9]*(\d{1,2})(?:st|nd|rd|th)?[^0-9]*(?:quarter|period)?/);
+  if (period == null) {
+    if (isHalftime) {
+      period = Math.floor(totalPeriods / 2); // last completed period
+    } else if (endQuarterMatch) {
+      period = parseInt(endQuarterMatch[1], 10);
+    }
+  }
+  if (!period || period < 1) {
+    return { liveFairProb: leg.fairProb || null, model: 'basketball', confidence: 'pregame', reason: 'period unparseable' };
+  }
   const clockSec = parseClockToSeconds(state.displayClock);
-  if (clockSec == null) {
-    // End of quarter / halftime / etc. Assume the period has just ended
-    // → minutesRemaining = (totalPeriods - period) * periodLen.
-    const minsLeft = Math.max(0, (totalPeriods - state.period) * periodLen);
+  if (clockSec == null || isHalftime || endQuarterMatch) {
+    // Between periods — the current period has just ended.
+    const minsLeft = Math.max(0, (totalPeriods - period) * periodLen);
     return basketballProbFromState(leg, state, minsLeft, 'period-boundary');
   }
-  const minsLeft = minutesRemainingTimedGame(state.period, clockSec, periodLen, totalPeriods);
+  const minsLeft = minutesRemainingTimedGame(period, clockSec, periodLen, totalPeriods);
   return basketballProbFromState(leg, state, minsLeft, 'live');
 }
 
@@ -245,13 +266,24 @@ function hockeyLiveProb(leg, state) {
     const settled = settledLegProb(leg, state);
     if (settled != null) return { liveFairProb: settled, model: 'hockey', confidence: 'final', reason: 'game completed' };
   }
-  if (!state.period || state.state === 'pre') {
+  if (state.state === 'pre') {
     return { liveFairProb: leg.fairProb || null, model: 'hockey', confidence: 'pregame', reason: 'not started' };
   }
+  // period can be null at intermissions. Parse from detail string if so.
+  const detailStr = ((state.displayClock || '') + ' ' + (state.shortDetail || '')).toLowerCase();
+  let period = (state.period != null && Number.isFinite(Number(state.period))) ? Number(state.period) : null;
+  if (period == null) {
+    const m = detailStr.match(/\b(\d)(?:st|nd|rd)?(?:\s*period|\s*intermission)?\b/);
+    if (m) period = parseInt(m[1], 10);
+  }
+  if (!period || period < 1) {
+    return { liveFairProb: leg.fairProb || null, model: 'hockey', confidence: 'pregame', reason: 'period unparseable' };
+  }
   const clockSec = parseClockToSeconds(state.displayClock);
-  const minsLeft = clockSec != null
-    ? minutesRemainingTimedGame(state.period, clockSec, HOCKEY_PERIOD_LENGTH_MIN, HOCKEY_TOTAL_PERIODS)
-    : Math.max(0, (HOCKEY_TOTAL_PERIODS - state.period) * HOCKEY_PERIOD_LENGTH_MIN);
+  const isIntermission = /intermission|end\s*\d/.test(detailStr);
+  const minsLeft = (clockSec != null && !isIntermission)
+    ? minutesRemainingTimedGame(period, clockSec, HOCKEY_PERIOD_LENGTH_MIN, HOCKEY_TOTAL_PERIODS)
+    : Math.max(0, (HOCKEY_TOTAL_PERIODS - period) * HOCKEY_PERIOD_LENGTH_MIN);
   if (!(minsLeft > 0.05)) {
     const settled = settledLegProb(leg, state);
     if (settled != null) return { liveFairProb: settled, model: 'hockey', confidence: 'final', reason: '~0 min remaining' };
@@ -315,24 +347,42 @@ function mlbLiveProb(leg, state) {
     const settled = settledLegProb(leg, state);
     if (settled != null) return { liveFairProb: settled, model: 'mlb', confidence: 'final', reason: 'game completed' };
   }
-  if (!state.period || state.state === 'pre') {
+  // For MLB, ESPN's status.period IS sometimes null even for in-progress
+  // games — the inning info is in displayClock ("Top 7th") or shortDetail.
+  // So we can't gate on !state.period. Gate on state.state instead.
+  if (state.state === 'pre') {
     return { liveFairProb: leg.fairProb || null, model: 'mlb', confidence: 'pregame', reason: 'not started' };
   }
-  // ESPN shortDetail "Top 7th" / "Bottom 5th" tells us half-inning;
-  // status.period is the inning number (1-9+).
-  const inning = state.period;
-  const shortDetail = (state.shortDetail || '').toLowerCase();
-  const isTopHalf = /\btop\b/.test(shortDetail);
-  const isBottomHalf = /\bbot/.test(shortDetail);
-  // Half-innings remaining: 9 innings × 2 halves = 18 total. If we're in
-  // top of inning N, N-1 innings fully complete + the top half is in
-  // progress → (9-N+1) + 1 = 10-N half-innings remain. Bottom half: (9-N).
-  // Defensive: cap at ≥ 1 half-inning remaining (extras possible but rare
-  // in the calibration set).
+  // Parse half-inning + inning number from either displayClock or
+  // shortDetail (whichever has the "Top/Bot Nth" string).
+  const detailStr = ((state.displayClock || '') + ' ' + (state.shortDetail || '')).toLowerCase();
+  const isTopHalf = /\btop\b/.test(detailStr);
+  const isBottomHalf = /\bbot/.test(detailStr) || /\bbottom\b/.test(detailStr);
+  const isEndOf = /\bend\b/.test(detailStr);   // "End 6th" — between halves, top done, bottom hasn't started
+  const isMidOf = /\bmid\b/.test(detailStr);   // "Mid 6th" — between halves, top done
+  // Pull inning number: prefer status.period when present, else parse from
+  // a "Nth" / "N(st|nd|rd|th)" pattern in the detail string.
+  let inning = (state.period != null && Number.isFinite(Number(state.period))) ? Number(state.period) : null;
+  if (inning == null) {
+    const m = detailStr.match(/\b(\d{1,2})(?:st|nd|rd|th)?\b/);
+    if (m) inning = parseInt(m[1], 10);
+  }
+  if (!inning || inning < 1) {
+    return { liveFairProb: leg.fairProb || null, model: 'mlb', confidence: 'pregame', reason: 'inning unparseable' };
+  }
+  // Half-innings remaining. Five distinguishable states per inning N:
+  //   Top:    top of N is in progress         → (9-N)*2 + 1.5 halves
+  //   Mid:    top done, bottom not started    → (9-N)*2 + 1.0 halves
+  //   Bot:    bottom of N is in progress      → (9-N)*2 + 0.5 halves
+  //   End:    bottom done, between innings    → (9-N)*2 + 0.0 halves
+  //   (none): no half marker — assume current inning fully ahead
+  // Extras (inning > 9) reduce to a minimal-tail estimate.
   let halfInningsRemaining;
   if (inning > 9) halfInningsRemaining = 1; // extras — minimum 1 half
   else if (isTopHalf) halfInningsRemaining = (9 - inning) * 2 + 1.5;
+  else if (isMidOf) halfInningsRemaining = (9 - inning) * 2 + 1.0;
   else if (isBottomHalf) halfInningsRemaining = (9 - inning) * 2 + 0.5;
+  else if (isEndOf) halfInningsRemaining = (9 - inning) * 2;
   else halfInningsRemaining = (9 - inning) * 2;
   if (halfInningsRemaining < 0.5) {
     const settled = settledLegProb(leg, state);
