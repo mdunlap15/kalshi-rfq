@@ -1028,20 +1028,39 @@ async function seedAllLines() {
         const eventCtx = { homeTeam: matchedHome, awayTeam: matchedAway, startTime: event.scheduled || null };
         const parsedK = px.parseMarketSelections(market);
         let registered = 0;
+        // Confidence gate: ≥2 books with both sides, OR 1 trusted book.
+        // Same shape as resolveUnknownLine.
+        const trustedSet = (config.pricing && config.pricing.propTrustedSingleBooks) || [];
+        const usableFair = (l) => l && l.fairProbOver != null && l.fairProbUnder != null;
+        const isHighConfidence = (l) => {
+          if (!usableFair(l)) return false;
+          const both = l.booksWithBothSides || 0;
+          if (both >= 2) return true;
+          const books = l.books || [];
+          return both === 1 && books.some(b => trustedSet.includes(String(b).toLowerCase()));
+        };
         for (const sel of parsedK) {
           totalLines++;
-          let lookup = oddsFeed.lookupPlayerStrikeoutProp(sportKey, eventCtx, playerName, sel.line);
-          // Confidence gate: same as resolveUnknownLine. Skip if SharpAPI
-          // returned only a single non-trusted book.
-          const trustedSet = (config.pricing && config.pricing.propTrustedSingleBooks) || [];
-          const usableFair = (l) => l && l.fairProbOver != null && l.fairProbUnder != null;
-          const isHighConfidence = (l) => {
-            if (!usableFair(l)) return false;
-            const both = l.booksWithBothSides || 0;
-            if (both >= 2) return true;
-            const books = l.books || [];
-            return both === 1 && books.some(b => trustedSet.includes(String(b).toLowerCase()));
-          };
+          // TOA-primary: operator's Hobby SharpAPI tier has limited K-prop
+          // coverage (DK + FD only), so most pitchers fail the ≥2-book gate
+          // and don't register at seed time. TOA's market data has 4-8
+          // books per K-prop line and registers far more pitchers up-front.
+          // SharpAPI stays as a fallback for the rare case TOA misses.
+          let lookup = await oddsFeed.lookupPlayerStrikeoutPropFromTheOddsApi(
+            sportKey, eventCtx, playerName, sel.line,
+          );
+          let propSource = 'theoddsapi';
+          if (!isHighConfidence(lookup)) {
+            const sharp = oddsFeed.lookupPlayerStrikeoutProp(sportKey, eventCtx, playerName, sel.line);
+            if (isHighConfidence(sharp)) {
+              lookup = sharp;
+              propSource = 'sharpapi';
+            } else if (usableFair(sharp) && !usableFair(lookup)) {
+              // Both sub-threshold — prefer the one that at least has fairs.
+              lookup = sharp;
+              propSource = 'sharpapi';
+            }
+          }
           if (!isHighConfidence(lookup)) continue;
           const fairProb = sel.selection === 'over' ? lookup.fairProbOver : lookup.fairProbUnder;
           lineIndex[sel.lineId] = {
@@ -1065,7 +1084,7 @@ async function seedAllLines() {
             fairProbUnder: lookup.fairProbUnder,
             booksWithBothSides: lookup.booksWithBothSides,
             propBooks: lookup.books,
-            propSource: 'sharpapi',
+            propSource,
             propFetchedAt: lookup.fetchedAt || Date.now(),
           };
           _trackPrimaryForIndex(lineIndex[sel.lineId]);
@@ -2056,10 +2075,11 @@ async function resolveUnknownLine(rfqLeg) {
             // rule (b), even though TOA could have returned 5+ books for
             // the same line. Now we escalate when book count is < 2 AND
             // the single book isn't on the trusted-alone list.
-            let lookup = oddsFeed.lookupPlayerStrikeoutProp(
-              sportKey, eventCtx, playerName, matchingK.line,
-            );
-            let propSource = 'sharpapi';
+            // TOA-primary lookup (operator preference 2026-05-18). SharpAPI
+            // Hobby tier carries only 1-2 books on most K-prop lines, so
+            // SharpAPI rarely clears the ≥2-book gate. TOA has 4-8 books
+            // per K-prop line and is broader coverage in general. SharpAPI
+            // remains as a safety fallback for the rare case TOA misses.
             const usableFair = (l) => l && l.fairProbOver != null && l.fairProbUnder != null;
             const trustedSet = (config.pricing && config.pricing.propTrustedSingleBooks) || [];
             const isHighConfidence = (l) => {
@@ -2069,21 +2089,22 @@ async function resolveUnknownLine(rfqLeg) {
               const books = l.books || [];
               return both === 1 && books.some(b => trustedSet.includes(String(b).toLowerCase()));
             };
+            let lookup = await oddsFeed.lookupPlayerStrikeoutPropFromTheOddsApi(
+              sportKey, eventCtx, playerName, matchingK.line,
+            );
+            let propSource = 'theoddsapi';
             if (!isHighConfidence(lookup)) {
-              const toa = await oddsFeed.lookupPlayerStrikeoutPropFromTheOddsApi(
+              const sharp = oddsFeed.lookupPlayerStrikeoutProp(
                 sportKey, eventCtx, playerName, matchingK.line,
               );
-              // Use TOA if it returned anything usable. Special case: if
-              // SharpAPI was usable (not high-confidence but has fair
-              // probs) AND TOA also returned data, prefer whichever has
-              // more books — TOA usually wins for alt lines (5-8 books vs
-              // 1) but stick with SharpAPI if TOA somehow gave us less.
-              if (toa && usableFair(toa)) {
-                const sharpBoth = (lookup && lookup.booksWithBothSides) || 0;
-                const toaBoth = toa.booksWithBothSides || 0;
-                if (!usableFair(lookup) || toaBoth >= sharpBoth) {
-                  lookup = toa;
-                  propSource = 'theoddsapi';
+              if (sharp && usableFair(sharp)) {
+                const toaBoth = (lookup && lookup.booksWithBothSides) || 0;
+                const sharpBoth = sharp.booksWithBothSides || 0;
+                // Prefer SharpAPI if it has more books OR TOA produced no
+                // usable fairs at all.
+                if (!usableFair(lookup) || sharpBoth > toaBoth) {
+                  lookup = sharp;
+                  propSource = 'sharpapi';
                 }
               }
             }

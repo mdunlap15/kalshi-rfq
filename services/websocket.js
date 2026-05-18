@@ -992,21 +992,20 @@ async function handleRFQ(data) {
               // fire-and-forget so the decline path is never blocked.
               const usableFairProb = (l) => l && l.fairProbOver != null && l.fairProbUnder != null;
               (async () => {
-                let lookup = oddsFeed.lookupPlayerStrikeoutProp('baseball_mlb', eventCtx, captured.playerName, captured.lineNum);
-                let source = 'sharpapi';
+                // TOA-primary (operator preference 2026-05-18). SharpAPI
+                // remains as a fallback. Same order as the seed path and the
+                // on-demand resolveUnknownLine K-prop branch.
+                let lookup = await oddsFeed.lookupPlayerStrikeoutPropFromTheOddsApi(
+                  'baseball_mlb', eventCtx, captured.playerName, captured.lineNum,
+                );
+                let source = 'theoddsapi';
                 if (!usableFairProb(lookup)) {
-                  // SharpAPI didn't give us a usable fair prob — could be:
-                  //   - error: no_event_match | no_player_match | no_line_match
-                  //   - matched OK but books_with_both_sides=0 (DK Over-only)
-                  // Try TOA, which queries 4-5 books and caches per-event.
-                  const toaLookup = await oddsFeed.lookupPlayerStrikeoutPropFromTheOddsApi(
+                  const sharpLookup = oddsFeed.lookupPlayerStrikeoutProp(
                     'baseball_mlb', eventCtx, captured.playerName, captured.lineNum,
                   );
-                  if (toaLookup) {
-                    // Use TOA result. If TOA also failed, the row still records
-                    // its stages — useful to see that BOTH sources were tried.
-                    lookup = toaLookup;
-                    source = 'theoddsapi';
+                  if (sharpLookup && usableFairProb(sharpLookup)) {
+                    lookup = sharpLookup;
+                    source = 'sharpapi';
                   }
                 }
                 const entry = {
