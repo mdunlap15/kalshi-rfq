@@ -13333,12 +13333,17 @@
    *      flat split. Approximation only — used briefly during page boot.
    *
    * History (most recent first):
-   *   2026-05-15 16:09:55Z (rev 4, ACTIVE): Mike paid Rick $2,500 from a
-   *     separate personal account. Trading-account total equity unchanged
-   *     ($54,460.36). Mike's claim grew by $2.5K, Rick's shrank by $2.5K.
-   *     Pre-cohort = the 64 parlays open at 16:09:55Z ($14,473.65 stake),
-   *     settles at 7/12 Mike / 5/12 Rick. Post-cohort (everything placed
-   *     after 16:09:55Z) settles at 62.924% Mike / 37.076% Rick.
+   *   2026-05-18 03:59:00Z (rev 5, ACTIVE): Mike paid Rick another $5,000
+   *     from a personal account (retroactive to 23:59 ET on 2026-05-17;
+   *     cumulative Mike→Rick personal = $7,500). Partnership equity at
+   *     cutoff $69,775.59; Mike's claim grew by $5K, Rick's shrank by $5K.
+   *     Pre-cohort = the 14 parlays still open at cutoff that were quoted
+   *     under rev-4 ($3,802.20 stake), settles at 62.924% Mike / 37.076%
+   *     Rick (rev-4's post-ratio). Post-cohort (everything placed after
+   *     03:59:00Z) settles at 69.983% Mike / 30.017% Rick.
+   *   2026-05-15 16:09:55Z (rev 4, superseded): Mike paid Rick $2,500.
+   *     Pre-cohort = 64 parlays open at snapshot ($14,473.65 stake),
+   *     settled at 7/12 Mike / 5/12 Rick.
    *   Rev 3 (superseded): same setup, transfer was $5K (later revised down).
    *   Rev 2 (superseded): same $5K, but pre-cohort had drifted to 65.
    *   Rev 1 (superseded): misread as $2K Rick withdrawal from PX.
@@ -13346,13 +13351,13 @@
    *     base_total $30,000.
    */
   // Fallback formula constants — used only if /bankroll endpoint isn't
-  // reachable. Reflects the post-2026-05-15 external-transfer state.
+  // reachable. Reflects the post-2026-05-18 second-transfer state.
   const BANKROLL_FALLBACK = {
-    baseTotal: 54460.36,
-    mikeBase:  34268.54,
-    rickBase:  20191.82,
-    mikeShare: 34268.54 / 54460.36,   // ≈ 0.62924
-    rickShare: 20191.82 / 54460.36,   // ≈ 0.37076
+    baseTotal: 69775.59,
+    mikeBase:  48830.99,
+    rickBase:  20944.60,
+    mikeShare: 48830.99 / 69775.59,   // ≈ 0.69983
+    rickShare: 20944.60 / 69775.59,   // ≈ 0.30017
   };
 
   // Cache the last successful /bankroll response so a transient endpoint
