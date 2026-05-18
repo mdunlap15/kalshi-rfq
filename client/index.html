@@ -4855,9 +4855,29 @@
   // win or lose together; opposite-side legs are anti-correlated).
   function runRiskSimulation(nSims) {
     nSims = nSims || 10000;
-    const confirmed = Object.values(orderState.allOrders || {}).filter(o =>
-      o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom
+    // Source positions the same way as the Open Positions table: UNION of
+    // /px-positions (canonical, has live in-play state) and orderState.allOrders
+    // (tracker's confirmed set), with /px-positions winning on parlayId match.
+    //
+    // Pre-fix: this only read from orderState.allOrders, which contains
+    // tracker's full confirmed history including stuck 'confirmed' rows
+    // from days/weeks ago. ESPN's score cache only keeps recent games, so
+    // those old rows never got augmented with liveFairProb / liveGameState,
+    // and the Risk Sim was simulating against stale static fairProb values.
+    // /px-positions is the canonical source of CURRENT open positions and
+    // is augmented with live in-play state at the endpoint level.
+    const byParlayId = {};
+    const trackerConfirmed = Object.values(orderState.allOrders || {}).filter(o =>
+      o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom && !!o.orderUuid
     );
+    for (const p of trackerConfirmed) {
+      if (p.parlayId) byParlayId[p.parlayId] = p;
+    }
+    for (const p of (window._pxPositions?.positions || [])) {
+      if (!p.orderUuid) continue;
+      if (p.parlayId) byParlayId[p.parlayId] = p; // PX wins (richer + has liveState)
+    }
+    const confirmed = Object.values(byParlayId);
     if (confirmed.length === 0) return null;
 
     // Merge helper: combine o.legs with o.meta.legs so sim sees both
@@ -5090,9 +5110,18 @@
     const el = document.getElementById('risk-sim-body');
     const sumEl = document.getElementById('risk-sim-summary');
     if (!el) return;
-    const confirmedCount = Object.values(orderState.allOrders || {}).filter(o =>
-      o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom
-    ).length;
+    // Same UNION source as runRiskSimulation — see comment there for the
+    // tracker-vs-px-positions priority rationale.
+    const _bp = {};
+    for (const o of Object.values(orderState.allOrders || {})) {
+      if (o.status === 'confirmed' && !(o.meta && o.meta.phantom) && !o.isStalePhantom && o.orderUuid && o.parlayId) {
+        _bp[o.parlayId] = o;
+      }
+    }
+    for (const p of (window._pxPositions?.positions || [])) {
+      if (p.orderUuid && p.parlayId) _bp[p.parlayId] = p;
+    }
+    const confirmedCount = Object.keys(_bp).length;
     if (confirmedCount === 0) {
       el.innerHTML = '<div class="empty-state"><div class="icon">-</div><div>No confirmed positions to simulate</div></div>';
       return;
