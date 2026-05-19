@@ -87,6 +87,35 @@ const lineIndex = {};
 // from line_cache.
 let _hasSeededOnce = false;
 
+// Build-then-swap support for refreshLines (warm refresh).
+// During a periodic refresh, seedAllLines writes into _seedIndexTarget /
+// _seedPrimaryTarget instead of the live lineIndex / primaryByEvent. Live
+// lineIndex keeps serving RFQ lookups — and cache write-throughs from
+// resolveUnknownLine / lookupLineAsync — for the entire seed window. At
+// the end of seed, contents swap atomically (single synchronous block,
+// no awaits) so no RFQ handler can observe an empty or partial state.
+//
+// On COLD START both targets are null and seed writes go directly to live —
+// preserves the existing behaviour where line_cache hydration pre-fills
+// lineIndex synchronously before any RFQ can race against it.
+//
+// Safety: the data stored in lineIndex is routing metadata (sport, market,
+// selection, team, line value, startTime). Actual pricing odds live in
+// oddsCache (services/odds-feed.js) and are subject to their own staleness
+// check (STALE_PRICE_MINUTES). Serving RFQs against the previous-refresh
+// lineIndex cannot produce stale prices: line_ids are immutable per market,
+// and pricer.shouldDecline catches event-started lines via startTime.
+let _seedIndexTarget = null;
+let _seedPrimaryTarget = null;
+
+// Seed-side line writer. Routes to staging during warm refresh, to live
+// otherwise. Returns the stored info so callers can chain
+// _trackPrimaryForIndex without re-reading.
+function _setSeedLine(lineId, info) {
+  (_seedIndexTarget || lineIndex)[lineId] = info;
+  return info;
+}
+
 // O(1) reverse index for getPrimarySpreadHomePoint / getPrimaryTotalLine.
 // Without this, those helpers do Object.values(lineIndex) which is O(N=~1200)
 // per call. Called per leg in shouldDecline → significant hot-path cost on
@@ -106,7 +135,12 @@ function _trackPrimaryForIndex(lineInfo) {
   if (eid == null) return;
   const mt = lineInfo.marketType;
   if (mt !== 'spread' && mt !== 'total') return;
-  if (!primaryByEvent[eid]) primaryByEvent[eid] = { spread: null, total: null };
+  // Route to staging during warm refresh, to live otherwise. Reads of the
+  // current slot also go through `target` so within-seed comparisons see
+  // a consistent view (the staging primary set, not the previous-refresh
+  // live one).
+  const target = _seedPrimaryTarget || primaryByEvent;
+  if (!target[eid]) target[eid] = { spread: null, total: null };
 
   // Bug 2026-04-27: previous "first-seen wins" heuristic let alt spreads
   // get locked in as primary if PX seeded them before the main spread —
@@ -132,9 +166,9 @@ function _trackPrimaryForIndex(lineInfo) {
   if (newAbs === 0) return; // line=0 isn't a real spread/total
 
   if (mt === 'spread') {
-    const cur = primaryByEvent[eid].spread;
+    const cur = target[eid].spread;
     const curAbs = cur ? Math.abs(Number(cur.line) || Infinity) : Infinity;
-    if (newAbs < curAbs) primaryByEvent[eid].spread = lineInfo;
+    if (newAbs < curAbs) target[eid].spread = lineInfo;
   }
   if (mt === 'total') {
     // Totals: same bug class as spreads (first-seen could be an alt
@@ -145,9 +179,9 @@ function _trackPrimaryForIndex(lineInfo) {
     // returns the median. With ≥3 alts seeded, the median converges to
     // the main quickly (alt ladders cluster symmetrically around the
     // main). With <3 known lines, fall back to first-seen.
-    if (!primaryByEvent[eid].total) primaryByEvent[eid].total = lineInfo;
-    if (!primaryByEvent[eid].seenTotalLines) primaryByEvent[eid].seenTotalLines = new Set();
-    primaryByEvent[eid].seenTotalLines.add(newAbs);
+    if (!target[eid].total) target[eid].total = lineInfo;
+    if (!target[eid].seenTotalLines) target[eid].seenTotalLines = new Set();
+    target[eid].seenTotalLines.add(newAbs);
   }
 }
 
@@ -567,7 +601,7 @@ async function seedAllLines() {
       const hydrated = await db.loadAllRecentLineCache(1);
       let count = 0;
       for (const [lineId, info] of Object.entries(hydrated)) {
-        lineIndex[lineId] = info;
+        _setSeedLine(lineId, info);
         _trackPrimaryForIndex(info);
         count++;
       }
@@ -1063,7 +1097,7 @@ async function seedAllLines() {
           }
           if (!isHighConfidence(lookup)) continue;
           const fairProb = sel.selection === 'over' ? lookup.fairProbOver : lookup.fairProbUnder;
-          lineIndex[sel.lineId] = {
+          const info = _setSeedLine(sel.lineId, {
             sport: sportKey,
             pxEventId: event.event_id,
             pxEventName: event.name,
@@ -1086,8 +1120,8 @@ async function seedAllLines() {
             propBooks: lookup.books,
             propSource,
             propFetchedAt: lookup.fetchedAt || Date.now(),
-          };
-          _trackPrimaryForIndex(lineIndex[sel.lineId]);
+          });
+          _trackPrimaryForIndex(info);
           matchedLines++;
           registered++;
         }
@@ -1296,7 +1330,7 @@ async function seedAllLines() {
         const startTime = event.scheduled || oddsEvt?.commenceTime || null;
 
         if (isGolfSport) golfTrace.linesRegistered++;
-        lineIndex[sel.lineId] = {
+        const info = _setSeedLine(sel.lineId, {
           sport: sportKey,
           pxEventId: event.event_id,
           pxEventName: event.name,
@@ -1318,8 +1352,8 @@ async function seedAllLines() {
           tournamentName: oddsEvt?.eventName || null,
           roundNum: golfRoundNum ?? oddsEvt?.roundNum ?? null,
           matchupType: golfMatchupType ?? oddsEvt?.matchupType ?? null,
-        };
-        _trackPrimaryForIndex(lineIndex[sel.lineId]);
+        });
+        _trackPrimaryForIndex(info);
       }
     }
 
@@ -1453,7 +1487,7 @@ async function seedAllLines() {
             // lineId per (line, side) pair).
             for (const sel of sels) {
               const fairProb = sel.selection === 'over' ? lookup.fairProbOver : lookup.fairProbUnder;
-              lineIndex[sel.lineId] = {
+              _setSeedLine(sel.lineId, {
                 sport: sportKey,
                 pxEventId: event.event_id,
                 pxEventName: event.name,
@@ -1477,7 +1511,7 @@ async function seedAllLines() {
                 propBooks: lookup.books,
                 propSource: lookup.source || 'theoddsapi',
                 propFetchedAt: lookup.fetchedAt || Date.now(),
-              };
+              });
               totalLines++;
               matchedLines++;
             }
@@ -1500,7 +1534,31 @@ async function seedAllLines() {
     }
   }
 
-  // 6. Register matched lines with PX
+  // 6a. Atomic build-then-swap. If we built into staging objects this run
+  // (warm refresh: _seedIndexTarget is set), replace the live lineIndex /
+  // primaryByEvent contents with the staging contents now — before
+  // registerSupportedLines so PX RFQs that arrive immediately after
+  // registration find their entries in the LIVE index.
+  //
+  // JS is single-threaded; this entire block executes synchronously between
+  // any two RFQ handlers, so no caller observes a partial state. We mutate
+  // contents in place (rather than reassign) because the module-level
+  // `const` bindings forbid reassignment and because outside callers
+  // (e.g. /health/coverage, /coverage-audit, getLineSummary) may have
+  // captured the reference.
+  //
+  // Cold start: _seedIndexTarget is null and this block is a no-op (seed
+  // wrote directly to live as before).
+  if (_seedIndexTarget && _seedPrimaryTarget) {
+    for (const k of Object.keys(lineIndex)) delete lineIndex[k];
+    Object.assign(lineIndex, _seedIndexTarget);
+    for (const k of Object.keys(primaryByEvent)) delete primaryByEvent[k];
+    Object.assign(primaryByEvent, _seedPrimaryTarget);
+    _seedIndexTarget = null;
+    _seedPrimaryTarget = null;
+  }
+
+  // 6b. Register matched lines with PX
   const lineIds = Object.keys(lineIndex);
   if (lineIds.length > 0) {
     try {
@@ -2875,18 +2933,46 @@ async function debugGolfMatching() {
 }
 
 /**
- * Re-seed lines. Clears old index and re-fetches everything.
+ * Re-seed lines (warm refresh, build-then-swap).
+ *
+ * Builds a fresh lineIndex/primaryByEvent in staging objects while the live
+ * objects keep serving RFQ lookups and on-demand cache write-throughs. When
+ * seed completes (inside seedAllLines, right before px.registerSupportedLines),
+ * staging contents replace live contents in a single synchronous block —
+ * atomic from any other code's perspective because JS is single-threaded.
+ *
+ * Eliminates the 10-90s window where the previous clear-then-rebuild design
+ * had RFQs declining as "unknown legs" and the /health/coverage banner
+ * flagging false-positive gaps mid-refresh.
+ *
+ * Safety: lineIndex stores routing metadata only (sport / market / selection
+ * / team / line / startTime). Actual pricing odds come from oddsCache with
+ * its own staleness gate (STALE_PRICE_MINUTES). Serving RFQs against
+ * previous-refresh routing entries cannot produce stale pricing — line_ids
+ * are immutable per market, and pricer.shouldDecline catches event-started
+ * lines via startTime regardless of how recently they were registered.
+ *
+ * If seed throws, the targets are cleared in the catch so subsequent cache
+ * write-throughs don't accidentally write into an abandoned staging object;
+ * the live index remains intact (we never swapped) so RFQs keep working off
+ * the prior refresh's data until the next cycle succeeds.
  */
 async function refreshLines() {
-  log.info('Lines', 'Refreshing all lines...');
-  // Clear existing
-  for (const key of Object.keys(lineIndex)) {
-    delete lineIndex[key];
+  log.info('Lines', 'Refreshing all lines (build-then-swap)...');
+  _seedIndexTarget = {};
+  _seedPrimaryTarget = {};
+  try {
+    return await seedAllLines();
+  } catch (err) {
+    // Seed failed mid-build. The swap-block inside seedAllLines never ran,
+    // so live lineIndex/primaryByEvent are untouched. Just clear the
+    // staging targets so any post-failure cache write-through (e.g. a
+    // resolveUnknownLine that races in right after the throw) writes to
+    // live and not to the dead staging object.
+    _seedIndexTarget = null;
+    _seedPrimaryTarget = null;
+    throw err;
   }
-  for (const key of Object.keys(primaryByEvent)) {
-    delete primaryByEvent[key];
-  }
-  return seedAllLines();
 }
 
 /**
